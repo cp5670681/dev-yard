@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from dev_yard import gitops, paths, status as st
-from dev_yard.config import Repo, load_repos, save_repos
+from dev_yard.config import Repo, git_project_name, load_repos, save_repos
 from dev_yard.atlassian import collect_requirement
-from dev_yard.claude_fetch import claude_binary, run_claude_fetch
 from dev_yard.env import load_env
-from dev_yard.runners import RunResult, Runner, get_runner
+from dev_yard.runners import RunResult, Runner, agent_binary, get_runner, pi_argv
 from dev_yard.skillbind import session_prompt
 from dev_yard.tickets import Ticket, load_tickets
 
@@ -66,8 +66,17 @@ def init_yard(root: Path) -> None:
     paths.reqs_dir(root).mkdir(exist_ok=True)
 
 
-def repo_add(root: Path, alias: str, url: str, default_base: str, role: str, path: str | None) -> Repo:
+def repo_add(
+    root: Path,
+    alias: str,
+    url: str,
+    default_base: str,
+    role: str,
+    path: str | None,
+    on_progress: gitops.Progress | None = None,
+) -> Repo:
     repos = load_repos(root)
+    alias = (alias or "").strip() or git_project_name(url)
     repo = Repo(
         alias=alias,
         url=url,
@@ -80,25 +89,26 @@ def repo_add(root: Path, alias: str, url: str, default_base: str, role: str, pat
         raise ValueError(f"{source} is not a git repo")
     repos[alias] = repo
     save_repos(root, repos)
-    gitops.ensure_clone(repo.url, source)
+    gitops.ensure_clone(repo.url, source, on_progress=on_progress)
     return repo
 
 
 def req_open(
     root: Path,
     jira: str,
-    *,
-    source: str = "claude",
+    source: str = "pi",
     dry_run: bool = False,
     force: bool = False,
+    on_progress: Callable[[str], None] | None = None,
+    runner: Runner | None = None,
 ) -> tuple[Path, str]:
     load_env(root)
     d = paths.req_dir(root, jira)
     if dry_run:
-        if source == "claude":
-            from dev_yard.claude_fetch import claude_argv
-
-            return d, " ".join(claude_argv(d)) + "\n(stdin prompt)"
+        if source == "pi":
+            return d, " ".join(
+                pi_argv(root=root, bundle="open", prompt="(dry-run)", print_mode=True)
+            )
         if source == "http":
             return d, f"http fetch {jira} (no request)"
         return d, "skipped remote fetch"
@@ -108,25 +118,36 @@ def req_open(
             raise ValueError(f"{jira} is already phase={phase}; pass --force to re-open")
     d.mkdir(parents=True, exist_ok=True)
     warning = ""
-    if source == "claude":
+    if source == "pi":
         import shutil
 
-        binary = claude_binary()
-        if not shutil.which(binary) and not Path(binary).exists():
-            raise FileNotFoundError(
-                f"claude not found (`{binary}`). Install Claude Code or set YARD_CLAUDE."
-            )
+        if runner is None:
+            binary = agent_binary()
+            if not shutil.which(binary) and not Path(binary).exists():
+                raise FileNotFoundError(
+                    f"pi not found (`{binary}`). Install pi or set YARD_PI to its path."
+                )
         assets = d / "assets"
+        saved_assets = _stash_tree(assets)
         if assets.exists():
             shutil.rmtree(assets)
-        result = run_claude_fetch(jira, d, dry_run=False)
+        snap = _snapshot(d, STAGE_PROTECT["open"])
+        r = runner or get_runner(root, "open", print_mode=True)
+        result = r.start(session_prompt(root, "open", jira), root, [d])
+        restored = _restore(d, snap)
+        if on_progress and result.summary:
+            on_progress(result.summary)
+        if restored:
+            warning = "restored (not this stage's job): " + ", ".join(restored)
         if not result.ok:
+            if saved_assets is not None:
+                _unstash_tree(assets, saved_assets)
             raise RuntimeError(result.summary)
-        if not (d / "REQUIREMENT.md").exists():
-            (d / "REQUIREMENT.md").write_text(
-                REQ_SKELETON.format(key=jira, title=jira, body="")
-            )
-            warning = "Claude did not write REQUIREMENT.md; wrote skeleton"
+        req_md = d / "REQUIREMENT.md"
+        skeleton = REQ_SKELETON.format(key=jira, title=jira, body="")
+        if not req_md.exists() or req_md.read_text() == skeleton:
+            req_md.write_text(skeleton)
+            warning = "pi did not write REQUIREMENT.md; wrote skeleton"
     elif source == "http":
         result = collect_requirement(d, jira, root)
         warning = "; ".join(result.warnings)
@@ -145,6 +166,8 @@ def req_open(
     data = st.load(root, jira)
     data["phase"] = "open"
     st.save(root, jira, data)
+    if warning == "pi did not write REQUIREMENT.md; wrote skeleton":
+        raise RuntimeError(warning)
     return d, warning
 
 
@@ -273,6 +296,7 @@ def ensure_on_default_base(root: Path) -> dict[str, Path]:
 
 
 STAGE_PROTECT = {
+    "open": ("GRILL.md", "SPEC.md", "TICKETS.md", "STATUS.yaml"),
     "grill": ("SPEC.md", "TICKETS.md"),
     "spec": ("TICKETS.md",),
     "tickets": ("REQUIREMENT.md", "GRILL.md", "SPEC.md", "STATUS.yaml"),
@@ -281,6 +305,24 @@ STAGE_PROTECT = {
 
 def _snapshot(req: Path, names: tuple[str, ...]) -> dict[str, bytes | None]:
     return {n: (req / n).read_bytes() if (req / n).exists() else None for n in names}
+
+
+def _stash_tree(path: Path) -> dict[str, bytes] | None:
+    if not path.is_dir():
+        return None
+    return {
+        str(p.relative_to(path)): p.read_bytes()
+        for p in path.rglob("*")
+        if p.is_file()
+    }
+
+
+def _unstash_tree(path: Path, files: dict[str, bytes]) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    for rel, data in files.items():
+        dest = path / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
 
 
 def _restore(req: Path, snap: dict[str, bytes | None]) -> list[str]:

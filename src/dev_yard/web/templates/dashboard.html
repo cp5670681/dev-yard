@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}需求 · dev-yard{% endblock %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <h1>需求</h1>
+    <p class="lede">一个 Jira 一张看板。文档阶段可在网页用 pi -p 跑；需要对齐访谈时用 CLI 的 TUI。</p>
+  </div>
+  <a class="btn primary" href="/open">打开需求</a>
+</header>
+
+{% if not items %}
+<section class="empty">
+  <h2>还没有需求</h2>
+  <p>先在「仓库」登记业务仓，再打开一张 Jira。</p>
+  <div class="empty-actions">
+    <a class="btn" href="/repos">登记仓库</a>
+    <a class="btn primary" href="/open">打开需求</a>
+  </div>
+</section>
+{% else %}
+<section class="cards">
+  {% for item in items %}
+  <a class="req-card" href="/r/{{ item.jira }}">
+    <div class="req-card-top">
+      <span class="key">{{ item.jira }}</span>
+      <span class="pill phase-{{ item.phase }}">{{ item.phase }}</span>
+    </div>
+    <p class="next">下一步 · {{ item.next_label }}</p>
+    <div class="bar">
+      {% set pct = (item.ticket_done / item.ticket_total * 100) if item.ticket_total else 0 %}
+      <span style="width: {{ pct }}%"></span>
+    </div>
+    <p class="meta">
+      {% if item.ticket_total %}
+        {{ item.ticket_done }}/{{ item.ticket_total }} 票完成
+      {% else %}
+        尚未拆票
+      {% endif %}
+    </p>
+  </a>
+  {% endfor %}
+</section>
+{% endif %}
+{% endblock %}

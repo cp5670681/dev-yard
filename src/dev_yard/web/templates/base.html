@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}dev-yard{% endblock %}</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body {% if job and job.state in ("queued", "running") %}data-job="{{ job.id }}"{% endif %}>
+  <aside class="nav">
+    <a class="brand" href="/">
+      <span class="brand-mark">Y</span>
+      <span>
+        <strong>dev-yard</strong>
+        <small>{{ root_name }}</small>
+      </span>
+    </a>
+    <nav>
+      <a href="/" class="{% if request.url.path == '/' %}on{% endif %}">需求看板</a>
+      <a href="/repos" class="{% if request.url.path.startswith('/repos') %}on{% endif %}">仓库</a>
+      <a href="/open" class="{% if request.url.path.startswith('/open') %}on{% endif %}">打开需求</a>
+    </nav>
+    {% if running_jobs %}
+    <div class="nav-jobs">
+      <p>进行中</p>
+      {% for j in running_jobs %}
+      {% if j.action == "repo_add" %}
+      <a href="/repos?job={{ j.id }}">仓库 · clone</a>
+      {% else %}
+      <a href="/r/{{ j.jira }}?job={{ j.id }}">{{ j.jira }} · {{ j.action }}</a>
+      {% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
+    <p class="nav-foot">本机 {{ root }}</p>
+  </aside>
+  <main class="main">
+    {% if request.query_params.get('error') %}
+    <div class="flash bad">{{ request.query_params.get('error') }}</div>
+    {% endif %}
+    {% if job and job.state == 'error' %}
+    <div class="flash bad">{{ job.action }} 失败</div>
+    {% endif %}
+    {% if request.query_params.get('ok') %}
+    <div class="flash ok">已完成</div>
+    {% endif %}
+    {% if request.query_params.get('saved') %}
+    <div class="flash ok">已保存</div>
+    {% endif %}
+    {% block body %}{% endblock %}
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

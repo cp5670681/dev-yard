@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}打开需求 · dev-yard{% endblock %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <h1>打开需求</h1>
+    <p class="lede">默认走本机 pi 的 mcp-atlassian-pro，只抽当前这张 Jira 的产品说明。</p>
+  </div>
+</header>
+
+<form class="panel form" method="post" action="/open">
+  <label>
+    Jira key
+    <input name="jira" required placeholder="PG-13068" autocomplete="off">
+  </label>
+  <label>
+    来源
+    <select name="source">
+      <option value="pi">pi + mcp-atlassian-pro（推荐）</option>
+      <option value="http">HTTP 爬取（会带历史页）</option>
+      <option value="none">只建骨架，不联网</option>
+    </select>
+  </label>
+  <label class="check">
+    <input type="checkbox" name="force" value="1">
+    强制重抽（会重置 phase 并删除 assets/）
+  </label>
+  <button class="btn primary" type="submit">开始抽取</button>
+</form>
+{% endblock %}

@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}仓库 · dev-yard{% endblock %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <h1>仓库</h1>
+    <p class="lede">alias 必须和 TICKETS.md 里的 <code>- repo:</code> 完全一致。本机 path 不要提交进 git。不填 path 时会 clone，页面上能看到进度。</p>
+  </div>
+</header>
+
+{% if job %}
+<section class="job" data-job-panel>
+  <div class="job-head">
+    <strong>clone</strong>
+    <span class="pill" data-job-state>{{ job.state }}</span>
+  </div>
+  <div class="bar job-bar"><span data-job-pct></span></div>
+  <pre class="log" data-job-log>{{ job.log }}</pre>
+</section>
+{% endif %}
+
+<section class="panel">
+  {% if not repos %}
+  <p class="muted">还没有登记仓库。</p>
+  {% else %}
+  <table class="table">
+    <thead>
+      <tr><th>alias</th><th>role</th><th>base</th><th>url</th><th>path</th></tr>
+    </thead>
+    <tbody>
+      {% for r in repos %}
+      <tr>
+        <td><code>{{ r.alias }}</code></td>
+        <td>{{ r.role }}</td>
+        <td>{{ r.default_base }}</td>
+        <td class="clip">{{ r.url }}</td>
+        <td class="clip">{{ r.path or "（托管 clone）" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+<form class="panel form" method="post" action="/repos">
+  <h2>登记一个仓</h2>
+  <div class="grid-2">
+    <label>alias（可空，默认 git 项目名）
+      <input name="alias" placeholder="research">
+    </label>
+    <label>url <input name="url" required placeholder="git@host:group/repo.git"></label>
+    <label>default_base <input name="default_base" value="main"></label>
+    <label>role（可选标记，不参与调度）
+      <input name="role" value="svc" placeholder="be / fe / 任意">
+    </label>
+  </div>
+  <label>本地 path（可选，已有工作副本时填写）
+    <input name="path" placeholder="/home/you/src/research">
+  </label>
+  <button class="btn primary" type="submit">添加</button>
+</form>
+{% endblock %}

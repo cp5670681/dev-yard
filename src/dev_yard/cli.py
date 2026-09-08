@@ -54,10 +54,18 @@ def repo_add(
 ) -> None:
     root = root_opt()
     try:
-        repo = service.repo_add(root, alias, url, default_base, role, path)
+        repo = service.repo_add(
+            root,
+            alias,
+            url,
+            default_base,
+            role,
+            path,
+            on_progress=lambda line: typer.echo(line, err=True),
+        )
     except (ValueError, GitError) as e:
         _die(e)
-    typer.echo(f"added {alias} -> {repo.source_path(root)}")
+    typer.echo(f"added {repo.alias} -> {repo.source_path(root)}")
 
 
 @repo_app.command("list")
@@ -79,7 +87,7 @@ def req_open(
     force: bool = typer.Option(False, "--force", help="Re-open even if phase is past open"),
 ) -> None:
     root = root_opt()
-    source = "http" if http else "claude"
+    source = "http" if http else "pi"
     try:
         d, warning = service.req_open(root, jira, source=source, dry_run=dry_run, force=force)
     except (ValueError, FileNotFoundError, RuntimeError, GitError) as e:
@@ -199,3 +207,29 @@ def review(
 def status(jira: Optional[str] = typer.Argument(None)) -> None:
     root = root_opt()
     typer.echo(service.status_text(root, jira))
+
+
+@app.command()
+def web(
+    host: str = typer.Option("127.0.0.1", help="Bind address"),
+    port: int = typer.Option(8765, help="Bind port"),
+    open_browser: bool = typer.Option(True, "--open/--no-open", help="Open the UI in a browser"),
+    allow_remote: bool = typer.Option(
+        False,
+        "--allow-remote",
+        help="Allow binding off loopback (no auth; pi --approve is exposed)",
+    ),
+) -> None:
+    """Local web console: board, docs, and print-mode stages."""
+    from dev_yard.web.app import serve
+
+    root = root_opt()
+    if allow_remote:
+        typer.echo(
+            "warning: --allow-remote binds off loopback with no auth; pi jobs are exposed",
+            err=True,
+        )
+    try:
+        serve(root, host=host, port=port, open_browser=open_browser, allow_remote=allow_remote)
+    except ValueError as e:
+        _die(e)

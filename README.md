@@ -15,10 +15,10 @@ CLI 入口是 **`dev-yard`**（别名 `devyard`）。不要用 `yard`：那是 R
 uv sync --group dev
 uv run dev-yard init
 uv run dev-yard repo add …     # 每个业务仓登记一次
-# 确认：claude、pi 在 PATH 上；Claude Code 已配 Atlassian MCP
+# 确认：pi 在 PATH 上；pi-mcp-adapter + Atlassian MCP 已配好
 
 # —— 每个需求 ——
-uv run dev-yard req open PG-13068          # Claude 抽本票产品说明 → reqs/PG-13068/REQUIREMENT.md
+uv run dev-yard req open PG-13068          # pi 抽本票产品说明 → reqs/PG-13068/REQUIREMENT.md
 uv run dev-yard grill PG-13068             # pi TUI：对齐，写 GRILL.md
 uv run dev-yard spec PG-13068              # pi TUI：写 SPEC.md
 uv run dev-yard tickets PG-13068           # pi TUI：写 TICKETS.md（每张票一个 repo alias）
@@ -27,11 +27,12 @@ uv run dev-yard implement PG-13068         # 所有 ready 票；成功后停在 
 uv run dev-yard review PG-13068            # 审查 implemented 的票 → done
 uv run dev-yard review PG-13068 --contract # 跨仓契约（必须已经 freeze）
 uv run dev-yard status PG-13068
+uv run dev-yard web                 # 本机看板：看状态、读/改文档、一键跑阶段（pi -p）
 
 # 然后自己开 PR：每个仓  req/<JIRA>  →  该仓 default_base（如 master）
 ```
 
-`grill` / `spec` / `tickets` / `implement` / `review` 默认进 **pi 交互 TUI**。加 `--print` 变成 `pi -p` 跑完退出。加 `--dry-run` 只打印将执行的命令，不启动 agent、不改 git。
+`req open` 固定 `pi -p`（一次性抽完退出）。`grill` / `spec` / `tickets` / `implement` / `review` 默认进 **pi 交互 TUI**。加 `--print` 变成 `pi -p` 跑完退出。加 `--dry-run` 只打印将执行的命令，不启动 agent、不改 git。
 
 ---
 
@@ -44,8 +45,8 @@ uv run dev-yard status PG-13068
 | Python 3.12+ | 本 CLI | `python --version` |
 | [uv](https://docs.astral.sh/uv/) | 安装本仓库 | `uv --version` |
 | git | clone / worktree | `git --version` |
-| [pi](https://pi.dev) | grill/spec/tickets/implement/review | `which pi`；可用 `YARD_PI` 指绝对路径 |
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) `claude` | 仅 `req open` | `which claude`；可用 `YARD_CLAUDE` 指绝对路径 |
+| [pi](https://pi.dev) | 全部 agent 阶段（含 `req open`） | `which pi`；可用 `YARD_PI` 指绝对路径 |
+| Atlassian MCP | `req open` 读 Jira / 本票 Confluence | 本机 `pi` 已能查到目标 Jira（`pi-mcp-adapter` + `mcp-atlassian-pro`） |
 
 ```bash
 cd /path/to/dev-yard
@@ -124,25 +125,18 @@ git -C /home/chengpeng/rcc3/research rev-parse --abbrev-ref HEAD
 # 有未提交改动先自己处理干净，dev-yard 不会帮你 stash
 ```
 
-### 1.4 Claude Code（`req open` 用）
+### 1.4 pi（全部阶段）
 
-默认 `dev-yard req open` 会启动本机 `claude -p`，走你已经配好的 **Atlassian MCP（Jira + Confluence）**。不读 `.env` 里的 Jira 密码。
+`req open` / grill / spec / tickets / implement / review **只跑 pi**。技能已经在 `.pi/skills/`，不要再去插件或 skills.sh 另装一套，也不要跑 `/setup-matt-pocock-skills`。
 
-请先在 Claude Code 里能手动查到目标 Jira。二进制不在 PATH 时：
-
-```bash
-export YARD_CLAUDE=/绝对路径/claude
-```
-
-只想看将执行的命令、不写盘不联网：
+默认 `dev-yard req open` 会启动本机 `pi -p`，走 **Atlassian MCP（Jira + Confluence）**。不读 `.env` 里的 Jira 密码。请先在交互 `pi` 里能查到目标 Jira：
 
 ```bash
-uv run dev-yard req open PG-13068 --dry-run
+pi install npm:pi-mcp-adapter    # 若还没有
+# 全局 MCP：~/.config/mcp/mcp.json 配 mcp-atlassian-pro
 ```
 
-### 1.5 pi（其余阶段用）
-
-grill / spec / tickets / implement / review **只跑 pi**，不要换成 Claude。技能已经在 `.pi/skills/`，不要再去插件或 skills.sh 另装一套，也不要跑 `/setup-matt-pocock-skills`。
+二进制不在 PATH 时，以及可选的 provider/model：
 
 ```bash
 export YARD_PI=/绝对路径/pi          # 仅当 `pi` 不在 PATH
@@ -152,7 +146,13 @@ export YARD_PI_MODEL=MiniMax-M3      # 可选，传给 pi --model
 
 可写进仓库根 `.env`（已 gitignore）。`dev-yard` 启动时会加载它，不覆盖已经 export 的变量。
 
-### 1.6 `.env`（只有 `--http` 才需要）
+只想看将执行的命令、不写盘不联网：
+
+```bash
+uv run dev-yard req open PG-13068 --dry-run
+```
+
+### 1.5 `.env`（只有 `--http` 才需要）
 
 一般 **不用**。仅当 `req open --http`（旧 HTTP 爬取）时才要 Jira 账号：
 
@@ -169,7 +169,7 @@ cp .env.example .env
 | `JIRA_PASSWORD`、`JIRA_API_TOKEN` 或 `JIRA_TOKEN` | 密码或 token |
 | `CONFLUENCE_BASE_URL` | 可选 |
 | `CONFLUENCE_USERNAME` / `CONFLUENCE_PASSWORD` | 可选，缺省复用 Jira 账号 |
-| `YARD_CLAUDE` / `YARD_PI` / `YARD_PI_PROVIDER` / `YARD_PI_MODEL` | 见上 |
+| `YARD_PI` / `YARD_PI_PROVIDER` / `YARD_PI_MODEL` | 见上 |
 
 ---
 
@@ -184,19 +184,19 @@ uv run dev-yard req open PG-13068
 ```
 
 - 创建 `reqs/PG-13068/`（整棵 `reqs/` 已 gitignore，只留本机）。
-- 调 Claude + MCP：只抽 **这一张 Jira** 的产品说明和相关截图，写 `REQUIREMENT.md`，图片在 `assets/`。
+- 调 pi + MCP：只抽 **这一张 Jira** 的产品说明和相关截图，写 `REQUIREMENT.md`，图片在 `assets/`。
 - 不爬历史 Confluence、不把上级模块文档整页拉下来。
 - 若还没有，会补骨架 `GRILL.md` / `SPEC.md` / `TICKETS.md`，并把 `STATUS.yaml` 的 `phase` 设为 `open`。
 
-成功时 stdout 打印需求目录路径。Claude 没写 `REQUIREMENT.md` 时会写骨架并在 stderr 提示。
+成功时 stdout 打印需求目录路径。pi 没写 `REQUIREMENT.md` 时会写骨架并在 stderr 提示。
 
 | 情况 | 命令 |
 |------|------|
 | 先看命令、不写盘 | `req open PG-13068 --dry-run` |
 | 需求已经 grill/freeze 过，要重新抽 | `req open PG-13068 --force`（否则会拒绝把 phase 打回去） |
-| 不用 Claude、走 HTTP（会带历史页，一般不要） | `req open PG-13068 --http` |
+| 不用 MCP、走 HTTP（会带历史页，一般不要） | `req open PG-13068 --http` |
 
-`claude` 找不到会直接失败，**不会**先删掉已有 `assets/`。
+`pi` 找不到会直接失败，**不会**先删掉已有 `assets/`。
 
 ### 2.2 对齐 — `grill`
 
@@ -326,7 +326,16 @@ PG-13068  phase=frozen
 
 `blocked` 处理：改代码或改票后，`implement <JIRA> T1` 指定票重跑（指定 id 不要求当前是 ready）。
 
-### 2.9 开 PR（CLI 不会做）
+### 2.9 本机 Web 控制台 — `web`
+
+```bash
+uv run dev-yard web              # http://127.0.0.1:8765 ，并打开浏览器
+uv run dev-yard web --no-open --port 8765
+```
+
+页面可以：看需求列表和票看板、读/改四份 Markdown、登记仓库、打开 Jira、点抽取 / Grill / Spec / 拆票 / 冻结 / 实现 / 审查。Agent 阶段在网页里一律 `pi -p` 一次性跑完并刷日志；需要 Grill 访谈时仍用 CLI 的 pi TUI。默认只监听 `127.0.0.1`；绑 `0.0.0.0` 之类非回环地址会被拒绝（控制台无鉴权，还能跑 `pi --approve`）。真要对外听，显式传 `--allow-remote`。JSON 在 `/api/requirements`、`/api/docs`。
+
+### 2.10 开 PR（CLI 不会做）
 
 每个仓 **一个 PR**：`req/PG-13068` → 该仓 `default_base`。
 
@@ -392,7 +401,7 @@ uv run dev-yard ticket done PG-13068 T3    # merge 进需求分支，删子 wt �
 
 | 步骤 | 命令 | 运行时 | 读 | 写 |
 |------|------|--------|----|----|
-| 抽需求 | `req open` | **Claude Code** + Atlassian MCP | Jira / 本票 Confluence | `REQUIREMENT.md`、`assets/` |
+| 抽需求 | `req open` | **pi**：fetch-requirement + Atlassian MCP | Jira / 本票 Confluence | `REQUIREMENT.md`、`assets/` |
 | 对齐 | `grill` | **pi**：grill-with-docs + grilling + domain-modeling | REQUIREMENT + 源仓 `default_base` | `GRILL.md`、`CONTEXT.md`、ADR |
 | 写 spec | `spec` | pi：to-spec | GRILL | `SPEC.md` |
 | 拆票 | `tickets` | pi：to-tickets | SPEC | `TICKETS.md` |
@@ -426,6 +435,7 @@ pi 从 cwd 加载 `AGENTS.md`。文档阶段（grill/spec/tickets）没有 bash�
 | `dev-yard implement <JIRA> [票id…]` | `--dry-run` `--print` |
 | `dev-yard review <JIRA> [票id…]` | `--contract` `--dry-run` `--print` |
 | `dev-yard status [JIRA]` | 阶段、票状态、子 worktree |
+| `dev-yard web` | 本机 Web 控制台；`--host` `--port` `--open/--no-open`；非回环需 `--allow-remote` |
 
 涉及哪些仓由 **人和 grill/spec/tickets** 根据文档和代码定，不是 Jira 自动推断。
 
@@ -438,7 +448,6 @@ pi 从 cwd 加载 `AGENTS.md`。文档阶段（grill/spec/tickets）没有 bash�
 | `repos.yaml not found` | 不在 workspace 里 | 回到本仓库根再跑 |
 | `(no repos)` / grill 提示里没有源码路径 | 还没 `repo add` | 第 1.3 节登记仓 |
 | `is on <branch>, need master; … will not move a path-mapped clone` | `--path` 仓不在基线 | 自己 `git checkout` 到 `default_base`，有脏改动先处理 |
-| `claude not found` | 没装 Claude Code | 装好或设 `YARD_CLAUDE` |
 | `pi not found` | 没装 pi | 装好或设 `YARD_PI` |
 | `already phase=frozen; pass --force` | 需求已往下走还 `req open` | 确认要重抽再用 `--force` |
 | `TICKETS.md has no tickets with a repo` | 还没拆票，或标题不是 `T1` / 缺 `repo:` | 跑 `tickets` 或手改格式 |
@@ -452,11 +461,10 @@ pi 从 cwd 加载 `AGENTS.md`。文档阶段（grill/spec/tickets）没有 bash�
 
 ## 8. 第一期明确不做
 
-- Web 界面
 - 自动 `gh pr create`、自动建 Jira 子票
 - 同仓并行改同一文件的自动语义合并
 - 清理需求级 worktree（子 worktree 会清）
-- 把 grill/spec/tickets/implement/review 换成 Claude / Grok（固定 pi）
+- 把任一阶段换成 Claude / Grok（固定 pi）
 
 ---
 
