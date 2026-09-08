@@ -19,6 +19,7 @@ def test_session_prompt_includes_jira(tmp_path: Path):
 def test_grill_prompt_forbids_spec():
     p = session_prompt(Path("/tmp"), "grill", "AB-1")
     assert "Do not write SPEC.md" in p
+    assert "WEB_GRILL_ROUND" not in p
 
 
 def test_pi_argv_implement_keeps_bash(monkeypatch):

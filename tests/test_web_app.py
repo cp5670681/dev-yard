@@ -191,6 +191,64 @@ def test_running_job_is_bound_without_query(tmp_path: Path):
     job.done.wait(timeout=5)
 
 
+def test_waiting_job_is_bound_and_answers_api(tmp_path: Path):
+    import threading
+    import time
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    req_open(yard, "AB-51", source="none")
+    gate = threading.Event()
+
+    def execute(root: Path, job) -> None:
+        job.set_waiting(
+            {
+                "done": False,
+                "round": 1,
+                "intro": "范围",
+                "questions": [
+                    {
+                        "id": "Q1",
+                        "title": "范围",
+                        "body": "只做这张票？",
+                        "options": [{"id": "A", "label": "只这张票"}],
+                        "suggested": "A",
+                        "suggested_text": "只这张票",
+                    }
+                ],
+            }
+        )
+        job.wait_answers()
+        gate.set()
+
+    runner = JobRunner(yard, execute=execute, sync=False)
+    job = runner.submit("grill", "AB-51")
+    deadline = time.time() + 5
+    while job.state != "waiting" and time.time() < deadline:
+        time.sleep(0.05)
+    client = TestClient(create_app(yard, job_runner=runner))
+    page = client.get("/r/AB-51")
+    assert f'data-job="{job.id}"' in page.text
+    assert "data-grill-form" in page.text
+    bad = client.post(f"/api/jobs/{job.id}/answers", json={"answers": "nope"})
+    assert bad.status_code == 422
+    snap = client.get(f"/api/jobs/{job.id}").json()
+    assert snap["state"] == "waiting"
+    assert snap["grill"]["questions"][0]["id"] == "Q1"
+    ok = client.post(
+        f"/api/jobs/{job.id}/answers",
+        json={"answers": [{"id": "Q1", "option": "A", "text": ""}]},
+    )
+    assert ok.status_code == 200
+    assert job.done.wait(timeout=5)
+    assert gate.is_set()
+    idle = client.post(
+        f"/api/jobs/{job.id}/answers",
+        json={"answers": [{"id": "Q1", "option": "A"}]},
+    )
+    assert idle.status_code == 400
+
+
 def test_grill_action_uses_injected_execute(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)

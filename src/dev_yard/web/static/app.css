@@ -309,7 +309,42 @@ h2 { font-size: 1.05rem; margin: 0 0 0.8rem; }
   line-height: 1.45;
   white-space: pre-wrap;
 }
+.log.is-folded { max-height: 8rem; }
 .hint { color: var(--muted); font-size: 0.8rem; margin: 0.6rem 0 0; }
+.job-waiting { color: var(--accent); background: var(--accent-dim); }
+
+.grill-round { margin-top: 0.9rem; }
+.grill-form { display: flex; flex-direction: column; gap: 0.9rem; }
+.grill-form h2 { margin: 0; font-size: 1rem; }
+.grill-intro { color: var(--muted); margin: 0; line-height: 1.5; }
+.grill-q {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.8rem 0.9rem 0.9rem;
+  background: var(--bg-2);
+  margin: 0;
+}
+.grill-q legend { font-weight: 600; color: var(--text); padding: 0 0.25rem; }
+.grill-body {
+  white-space: pre-wrap;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  margin: 0.35rem 0 0.7rem;
+}
+.grill-q .check { margin-bottom: 0.35rem; color: var(--text) !important; }
+.grill-q textarea {
+  width: 100%;
+  margin-top: 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0.55rem 0.7rem;
+  font: inherit;
+  resize: vertical;
+}
+.grill-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 
 .gallery {
   display: grid;

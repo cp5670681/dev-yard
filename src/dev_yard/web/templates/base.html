@@ -7,7 +7,7 @@
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/app.css">
 </head>
-<body {% if job and job.state in ("queued", "running") %}data-job="{{ job.id }}"{% endif %}>
+<body {% if job and job.state in ("queued", "running", "waiting") %}data-job="{{ job.id }}"{% endif %}>
   <aside class="nav">
     <a class="brand" href="/">
       <span class="brand-mark">Y</span>

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote
 
 import markdown
@@ -9,6 +10,7 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from dev_yard import paths
@@ -49,6 +51,10 @@ ACTION_LABELS = {
 
 _ASSET_SRC = re.compile(r'src=(["\'])(?:\./)?assets/([^"\']+)\1')
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+
+
+class GrillAnswersIn(BaseModel):
+    answers: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def check_bind_host(host: str, allow_remote: bool = False) -> None:
@@ -302,6 +308,17 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
         if job is None:
             raise HTTPException(404, "unknown job")
         return job.snapshot()
+
+    @app.post("/api/jobs/{job_id}/answers")
+    def api_job_answers(job_id: str, payload: GrillAnswersIn):
+        job = jobs.get(job_id)
+        if job is None:
+            raise HTTPException(404, "unknown job")
+        try:
+            job.submit_answers(payload.answers)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return {"ok": True}
 
     @app.get("/api/repos")
     def api_repos():
