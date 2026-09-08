@@ -14,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from dev_yard import paths
+from dev_yard import paths, service as yard_service
 from dev_yard.web.board import (
     DOC_FILES,
     PIPELINE,
@@ -117,6 +117,38 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
             raise HTTPException(404, f"no requirement {jira}")
         return detail
 
+    def _submit_action(
+        action: str,
+        jira: str,
+        ids: list[str] | None,
+        extra: dict,
+    ):
+        if action in {"implement", "review"}:
+            if not ids:
+                detail = detail_or_404(jira)
+                wanted = [
+                    t.id
+                    for t in detail.tickets
+                    if (t.can_implement if action == "implement" else t.can_review)
+                ]
+                busy = jobs.busy_tickets(jira, action)
+                if busy is None:
+                    raise ValueError(f"{jira} already has a running job")
+                wanted = [tid for tid in wanted if tid not in busy]
+                if not wanted:
+                    if busy:
+                        raise ValueError(
+                            f"{jira} already has a running job ({action})"
+                        )
+                    return [jobs.submit(action, jira, ticket_ids=None, extra=extra)]
+                ids = wanted
+            yard_service.claim_run(root, jira, action, ids)
+            return [
+                jobs.submit(action, jira, ticket_ids=[tid], extra=extra)
+                for tid in ids
+            ]
+        return [jobs.submit(action, jira, ticket_ids=ids, extra=extra)]
+
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request):
         return templates.TemplateResponse(
@@ -192,7 +224,8 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
     @app.get("/r/{jira}", response_class=HTMLResponse)
     def req_page(request: Request, jira: str, job: str | None = None):
         detail = requirement_detail(root, jira)
-        job_obj = jobs.for_page(jira, job)
+        page_job_objs = jobs.page_jobs(jira, job)
+        job_obj = page_job_objs[0] if page_job_objs else None
         if detail is None and job_obj is None:
             raise HTTPException(404, f"no requirement {jira}")
         return templates.TemplateResponse(
@@ -203,6 +236,7 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
                 jira=jira,
                 detail=detail,
                 job=job_obj.snapshot() if job_obj else None,
+                page_jobs=[j.snapshot() for j in page_job_objs],
             ),
         )
 
@@ -254,12 +288,16 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
         ids = [ticket_id] if ticket_id.strip() else None
         extra = {"force": bool(force), "source": source}
         try:
-            job = jobs.submit(action, jira, ticket_ids=ids, extra=extra)
+            submitted = _submit_action(action, jira, ids, extra)
         except ValueError as e:
             return RedirectResponse(
                 f"/r/{quote(jira)}?error={quote(str(e))}", status_code=303
             )
-        return RedirectResponse(f"/r/{quote(jira)}?job={job.id}", status_code=303)
+        if len(submitted) == 1:
+            return RedirectResponse(
+                f"/r/{quote(jira)}?job={submitted[0].id}", status_code=303
+            )
+        return RedirectResponse(f"/r/{quote(jira)}", status_code=303)
 
     @app.get("/api/requirements")
     def api_list():
@@ -293,6 +331,7 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
                     "parallel": t.parallel,
                     "can_implement": t.can_implement,
                     "can_review": t.can_review,
+                    "last_summary": t.last_summary,
                 }
                 for t in detail.tickets
             ],

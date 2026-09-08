@@ -121,6 +121,102 @@ def test_freeze_from_web(tmp_path: Path, git_src: Path, monkeypatch):
     assert "implement" in page.text.lower() or "实现" in page.text
 
 
+def test_web_implement_runs_ready_tickets_in_parallel(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-80", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n\n"
+        "## T2: y\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    from dev_yard.service import req_freeze
+
+    req_freeze(yard, "AB-80")
+    gate = threading.Event()
+
+    def execute(root: Path, job) -> None:
+        gate.wait(timeout=5)
+
+    runner = JobRunner(yard, execute=execute, sync=False)
+    client = TestClient(create_app(yard, job_runner=runner))
+    first = client.post(
+        "/r/AB-80/actions/implement",
+        data={"ticket_id": "T1"},
+        follow_redirects=False,
+    )
+    assert first.status_code == 303
+    second = client.post(
+        "/r/AB-80/actions/implement",
+        data={"ticket_id": "T2"},
+        follow_redirects=False,
+    )
+    assert second.status_code == 303
+    listed = client.get("/api/jobs").json()
+    assert len(listed) == 2
+    assert {tuple(row.get("ticket_ids") or []) for row in listed} == {("T1",), ("T2",)}
+    again = client.post(
+        "/r/AB-80/actions/implement",
+        data={"ticket_id": "T1"},
+        follow_redirects=False,
+    )
+    assert again.status_code == 303
+    assert "already" in again.headers["location"]
+    page = client.get("/r/AB-80")
+    assert page.text.count("data-job-id=") == 2
+    from dev_yard import status as st
+
+    assert st.load(yard, "AB-80")["tickets"]["T1"]["state"] == "implementing"
+    assert st.load(yard, "AB-80")["tickets"]["T2"]["state"] == "implementing"
+    assert 'data-ticket="T1"' in page.text
+    impl_col = page.text.split('data-col="implementing"')[1].split("data-col=")[0]
+    assert 'data-ticket="T1"' in impl_col
+    assert 'data-ticket="T2"' in impl_col
+    gate.set()
+    for job in runner.running():
+        job.done.wait(timeout=5)
+
+
+def test_web_implement_ready_fans_out_remaining_tickets(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-81", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n\n"
+        "## T2: y\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    from dev_yard.service import req_freeze
+
+    req_freeze(yard, "AB-81")
+    gate = threading.Event()
+
+    def execute(root: Path, job) -> None:
+        gate.wait(timeout=5)
+
+    runner = JobRunner(yard, execute=execute, sync=False)
+    client = TestClient(create_app(yard, job_runner=runner))
+    client.post(
+        "/r/AB-81/actions/implement",
+        data={"ticket_id": "T1"},
+        follow_redirects=False,
+    )
+    bulk = client.post("/r/AB-81/actions/implement", follow_redirects=False)
+    assert bulk.status_code == 303
+    listed = client.get("/api/jobs").json()
+    assert len(listed) == 2
+    assert {tuple(row.get("ticket_ids") or []) for row in listed} == {("T1",), ("T2",)}
+    gate.set()
+    for job in runner.running():
+        job.done.wait(timeout=5)
+
+
 def test_save_doc_and_markdown_assets(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)
@@ -268,6 +364,8 @@ def test_app_js_uses_event_source():
     css = (HERE / "static" / "app.css").read_text()
     assert "EventSource" in js
     assert "/api/jobs/events" in js
+    assert "/api/requirements/" in js
+    assert "data-board" in js
     assert "nav-dot" in js
     assert "setTimeout(tick, 1000)" not in js
     assert "setInterval" not in js

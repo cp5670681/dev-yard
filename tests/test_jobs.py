@@ -210,6 +210,30 @@ def test_rejects_second_job_for_same_jira(tmp_path: Path):
     assert first.state == "ok"
 
 
+def test_allows_parallel_implement_jobs_for_different_tickets(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    gate = threading.Event()
+    started = threading.Event()
+
+    def execute(root: Path, job) -> None:
+        started.set()
+        gate.wait(timeout=5)
+
+    runner = JobRunner(yard, execute=execute, sync=False)
+    first = runner.submit("implement", "AB-1", ticket_ids=["T1"])
+    second = runner.submit("implement", "AB-1", ticket_ids=["T2"])
+    assert started.wait(timeout=5)
+    assert {first.id, second.id} == {j.id for j in runner.running()}
+    with pytest.raises(ValueError, match="already"):
+        runner.submit("implement", "AB-1", ticket_ids=["T1"])
+    with pytest.raises(ValueError, match="already"):
+        runner.submit("grill", "AB-1")
+    gate.set()
+    assert first.done.wait(timeout=5)
+    assert second.done.wait(timeout=5)
+
+
 def test_open_job_errors_when_pi_skips_requirement(tmp_path: Path, monkeypatch):
     yard = tmp_path / "yard"
     init_yard(yard)

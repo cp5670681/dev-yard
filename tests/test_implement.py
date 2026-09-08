@@ -131,6 +131,51 @@ class _FailReview(DryRunRunner):
         return RunResult(ok=True, summary="nits\nREVIEW_FAILED\n", exit_code=0)
 
 
+def test_same_repo_ready_ticket_gets_child_while_sibling_implementing(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    import threading
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-18", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n\n"
+        "## T2: y\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    req_freeze(yard, "AB-18")
+    t1_in = threading.Event()
+    release = threading.Event()
+
+    class Gate:
+        def start(self, prompt, cwd, extra_read_paths):
+            if "Ticket: T1" in prompt:
+                t1_in.set()
+                release.wait(timeout=5)
+            return RunResult(ok=True, summary="ok")
+
+    t1_done = threading.Event()
+
+    def run_t1():
+        implement(yard, "AB-18", ["T1"], runner=Gate())
+        t1_done.set()
+
+    threading.Thread(target=run_t1, daemon=True).start()
+    assert t1_in.wait(timeout=5)
+    ran = implement(yard, "AB-18", ["T2"], runner=Gate())
+    assert ran == ["T2"]
+    data = st.load(yard, "AB-18")
+    assert data["tickets"]["T1"]["state"] == "implementing"
+    assert data["tickets"]["T2"]["state"] == "implemented"
+    assert data["tickets"]["T2"]["child_worktree"]
+    release.set()
+    assert t1_done.wait(timeout=5)
+    assert st.load(yard, "AB-18")["tickets"]["T1"]["state"] == "implemented"
+
+
 def test_review_marker_blocks_even_on_exit_zero(tmp_path: Path, git_src: Path, monkeypatch):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)

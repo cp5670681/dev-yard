@@ -14,6 +14,7 @@ from dev_yard.runners import RunResult, Runner, pi_argv
 
 Execute = Callable[[Path, "Job"], None]
 _TERMINAL = {"ok", "error"}
+_TICKET_ACTIONS = {"implement", "review"}
 
 
 def format_sse(event: str, data: Any) -> str:
@@ -73,7 +74,7 @@ class Job:
     def brief(self) -> dict:
         with self._cv:
             data = self._public()
-            return {k: data[k] for k in ("id", "jira", "action", "state")}
+            return {k: data[k] for k in ("id", "jira", "action", "state", "ticket_ids")}
 
     def capture(self) -> tuple[dict, int]:
         with self._cv:
@@ -372,12 +373,33 @@ class JobRunner:
         return matches[-1] if matches else None
 
     def for_page(self, jira: str, job_id: str | None) -> Job | None:
-        if job_id:
-            return self.get(job_id)
-        latest = self.latest(jira)
-        if latest and latest.state in {"queued", "running", "waiting"}:
-            return latest
-        return None
+        jobs = self.page_jobs(jira, job_id)
+        return jobs[0] if jobs else None
+
+    def page_jobs(self, jira: str, job_id: str | None) -> list[Job]:
+        running = [j for j in self.running() if j.jira == jira]
+        if not job_id:
+            return running
+        picked = self.get(job_id)
+        if picked is None:
+            return running
+        rest = [j for j in running if j.id != picked.id]
+        return [picked] + rest
+
+    def busy_tickets(self, jira: str, action: str) -> set[str] | None:
+        """Ticket ids occupied by a running job. None means the whole Jira is busy."""
+        occupied: set[str] = set()
+        for job in self.running():
+            if job.jira != jira:
+                continue
+            scope = _ticket_scope(job)
+            if scope is None:
+                if job.action == action or job.action not in _TICKET_ACTIONS:
+                    return None
+                continue
+            if job.action == action:
+                occupied.update(scope)
+        return occupied
 
     def running(self) -> list[Job]:
         return [j for j in self._jobs.values() if j.state in {"queued", "running", "waiting"}]
@@ -406,8 +428,10 @@ class JobRunner:
     ) -> Job:
         with self._lock:
             for job in self._jobs.values():
-                if job.jira == jira and job.state in {"queued", "running", "waiting"}:
-                    raise ValueError(f"{jira} already has a running job ({job.action})")
+                if job.state not in {"queued", "running", "waiting"}:
+                    continue
+                if _jobs_conflict(job, jira, action, ticket_ids):
+                    raise ValueError(_conflict_message(job, action, ticket_ids))
             job = Job(
                 id=uuid.uuid4().hex[:10],
                 jira=jira,
@@ -434,3 +458,42 @@ class JobRunner:
             job.set_state("error")
         finally:
             job.done.set()
+
+
+def _ticket_scope(job: Job) -> set[str] | None:
+    if job.action not in _TICKET_ACTIONS:
+        return None
+    if not job.ticket_ids:
+        return None
+    return set(job.ticket_ids)
+
+
+def _jobs_conflict(
+    running: Job, jira: str, action: str, ticket_ids: list[str] | None
+) -> bool:
+    if running.jira != jira:
+        return False
+    running_scope = _ticket_scope(running)
+    incoming_scope = (
+        None
+        if action not in _TICKET_ACTIONS or not ticket_ids
+        else set(ticket_ids)
+    )
+    if running_scope is None or incoming_scope is None:
+        return True
+    return bool(running_scope & incoming_scope)
+
+
+def _conflict_message(running: Job, action: str, ticket_ids: list[str] | None) -> str:
+    overlap = ""
+    running_scope = _ticket_scope(running)
+    incoming_scope = (
+        None
+        if action not in _TICKET_ACTIONS or not ticket_ids
+        else set(ticket_ids)
+    )
+    if running_scope and incoming_scope:
+        shared = running_scope & incoming_scope
+        if shared:
+            overlap = " " + ", ".join(sorted(shared))
+    return f"{running.jira}{overlap} already has a running job ({running.action})"

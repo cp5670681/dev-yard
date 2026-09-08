@@ -13,10 +13,11 @@
   </div>
 </header>
 
-{% if job %}
-<section class="job" data-job-panel>
+{% set job_list = page_jobs if page_jobs is defined else ([job] if job else []) %}
+{% for job in job_list %}
+<section class="job" data-job-panel{% if job.state in ("queued", "running", "waiting") %} data-job-id="{{ job.id }}"{% endif %}>
   <div class="job-head">
-    <strong>{{ job.action }}</strong>
+    <strong>{{ job.action }}{% if job.ticket_ids %} {{ job.ticket_ids | join(", ") }}{% endif %}</strong>
     <span class="pill" data-job-state>{{ job.state }}</span>
   </div>
   <pre class="log" data-job-log>{{ job.log }}</pre>
@@ -27,7 +28,7 @@
   <p class="hint" data-job-hint>抽取 / Spec / Tickets / Implement / Review 在网页里用 <code>pi -p</code> 一次性跑完。</p>
   {% endif %}
 </section>
-{% endif %}
+{% endfor %}
 
 {% if detail %}
 <ol class="pipeline">
@@ -61,16 +62,16 @@
 </nav>
 
 {% set columns = ["pending", "ready", "implementing", "implemented", "reviewing", "blocked", "done"] %}
-<section class="board">
+<section class="board" data-board data-jira="{{ jira }}">
   {% for col in columns %}
-  <div class="col">
+  <div class="col" data-col="{{ col }}">
     <header>
       <span class="dot state-{{ col }}"></span>
       {{ col }}
       <em>{{ detail.tickets | selectattr("state", "equalto", col) | list | length }}</em>
     </header>
     {% for t in detail.tickets if t.state == col %}
-    <article class="ticket">
+    <article class="ticket" data-ticket="{{ t.id }}">
       <div class="ticket-id">{{ t.id }}{% if t.parallel %} · parallel{% endif %}</div>
       <h3>{{ t.title or t.id }}</h3>
       <p class="meta">{{ t.repo }}{% if t.depends_on %} · 依赖 {{ t.depends_on | join(", ") }}{% endif %}</p>

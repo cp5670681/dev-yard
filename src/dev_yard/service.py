@@ -217,17 +217,23 @@ def ticket_start(root: Path, jira: str, ticket_id: str) -> Path:
         raise ValueError(f"missing requirement worktree {parent}; freeze first")
     child = paths.child_worktree(root, jira, t.repo, ticket_id)
     gitops.worktree_add(
-        source, child, f"req/{jira}/{ticket_id}", f"req/{jira}", reset_existing=True
+        source, child, _child_branch(jira, ticket_id), f"req/{jira}", reset_existing=True
     )
-    data = st.load(root, jira)
-    slot = data.setdefault("tickets", {}).setdefault(ticket_id, {})
-    slot["child_worktree"] = str(child)
-    slot["worktree"] = str(parent)
-    st.save(root, jira, data)
+    with st.jira_lock(jira):
+        data = st.load(root, jira)
+        slot = data.setdefault("tickets", {}).setdefault(ticket_id, {})
+        slot["child_worktree"] = str(child)
+        slot["worktree"] = str(parent)
+        st.save(root, jira, data)
     return child
 
 
 def ticket_done(root: Path, jira: str, ticket_id: str) -> None:
+    with st.jira_lock(jira):
+        _ticket_done_locked(root, jira, ticket_id)
+
+
+def _ticket_done_locked(root: Path, jira: str, ticket_id: str) -> None:
     data = st.load(root, jira)
     slot = (data.get("tickets") or {}).get(ticket_id) or {}
     child = slot.get("child_worktree")
@@ -242,13 +248,18 @@ def ticket_done(root: Path, jira: str, ticket_id: str) -> None:
         raise ValueError(f"unknown repo alias {t.repo}")
     source = repo.source_path(root)
     if child and parent:
-        gitops.merge_into(Path(parent), f"req/{jira}/{ticket_id}")
+        gitops.merge_into(Path(parent), _child_branch(jira, ticket_id))
         gitops.worktree_remove(source, Path(child))
-        gitops.branch_delete(source, f"req/{jira}/{ticket_id}")
+        gitops.branch_delete(source, _child_branch(jira, ticket_id))
         slot["child_worktree"] = None
     slot["state"] = "done"
     st.refresh_ready(data)
     st.save(root, jira, data)
+
+
+def _child_branch(jira: str, ticket_id: str) -> str:
+    # Cannot be req/<jira>/<ticket>: git refuses a nested ref when req/<jira> exists.
+    return f"req/{jira}-{ticket_id}"
 
 
 def _cwd_for_ticket(root: Path, jira: str, ticket: Ticket, slot: dict) -> Path:
@@ -260,18 +271,20 @@ def _cwd_for_ticket(root: Path, jira: str, ticket: Ticket, slot: dict) -> Path:
 
 
 def _needs_child(data: dict, ticket: Ticket) -> bool:
-    if not ticket.parallel:
-        return False
+    sibling_inflight = False
+    sibling_mid = False
     for tid, slot in (data.get("tickets") or {}).items():
         if tid == ticket.id:
             continue
         if slot.get("repo") != ticket.repo:
             continue
+        if slot.get("state") == "implementing" or slot.get("child_worktree"):
+            sibling_inflight = True
         if slot.get("state") in {"implementing", "implemented", "reviewing"}:
-            return True
-        if slot.get("child_worktree"):
-            return True
-    return False
+            sibling_mid = True
+    if sibling_inflight:
+        return True
+    return bool(ticket.parallel and sibling_mid)
 
 
 def ensure_on_default_base(root: Path) -> dict[str, Path]:
@@ -403,6 +416,35 @@ def _review_blocked(result: RunResult) -> bool:
     return "REVIEW_FAILED" in (result.summary or "")
 
 
+_CLAIM = {
+    "implement": ("implementing", {"ready", "blocked", "implementing"}),
+    "review": ("reviewing", {"implemented", "reviewing"}),
+}
+
+
+def claim_run(root: Path, jira: str, action: str, ids: list[str]) -> list[str]:
+    spec = _CLAIM.get(action)
+    if spec is None or not ids:
+        return []
+    state, allowed = spec
+    parsed = load_tickets(paths.req_dir(root, jira))
+    claimed: list[str] = []
+    with st.jira_lock(jira):
+        data = st.sync_tickets(st.load(root, jira), parsed)
+        st.refresh_ready(data)
+        tickets = data["tickets"]
+        for tid in ids:
+            slot = tickets.get(tid)
+            if not slot:
+                continue
+            if slot.get("state") not in allowed:
+                continue
+            slot["state"] = state
+            claimed.append(tid)
+        st.save(root, jira, data)
+    return claimed
+
+
 def implement(
     root: Path,
     jira: str,
@@ -413,35 +455,44 @@ def implement(
 ) -> list[str]:
     req = paths.req_dir(root, jira)
     tickets = {t.id: t for t in load_tickets(req)}
-    data = st.sync_tickets(st.load(root, jira), list(tickets.values()))
-    st.refresh_ready(data)
-    if not dry_run:
-        st.save(root, jira, data)
+    with st.jira_lock(jira):
+        data = st.sync_tickets(st.load(root, jira), list(tickets.values()))
+        st.refresh_ready(data)
+        if not dry_run:
+            st.save(root, jira, data)
+        targets = ids or st.ready_ids(data)
     runner = runner or get_runner(root, "implement", dry_run=dry_run, print_mode=print_mode)
-    targets = ids or st.ready_ids(data)
     ran: list[str] = []
     extra = [req / "SPEC.md", req / "TICKETS.md"]
     for tid in targets:
         t = tickets.get(tid)
         if not t:
             continue
-        slot = data["tickets"].get(tid)
-        if not slot:
-            continue
-        if slot.get("state") not in {"ready", "blocked", "implementing"} and ids is None:
-            continue
         if dry_run:
+            slot = data["tickets"].get(tid)
+            if not slot:
+                continue
+            if slot.get("state") not in {"ready", "blocked", "implementing"} and ids is None:
+                continue
             ran.append(tid)
             continue
-        if _needs_child(data, t) and not slot.get("child_worktree"):
-            ticket_start(root, jira, tid)
-            data = st.load(root, jira)
-            slot = data["tickets"][tid]
-        cwd = _cwd_for_ticket(root, jira, t, slot)
-        if not (cwd / ".git").exists():
-            raise ValueError(f"missing worktree {cwd}; freeze first")
-        slot["state"] = "implementing"
-        st.save(root, jira, data)
+        with st.jira_lock(jira):
+            data = st.sync_tickets(st.load(root, jira), list(tickets.values()))
+            st.refresh_ready(data)
+            slot = data["tickets"].get(tid)
+            if not slot:
+                continue
+            if slot.get("state") not in {"ready", "blocked", "implementing"} and ids is None:
+                continue
+            slot["state"] = "implementing"
+            st.save(root, jira, data)
+            if _needs_child(data, t) and not slot.get("child_worktree"):
+                ticket_start(root, jira, tid)
+                data = st.load(root, jira)
+                slot = data["tickets"][tid]
+            cwd = _cwd_for_ticket(root, jira, t, slot)
+            if not (cwd / ".git").exists():
+                raise ValueError(f"missing worktree {cwd}; freeze first")
         prompt = session_prompt(
             root,
             "implement",
@@ -449,16 +500,16 @@ def implement(
             extra=f"Ticket: {tid} — {t.title}\nRepo alias: {t.repo}\nStay in this worktree.",
         )
         result = runner.start(prompt, cwd, extra)
-        slot = st.load(root, jira)["tickets"][tid]
-        data = st.load(root, jira)
-        slot = data["tickets"][tid]
-        if result.ok:
-            slot["state"] = "implemented"
-            slot["last_summary"] = result.summary
-        else:
-            slot["state"] = "blocked"
-            slot["last_summary"] = result.summary
-        st.save(root, jira, data)
+        with st.jira_lock(jira):
+            data = st.load(root, jira)
+            slot = data["tickets"][tid]
+            if result.ok:
+                slot["state"] = "implemented"
+                slot["last_summary"] = result.summary
+            else:
+                slot["state"] = "blocked"
+                slot["last_summary"] = result.summary
+            st.save(root, jira, data)
         ran.append(tid)
     return ran
 
@@ -530,17 +581,22 @@ def review(
         t = tickets.get(tid)
         if not t:
             continue
-        slot = data["tickets"].get(tid)
-        if not slot:
-            continue
-        cwd = _cwd_for_ticket(root, jira, t, slot)
         if dry_run:
+            slot = data["tickets"].get(tid)
+            if not slot:
+                continue
             ran.append(tid)
             continue
-        if not (cwd / ".git").exists():
-            raise ValueError(f"missing worktree {cwd}; freeze first")
-        slot["state"] = "reviewing"
-        st.save(root, jira, data)
+        with st.jira_lock(jira):
+            data = st.load(root, jira)
+            slot = data["tickets"].get(tid)
+            if not slot:
+                continue
+            cwd = _cwd_for_ticket(root, jira, t, slot)
+            if not (cwd / ".git").exists():
+                raise ValueError(f"missing worktree {cwd}; freeze first")
+            slot["state"] = "reviewing"
+            st.save(root, jira, data)
         base = repos[t.repo].default_base if t.repo in repos else "main"
         prompt = session_prompt(
             root,
@@ -552,21 +608,23 @@ def review(
             ),
         )
         result = runner.start(prompt, cwd, extra)
-        data = st.load(root, jira)
-        slot = data["tickets"][tid]
-        if not _review_blocked(result):
-            slot["state"] = "done"
-            child = slot.get("child_worktree")
-            st.save(root, jira, data)
-            if child:
-                ticket_done(root, jira, tid)
+        with st.jira_lock(jira):
             data = st.load(root, jira)
             slot = data["tickets"][tid]
-            st.refresh_ready(data)
-        else:
-            slot["state"] = "blocked"
-        slot["last_summary"] = result.summary
-        st.save(root, jira, data)
+            if not _review_blocked(result):
+                slot["state"] = "done"
+                child = slot.get("child_worktree")
+                slot["last_summary"] = result.summary
+                st.save(root, jira, data)
+                if child:
+                    _ticket_done_locked(root, jira, tid)
+                data = st.load(root, jira)
+                st.refresh_ready(data)
+                st.save(root, jira, data)
+            else:
+                slot["state"] = "blocked"
+                slot["last_summary"] = result.summary
+                st.save(root, jira, data)
         ran.append(tid)
     return ran
 
