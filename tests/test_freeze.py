@@ -1,0 +1,18 @@
+from pathlib import Path
+
+from dev_yard.service import init_yard, repo_add, req_freeze, req_open
+
+
+def test_freeze_creates_worktree(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-9")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    wts = req_freeze(yard, "AB-9")
+    assert wts[0].exists()
+    assert (wts[0] / "README").exists()
