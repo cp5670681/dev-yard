@@ -2,22 +2,24 @@
 name: code-review
 description: >
   Two-axis review (Standards + Spec) of a yard ticket worktree.
-  Use when the user runs /code-review, yard review, 审查代码.
+  Use when the user runs /code-review, dev-yard review, 审查代码.
 ---
 
 # code-review（dev-yard）
 
-沿用 mattpocock 双轴审查：**Standards** 与 **Spec** 分两个子 agent，互不污染，汇报时分开，不要合成一个排名。
+沿用 mattpocock 双轴审查：**Standards** 与 **Spec** 分开写，不要合成一个排名。pi 没有子 agent，同一会话顺序做完两轴。
 
 **不要**去读 `docs/agents/issue-tracker.md`，**不要**让用户跑 `/setup-matt-pocock-skills`。
 
 ## 1. Fixed point
 
-- 票级：该仓 `default_base`（见 `repos.yaml`），`git diff <default_base>...HEAD`，`git log <default_base>..HEAD --oneline`。
+- 票级：启动提示里已内联该仓相对 `default_base` 的 `git log` / `git diff`。不要自己跑 git（本阶段没有 bash）。
 - 用户若指定 commit/branch，用用户的。
-- `git rev-parse` 失败或 diff 为空则停，不要派子 agent。
+- diff 为空或提示 git 失败则停。
 
-契约审查（`yard review --contract`）：对每个需求 worktree 相对 `default_base` 做 diff，对照 `SPEC.md` 的跨仓契约，不跑 Fowler 气味轴也可以，但必须列出契约缺口。
+契约审查（`dev-yard review --contract`）：cwd 是 yard 根。启动提示已内联每个需求 worktree 相对 `default_base` 的 diff。对照 `SPEC.md` 跨仓契约。不跑 Fowler 气味轴也可以，但必须列出契约缺口。不要在 yard 仓库根上 `git diff`。
+
+pi 没有子 agent。两轴都自己做，先 Spec 再 Standards（契约模式可只做 Spec）。工具：`read` 参数是 `path`。
 
 ## 2. Spec 来源（按序，找到就停）
 
@@ -42,15 +44,15 @@ description: >
 - Middle Man → 去掉中间人
 - Refused Bequest → 别继承，用组合
 
-## 4. 并行子 agent
+## 4. 两轴（同一会话，顺序做）
 
-**Standards**：完整 diff 命令、commit 列表、标准文件列表、上面气味基线全文。报告每处 (a) 违反成文标准（引用文件+规则）(b) 气味（点名+摘 hunk）。硬违规 vs 判断题分开。少于 400 字。
+**Spec**：diff + `SPEC.md`（契约模式）或该票正文（票级）。报告 (a) spec 有但缺/残 (b) 没要的 scope creep (c) 看起来做了但做错。每条引用 spec。少于 400 字。
 
-**Spec**：diff + `SPEC.md` 与该票正文。报告 (a) spec 有但缺/残 (b) 没要的 scope creep (c) 看起来做了但做错。每条引用 spec。少于 400 字。
+**Standards**（票级；契约模式可省略）：完整 diff、commit 列表、标准文件。报告每处 (a) 违反成文标准（引用文件+规则）(b) 气味（点名+摘 hunk）。硬违规 vs 判断题分开。少于 400 字。
 
 ## 5. 汇总
 
 `## Standards` 与 `## Spec` 分开贴。末行：每轴发现数 + 该轴最严重问题。
 
-- 有硬违规或 Spec 缺需求 → 审查失败（yard 将票标 `blocked`）
+- 有硬违规或 Spec 缺需求 → 审查失败：报告里写 `REVIEW_FAILED`，并以非零退出（yard 据此把票标 `blocked`）
 - 仅判断题气味 → 通过，但写在报告里

@@ -20,3 +20,21 @@ def test_parse_tickets():
     assert ts[0].repo == "backend"
     assert ts[1].depends_on == ["T1"]
     assert ts[1].parallel is True
+
+
+def test_parse_ignores_non_ticket_headings():
+    text = """
+# Tickets
+
+## 验收
+- repo: backend
+
+## T1: real
+- repo: backend
+
+## Further Notes
+stuff
+"""
+    ts = parse_tickets(text)
+    assert [t.id for t in ts] == ["T1"]
+    assert ts[0].repo == "backend"

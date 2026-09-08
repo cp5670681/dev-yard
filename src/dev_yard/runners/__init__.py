@@ -25,25 +25,45 @@ def agent_binary() -> str:
     return os.environ.get("YARD_PI") or "pi"
 
 
+# pi leaves grep/find/ls off unless listed.
+# grill/spec/tickets write docs only; git on source clones is the CLI's job.
+# review is read-only — CLI injects the diff, no bash.
+_REVIEW_TOOLS = "read,grep,find,ls"
+_DOC_TOOLS = "read,grep,find,ls,edit,write"
+_IMPLEMENT_TOOLS = "read,bash,grep,find,ls,edit,write"
+
+
+def _tools_for(bundle: str) -> str:
+    if bundle == "review":
+        return _REVIEW_TOOLS
+    if bundle in {"grill", "spec", "tickets"}:
+        return _DOC_TOOLS
+    return _IMPLEMENT_TOOLS
+
+
 def pi_argv(
     *,
     root: Path,
     bundle: str,
     prompt: str,
-    extra_read_paths: list[Path] | None = None,
     print_mode: bool = False,
     binary: str | None = None,
 ) -> list[str]:
     cmd = binary or agent_binary()
-    argv = [cmd, "--approve"]
-    agents = root / "AGENTS.md"
-    if agents.exists():
-        argv.extend(["--append-system-prompt", str(agents)])
+    # --no-skills: skip ~/.pi/agent/skills and extra project skills.
+    # Explicit --skill still loads this command's bundle (project copies).
+    # Do not --append-system-prompt AGENTS.md: pi already loads it from cwd.
+    # Do not @-attach REQUIREMENT.md: large dumps break tool-call arguments.
+    argv = [cmd, "--approve", "--no-skills"]
+    provider = os.environ.get("YARD_PI_PROVIDER")
+    model = os.environ.get("YARD_PI_MODEL")
+    if provider:
+        argv.extend(["--provider", provider])
+    if model:
+        argv.extend(["--model", model])
+    argv.extend(["--tools", _tools_for(bundle)])
     for d in skill_dirs(root, bundle):
         argv.extend(["--skill", str(d)])
-    for p in extra_read_paths or []:
-        if p.exists():
-            argv.append(f"@{p}")
     if print_mode:
         argv.append("-p")
     argv.append(prompt)
@@ -74,14 +94,19 @@ class PiRunner(Runner):
             root=self.root,
             bundle=self.bundle,
             prompt=prompt,
-            extra_read_paths=extra_read_paths,
             print_mode=self.print_mode,
             binary=self.binary,
         )
         if self.print_mode:
             r = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
-            summary = (r.stdout or r.stderr or "").strip()[:4000]
-            return RunResult(ok=r.returncode == 0, summary=summary, exit_code=r.returncode)
+            raw = (r.stdout or r.stderr or "")
+            blocked = r.returncode != 0 or "REVIEW_FAILED" in raw
+            summary = raw.strip()[:4000]
+            return RunResult(
+                ok=not blocked,
+                summary=summary,
+                exit_code=r.returncode if r.returncode else (1 if blocked else 0),
+            )
         r = subprocess.run(argv, cwd=cwd)
         return RunResult(
             ok=r.returncode == 0,

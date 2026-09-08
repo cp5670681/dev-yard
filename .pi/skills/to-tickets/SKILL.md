@@ -2,7 +2,7 @@
 name: to-tickets
 description: >
   把 SPEC 拆成 reqs/<JIRA>/TICKETS.md，yard CLI 可解析的 DAG。
-  Use when the user runs /to-tickets, 拆票, to-tickets.
+  Use when the user runs /to-tickets or `dev-yard tickets`. Do not run during grill.
 ---
 
 # to-tickets（dev-yard）
@@ -33,8 +33,8 @@ description: >
 - parallel: false
 ```
 
-二级标题必须是 `## <id>: <title>`。字段名必须是 `repo` / `depends_on` / `parallel`。
+二级标题必须是 `## T<n>: <title>`（如 `T1`、`T2`）。其它二级标题（「验收」「Further Notes」）CLI 会忽略。字段名必须是 `repo` / `depends_on` / `parallel`。没有 `- repo:` 的票不会入列。
 
-在标题下可用普通段落写「做什么 / 验收」，CLI 会忽略。`parallel: true` 仅当同仓两张无依赖票要同时开子 worktree。
+在标题下可用普通段落写「做什么 / 验收」。`parallel: true` 仅当同仓两张无依赖票要同时开子 worktree。
 
-用户批准后写入 `TICKETS.md`，提示 `yard req freeze <JIRA>`，然后 `/implement`。
+用户批准后写入 `TICKETS.md`，提示 `dev-yard req freeze <JIRA>`，然后 `dev-yard implement`。

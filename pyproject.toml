@@ -5,10 +5,13 @@ description = "Multi-repo requirement worktrees and DAG implement/review"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "python-dotenv>=1.0",
     "pyyaml>=6.0",
     "typer>=0.15",
 ]
-scripts.yard = "dev_yard.cli:app"
+[project.scripts]
+dev-yard = "dev_yard.cli:app"
+devyard = "dev_yard.cli:app"
 
 [build-system]
 requires = ["hatchling"]
