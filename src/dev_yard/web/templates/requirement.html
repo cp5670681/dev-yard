@@ -19,6 +19,11 @@
   <div class="job-head">
     <strong>{{ job.action }}{% if job.ticket_ids %} {{ job.ticket_ids | join(", ") }}{% endif %}</strong>
     <span class="pill" data-job-state>{{ job.state }}</span>
+    <div class="pi-runs" data-pi-runs {% if not job.pi_runs %}hidden{% endif %}>
+      {% for run in job.pi_runs or [] %}
+      <a href="#" data-open-pi data-job="{{ job.id }}" data-run="{{ run.index }}">查看对话{% if job.pi_runs|length > 1 %} · {{ run.index + 1 }}{% endif %}</a>
+      {% endfor %}
+    </div>
   </div>
   <pre class="log" data-job-log>{{ job.log }}</pre>
   <div class="grill-round" data-grill-form hidden></div>

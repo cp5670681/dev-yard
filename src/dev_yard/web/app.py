@@ -24,7 +24,8 @@ from dev_yard.web.board import (
     requirement_detail,
     save_doc,
 )
-from dev_yard.web.jobs import BoardSse, JobRunner, JobSse
+from dev_yard.pi_session import cwd_is_under_root, load_conversation
+from dev_yard.web.jobs import BoardSse, JobRunner, JobSse, PiChatSse, _pi_run_until
 from dev_yard.web.sanitize import sanitize_html
 
 HERE = Path(__file__).parent
@@ -377,6 +378,64 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
         if job is None:
             raise HTTPException(404, "unknown job")
         return job.snapshot()
+
+    def _pi_run_or_404(job_id: str, run_index: int):
+        job = jobs.get(job_id)
+        if job is None:
+            raise HTTPException(404, "unknown job")
+        snap = job.snapshot()
+        runs = snap.get("pi_runs") or []
+        if run_index < 0 or run_index >= len(runs):
+            raise HTTPException(404, "unknown pi run")
+        run = runs[run_index]
+        cwd = Path(run["cwd"])
+        if not cwd_is_under_root(cwd, root):
+            raise HTTPException(404, "unknown pi run")
+        return job, snap, runs, run
+
+    @app.get("/api/jobs/{job_id}/pi/{run_index}")
+    def api_job_pi(job_id: str, run_index: int, offset: int = 0):
+        job, snap, runs, run = _pi_run_or_404(job_id, run_index)
+        data = load_conversation(
+            Path(run["cwd"]),
+            root=root,
+            started_at=run.get("started_at"),
+            until=_pi_run_until(runs, run_index),
+            offset=offset,
+        )
+        data.update(
+            job_id=job.id,
+            run=run_index,
+            started_at=run.get("started_at"),
+            job_state=snap["state"],
+        )
+        return data
+
+    @app.get("/api/jobs/{job_id}/pi/{run_index}/events")
+    async def api_job_pi_events(job_id: str, run_index: int):
+        job, _snap, _runs, _run = _pi_run_or_404(job_id, run_index)
+
+        async def gen():
+            sse = PiChatSse(job, run_index, root)
+            while True:
+                frames, done, seq = sse.poll()
+                for frame in frames:
+                    yield frame
+                if done:
+                    return
+                new_seq = await asyncio.to_thread(job.wait_seq, seq, 0.4)
+                if new_seq <= seq:
+                    yield ": ping\n\n"
+
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.get("/api/jobs/{job_id}/events")
     async def api_job_events(job_id: str):

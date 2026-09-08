@@ -510,6 +510,159 @@ def test_resume_pending_grills_restores_waiting_jobs(tmp_path: Path, monkeypatch
     assert runner.resume_pending_grills() == []
 
 
+def test_snapshot_includes_recorded_pi_runs(tmp_path: Path):
+    job = Job(id="abc", jira="AB-1", action="open")
+    cwd = tmp_path / "wt"
+    cwd.mkdir()
+    run = job.record_pi_run(cwd)
+    snap = job.snapshot()
+    assert run["index"] == 0
+    assert snap["pi_runs"][0]["cwd"] == str(cwd.resolve())
+    assert snap["pi_runs"][0]["started_at"]
+    assert "log" in snap
+
+
+def test_job_log_runner_records_pi_run_before_popen(tmp_path: Path, monkeypatch):
+    job = Job(id="abc", jira="AB-1", action="open")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+
+    class FakeProc:
+        stdout = iter(["hello\n"])
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr("dev_yard.web.jobs.shutil.which", lambda b: "/usr/bin/pi")
+    monkeypatch.setattr("dev_yard.web.jobs.subprocess.Popen", lambda *a, **k: FakeProc())
+    monkeypatch.setattr("dev_yard.web.jobs.pi_argv", lambda **k: ["pi", "-p", "x"])
+    from dev_yard.web.jobs import JobLogRunner
+
+    result = JobLogRunner(job, tmp_path, "open").start("p", cwd, [])
+    assert result.ok
+    runs = job.snapshot()["pi_runs"]
+    assert len(runs) == 1
+    assert runs[0]["cwd"] == str(cwd.resolve())
+    assert "cwd=" in job.log
+
+
+def test_sse_poll_emits_pi_runs_on_state(tmp_path: Path):
+    job = Job(id="abc", jira="AB-1", action="grill")
+    job.set_state("running")
+    sse = JobSse(job)
+    frames, done, _seq = sse.poll()
+    assert done is False
+    cwd = tmp_path / "w"
+    cwd.mkdir()
+    job.record_pi_run(cwd)
+    frames, done, _seq = sse.poll()
+    events = _parse_sse("".join(frames))
+    assert events[0][0] == "state"
+    assert events[0][1]["pi_runs"][0]["index"] == 0
+    assert "log" not in events[0][1]
+
+
+def test_pi_chat_sse_emits_entries_then_done(tmp_path: Path):
+    import json
+
+    from dev_yard.web.jobs import PiChatSse
+
+    job = Job(id="abc", jira="AB-1", action="spec")
+    cwd = tmp_path / "yard"
+    cwd.mkdir()
+    job.record_pi_run(cwd)
+    job.set_state("ok")
+    sessions = tmp_path / "sessions"
+    path = sessions / "dir" / "s.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "type": "session",
+                "version": 3,
+                "id": "sid",
+                "timestamp": "2099-01-01T00:00:00.000Z",
+                "cwd": str(cwd.resolve()),
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "message",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "hi"}],
+                },
+            }
+        )
+        + "\n"
+    )
+    sse = PiChatSse(job, 0, cwd, sessions_dir=sessions)
+    frames, done, _seq = sse.poll()
+    assert done is True
+    events = _parse_sse("".join(frames))
+    names = [n for n, _ in events]
+    assert names[0] == "snapshot"
+    assert names[-1] == "done"
+    assert events[0][1]["found"] is True
+    assert events[0][1]["session_id"] == "sid"
+    assert ("entry", {"role": "user", "text": "hi"}) in [
+        (n, {k: d[k] for k in ("role", "text") if k in d}) for n, d in events if n == "entry"
+    ]
+
+
+def test_pi_chat_sse_tails_new_lines_while_running(tmp_path: Path):
+    import json
+
+    from dev_yard.web.jobs import PiChatSse
+
+    job = Job(id="abc", jira="AB-1", action="spec")
+    cwd = tmp_path / "yard"
+    cwd.mkdir()
+    job.record_pi_run(cwd)
+    job.set_state("running")
+    sessions = tmp_path / "sessions"
+    path = sessions / "dir" / "s.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "type": "session",
+                "version": 3,
+                "id": "sid",
+                "timestamp": "2099-01-01T00:00:00.000Z",
+                "cwd": str(cwd.resolve()),
+            }
+        )
+        + "\n"
+    )
+    sse = PiChatSse(job, 0, cwd, sessions_dir=sessions)
+    frames, done, _seq = sse.poll()
+    assert done is False
+    assert [n for n, _ in _parse_sse("".join(frames))] == ["snapshot"]
+    with path.open("a") as f:
+        f.write(
+            json.dumps(
+                {
+                    "type": "message",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "next"}],
+                    },
+                }
+            )
+            + "\n"
+        )
+    frames, done, _seq = sse.poll()
+    assert done is False
+    events = _parse_sse("".join(frames))
+    assert events == [("entry", {"role": "assistant", "text": "next"})]
+    job.set_state("ok")
+    frames, done, _seq = sse.poll()
+    assert done is True
+    assert _parse_sse("".join(frames))[-1][0] == "done"
+
+
 def test_resume_pending_grills_skips_markdown_frontier(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)

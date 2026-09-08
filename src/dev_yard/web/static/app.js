@@ -286,11 +286,32 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
 
+    function renderPiRuns(job) {
+      const host = root.querySelector("[data-pi-runs]");
+      if (!host || !job.pi_runs) return;
+      const runs = job.pi_runs;
+      host.hidden = !runs.length;
+      host.replaceChildren();
+      runs.forEach(function (run, i) {
+        const a = el(
+          "a",
+          "",
+          runs.length > 1 ? "查看对话 · " + (i + 1) : "查看对话"
+        );
+        a.href = "#";
+        a.setAttribute("data-open-pi", "");
+        a.setAttribute("data-job", job.id);
+        a.setAttribute("data-run", String(run.index != null ? run.index : i));
+        host.appendChild(a);
+      });
+    }
+
     function applyState(job) {
       if (stateEl) {
         stateEl.textContent = job.state;
         stateEl.className = "pill job-" + job.state;
       }
+      renderPiRuns(job);
       renderGrill(job);
       if (hintEl && job.action === "grill") {
         if (job.state === "waiting") {
@@ -351,6 +372,143 @@
       if (Date.now() - started > 6 * 60 * 60 * 1000) es.close();
     };
   }
+
+  let piEs = null;
+  let piFollow = true;
+
+  function closePiDrawer() {
+    const host = document.querySelector("[data-pi-drawer]");
+    if (piEs) {
+      piEs.close();
+      piEs = null;
+    }
+    if (host) host.hidden = true;
+  }
+
+  function ensurePiDrawer() {
+    let host = document.querySelector("[data-pi-drawer]");
+    if (host) return host;
+    host = el("div", "pi-drawer-root");
+    host.setAttribute("data-pi-drawer", "");
+    host.hidden = true;
+    const backdrop = el("div", "pi-backdrop");
+    backdrop.setAttribute("data-pi-close", "");
+    const drawer = el("aside", "pi-drawer");
+    drawer.setAttribute("role", "dialog");
+    drawer.setAttribute("aria-label", "pi 对话");
+    const head = el("header", "pi-drawer-head");
+    const titles = el("div");
+    const title = el("strong", "", "pi 对话");
+    title.setAttribute("data-pi-title", "");
+    const meta = el("p", "meta");
+    meta.setAttribute("data-pi-meta", "");
+    titles.appendChild(title);
+    titles.appendChild(meta);
+    const closeBtn = el("button", "btn tiny", "关闭");
+    closeBtn.type = "button";
+    closeBtn.setAttribute("data-pi-close", "");
+    head.appendChild(titles);
+    head.appendChild(closeBtn);
+    const chat = el("div", "pi-chat");
+    chat.setAttribute("data-pi-chat", "");
+    drawer.appendChild(head);
+    drawer.appendChild(chat);
+    host.appendChild(backdrop);
+    host.appendChild(drawer);
+    document.body.appendChild(host);
+    chat.addEventListener("scroll", function () {
+      const gap = chat.scrollHeight - chat.scrollTop - chat.clientHeight;
+      piFollow = gap < 48;
+    });
+    return host;
+  }
+
+  function appendPiEntry(chat, entry) {
+    const art = el("article", "pi-msg role-" + (entry.role || "assistant"));
+    const labels = { user: "user", assistant: "assistant", toolResult: "tool" };
+    art.appendChild(el("div", "pi-role", labels[entry.role] || entry.role || ""));
+    if (entry.thinking) {
+      const d = document.createElement("details");
+      d.className = "pi-fold";
+      d.appendChild(el("summary", "", "思考"));
+      d.appendChild(el("pre", "", entry.thinking));
+      art.appendChild(d);
+    }
+    if (entry.role === "toolResult") {
+      const d = document.createElement("details");
+      d.className = "pi-fold";
+      const mark = entry.is_error ? "error · " : "";
+      d.appendChild(el("summary", "", mark + (entry.tool_name || "result")));
+      if (entry.text) d.appendChild(el("pre", "", entry.text));
+      art.appendChild(d);
+    } else if (entry.text) {
+      art.appendChild(el("div", "pi-text", entry.text));
+    }
+    (entry.tools || []).forEach(function (t) {
+      const d = document.createElement("details");
+      d.className = "pi-fold";
+      d.appendChild(el("summary", "", t.name || "tool"));
+      if (t.args) d.appendChild(el("pre", "", t.args));
+      art.appendChild(d);
+    });
+    chat.appendChild(art);
+    if (piFollow) chat.scrollTop = chat.scrollHeight;
+  }
+
+  function openPiDrawer(jobId, run) {
+    const host = ensurePiDrawer();
+    const chat = host.querySelector("[data-pi-chat]");
+    const meta = host.querySelector("[data-pi-meta]");
+    const title = host.querySelector("[data-pi-title]");
+    chat.replaceChildren();
+    chat.appendChild(el("p", "pi-empty", "连接对话流…"));
+    piFollow = true;
+    host.hidden = false;
+    if (piEs) {
+      piEs.close();
+      piEs = null;
+    }
+    const url =
+      "/api/jobs/" + encodeURIComponent(jobId) + "/pi/" + encodeURIComponent(run) + "/events";
+    piEs = new EventSource(url);
+    piEs.addEventListener("snapshot", function (e) {
+      const data = JSON.parse(e.data);
+      title.textContent = "pi 对话";
+      meta.textContent =
+        (data.cwd || "") + (data.found ? "" : " · 等待 session…");
+      const empty = chat.querySelector(".pi-empty");
+      if (empty && data.found) empty.remove();
+    });
+    piEs.addEventListener("entry", function (e) {
+      const empty = chat.querySelector(".pi-empty");
+      if (empty) empty.remove();
+      appendPiEntry(chat, JSON.parse(e.data));
+    });
+    piEs.addEventListener("done", function () {
+      if (piEs) {
+        piEs.close();
+        piEs = null;
+      }
+      if (!chat.querySelector(".pi-msg") && !chat.querySelector(".pi-empty")) {
+        chat.appendChild(el("p", "pi-empty", "没有找到对话记录"));
+      }
+    });
+  }
+
+  document.addEventListener("click", function (e) {
+    const closer = e.target.closest("[data-pi-close]");
+    if (closer) {
+      closePiDrawer();
+      return;
+    }
+    const a = e.target.closest("[data-open-pi]");
+    if (!a) return;
+    e.preventDefault();
+    openPiDrawer(a.getAttribute("data-job"), a.getAttribute("data-run") || "0");
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") closePiDrawer();
+  });
 
   const panels = document.querySelectorAll("[data-job-panel][data-job-id]");
   if (panels.length) {

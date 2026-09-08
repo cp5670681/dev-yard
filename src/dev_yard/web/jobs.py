@@ -6,10 +6,12 @@ import subprocess
 import threading
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from dev_yard import grill_round, paths, service
+from dev_yard.pi_session import load_conversation
 from dev_yard.runners import RunResult, Runner, pi_argv
 
 Execute = Callable[[Path, "Job"], None]
@@ -31,6 +33,7 @@ class Job:
     ticket_ids: list[str] | None = None
     extra: dict = field(default_factory=dict)
     grill: dict | None = None
+    pi_runs: list[dict[str, Any]] = field(default_factory=list)
     done: threading.Event = field(default_factory=threading.Event)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _cv: threading.Condition = field(init=False, repr=False, compare=False)
@@ -58,6 +61,7 @@ class Job:
             "log": self.log,
             "ticket_ids": self.ticket_ids,
             "grill": self.grill,
+            "pi_runs": list(self.pi_runs),
         }
 
     def append(self, text: str) -> None:
@@ -125,6 +129,19 @@ class Job:
                 raise RuntimeError("grill interrupted")
             return answers
 
+    def record_pi_run(self, cwd: Path) -> dict[str, Any]:
+        run = {
+            "cwd": str(cwd.resolve()),
+            "started_at": datetime.now(timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z"),
+        }
+        with self._cv:
+            run = {"index": len(self.pi_runs), **run}
+            self.pi_runs.append(run)
+            self._bump()
+            return dict(run)
+
 
 class JobSse:
     def __init__(self, job: Job) -> None:
@@ -133,6 +150,7 @@ class JobSse:
         self._sent_snapshot = False
         self._last_state: str | None = None
         self._last_grill: Any = object()
+        self._last_pi_runs: Any = object()
 
     def poll(self) -> tuple[list[str], bool, int]:
         snap, seq = self.job.capture()
@@ -143,11 +161,16 @@ class JobSse:
             self._log_off = len(snap["log"])
             self._last_state = snap["state"]
             self._last_grill = snap["grill"]
+            self._last_pi_runs = snap.get("pi_runs")
         else:
             if len(snap["log"]) > self._log_off:
                 frames.append(format_sse("log", snap["log"][self._log_off :]))
                 self._log_off = len(snap["log"])
-            if snap["state"] != self._last_state or snap["grill"] != self._last_grill:
+            if (
+                snap["state"] != self._last_state
+                or snap["grill"] != self._last_grill
+                or snap.get("pi_runs") != self._last_pi_runs
+            ):
                 frames.append(
                     format_sse(
                         "state",
@@ -158,14 +181,81 @@ class JobSse:
                             "state": snap["state"],
                             "grill": snap["grill"],
                             "ticket_ids": snap["ticket_ids"],
+                            "pi_runs": snap.get("pi_runs") or [],
                         },
                     )
                 )
                 self._last_state = snap["state"]
                 self._last_grill = snap["grill"]
+                self._last_pi_runs = snap.get("pi_runs")
         done = snap["state"] in _TERMINAL
         if done:
             frames.append(format_sse("done", snap))
+        return frames, done, seq
+
+
+def _pi_run_until(runs: list[dict[str, Any]], index: int) -> str | None:
+    cwd = runs[index]["cwd"]
+    for later in runs[index + 1 :]:
+        if later.get("cwd") == cwd:
+            return later.get("started_at")
+    return None
+
+
+class PiChatSse:
+    def __init__(
+        self,
+        job: Job,
+        run_index: int,
+        root: Path,
+        sessions_dir: Path | None = None,
+    ) -> None:
+        self.job = job
+        self.run_index = run_index
+        self.root = root
+        self.sessions_dir = sessions_dir
+        self._sent_snapshot = False
+        self._offset = 0
+        self._found = False
+
+    def poll(self) -> tuple[list[str], bool, int]:
+        snap, seq = self.job.capture()
+        runs = snap.get("pi_runs") or []
+        if self.run_index < 0 or self.run_index >= len(runs):
+            return [format_sse("done", {"error": "unknown run"})], True, seq
+        run = runs[self.run_index]
+        try:
+            data = load_conversation(
+                Path(run["cwd"]),
+                root=self.root,
+                started_at=run.get("started_at"),
+                until=_pi_run_until(runs, self.run_index),
+                offset=self._offset,
+                sessions_dir=self.sessions_dir,
+            )
+        except PermissionError:
+            return [format_sse("done", {"error": "forbidden"})], True, seq
+        frames: list[str] = []
+        meta = {
+            "job_id": snap["id"],
+            "run": self.run_index,
+            "cwd": data["cwd"],
+            "started_at": run.get("started_at"),
+            "found": data["found"],
+            "session_id": data["session_id"],
+            "job_state": snap["state"],
+        }
+        if not self._sent_snapshot or (data["found"] and not self._found):
+            frames.append(format_sse("snapshot", meta))
+            self._sent_snapshot = True
+        for entry in data["entries"]:
+            frames.append(format_sse("entry", entry))
+        self._offset = data["next_offset"]
+        self._found = data["found"]
+        later = self.run_index < len(runs) - 1
+        done = snap["state"] in _TERMINAL or later
+        if done:
+            frames.append(format_sse("done", {"found": data["found"], "job_state": snap["state"]}))
         return frames, done, seq
 
 
@@ -182,6 +272,7 @@ class JobLogRunner(Runner):
             msg = f"pi not found (`{binary}`). Install pi or set YARD_PI to its path."
             self.job.append(msg)
             return RunResult(ok=False, summary=msg, exit_code=127)
+        self.job.record_pi_run(cwd)
         self.job.append(f"$ {binary} -p …  cwd={cwd}")
         proc = subprocess.Popen(
             argv,

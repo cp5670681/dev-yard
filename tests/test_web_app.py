@@ -369,7 +369,81 @@ def test_app_js_uses_event_source():
     assert "nav-dot" in js
     assert "setTimeout(tick, 1000)" not in js
     assert "setInterval" not in js
+    assert "/pi/" in js
+    assert "data-open-pi" in js
+    assert "pi-drawer" in css
     assert ".nav-jobs { display: none; }" not in css
+
+
+def test_pi_chat_api_streams_session_and_rejects_outside_cwd(tmp_path: Path, monkeypatch):
+    import json
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    sessions = tmp_path / "sessions"
+    monkeypatch.setenv("YARD_PI_SESSIONS", str(sessions))
+
+    def execute(root: Path, job) -> None:
+        job.record_pi_run(root)
+        job.append("pi done")
+
+    runner = JobRunner(yard, execute=execute, sync=True)
+    job = runner.submit("spec", "AB-90")
+    path = sessions / "d" / "s.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "type": "session",
+                "version": 3,
+                "id": "sid-90",
+                "timestamp": "2099-01-01T00:00:00.000Z",
+                "cwd": str(yard.resolve()),
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "toolCall",
+                            "id": "c1",
+                            "name": "read",
+                            "arguments": {"path": "REQUIREMENT.md"},
+                        }
+                    ],
+                },
+            }
+        )
+        + "\n"
+    )
+    client = TestClient(create_app(yard, job_runner=runner))
+    snap = client.get(f"/api/jobs/{job.id}").json()
+    assert snap["pi_runs"][0]["cwd"] == str(yard.resolve())
+    page = client.get(f"/r/AB-90?job={job.id}")
+    assert "查看对话" in page.text
+    assert "data-open-pi" in page.text
+    data = client.get(f"/api/jobs/{job.id}/pi/0").json()
+    assert data["found"] is True
+    assert data["session_id"] == "sid-90"
+    assert data["entries"][0]["role"] == "assistant"
+    assert data["entries"][0]["tools"][0]["name"] == "read"
+    events = client.get(f"/api/jobs/{job.id}/pi/0/events")
+    assert events.status_code == 200
+    assert events.headers["content-type"].startswith("text/event-stream")
+    parsed = _parse_sse(events.text)
+    assert parsed[0][0] == "snapshot"
+    assert parsed[-1][0] == "done"
+    assert any(name == "entry" for name, _ in parsed)
+    assert client.get(f"/api/jobs/{job.id}/pi/9").status_code == 404
+    job.record_pi_run(tmp_path / "elsewhere")
+    denied = client.get(f"/api/jobs/{job.id}/pi/1")
+    assert denied.status_code == 404
 
 
 def test_waiting_job_is_bound_and_answers_api(tmp_path: Path):
