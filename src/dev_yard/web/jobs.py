@@ -6,9 +6,9 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
-from dev_yard import service
+from dev_yard import grill_round, paths, service
 from dev_yard.runners import RunResult, Runner, pi_argv
 
 Execute = Callable[[Path, "Job"], None]
@@ -23,8 +23,11 @@ class Job:
     log: str = ""
     ticket_ids: list[str] | None = None
     extra: dict = field(default_factory=dict)
+    grill: dict | None = None
     done: threading.Event = field(default_factory=threading.Event)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    _input: threading.Event = field(default_factory=threading.Event)
+    _answers: list[dict[str, Any]] | None = None
 
     def append(self, text: str) -> None:
         if not text:
@@ -41,7 +44,35 @@ class Job:
                 "state": self.state,
                 "log": self.log,
                 "ticket_ids": self.ticket_ids,
+                "grill": self.grill,
             }
+
+    def set_waiting(self, payload: dict) -> None:
+        with self._lock:
+            self._input.clear()
+            self._answers = None
+            self.state = "waiting"
+            self.grill = payload
+
+    def submit_answers(self, answers: list[dict[str, Any]]) -> None:
+        if not isinstance(answers, list):
+            raise ValueError("answers must be a list")
+        with self._lock:
+            if self.state != "waiting":
+                raise ValueError("job is not waiting for answers")
+            self._answers = answers
+            self.state = "running"
+            self.grill = None
+            self._input.set()
+
+    def wait_answers(self) -> list[dict[str, Any]]:
+        self._input.wait()
+        with self._lock:
+            answers = self._answers
+            self._answers = None
+            if answers is None:
+                raise RuntimeError("grill interrupted")
+            return answers
 
 
 class JobLogRunner(Runner):
@@ -125,8 +156,11 @@ def default_execute(root: Path, job: Job) -> None:
     }.get(job.action)
     if bundle is None:
         raise ValueError(f"unknown action {job.action}")
+    if job.action == "grill":
+        _run_web_grill(root, job)
+        return
     runner = JobLogRunner(job, root, bundle)
-    if job.action in {"grill", "spec", "tickets"}:
+    if job.action in {"spec", "tickets"}:
         result = service.launch_skill(
             root, job.action, job.jira, print_mode=True, runner=runner
         )
@@ -150,6 +184,40 @@ def default_execute(root: Path, job: Job) -> None:
         root, job.jira, None, contract=True, print_mode=True, runner=runner
     )
     job.append("contract: " + (", ".join(ran) if ran else "(none)"))
+
+
+def _run_web_grill(root: Path, job: Job) -> None:
+    extra = grill_round.web_grill_extra(job.jira)
+    req = paths.req_dir(root, job.jira)
+    for _ in range(grill_round.MAX_ROUNDS):
+        runner = JobLogRunner(job, root, "grill")
+        result = service.launch_skill(
+            root,
+            "grill",
+            job.jira,
+            print_mode=True,
+            runner=runner,
+            prompt_extra=extra,
+        )
+        if not result.ok:
+            raise RuntimeError("grill failed")
+        rnd = grill_round.load_round(req)
+        if rnd is None or not rnd.awaiting():
+            leftover = grill_round.round_path(req)
+            if leftover.exists():
+                leftover.unlink()
+            job.append("grill finished")
+            return
+        job.append(f"round {rnd.round}: {len(rnd.questions)} questions")
+        job.set_waiting(rnd.to_dict())
+        answers = job.wait_answers()
+        grill_round.apply_answers(req, rnd, answers)
+        job.append(f"round {rnd.round} answers recorded")
+        extra = (
+            grill_round.web_grill_extra(job.jira)
+            + "\nPrevious round answers are in GRILL.md. Continue the frontier."
+        )
+    raise RuntimeError("too many grill rounds")
 
 
 class JobRunner:
@@ -176,12 +244,12 @@ class JobRunner:
         if job_id:
             return self.get(job_id)
         latest = self.latest(jira)
-        if latest and latest.state in {"queued", "running"}:
+        if latest and latest.state in {"queued", "running", "waiting"}:
             return latest
         return None
 
     def running(self) -> list[Job]:
-        return [j for j in self._jobs.values() if j.state in {"queued", "running"}]
+        return [j for j in self._jobs.values() if j.state in {"queued", "running", "waiting"}]
 
     def submit(
         self,
@@ -192,7 +260,7 @@ class JobRunner:
     ) -> Job:
         with self._lock:
             for job in self._jobs.values():
-                if job.jira == jira and job.state in {"queued", "running"}:
+                if job.jira == jira and job.state in {"queued", "running", "waiting"}:
                     raise ValueError(f"{jira} already has a running job ({job.action})")
             job = Job(
                 id=uuid.uuid4().hex[:10],

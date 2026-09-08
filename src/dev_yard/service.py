@@ -347,6 +347,7 @@ def launch_skill(
     dry_run: bool = False,
     print_mode: bool = False,
     runner: Runner | None = None,
+    prompt_extra: str = "",
 ) -> RunResult:
     req = paths.req_dir(root, jira)
     if not req.exists():
@@ -367,6 +368,8 @@ def launch_skill(
             "Do not switch their branches. Requirement worktrees are created later by freeze.\n"
             f"{lines}\n"
         )
+    if prompt_extra:
+        bases = (bases + "\n" + prompt_extra).strip() if bases else prompt_extra
     prompt = session_prompt(root, name, jira, extra=bases)
     r = runner or get_runner(root, name, dry_run=dry_run, print_mode=print_mode)
     snap = _snapshot(req, STAGE_PROTECT[name]) if name in STAGE_PROTECT and not dry_run else {}

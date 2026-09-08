@@ -29,11 +29,14 @@ description: >
 |------|------|
 | `reqs/<JIRA>/REQUIREMENT.md` | 只读：产品原文 |
 | `reqs/<JIRA>/GRILL.md` | **唯一要写的需求产物**：每轮 Q/A、已拍板决策 |
+| `reqs/<JIRA>/.grill-round.json` | 仅 WEB_GRILL_ROUND：本轮表单契约 |
 | `CONTEXT.md`（workspace 根） | 术语表（domain-modeling） |
 | `docs/adr/` | 难逆、意外、有取舍的决策 |
 | `repos.yaml` | 只读 |
 
 **禁止**写 `SPEC.md`、`TICKETS.md`、业务代码。SPEC 留给 `dev-yard spec`，票留给 `dev-yard tickets`。
+
+当 session prompt 含 `WEB_GRILL_ROUND` 时，读并执行 [`WEB-ROUND.md`](WEB-ROUND.md)（写本轮 `.grill-round.json` 后停）。
 
 ## 结束
 

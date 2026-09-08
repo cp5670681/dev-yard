@@ -20,7 +20,12 @@
     <span class="pill" data-job-state>{{ job.state }}</span>
   </div>
   <pre class="log" data-job-log>{{ job.log }}</pre>
-  <p class="hint">抽取 / Grill / Spec / Tickets / Implement / Review 在网页里用 <code>pi -p</code> 一次性跑完。要对齐访谈，请在仓库根执行 <code>dev-yard {{ job.action }} {{ jira }}</code>。</p>
+  <div class="grill-round" data-grill-form hidden></div>
+  {% if job.action == "grill" %}
+  <p class="hint" data-job-hint>Grill 按轮提问。每轮生成后在上方表单里选或改，提交后再问下一轮。</p>
+  {% else %}
+  <p class="hint" data-job-hint>抽取 / Spec / Tickets / Implement / Review 在网页里用 <code>pi -p</code> 一次性跑完。</p>
+  {% endif %}
 </section>
 {% endif %}
 
