@@ -65,11 +65,11 @@ uv run pytest
 uv run dev-yard init
 ```
 
-可重复执行：已有 `repos.yaml` 不会被覆盖。会补 `.gitignore` 条目（`.repos/`、`.yard-worktrees/`、`reqs/`、`.env`），建空的 `reqs/`、`.repos/`，若没有 `.env.example` 会写一份。
+可重复执行：已有 `repos.yaml` 不会被覆盖。会补 `.gitignore` 条目（`.repos/`、`.yard-worktrees/`、`reqs/`、`.env`、`repos.yaml`），建空的 `reqs/`、`.repos/`，若没有 `.env.example` 会写一份。
 
 ### 1.3 登记业务仓（必须，否则 grill/freeze 没有代码可读/可建 worktree）
 
-仓库里的 `repos.yaml` 默认是空的（`repos: {}`）。本机路径不要提交进 git。模板见 `repos.yaml.example`。
+`repos.yaml` 是本机仓登记表，已 gitignore，不要提交。`dev-yard init` 会写一份空的（`repos: {}`）。模板见 `repos.yaml.example`。
 
 **两种登记方式，二选一（或混用）：**
 
@@ -204,7 +204,7 @@ uv run dev-yard req open PG-13068
 uv run dev-yard grill PG-13068
 ```
 
-打开 pi TUI。你要做的事：按提示读 `REQUIREMENT.md` 和源码（`default_base`），把问答和拍板写进 `GRILL.md`。术语进仓库根 `CONTEXT.md`，难逆决策进 `docs/adr/`。
+打开 pi TUI。你要做的事：按提示读 `REQUIREMENT.md` 和源码（`default_base`），把问答和拍板写进 `GRILL.md`。术语进 `reqs/CONTEXT.md`（多票共用），难逆决策进 `reqs/docs/adr/`。这两类文件一直留在 `reqs/`，freeze **不会**拷进业务仓。
 
 - 只应改 `GRILL.md`（以及术语/ADR）。若模型误写了 `SPEC.md` / `TICKETS.md`，CLI 会 **回滚** 并在退出时打印 `restored …`。
 - 不要在业务仓里改代码、不要自己切分支。
@@ -274,6 +274,7 @@ uv run dev-yard req freeze PG-13068
 - 分支名：`req/PG-13068`（各仓各一条）
 - 起点：`origin/<default_base>`，没有 remote 则用本地 `default_base`
 - `STATUS.yaml`：`phase=frozen`，无依赖的票变 `ready`
+- 不把 `reqs/CONTEXT.md` / `reqs/docs/adr/` 拷进 worktree
 
 stdout 打印建好的 worktree 路径。需求级 worktree **一直留着**，方便回看和开 PR。
 
@@ -354,25 +355,26 @@ git -C reqs/PG-13068/worktrees/research log --oneline origin/master..HEAD
 ```text
 dev-yard/                          ← 你执行命令的地方
   AGENTS.md                        # pi 会从 cwd 读
-  repos.yaml                       # 仓登记表（本机填，不要提交 path）
+  repos.yaml                       # 仓登记表（本机，已 gitignore）
   repos.yaml.example
   .env / .env.example
   .pi/skills/                      # 已绑定的技能，不要另装
   .repos/<alias>/                  # 未指定 path 时的源 clone
-  reqs/<JIRA>/                     # 本机产物
-    REQUIREMENT.md
-    GRILL.md
-    SPEC.md
-    TICKETS.md
-    STATUS.yaml                    # CLI 维护，不要当常规流程手改
-    assets/                        # req open 拉下来的图
-    worktrees/<alias>/             # 需求级 worktree，分支 req/<JIRA>
+  reqs/
+    CONTEXT.md                     # 术语（多票共用，本机）
+    docs/adr/                      # ADR（多票共用；`docs` 不是 Jira，看板会跳过）
+    <JIRA>/                        # 票级产物
+      REQUIREMENT.md
+      GRILL.md
+      SPEC.md
+      TICKETS.md
+      STATUS.yaml                  # CLI 维护，不要当常规流程手改
+      assets/                      # req open 拉下来的图
+      worktrees/<alias>/           # 需求级 worktree，分支 req/<JIRA>
   .yard-worktrees/<JIRA>/<alias>/<票id>/   # 并行子 worktree，done 时删除
-  CONTEXT.md                       # 术语（grill 时可能写在仓库根）
-  docs/adr/                        # ADR
 ```
 
-`.repos/`、`.yard-worktrees/`、整个 `reqs/` 已 gitignore。
+`.repos/`、`.yard-worktrees/`、整个 `reqs/`、`repos.yaml` 已 gitignore。
 
 ---
 
@@ -397,12 +399,12 @@ uv run dev-yard ticket done PG-13068 T3    # merge 进需求分支，删子 wt �
 
 ## 5. 和 AI 技能怎么配合
 
-[mattpocock/skills](https://github.com/mattpocock/skills) 已经绑在 `.pi/skills/`。产物一律进 `reqs/<JIRA>/`。来源说明：`.pi/ORIGIN.md`。
+[mattpocock/skills](https://github.com/mattpocock/skills) 已经绑在 `.pi/skills/`。票级产物进 `reqs/<JIRA>/`；术语/ADR 进 `reqs/CONTEXT.md` 与 `reqs/docs/adr/`，不进业务仓。来源说明：`.pi/ORIGIN.md`。
 
 | 步骤 | 命令 | 运行时 | 读 | 写 |
 |------|------|--------|----|----|
 | 抽需求 | `req open` | **pi**：fetch-requirement + Atlassian MCP | Jira / 本票 Confluence | `REQUIREMENT.md`、`assets/` |
-| 对齐 | `grill` | **pi**：grill-with-docs + grilling + domain-modeling | REQUIREMENT + 源仓 `default_base` | `GRILL.md`、`CONTEXT.md`、ADR |
+| 对齐 | `grill` | **pi**：grill-with-docs + grilling + domain-modeling | REQUIREMENT + 源仓 `default_base` | `GRILL.md`、`reqs/CONTEXT.md`、`reqs/docs/adr/` |
 | 写 spec | `spec` | pi：to-spec | GRILL | `SPEC.md` |
 | 拆票 | `tickets` | pi：to-tickets | SPEC | `TICKETS.md` |
 | 实现 | `implement` | pi：implement + tdd + codebase-design | SPEC + 票 | 该票 worktree 里的代码 |

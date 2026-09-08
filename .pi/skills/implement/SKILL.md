@@ -12,6 +12,7 @@ description: >
 ## 必读
 
 - `reqs/<JIRA>/SPEC.md`、`TICKETS.md`（只读）
+- `reqs/CONTEXT.md`（若有：只读术语；不要写进 worktree）
 - 本票条目：id、repo、验收
 - `.pi/skills/tdd/SKILL.md` — 在 spec 已约定的缝上 red-green
 - 该仓代码与测试习惯

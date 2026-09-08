@@ -4,7 +4,7 @@ import pytest
 
 from dev_yard import status as st
 from dev_yard.runners import RunResult, Runner
-from dev_yard.service import REQ_SKELETON, init_yard, req_open
+from dev_yard.service import REQ_SKELETON, init_yard, req_open, status_text
 
 
 class _OkEmpty(Runner):
@@ -36,6 +36,8 @@ def test_init_and_open(tmp_path: Path, monkeypatch):
         monkeypatch.delenv(k, raising=False)
     init_yard(tmp_path)
     assert (tmp_path / "repos.yaml").exists()
+    gi = (tmp_path / ".gitignore").read_text().splitlines()
+    assert "repos.yaml" in gi
     d, warning = req_open(tmp_path, "ABC-1", source="none")
     assert warning
     assert (d / "REQUIREMENT.md").exists()
@@ -43,6 +45,20 @@ def test_init_and_open(tmp_path: Path, monkeypatch):
     assert (d / "SPEC.md").exists()
     assert (d / "TICKETS.md").exists()
     assert "## T1" not in (d / "TICKETS.md").read_text()
+
+
+def test_open_rejects_reserved_docs(tmp_path: Path):
+    init_yard(tmp_path)
+    with pytest.raises(ValueError, match="reserved"):
+        req_open(tmp_path, "docs", source="none")
+    with pytest.raises(ValueError, match="reserved"):
+        req_open(tmp_path, "DOCS", source="none")
+    adr = tmp_path / "reqs" / "docs" / "adr"
+    adr.mkdir(parents=True)
+    (adr / "0001.md").write_text("# adr\n")
+    text = status_text(tmp_path, None)
+    assert "docs" not in text
+    assert text == "(no requirements)"
 
 
 def test_dry_run_does_not_write(tmp_path: Path):

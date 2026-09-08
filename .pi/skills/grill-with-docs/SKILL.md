@@ -18,7 +18,7 @@ description: >
 ## 定位需求
 
 - 参数或 cwd 若含 `reqs/<JIRA>/`，就用该 JIRA。
-- 否则对最新的 `reqs/*` 或问用户 JIRA key。
+- 否则对最新的 `reqs/<JIRA>/`（含 `STATUS.yaml` 或 `REQUIREMENT.md`）或问用户 JIRA key。跳过 `reqs/docs/` 和 `reqs/CONTEXT.md`，那不是需求。
 - 没有目录则先 `dev-yard req open <JIRA>`（或让用户跑）。
 
 工作目录：workspace 根（含 `repos.yaml`）。只读 CLI 列出的源仓目录（`repos.yaml` 的 `path` 或 `.repos/<alias>`）。托管 clone（`.repos/`）CLI 会切到 `default_base`；`path` 映射的日常副本 CLI **不会**代为 checkout，不在 `default_base` 时命令失败。源仓只用来对照代码和之后 `git worktree add`，不要在源仓里改业务、不要再切分支。需求分支在 `freeze` 之后的 `reqs/*/worktrees`。
@@ -30,9 +30,11 @@ description: >
 | `reqs/<JIRA>/REQUIREMENT.md` | 只读：产品原文 |
 | `reqs/<JIRA>/GRILL.md` | **唯一要写的需求产物**：每轮 Q/A、已拍板决策 |
 | `reqs/<JIRA>/.grill-round.json` | 仅 WEB_GRILL_ROUND：本轮表单契约 |
-| `CONTEXT.md`（workspace 根） | 术语表（domain-modeling） |
-| `docs/adr/` | 难逆、意外、有取舍的决策 |
+| `reqs/CONTEXT.md` | 术语表（多票共用，domain-modeling） |
+| `reqs/docs/adr/` | 难逆、意外、有取舍的决策（多票共用） |
 | `repos.yaml` | 只读 |
+
+**禁止**写 workspace 根的 `CONTEXT.md` / `docs/adr/`，禁止写进源仓或 freeze worktree。术语和 ADR 一直留在 `reqs/`（gitignore），不进业务仓。
 
 **禁止**写 `SPEC.md`、`TICKETS.md`、业务代码。SPEC 留给 `dev-yard spec`，票留给 `dev-yard tickets`。
 

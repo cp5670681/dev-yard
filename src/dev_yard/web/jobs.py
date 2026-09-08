@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import threading
@@ -12,6 +13,11 @@ from dev_yard import grill_round, paths, service
 from dev_yard.runners import RunResult, Runner, pi_argv
 
 Execute = Callable[[Path, "Job"], None]
+_TERMINAL = {"ok", "error"}
+
+
+def format_sse(event: str, data: Any) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 @dataclass
@@ -26,53 +32,140 @@ class Job:
     grill: dict | None = None
     done: threading.Event = field(default_factory=threading.Event)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    _cv: threading.Condition = field(init=False, repr=False, compare=False)
+    _seq: int = field(default=0, repr=False, compare=False)
     _input: threading.Event = field(default_factory=threading.Event)
     _answers: list[dict[str, Any]] | None = None
+    on_change: Callable[[], None] | None = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        self._cv = threading.Condition(self._lock)
+
+    def _bump(self) -> None:
+        self._seq += 1
+        self._cv.notify_all()
+        cb = self.on_change
+        if cb is not None:
+            cb()
+
+    def _public(self) -> dict:
+        return {
+            "id": self.id,
+            "jira": self.jira,
+            "action": self.action,
+            "state": self.state,
+            "log": self.log,
+            "ticket_ids": self.ticket_ids,
+            "grill": self.grill,
+        }
 
     def append(self, text: str) -> None:
         if not text:
             return
-        with self._lock:
+        with self._cv:
             self.log += text if text.endswith("\n") else text + "\n"
+            self._bump()
 
     def snapshot(self) -> dict:
-        with self._lock:
-            return {
-                "id": self.id,
-                "jira": self.jira,
-                "action": self.action,
-                "state": self.state,
-                "log": self.log,
-                "ticket_ids": self.ticket_ids,
-                "grill": self.grill,
-            }
+        with self._cv:
+            return self._public()
+
+    def brief(self) -> dict:
+        with self._cv:
+            data = self._public()
+            return {k: data[k] for k in ("id", "jira", "action", "state")}
+
+    def capture(self) -> tuple[dict, int]:
+        with self._cv:
+            return self._public(), self._seq
+
+    def current_seq(self) -> int:
+        with self._cv:
+            return self._seq
+
+    def wait_seq(self, seq: int, timeout: float | None = None) -> int:
+        with self._cv:
+            if self._seq > seq:
+                return self._seq
+            self._cv.wait(timeout=timeout)
+            return self._seq
+
+    def set_state(self, state: str) -> None:
+        with self._cv:
+            self.state = state
+            self._bump()
 
     def set_waiting(self, payload: dict) -> None:
-        with self._lock:
+        with self._cv:
             self._input.clear()
             self._answers = None
             self.state = "waiting"
             self.grill = payload
+            self._bump()
 
     def submit_answers(self, answers: list[dict[str, Any]]) -> None:
         if not isinstance(answers, list):
             raise ValueError("answers must be a list")
-        with self._lock:
+        with self._cv:
             if self.state != "waiting":
                 raise ValueError("job is not waiting for answers")
             self._answers = answers
             self.state = "running"
             self.grill = None
             self._input.set()
+            self._bump()
 
     def wait_answers(self) -> list[dict[str, Any]]:
         self._input.wait()
-        with self._lock:
+        with self._cv:
             answers = self._answers
             self._answers = None
             if answers is None:
                 raise RuntimeError("grill interrupted")
             return answers
+
+
+class JobSse:
+    def __init__(self, job: Job) -> None:
+        self.job = job
+        self._log_off = 0
+        self._sent_snapshot = False
+        self._last_state: str | None = None
+        self._last_grill: Any = object()
+
+    def poll(self) -> tuple[list[str], bool, int]:
+        snap, seq = self.job.capture()
+        frames: list[str] = []
+        if not self._sent_snapshot:
+            frames.append(format_sse("snapshot", snap))
+            self._sent_snapshot = True
+            self._log_off = len(snap["log"])
+            self._last_state = snap["state"]
+            self._last_grill = snap["grill"]
+        else:
+            if len(snap["log"]) > self._log_off:
+                frames.append(format_sse("log", snap["log"][self._log_off :]))
+                self._log_off = len(snap["log"])
+            if snap["state"] != self._last_state or snap["grill"] != self._last_grill:
+                frames.append(
+                    format_sse(
+                        "state",
+                        {
+                            "id": snap["id"],
+                            "jira": snap["jira"],
+                            "action": snap["action"],
+                            "state": snap["state"],
+                            "grill": snap["grill"],
+                            "ticket_ids": snap["ticket_ids"],
+                        },
+                    )
+                )
+                self._last_state = snap["state"]
+                self._last_grill = snap["grill"]
+        done = snap["state"] in _TERMINAL
+        if done:
+            frames.append(format_sse("done", snap))
+        return frames, done, seq
 
 
 class JobLogRunner(Runner):
@@ -190,24 +283,26 @@ def _run_web_grill(root: Path, job: Job) -> None:
     extra = grill_round.web_grill_extra(job.jira)
     req = paths.req_dir(root, job.jira)
     for _ in range(grill_round.MAX_ROUNDS):
-        runner = JobLogRunner(job, root, "grill")
-        result = service.launch_skill(
-            root,
-            "grill",
-            job.jira,
-            print_mode=True,
-            runner=runner,
-            prompt_extra=extra,
-        )
-        if not result.ok:
-            raise RuntimeError("grill failed")
         rnd = grill_round.load_round(req)
         if rnd is None or not rnd.awaiting():
-            leftover = grill_round.round_path(req)
-            if leftover.exists():
-                leftover.unlink()
-            job.append("grill finished")
-            return
+            runner = JobLogRunner(job, root, "grill")
+            result = service.launch_skill(
+                root,
+                "grill",
+                job.jira,
+                print_mode=True,
+                runner=runner,
+                prompt_extra=extra,
+            )
+            if not result.ok:
+                raise RuntimeError("grill failed")
+            rnd = grill_round.load_round(req)
+            if rnd is None or not rnd.awaiting():
+                leftover = grill_round.round_path(req)
+                if leftover.exists():
+                    leftover.unlink()
+                job.append("grill finished")
+                return
         job.append(f"round {rnd.round}: {len(rnd.questions)} questions")
         job.set_waiting(rnd.to_dict())
         answers = job.wait_answers()
@@ -218,6 +313,21 @@ def _run_web_grill(root: Path, job: Job) -> None:
             + "\nPrevious round answers are in GRILL.md. Continue the frontier."
         )
     raise RuntimeError("too many grill rounds")
+
+
+class BoardSse:
+    def __init__(self, runner: "JobRunner") -> None:
+        self.runner = runner
+        self._last: list[dict] | None = None
+
+    def poll(self) -> tuple[list[str], int]:
+        seq = self.runner.board_seq()
+        items = self.runner.running_brief()
+        frames: list[str] = []
+        if items != self._last:
+            frames.append(format_sse("jobs", items))
+            self._last = items
+        return frames, seq
 
 
 class JobRunner:
@@ -232,6 +342,27 @@ class JobRunner:
         self.sync = sync
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
+        self._board_cv = threading.Condition()
+        self._board_seq = 0
+
+    def _bump_board(self) -> None:
+        with self._board_cv:
+            self._board_seq += 1
+            self._board_cv.notify_all()
+
+    def board_seq(self) -> int:
+        with self._board_cv:
+            return self._board_seq
+
+    def wait_board(self, seq: int, timeout: float | None = None) -> int:
+        with self._board_cv:
+            if self._board_seq > seq:
+                return self._board_seq
+            self._board_cv.wait(timeout=timeout)
+            return self._board_seq
+
+    def running_brief(self) -> list[dict]:
+        return [j.brief() for j in self.running()]
 
     def get(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)
@@ -251,6 +382,21 @@ class JobRunner:
     def running(self) -> list[Job]:
         return [j for j in self._jobs.values() if j.state in {"queued", "running", "waiting"}]
 
+    def resume_pending_grills(self) -> list[Job]:
+        if self.sync:
+            return []
+        restored: list[Job] = []
+        for req in paths.iter_req_dirs(self.root):
+            rnd = grill_round.load_round_file(req)
+            if rnd is None or not rnd.awaiting():
+                continue
+            try:
+                job = self.submit("grill", req.name)
+            except ValueError:
+                continue
+            restored.append(job)
+        return restored
+
     def submit(
         self,
         action: str,
@@ -268,8 +414,10 @@ class JobRunner:
                 action=action,
                 ticket_ids=ticket_ids,
                 extra=extra or {},
+                on_change=self._bump_board,
             )
             self._jobs[job.id] = job
+        self._bump_board()
         if self.sync:
             self._run(job)
         else:
@@ -277,12 +425,12 @@ class JobRunner:
         return job
 
     def _run(self, job: Job) -> None:
-        job.state = "running"
+        job.set_state("running")
         try:
             self._execute(self.root, job)
-            job.state = "ok"
+            job.set_state("ok")
         except Exception as e:
-            job.state = "error"
             job.append(str(e))
+            job.set_state("error")
         finally:
             job.done.set()

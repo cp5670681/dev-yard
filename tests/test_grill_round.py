@@ -6,6 +6,7 @@ from dev_yard.grill_round import (
     apply_answers,
     format_answers,
     load_round,
+    load_round_file,
     parse_markdown,
     parse_round,
 )
@@ -80,6 +81,16 @@ def test_load_round_prefers_json_file(tmp_path: Path):
     rnd = load_round(req)
     assert rnd is not None
     assert rnd.questions[0].title == "from json"
+
+
+def test_load_round_file_ignores_markdown(tmp_path: Path):
+    req = tmp_path / "reqs" / "AB-1"
+    req.mkdir(parents=True)
+    (req / "GRILL.md").write_text("# Grill\n\n❓ **Q9** - **from md**：no\n\n➡️ skip\n")
+    assert load_round_file(req) is None
+    rnd = load_round(req)
+    assert rnd is not None
+    assert rnd.questions[0].id == "Q9"
 
 
 def test_parse_markdown_last_frontier():

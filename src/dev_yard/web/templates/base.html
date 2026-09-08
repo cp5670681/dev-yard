@@ -21,18 +21,18 @@
       <a href="/repos" class="{% if request.url.path.startswith('/repos') %}on{% endif %}">仓库</a>
       <a href="/open" class="{% if request.url.path.startswith('/open') %}on{% endif %}">打开需求</a>
     </nav>
-    {% if running_jobs %}
-    <div class="nav-jobs">
+    <div class="nav-jobs" data-nav-jobs {% if not running_jobs %}hidden{% endif %}>
       <p>进行中</p>
-      {% for j in running_jobs %}
-      {% if j.action == "repo_add" %}
-      <a href="/repos?job={{ j.id }}">仓库 · clone</a>
-      {% else %}
-      <a href="/r/{{ j.jira }}?job={{ j.id }}">{{ j.jira }} · {{ j.action }}</a>
-      {% endif %}
-      {% endfor %}
+      <div data-nav-job-list>
+        {% for j in running_jobs %}
+        {% if j.action == "repo_add" %}
+        <a href="/repos?job={{ j.id }}">仓库 · clone</a>
+        {% else %}
+        <a href="/r/{{ j.jira }}?job={{ j.id }}"{% if j.state == "waiting" %} class="is-waiting"{% endif %}>{{ j.jira }} · {{ j.action }}{% if j.state == "waiting" %}<span class="nav-dot" aria-label="需要确认"></span>{% endif %}</a>
+        {% endif %}
+        {% endfor %}
+      </div>
     </div>
-    {% endif %}
     <p class="nav-foot">本机 {{ root }}</p>
   </aside>
   <main class="main">

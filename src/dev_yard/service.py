@@ -21,7 +21,8 @@ REQ_SKELETON = """# {key}
 GRILL_SKELETON = """# Grill — {key}
 
 Work in this directory. Read REQUIREMENT.md and source clones on `default_base`.
-Record Q/A and decisions here. Do not implement in requirement worktrees until freeze.
+Record Q/A and decisions here. Settled terms go in `reqs/CONTEXT.md`; ADRs in `reqs/docs/adr/`.
+Do not copy those into business repos. Do not implement in requirement worktrees until freeze.
 """
 
 SPEC_SKELETON = """# Spec — {key}
@@ -50,7 +51,7 @@ def init_yard(root: Path) -> None:
     if not yml.exists():
         yml.write_text("repos: {}\n")
     gi = root / ".gitignore"
-    extra = [".repos/", ".yard-worktrees/", "reqs/", ".env"]
+    extra = [".repos/", ".yard-worktrees/", "reqs/", ".env", "repos.yaml"]
     existing = gi.read_text() if gi.exists() else ""
     lines = existing.splitlines()
     for line in extra:
@@ -352,7 +353,14 @@ def launch_skill(
     req = paths.req_dir(root, jira)
     if not req.exists():
         raise FileNotFoundError(f"missing {req}; run: dev-yard req open {jira}")
-    extra = [req / "REQUIREMENT.md", req / "GRILL.md", req / "SPEC.md", req / "TICKETS.md"]
+    extra = [
+        req / "REQUIREMENT.md",
+        req / "GRILL.md",
+        req / "SPEC.md",
+        req / "TICKETS.md",
+        paths.context_md(root),
+        paths.adr_dir(root),
+    ]
     bases = ""
     if name in {"grill", "spec", "tickets"} and not dry_run:
         mapping = ensure_on_default_base(root)
@@ -567,8 +575,7 @@ def status_text(root: Path, jira: str | None) -> str:
     if jira:
         keys = [jira]
     else:
-        rd = paths.reqs_dir(root)
-        keys = [p.name for p in rd.iterdir() if p.is_dir()] if rd.exists() else []
+        keys = [p.name for p in paths.iter_req_dirs(root)]
     lines: list[str] = []
     for key in sorted(keys):
         data = st.load(root, key)

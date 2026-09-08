@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 from typing import Any
@@ -7,7 +8,7 @@ from urllib.parse import quote
 
 import markdown
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -23,7 +24,7 @@ from dev_yard.web.board import (
     requirement_detail,
     save_doc,
 )
-from dev_yard.web.jobs import JobRunner
+from dev_yard.web.jobs import BoardSse, JobRunner, JobSse
 from dev_yard.web.sanitize import sanitize_html
 
 HERE = Path(__file__).parent
@@ -85,6 +86,8 @@ def render_markdown(text: str, jira: str) -> str:
 def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool = False) -> FastAPI:
     root = root.resolve()
     jobs = job_runner or JobRunner(root, sync=sync_jobs)
+    if not jobs.sync:
+        jobs.resume_pending_grills()
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     templates.env.globals["step_labels"] = STEP_LABELS
     templates.env.globals["action_labels"] = ACTION_LABELS
@@ -99,12 +102,11 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
     def base(request: Request, **extra):
-        running = [j.snapshot() for j in jobs.running()]
         ctx = {
             "request": request,
             "root": str(root),
             "root_name": root.name,
-            "running_jobs": running,
+            "running_jobs": jobs.running_brief(),
         }
         ctx.update(extra)
         return ctx
@@ -302,12 +304,68 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
             ],
         }
 
+    @app.get("/api/jobs")
+    def api_jobs():
+        return jobs.running_brief()
+
+    @app.get("/api/jobs/events")
+    async def api_jobs_events():
+        async def gen():
+            sse = BoardSse(jobs)
+            seq = jobs.board_seq()
+            while True:
+                frames, _seq = sse.poll()
+                for frame in frames:
+                    yield frame
+                new_seq = await asyncio.to_thread(jobs.wait_board, seq, 5.0)
+                if new_seq <= seq:
+                    yield ": ping\n\n"
+                seq = new_seq
+
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     @app.get("/api/jobs/{job_id}")
     def api_job(job_id: str):
         job = jobs.get(job_id)
         if job is None:
             raise HTTPException(404, "unknown job")
         return job.snapshot()
+
+    @app.get("/api/jobs/{job_id}/events")
+    async def api_job_events(job_id: str):
+        job = jobs.get(job_id)
+        if job is None:
+            raise HTTPException(404, "unknown job")
+
+        async def gen():
+            sse = JobSse(job)
+            while True:
+                frames, done, seq = sse.poll()
+                for frame in frames:
+                    yield frame
+                if done:
+                    return
+                new_seq = await asyncio.to_thread(job.wait_seq, seq, 5.0)
+                if new_seq <= seq:
+                    yield ": ping\n\n"
+
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.post("/api/jobs/{job_id}/answers")
     def api_job_answers(job_id: str, payload: GrillAnswersIn):
@@ -355,4 +413,6 @@ def serve(
     url = f"http://{host}:{port}"
     if open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    # SSE 连接是无限循环，优雅关闭时会一直"Waiting for connections to close"；
+    # 设一个上限，超时后 uvicorn 会强制取消在途任务。
+    uvicorn.run(app, host=host, port=port, log_level="info", timeout_graceful_shutdown=3)

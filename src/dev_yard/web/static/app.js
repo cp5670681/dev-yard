@@ -1,4 +1,47 @@
 (function () {
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  function renderNavJobs(items) {
+    const host = document.querySelector("[data-nav-jobs]");
+    const list = host && host.querySelector("[data-nav-job-list]");
+    if (!host || !list) return;
+    if (!items.length) {
+      host.hidden = true;
+      list.replaceChildren();
+      return;
+    }
+    host.hidden = false;
+    const frag = document.createDocumentFragment();
+    items.forEach(function (j) {
+      const waiting = j.state === "waiting";
+      const a = el("a", waiting ? "is-waiting" : "");
+      if (j.action === "repo_add") {
+        a.href = "/repos?job=" + encodeURIComponent(j.id);
+        a.textContent = "仓库 · clone";
+      } else {
+        a.href = "/r/" + encodeURIComponent(j.jira) + "?job=" + encodeURIComponent(j.id);
+        a.appendChild(document.createTextNode(j.jira + " · " + j.action));
+        if (waiting) {
+          const dot = el("span", "nav-dot");
+          dot.setAttribute("aria-label", "需要确认");
+          a.appendChild(dot);
+        }
+      }
+      frag.appendChild(a);
+    });
+    list.replaceChildren(frag);
+  }
+
+  const navEs = new EventSource("/api/jobs/events");
+  navEs.addEventListener("jobs", function (e) {
+    renderNavJobs(JSON.parse(e.data));
+  });
+
   const jobId = document.body.getAttribute("data-job");
   if (!jobId) return;
   const logEl = document.querySelector("[data-job-log]");
@@ -7,13 +50,6 @@
   const hintEl = document.querySelector("[data-job-hint]");
   const started = Date.now();
   let formKey = "";
-
-  function el(tag, className, text) {
-    const node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text != null) node.textContent = text;
-    return node;
-  }
 
   function collectAnswers(form, questions) {
     return questions.map(function (q) {
@@ -124,21 +160,30 @@
       }
       formHost.hidden = true;
       formKey = "";
-      tick();
     });
     formHost.appendChild(form);
   }
 
-  async function tick() {
-    const res = await fetch("/api/jobs/" + encodeURIComponent(jobId));
-    if (!res.ok) return;
-    const job = await res.json();
-    if (logEl) logEl.textContent = job.log || "";
+  function updatePct(text) {
     const pctEl = document.querySelector("[data-job-pct]");
-    const pcts = [...(job.log || "").matchAll(/(\d+)\s*%/g)];
-    if (pctEl && pcts.length) {
-      pctEl.style.width = pcts[pcts.length - 1][1] + "%";
+    if (!pctEl) return;
+    const pcts = [...(text || "").matchAll(/(\d+)\s*%/g)];
+    if (pcts.length) pctEl.style.width = pcts[pcts.length - 1][1] + "%";
+  }
+
+  function applyLog(text, replace) {
+    if (!logEl) return;
+    if (replace) {
+      logEl.textContent = text || "";
+      updatePct(text || "");
+    } else if (text) {
+      logEl.textContent += text;
+      updatePct(text);
     }
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function applyState(job) {
     if (stateEl) {
       stateEl.textContent = job.state;
       stateEl.className = "pill job-" + job.state;
@@ -151,19 +196,41 @@
         hintEl.textContent = "正在生成本轮问题…";
       }
     }
-    if (logEl) logEl.scrollTop = logEl.scrollHeight;
-    if (job.state === "ok") {
-      const url = new URL(window.location.href);
-      url.searchParams.delete("job");
-      url.searchParams.set("ok", "1");
-      const next = url.pathname + "?" + url.searchParams.toString();
-      const here = window.location.pathname + window.location.search;
-      if (here !== next) window.location.replace(next);
-      return;
-    }
-    if (job.state === "error" || job.state === "waiting") return;
-    if (Date.now() - started > 6 * 60 * 60 * 1000) return;
-    setTimeout(tick, 1000);
   }
-  tick();
+
+  function goOk() {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("job");
+    url.searchParams.set("ok", "1");
+    const next = url.pathname + "?" + url.searchParams.toString();
+    const here = window.location.pathname + window.location.search;
+    if (here !== next) window.location.replace(next);
+  }
+
+  function finish(job) {
+    es.close();
+    applyState(job);
+    if (job.log != null) applyLog(job.log, true);
+    if (job.state === "ok") goOk();
+  }
+
+  const es = new EventSource("/api/jobs/" + encodeURIComponent(jobId) + "/events");
+  es.addEventListener("snapshot", function (e) {
+    const job = JSON.parse(e.data);
+    applyLog(job.log || "", true);
+    applyState(job);
+    if (job.state === "ok" || job.state === "error") finish(job);
+  });
+  es.addEventListener("log", function (e) {
+    applyLog(JSON.parse(e.data), false);
+  });
+  es.addEventListener("state", function (e) {
+    applyState(JSON.parse(e.data));
+  });
+  es.addEventListener("done", function (e) {
+    finish(JSON.parse(e.data));
+  });
+  es.onerror = function () {
+    if (Date.now() - started > 6 * 60 * 60 * 1000) es.close();
+  };
 })();

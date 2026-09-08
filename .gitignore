@@ -1,4 +1,5 @@
 .env
+repos.yaml
 .venv/
 __pycache__/
 *.py[cod]

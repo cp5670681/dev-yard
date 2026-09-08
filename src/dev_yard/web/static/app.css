@@ -81,7 +81,26 @@ h2 { font-size: 1.05rem; margin: 0 0 0.8rem; }
   text-decoration: none;
 }
 .nav-jobs p { margin: 0 0 0.4rem; color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; }
-.nav-jobs a { display: block; font-size: 0.85rem; margin-bottom: 0.3rem; }
+.nav-jobs a {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.85rem;
+  margin-bottom: 0.3rem;
+  color: var(--text);
+  text-decoration: none;
+}
+.nav-jobs a:hover { text-decoration: none; color: var(--accent); }
+.nav-jobs a.is-waiting { color: var(--text); }
+.nav-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--bad);
+  margin-left: auto;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 22%, transparent);
+}
 .nav-foot { margin-top: auto; color: var(--muted); font-size: 0.7rem; word-break: break-all; }
 
 .main { padding: 1.6rem 2rem 3rem; max-width: 1400px; }
@@ -384,7 +403,8 @@ h2 { font-size: 1.05rem; margin: 0 0 0.8rem; }
 @media (max-width: 960px) {
   body { grid-template-columns: 1fr; }
   .nav { position: relative; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; }
-  .nav-foot, .nav-jobs { display: none; }
+  .nav-jobs { flex: 1 1 100%; }
+  .nav-foot { display: none; }
   .board { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
   .grid-2 { grid-template-columns: 1fr; }
   .main { padding: 1rem; }

@@ -14,9 +14,17 @@ def test_freeze_creates_worktree(tmp_path: Path, git_src: Path, monkeypatch):
     (d / "TICKETS.md").write_text(
         "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n"
     )
+    (yard / "reqs" / "CONTEXT.md").write_text("# glossary\n")
+    adr = yard / "reqs" / "docs" / "adr"
+    adr.mkdir(parents=True)
+    (adr / "0001-test.md").write_text("# adr\n")
     wts = req_freeze(yard, "AB-9")
     assert wts[0].exists()
     assert (wts[0] / "README").exists()
+    assert not (wts[0] / "CONTEXT.md").exists()
+    assert not (wts[0] / "docs" / "adr" / "0001-test.md").exists()
+    assert (yard / "reqs" / "CONTEXT.md").read_text() == "# glossary\n"
+    assert (adr / "0001-test.md").read_text() == "# adr\n"
 
 
 def test_freeze_coerces_list_tickets_in_status(tmp_path: Path, git_src: Path, monkeypatch):

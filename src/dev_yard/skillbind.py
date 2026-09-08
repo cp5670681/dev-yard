@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from dev_yard import paths
+
 SKILL_NAMES = {
     "open": "fetch-requirement",
     "grill": "grill-with-docs",
@@ -37,16 +39,27 @@ def load_skill(root: Path, name: str) -> str:
 
 STAGE_WRITE = {
     "open": "Write REQUIREMENT.md and optional assets/ for this Jira only.",
-    "grill": "Write only GRILL.md (and CONTEXT.md / docs/adr if a term or ADR is settled). Do not write SPEC.md or TICKETS.md.",
+    "grill": (
+        "Write only reqs/<JIRA>/GRILL.md. If a term or ADR is settled, write "
+        "reqs/CONTEXT.md and reqs/docs/adr/ (shared across Jiras). "
+        "Do not write workspace-root CONTEXT.md or docs/adr. "
+        "Do not copy them into source clones or freeze worktrees. "
+        "Do not write SPEC.md or TICKETS.md."
+    ),
     "spec": "Write only SPEC.md from GRILL.md. Do not interview. Do not write TICKETS.md.",
     "tickets": "Write only TICKETS.md from SPEC.md.",
-    "implement": "Write code in the current worktree only.",
+    "implement": (
+        "Write code in the current worktree only. "
+        "Do not add CONTEXT.md or docs/adr to the business repo."
+    ),
     "review": "Do not implement; report Standards and Spec axes.",
 }
 
 
 def session_prompt(root: Path, name: str, jira: str, extra: str = "") -> str:
-    req = root / "reqs" / jira
+    req = paths.req_dir(root, jira)
+    ctx = paths.context_md(root)
+    adr = paths.adr_dir(root)
     entry = SKILL_NAMES.get(name, name)
     stage = STAGE_WRITE.get(name, "")
     if name == "open":
@@ -57,7 +70,10 @@ def session_prompt(root: Path, name: str, jira: str, extra: str = "") -> str:
         )
     else:
         start_file = req / ("SPEC.md" if name == "review" else "REQUIREMENT.md")
-        start = f"Read files with the read tool as needed, starting with {start_file}."
+        start = (
+            f"Read files with the read tool as needed, starting with {start_file}. "
+            f"Shared glossary: `{ctx}`. ADRs: `{adr}`."
+        )
     return (
         f"Run skill `{entry}` (already loaded via --skill) for {jira}.\n"
         f"Req dir: {req}\n"

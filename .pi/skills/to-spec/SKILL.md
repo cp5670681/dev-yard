@@ -7,7 +7,7 @@ description: >
 
 # to-spec（dev-yard）
 
-**不要访谈。** 综合当前对话、`GRILL.md`、`CONTEXT.md`、ADR。不要发到 GitHub/Jira，**只写** `reqs/<JIRA>/SPEC.md`。不要跑 `/setup-matt-pocock-skills`。
+**不要访谈。** 综合当前对话、`GRILL.md`、`reqs/CONTEXT.md`、`reqs/docs/adr/`。不要发到 GitHub/Jira，**只写** `reqs/<JIRA>/SPEC.md`。不要跑 `/setup-matt-pocock-skills`。
 
 ## 定位
 

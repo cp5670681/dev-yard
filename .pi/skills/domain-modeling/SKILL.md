@@ -7,6 +7,18 @@ description: Build and sharpen a project's domain model. Use when discussing cod
 
 Actively build and sharpen the project's domain model as you design. This is the *active* discipline — challenging terms, inventing edge-case scenarios, and writing the glossary and decisions down the moment they crystallise. (Merely *reading* `CONTEXT.md` for vocabulary is not this skill — that's a one-line habit any skill can do. This skill is for when you're changing the model, not just consuming it.)
 
+## Yard I/O
+
+This copy runs inside **dev-yard**. Remap the tree below; do not write the workspace root or any business repo.
+
+| Primitive | Yard |
+|-----------|------|
+| `CONTEXT.md` at repo root | `reqs/CONTEXT.md` (shared across Jiras) |
+| `docs/adr/` at repo root | `reqs/docs/adr/` |
+| `CONTEXT-MAP.md` at repo root | `reqs/CONTEXT-MAP.md` |
+
+Create these lazily under `reqs/`. Freeze does **not** copy them into worktrees. They stay gitignored local working language.
+
 ## File structure
 
 Most repos have a single context:
