@@ -1,5 +1,7 @@
-def main():
-    print("Hello from dev-yard!")
+def main() -> None:
+    from dev_yard.cli import app
+
+    app()
 
 
 if __name__ == "__main__":

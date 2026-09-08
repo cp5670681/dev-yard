@@ -1,11 +1,12 @@
-# Python-generated files
+.venv/
 __pycache__/
-*.py[oc]
-build/
+*.py[cod]
+.pytest_cache/
+.repos/
+.yard-worktrees/
+reqs/*/worktrees/
 dist/
-wheels/
-*.egg-info
+*.egg-info/
+uv.lock
 
-# Virtual environments
-.venv
 .omc
