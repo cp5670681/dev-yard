@@ -3,10 +3,26 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
 from dev_yard import paths
+
+
+def git_project_name(url: str) -> str:
+    """Last path segment of a git URL or local path, without `.git`."""
+    raw = (url or "").strip()
+    if "://" not in raw and ":" in raw:
+        path = raw.split(":", 1)[1]
+    else:
+        path = urlparse(raw).path or raw
+    name = Path(path.rstrip("/")).name
+    if name.endswith(".git"):
+        name = name[: -len(".git")]
+    if not name or name in {".", ".."}:
+        raise ValueError(f"cannot derive alias from url {url!r}")
+    return name
 
 
 @dataclass

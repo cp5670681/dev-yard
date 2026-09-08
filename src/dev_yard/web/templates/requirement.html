@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}{{ jira }} · dev-yard{% endblock %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <p class="crumb"><a href="/">需求</a> / {{ jira }}</p>
+    <h1>{{ jira }}</h1>
+    {% if detail %}
+    <p class="lede">phase={{ detail.phase }} · 下一步 {{ detail.next_label }}{% if detail.contract %} · 契约 {{ detail.contract }}{% endif %}</p>
+    {% else %}
+    <p class="lede">目录还没写完，任务在跑。</p>
+    {% endif %}
+  </div>
+</header>
+
+{% if job %}
+<section class="job" data-job-panel>
+  <div class="job-head">
+    <strong>{{ job.action }}</strong>
+    <span class="pill" data-job-state>{{ job.state }}</span>
+  </div>
+  <pre class="log" data-job-log>{{ job.log }}</pre>
+  <p class="hint">抽取 / Grill / Spec / Tickets / Implement / Review 在网页里用 <code>pi -p</code> 一次性跑完。要对齐访谈，请在仓库根执行 <code>dev-yard {{ job.action }} {{ jira }}</code>。</p>
+</section>
+{% endif %}
+
+{% if detail %}
+<ol class="pipeline">
+  {% for step in detail.steps %}
+  <li class="{% if step.done %}done{% endif %} {% if step.current %}current{% endif %}">
+    <span class="n">{{ loop.index }}</span>
+    {{ step_labels[step.id] }}
+  </li>
+  {% endfor %}
+</ol>
+
+<section class="actions">
+  {% for a in detail.actions %}
+  <form method="post" action="/r/{{ jira }}/actions/{{ a.id }}"{% if a.id == 'open' %} class="action-open"{% endif %}>
+    {% if a.id == 'open' and detail.phase != 'open' %}
+    <label class="check force-open">
+      <input type="checkbox" name="force" value="1">
+      重置阶段（会删截图）
+    </label>
+    {% endif %}
+    <button class="btn {% if a.id == detail.next_label %}primary{% endif %}" type="submit" {% if not a.enabled %}disabled title="{{ a.reason }}"{% endif %}>{{ a.label }}</button>
+  </form>
+  {% endfor %}
+</section>
+
+<nav class="tabs">
+  <a class="on" href="/r/{{ jira }}">看板</a>
+  {% for d in detail.docs %}
+  <a href="/r/{{ jira }}/docs/{{ d.slug }}">{{ d.filename }}{% if not d.filled %} · 骨架{% endif %}</a>
+  {% endfor %}
+</nav>
+
+{% set columns = ["pending", "ready", "implementing", "implemented", "reviewing", "blocked", "done"] %}
+<section class="board">
+  {% for col in columns %}
+  <div class="col">
+    <header>
+      <span class="dot state-{{ col }}"></span>
+      {{ col }}
+      <em>{{ detail.tickets | selectattr("state", "equalto", col) | list | length }}</em>
+    </header>
+    {% for t in detail.tickets if t.state == col %}
+    <article class="ticket">
+      <div class="ticket-id">{{ t.id }}{% if t.parallel %} · parallel{% endif %}</div>
+      <h3>{{ t.title or t.id }}</h3>
+      <p class="meta">{{ t.repo }}{% if t.depends_on %} · 依赖 {{ t.depends_on | join(", ") }}{% endif %}</p>
+      {% if t.last_summary %}
+      <p class="summary">{{ t.last_summary[:240] }}</p>
+      {% endif %}
+      <div class="ticket-actions">
+        <form method="post" action="/r/{{ jira }}/actions/implement">
+          <input type="hidden" name="ticket_id" value="{{ t.id }}">
+          <button class="btn tiny" type="submit" {% if not t.can_implement %}disabled{% endif %}>实现</button>
+        </form>
+        <form method="post" action="/r/{{ jira }}/actions/review">
+          <input type="hidden" name="ticket_id" value="{{ t.id }}">
+          <button class="btn tiny" type="submit" {% if not t.can_review %}disabled{% endif %}>审查</button>
+        </form>
+      </div>
+    </article>
+    {% else %}
+    <p class="col-empty">—</p>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</section>
+
+{% if detail.assets %}
+<section class="panel">
+  <h2>截图</h2>
+  <div class="gallery">
+    {% for name in detail.assets %}
+    <a href="/r/{{ jira }}/assets/{{ name }}" target="_blank" rel="noopener">
+      <img src="/r/{{ jira }}/assets/{{ name }}" alt="{{ name }}">
+      <span>{{ name }}</span>
+    </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if detail.worktrees %}
+<section class="panel">
+  <h2>Worktrees</h2>
+  <ul class="paths">
+    {% for p in detail.worktrees %}
+    <li><code>{{ p }}</code></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% if detail.contract_summary %}
+<section class="panel">
+  <h2>契约审查摘要</h2>
+  <pre class="log">{{ detail.contract_summary }}</pre>
+</section>
+{% endif %}
+
+{% endif %}
+{% endblock %}

@@ -1,11 +1,50 @@
 from __future__ import annotations
 
+import os
+import re
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
+
+Progress = Callable[[str], None]
 
 
 class GitError(RuntimeError):
     pass
+
+
+_PROGRESS_RE = re.compile(
+    r"^(?:remote: )?(?:"
+    r"Counting objects|Compressing objects|Receiving objects|Resolving deltas|"
+    r"Enumerating objects|Writing objects|Total \d+"
+    r")\b",
+    re.I,
+)
+
+
+def is_git_progress(line: str) -> bool:
+    return bool(_PROGRESS_RE.match(line.strip()))
+
+
+def git_failure_message(lines: list[str], args: list[str]) -> str:
+    useful = [ln for ln in lines if ln.strip() and not is_git_progress(ln)]
+    blob = "\n".join(useful if useful else lines).strip()
+    return blob or " ".join(args)
+
+
+def drain_git_output(buf: bytes, on_progress: Progress) -> bytes:
+    """Emit CR/LF-delimited git progress lines; return an incomplete tail."""
+    while True:
+        i_n = buf.find(b"\n")
+        i_r = buf.find(b"\r")
+        cuts = [i for i in (i_n, i_r) if i >= 0]
+        if not cuts:
+            return buf
+        i = min(cuts)
+        line = buf[:i].decode("utf-8", "replace").strip()
+        buf = buf[i + 1 :]
+        if line:
+            on_progress(line)
 
 
 def run(args: list[str], cwd: Path | None = None) -> str:
@@ -15,16 +54,56 @@ def run(args: list[str], cwd: Path | None = None) -> str:
     return r.stdout.strip()
 
 
-def ensure_clone(url: str, dest: Path) -> None:
+def _run_progress(args: list[str], on_progress: Progress, cwd: Path | None = None) -> None:
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    proc = subprocess.Popen(
+        args,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=0,
+        env=env,
+    )
+    assert proc.stdout is not None
+    buf = b""
+    lines: list[str] = []
+
+    def captured(line: str) -> None:
+        lines.append(line)
+        on_progress(line)
+
+    while True:
+        chunk = proc.stdout.read(256)
+        if not chunk:
+            break
+        buf = drain_git_output(buf + chunk, captured)
+    if buf.strip():
+        captured(buf.decode("utf-8", "replace").strip())
+    code = proc.wait()
+    if code != 0:
+        raise GitError(git_failure_message(lines, args))
+
+
+def ensure_clone(url: str, dest: Path, on_progress: Progress | None = None) -> None:
     if dest.exists() and (dest / ".git").exists():
-        fetch(dest)
+        fetch(dest, on_progress=on_progress)
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
-    run(["git", "clone", url, str(dest)])
+    argv = ["git", "clone", "--progress", url, str(dest)]
+    if on_progress is None:
+        run(["git", "clone", url, str(dest)])
+        return
+    on_progress(f"git clone {url} -> {dest}")
+    _run_progress(argv, on_progress)
 
 
-def fetch(source: Path) -> None:
-    run(["git", "fetch", "--all", "--prune"], cwd=source)
+def fetch(source: Path, on_progress: Progress | None = None) -> None:
+    if on_progress is None:
+        run(["git", "fetch", "--all", "--prune"], cwd=source)
+        return
+    on_progress(f"git fetch {source}")
+    _run_progress(["git", "fetch", "--all", "--prune", "--progress"], on_progress, cwd=source)
 
 
 def start_point(source: Path, default_base: str) -> str:

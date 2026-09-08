@@ -4,17 +4,15 @@ CLI 入口是 `dev-yard`（或 `devyard`），不要用 `yard`（会撞上 Ruby 
 
 ## 运行时
 
-| 命令 | 运行时 |
-|------|--------|
-| `dev-yard req open` | **Claude Code**（本机已配的 Atlassian MCP：Jira + Confluence） |
-| `dev-yard grill/spec/tickets/implement/review` | **pi** + `.pi/skills/` |
+全程 **pi** + `.pi/skills/`。`dev-yard req open` 走本机 `mcp-atlassian-pro`（Jira + Confluence），只抽**当前这条 Jira** 的产品说明，不要整本历史 Confluence。
 
-`req open` 只抽**当前这条 Jira 的产品说明**，不要整本历史 Confluence。其它阶段不要用 Claude 当默认 agent。
+`dev-yard web` 是本机控制台（FastAPI），套同一套 `service`；agent 阶段走 `pi -p`。
 
 ## 路由（pi）
 
 | 命令 | 技能 |
 |------|------|
+| `dev-yard req open` | fetch-requirement |
 | `dev-yard grill` | grill-with-docs + grilling + domain-modeling |
 | `dev-yard spec` | to-spec |
 | `dev-yard tickets` | to-tickets |

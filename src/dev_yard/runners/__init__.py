@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,14 +29,18 @@ def agent_binary() -> str:
 # pi leaves grep/find/ls off unless listed.
 # grill/spec/tickets write docs only; git on source clones is the CLI's job.
 # review is read-only — CLI injects the diff, no bash.
+# open needs mcp (Atlassian) and bash to save screenshot files from attachment URLs.
 _REVIEW_TOOLS = "read,grep,find,ls"
 _DOC_TOOLS = "read,grep,find,ls,edit,write"
+_OPEN_TOOLS = "read,bash,grep,find,ls,edit,write,mcp"
 _IMPLEMENT_TOOLS = "read,bash,grep,find,ls,edit,write"
 
 
 def _tools_for(bundle: str) -> str:
     if bundle == "review":
         return _REVIEW_TOOLS
+    if bundle == "open":
+        return _OPEN_TOOLS
     if bundle in {"grill", "spec", "tickets"}:
         return _DOC_TOOLS
     return _IMPLEMENT_TOOLS
@@ -98,14 +103,27 @@ class PiRunner(Runner):
             binary=self.binary,
         )
         if self.print_mode:
-            r = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
-            raw = (r.stdout or r.stderr or "")
-            blocked = r.returncode != 0 or "REVIEW_FAILED" in raw
+            proc = subprocess.Popen(
+                argv,
+                cwd=cwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            chunks: list[str] = []
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                chunks.append(line)
+                sys.stdout.write(line)
+                sys.stdout.flush()
+            code = proc.wait()
+            raw = "".join(chunks)
+            blocked = code != 0 or "REVIEW_FAILED" in raw
             summary = raw.strip()[:4000]
             return RunResult(
                 ok=not blocked,
                 summary=summary,
-                exit_code=r.returncode if r.returncode else (1 if blocked else 0),
+                exit_code=code if code else (1 if blocked else 0),
             )
         r = subprocess.run(argv, cwd=cwd)
         return RunResult(

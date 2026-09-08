@@ -12,3 +12,4 @@ uv.lock
 
 .omc
 reqs
+.playwright-cli/

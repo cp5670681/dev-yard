@@ -53,6 +53,29 @@ def test_pi_argv_binds_skills(monkeypatch):
     assert "bash" not in tools
 
 
+def test_pi_argv_open_includes_mcp(monkeypatch):
+    monkeypatch.delenv("YARD_PI_PROVIDER", raising=False)
+    monkeypatch.delenv("YARD_PI_MODEL", raising=False)
+    root = Path(__file__).resolve().parents[1]
+    argv = pi_argv(root=root, bundle="open", prompt="go", print_mode=True, binary="pi")
+    assert "-p" in argv
+    tools = argv[argv.index("--tools") + 1]
+    assert "mcp" in tools
+    assert "edit" in tools
+    assert "bash" in tools
+    joined = " ".join(argv)
+    assert "fetch-requirement" in joined
+
+
+def test_open_prompt_uses_mcp():
+    p = session_prompt(Path("/tmp"), "open", "AB-1")
+    assert "AB-1" in p
+    assert "fetch-requirement" in p
+    assert "mcp-atlassian-pro" in p
+    assert "jira_get_issue" in p
+    assert "REQUIREMENT.md" in p
+
+
 def test_pi_argv_print_mode(monkeypatch):
     monkeypatch.delenv("YARD_PI_PROVIDER", raising=False)
     monkeypatch.delenv("YARD_PI_MODEL", raising=False)

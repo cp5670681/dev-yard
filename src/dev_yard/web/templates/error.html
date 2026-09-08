@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ status }} · dev-yard{% endblock %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <h1>{{ status }}</h1>
+    <p class="lede">{{ detail }}</p>
+  </div>
+  <a class="btn" href="/">回到看板</a>
+</header>
+{% endblock %}

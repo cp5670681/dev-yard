@@ -3,7 +3,23 @@ from pathlib import Path
 import pytest
 
 from dev_yard import status as st
-from dev_yard.service import init_yard, req_open
+from dev_yard.runners import RunResult, Runner
+from dev_yard.service import REQ_SKELETON, init_yard, req_open
+
+
+class _OkEmpty(Runner):
+    def start(self, prompt: str, cwd: Path, extra_read_paths: list[Path]) -> RunResult:
+        return RunResult(ok=True, summary="pi exit 0", exit_code=0)
+
+
+class _OkWrites(Runner):
+    def __init__(self, dest: Path, jira: str) -> None:
+        self.dest = dest
+        self.jira = jira
+
+    def start(self, prompt: str, cwd: Path, extra_read_paths: list[Path]) -> RunResult:
+        (self.dest / "REQUIREMENT.md").write_text(f"# {self.jira}\n\nfrom pi\n")
+        return RunResult(ok=True, summary="fetched", exit_code=0)
 
 
 def test_init_and_open(tmp_path: Path, monkeypatch):
@@ -31,9 +47,10 @@ def test_init_and_open(tmp_path: Path, monkeypatch):
 
 def test_dry_run_does_not_write(tmp_path: Path):
     init_yard(tmp_path)
-    d, warning = req_open(tmp_path, "ABC-2", source="claude", dry_run=True)
-    assert "claude" in warning
-    assert "(stdin prompt)" in warning
+    d, warning = req_open(tmp_path, "ABC-2", source="pi", dry_run=True)
+    assert "pi" in warning
+    assert "-p" in warning
+    assert "mcp" in warning
     assert not d.exists()
     assert not (tmp_path / "reqs" / "ABC-2" / "STATUS.yaml").exists()
 
@@ -59,13 +76,72 @@ def test_reopen_refuses_later_phase(tmp_path: Path, monkeypatch):
     assert st.load(tmp_path, "ABC-4")["phase"] == "open"
 
 
-def test_claude_missing_does_not_delete_assets(tmp_path: Path, monkeypatch):
+def test_pi_ok_without_requirement_raises(tmp_path: Path):
+    init_yard(tmp_path)
+    with pytest.raises(RuntimeError, match="did not write REQUIREMENT.md"):
+        req_open(tmp_path, "ABC-6", source="pi", runner=_OkEmpty())
+    assert (tmp_path / "reqs" / "ABC-6" / "REQUIREMENT.md").exists()
+
+
+def test_pi_leaving_skeleton_raises(tmp_path: Path):
+    init_yard(tmp_path)
+    d = tmp_path / "reqs" / "ABC-7"
+    d.mkdir(parents=True)
+    (d / "REQUIREMENT.md").write_text(REQ_SKELETON.format(key="ABC-7", title="ABC-7", body=""))
+    with pytest.raises(RuntimeError, match="did not write REQUIREMENT.md"):
+        req_open(tmp_path, "ABC-7", source="pi", runner=_OkEmpty())
+
+
+def test_pi_missing_does_not_delete_assets(tmp_path: Path, monkeypatch):
     init_yard(tmp_path)
     d = tmp_path / "reqs" / "ABC-5"
     assets = d / "assets"
     assets.mkdir(parents=True)
     (assets / "shot.png").write_text("img")
-    monkeypatch.setenv("YARD_CLAUDE", "/definitely/missing-claude")
-    with pytest.raises(FileNotFoundError, match="claude not found"):
-        req_open(tmp_path, "ABC-5", source="claude")
+    monkeypatch.setenv("YARD_PI", "/definitely/missing-pi")
+    with pytest.raises(FileNotFoundError, match="pi not found"):
+        req_open(tmp_path, "ABC-5", source="pi")
     assert (assets / "shot.png").exists()
+
+
+def test_injected_missing_pi_runner_does_not_delete_assets(tmp_path: Path):
+    init_yard(tmp_path)
+    d = tmp_path / "reqs" / "ABC-5b"
+    assets = d / "assets"
+    assets.mkdir(parents=True)
+    (assets / "shot.png").write_text("img")
+
+    class Missing(Runner):
+        def start(self, prompt, cwd, extra_read_paths):
+            return RunResult(ok=False, summary="pi not found (`/nope`).", exit_code=127)
+
+    with pytest.raises(RuntimeError, match="pi not found"):
+        req_open(tmp_path, "ABC-5b", source="pi", runner=Missing())
+    assert (assets / "shot.png").read_text() == "img"
+
+
+def test_pi_fetch_writes_requirement(tmp_path: Path):
+    init_yard(tmp_path)
+    dest = tmp_path / "reqs" / "ABC-8"
+    d, warning = req_open(
+        tmp_path, "ABC-8", source="pi", runner=_OkWrites(dest, "ABC-8")
+    )
+    assert warning == ""
+    assert "from pi" in (d / "REQUIREMENT.md").read_text()
+    assert st.load(tmp_path, "ABC-8")["phase"] == "open"
+
+
+def test_pi_open_restores_other_docs(tmp_path: Path):
+    init_yard(tmp_path)
+    d, _ = req_open(tmp_path, "ABC-9", source="none")
+    grill_before = (d / "GRILL.md").read_text()
+
+    class Hijack(Runner):
+        def start(self, prompt, cwd, extra_read_paths):
+            (d / "GRILL.md").write_text("# hijacked\n")
+            (d / "REQUIREMENT.md").write_text("# ABC-9\n\nok\n")
+            return RunResult(ok=True, summary="ok", exit_code=0)
+
+    _, warning = req_open(tmp_path, "ABC-9", source="pi", force=True, runner=Hijack())
+    assert (d / "GRILL.md").read_text() == grill_before
+    assert "GRILL.md" in warning

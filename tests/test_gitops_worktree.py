@@ -3,7 +3,16 @@ from pathlib import Path
 
 import pytest
 
-from dev_yard.gitops import GitError, branch_delete, run, worktree_add, worktree_remove
+from dev_yard.gitops import (
+    GitError,
+    branch_delete,
+    drain_git_output,
+    ensure_clone,
+    git_failure_message,
+    run,
+    worktree_add,
+    worktree_remove,
+)
 
 
 def test_worktree_add_clears_empty_leftover(git_src: Path, tmp_path: Path):
@@ -60,3 +69,39 @@ def test_worktree_remove_prunes_missing_dir(git_src: Path, tmp_path: Path):
     assert (child / ".git").exists()
     worktree_remove(git_src, child)
     branch_delete(git_src, "req/AB-1/T1")
+
+
+def test_drain_git_output_splits_cr_and_lf():
+    lines: list[str] = []
+    leftover = drain_git_output(
+        b"Receiving objects:  10% (1/10)\rReceiving objects:  40% (4/10)\nResolving",
+        lines.append,
+    )
+    assert lines == [
+        "Receiving objects:  10% (1/10)",
+        "Receiving objects:  40% (4/10)",
+    ]
+    assert leftover == b"Resolving"
+
+
+def test_git_failure_message_prefers_fatal_over_progress():
+    msg = git_failure_message(
+        [
+            "Receiving objects:  40% (4/10)",
+            "fatal: remote hung up unexpectedly",
+            "Resolving deltas:  10% (1/10)",
+        ],
+        ["git", "clone", "x"],
+    )
+    assert "fatal: remote hung up unexpectedly" in msg
+    assert "40%" not in msg
+
+
+def test_clone_reports_progress(tmp_path: Path, git_src: Path):
+    dest = tmp_path / "cloned"
+    lines: list[str] = []
+    ensure_clone(str(git_src), dest, on_progress=lines.append)
+    assert (dest / ".git").exists()
+    blob = "\n".join(lines).lower()
+    assert "clone" in blob
+    assert str(dest) in "\n".join(lines)

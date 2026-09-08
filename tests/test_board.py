@@ -1,0 +1,108 @@
+from pathlib import Path
+
+from dev_yard.service import init_yard, repo_add, req_freeze, req_open
+from dev_yard.web.board import (
+    DOC_FILES,
+    available_actions,
+    list_requirements,
+    requirement_detail,
+    save_doc,
+)
+
+
+def _yard(tmp_path: Path) -> Path:
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    return yard
+
+
+def test_list_empty(tmp_path: Path):
+    yard = _yard(tmp_path)
+    assert list_requirements(yard) == []
+
+
+def test_list_and_detail_after_open(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _yard(tmp_path)
+    req_open(yard, "AB-1", source="none")
+    items = list_requirements(yard)
+    assert len(items) == 1
+    assert items[0].jira == "AB-1"
+    assert items[0].phase == "open"
+    assert items[0].next_label == "grill"
+
+    detail = requirement_detail(yard, "AB-1")
+    assert detail is not None
+    assert detail.phase == "open"
+    assert [d.filename for d in detail.docs] == list(DOC_FILES.values())
+    assert all(d.exists for d in detail.docs)
+    assert not any(d.filled for d in detail.docs)
+    assert detail.tickets == []
+    ids = {a.id: a for a in detail.actions}
+    assert ids["grill"].enabled
+    assert ids["spec"].enabled
+    assert not ids["freeze"].enabled
+    assert not ids["implement"].enabled
+    assert not ids["review"].enabled
+    assert not ids["contract"].enabled
+
+
+def test_tickets_enable_freeze(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _yard(tmp_path)
+    d, _ = req_open(yard, "AB-2", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: backend api\n- repo: backend\n- depends_on:\n- parallel: false\n\n"
+        "## T2: frontend\n- repo: frontend\n- depends_on: T1\n- parallel: false\n"
+    )
+    detail = requirement_detail(yard, "AB-2")
+    assert [t.id for t in detail.tickets] == ["T1", "T2"]
+    assert detail.tickets[0].title == "backend api"
+    assert detail.tickets[1].depends_on == ["T1"]
+    assert detail.next_label == "freeze"
+    ids = {a.id: a for a in available_actions(detail)}
+    assert ids["freeze"].enabled
+    assert not ids["implement"].enabled
+
+
+def test_frozen_ready_implement(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _yard(tmp_path)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-3", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    req_freeze(yard, "AB-3")
+    detail = requirement_detail(yard, "AB-3")
+    assert detail.phase == "frozen"
+    assert detail.next_label == "implement"
+    assert detail.tickets[0].state == "ready"
+    assert detail.tickets[0].can_implement
+    assert not detail.tickets[0].can_review
+    ids = {a.id: a for a in detail.actions}
+    assert ids["implement"].enabled
+    assert not ids["review"].enabled
+    assert ids["contract"].enabled
+    assert detail.worktrees
+
+
+def test_missing_requirement_is_none(tmp_path: Path):
+    yard = _yard(tmp_path)
+    assert requirement_detail(yard, "NO-1") is None
+
+
+def test_save_doc_roundtrip(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _yard(tmp_path)
+    req_open(yard, "AB-4", source="none")
+    save_doc(yard, "AB-4", "grill", "# Grill — AB-4\n\nQ: scope?\nA: this ticket only.\n")
+    detail = requirement_detail(yard, "AB-4")
+    grill = next(d for d in detail.docs if d.slug == "grill")
+    assert grill.filled
+    assert "this ticket only" in grill.text
+    assert detail.next_label == "spec"

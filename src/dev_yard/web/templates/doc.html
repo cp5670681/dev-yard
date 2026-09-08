@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}{{ doc.filename }} · {{ jira }}{% endblock %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <p class="crumb"><a href="/">需求</a> / <a href="/r/{{ jira }}">{{ jira }}</a> / {{ doc.filename }}</p>
+    <h1>{{ doc.filename }}</h1>
+    <p class="lede">{% if doc.filled %}已填写{% else %}还是骨架，可以让 agent 写，或在下面改{% endif %}</p>
+  </div>
+  <a class="btn" href="/r/{{ jira }}/docs/{{ doc.slug }}{% if not editing %}?edit=1{% endif %}">
+    {% if editing %}阅读{% else %}编辑{% endif %}
+  </a>
+</header>
+
+<nav class="tabs">
+  <a href="/r/{{ jira }}">看板</a>
+  {% for d in detail.docs %}
+  <a class="{% if d.slug == doc.slug %}on{% endif %}" href="/r/{{ jira }}/docs/{{ d.slug }}">{{ d.filename }}</a>
+  {% endfor %}
+</nav>
+
+{% if editing %}
+<form class="panel form" method="post" action="/r/{{ jira }}/docs/{{ doc.slug }}">
+  <textarea name="body" rows="28" spellcheck="false">{{ doc.text }}</textarea>
+  <button class="btn primary" type="submit">保存</button>
+</form>
+{% else %}
+<article class="panel markdown">
+  {% if doc.text %}
+  {{ rendered | safe }}
+  {% else %}
+  <p class="muted">空文件</p>
+  {% endif %}
+</article>
+{% endif %}
+{% endblock %}
