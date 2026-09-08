@@ -33,13 +33,26 @@ def load_skill(root: Path, name: str) -> str:
     return path.read_text()
 
 
+STAGE_WRITE = {
+    "grill": "Write only GRILL.md (and CONTEXT.md / docs/adr if a term or ADR is settled). Do not write SPEC.md or TICKETS.md.",
+    "spec": "Write only SPEC.md from GRILL.md. Do not interview. Do not write TICKETS.md.",
+    "tickets": "Write only TICKETS.md from SPEC.md.",
+    "implement": "Write code in the current worktree only.",
+    "review": "Do not implement; report Standards and Spec axes.",
+}
+
+
 def session_prompt(root: Path, name: str, jira: str, extra: str = "") -> str:
     req = root / "reqs" / jira
     entry = SKILL_NAMES.get(name, name)
+    stage = STAGE_WRITE.get(name, "")
+    start = req / ("SPEC.md" if name == "review" else "REQUIREMENT.md")
     return (
-        f"Execute the loaded skill `{entry}` for requirement {jira}.\n"
+        f"Run skill `{entry}` (already loaded via --skill) for {jira}.\n"
         f"Req dir: {req}\n"
-        f"Do not use a separate mattpocock plugin copy.\n"
+        f"Read files with the read tool as needed, starting with {start}.\n"
+        f"{stage}\n"
+        f"Do not dump historical Confluence. Do not use ~/.pi/agent/skills copies.\n"
         f"{extra}"
     ).strip()
 

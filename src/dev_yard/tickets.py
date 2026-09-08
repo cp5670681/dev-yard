@@ -14,7 +14,7 @@ class Ticket:
     parallel: bool = False
 
 
-HEADING = re.compile(r"^##\s+(\S+)(?:\s*:\s*(.*))?$")
+HEADING = re.compile(r"^##\s+(T\d+)(?:\s*:\s*(.*))?$")
 
 
 def parse_tickets(text: str) -> list[Ticket]:
@@ -49,7 +49,7 @@ def load_tickets(req_path: Path) -> list[Ticket]:
     p = req_path / "TICKETS.md"
     if not p.exists():
         return []
-    return parse_tickets(p.read_text())
+    return [t for t in parse_tickets(p.read_text()) if t.repo]
 
 
 def by_id(tickets: list[Ticket]) -> dict[str, Ticket]:

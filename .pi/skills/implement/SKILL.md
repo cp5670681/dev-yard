@@ -1,8 +1,8 @@
 ---
 name: implement
 description: >
-  按 yard 票在对应 worktree 里实现。Drive TDD then code-review.
-  Use when the user runs /implement, yard implement, 写需求, 实现票.
+  按 yard 票在对应 worktree 里实现。Drive TDD; stop at implemented.
+  Use when the user runs /implement, dev-yard implement, 写需求, 实现票.
 ---
 
 # implement（dev-yard）
@@ -21,4 +21,4 @@ description: >
 1. 确认当前目录是 `reqs/<JIRA>/worktrees/<alias>/` 或 `.yard-worktrees/<JIRA>/<alias>/<票id>/`，分支为 `req/<JIRA>` 或 `req/<JIRA>/<票id>`。
 2. 按 TDD 做完本票范围，跑该仓类型检查与相关测试。
 3. 提交到**当前分支**（不要推，不要开 PR）。
-4. 不要自己宣布完成：yard CLI 会再跑 code-review。若你在交互会话里单独被叫 implement，做完后接着执行 `.pi/skills/code-review/SKILL.md`，fixed point 用该仓 `default_base`（三方 diff `default_base...HEAD`），spec 用 `SPEC.md`。
+4. 停在实现完成。不要自己跑 code-review：CLI 只把票标成 `implemented`。提示用户下一步 `dev-yard review <JIRA>`。

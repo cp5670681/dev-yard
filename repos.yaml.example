@@ -1,0 +1,13 @@
+# Copy entries into repos.yaml, or use `dev-yard repo add`.
+# path: optional existing clone. grill/spec/tickets will NOT checkout it;
+# it must already be on default_base.
+repos:
+  backend:
+    url: git@host:team/backend.git
+    default_base: main
+    role: be
+    # path: /home/you/src/backend
+  frontend:
+    url: git@host:team/frontend.git
+    default_base: main
+    role: fe

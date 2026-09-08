@@ -13,23 +13,69 @@ def test_session_prompt_includes_jira(tmp_path: Path):
     p = session_prompt(tmp_path, "spec", "AB-1")
     assert "AB-1" in p
     assert "to-spec" in p
+    assert "Write only SPEC.md" in p
 
 
-def test_pi_argv_binds_skills():
-    root = Path("/home/chengpeng/pythonProjects/dev-yard")
+def test_grill_prompt_forbids_spec():
+    p = session_prompt(Path("/tmp"), "grill", "AB-1")
+    assert "Do not write SPEC.md" in p
+
+
+def test_pi_argv_implement_keeps_bash(monkeypatch):
+    monkeypatch.delenv("YARD_PI_PROVIDER", raising=False)
+    monkeypatch.delenv("YARD_PI_MODEL", raising=False)
+    root = Path(__file__).resolve().parents[1]
+    argv = pi_argv(root=root, bundle="implement", prompt="go", binary="pi")
+    tools = argv[argv.index("--tools") + 1]
+    assert "bash" in tools
+    assert "edit" in tools
+
+
+def test_pi_argv_binds_skills(monkeypatch):
+    monkeypatch.delenv("YARD_PI_PROVIDER", raising=False)
+    monkeypatch.delenv("YARD_PI_MODEL", raising=False)
+    root = Path(__file__).resolve().parents[1]
     argv = pi_argv(root=root, bundle="grill", prompt="go", binary="pi")
     assert argv[0] == "pi"
     assert "--approve" in argv
+    assert "--no-skills" in argv
     assert "--skill" in argv
-    assert "--append-system-prompt" in argv
+    assert "--append-system-prompt" not in argv
     joined = " ".join(argv)
     assert ".pi/skills" in joined
     assert "grill-with-docs" in joined
     assert "grilling" in joined
+    assert "@" not in joined
     assert argv[-1] == "go"
+    assert "--tools" in argv
+    tools = argv[argv.index("--tools") + 1]
+    assert "edit" in tools
+    assert "bash" not in tools
 
 
-def test_pi_argv_print_mode():
-    root = Path("/home/chengpeng/pythonProjects/dev-yard")
+def test_pi_argv_print_mode(monkeypatch):
+    monkeypatch.delenv("YARD_PI_PROVIDER", raising=False)
+    monkeypatch.delenv("YARD_PI_MODEL", raising=False)
+    root = Path(__file__).resolve().parents[1]
     argv = pi_argv(root=root, bundle="review", prompt="r", print_mode=True, binary="pi")
     assert "-p" in argv
+    tools = argv[argv.index("--tools") + 1]
+    assert "read" in tools
+    assert "grep" in tools
+    assert "edit" not in tools
+    assert "bash" not in tools
+
+
+def test_pi_argv_model_from_env(monkeypatch):
+    monkeypatch.setenv("YARD_PI_PROVIDER", "rcc")
+    monkeypatch.setenv("YARD_PI_MODEL", "MiniMax-M3")
+    root = Path(__file__).resolve().parents[1]
+    argv = pi_argv(root=root, bundle="review", prompt="r", binary="pi")
+    assert argv[argv.index("--provider") + 1] == "rcc"
+    assert argv[argv.index("--model") + 1] == "MiniMax-M3"
+
+
+def test_review_prompt_starts_at_spec():
+    p = session_prompt(Path("/tmp"), "review", "AB-1")
+    assert "SPEC.md" in p
+    assert "REQUIREMENT.md" not in p

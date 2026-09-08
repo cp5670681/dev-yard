@@ -19,7 +19,10 @@ class Repo:
 
     def source_path(self, root: Path) -> Path:
         if self.path:
-            return self.path.expanduser().resolve()
+            p = self.path.expanduser()
+            if not p.is_absolute():
+                p = root / p
+            return p.resolve()
         return paths.repos_dir(root) / self.alias
 
 
@@ -27,6 +30,8 @@ def load_repos(root: Path) -> dict[str, Repo]:
     data = yaml.safe_load(paths.repos_yaml(root).read_text()) or {}
     out: dict[str, Repo] = {}
     for alias, raw in (data.get("repos") or {}).items():
+        if not isinstance(raw, dict) or "url" not in raw:
+            raise ValueError(f"repos.yaml {alias} missing url")
         out[alias] = Repo(
             alias=alias,
             url=raw["url"],

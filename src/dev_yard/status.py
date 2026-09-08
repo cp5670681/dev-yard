@@ -19,21 +19,58 @@ STATES = (
 )
 
 
+def _slot(val: Any) -> dict[str, Any]:
+    if val is None:
+        return {}
+    if isinstance(val, dict):
+        return dict(val)
+    return {"repo": val}
+
+
+def tickets_map(raw: Any) -> dict[str, dict[str, Any]]:
+    """Canonical shape is {ticket_id: {state, repo, ...}}. Agents sometimes write a list."""
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return {str(tid): _slot(slot) for tid, slot in raw.items()}
+    if not isinstance(raw, list):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for item in raw:
+        if isinstance(item, str):
+            out[item] = {}
+        elif isinstance(item, dict):
+            if "id" in item:
+                tid = str(item["id"])
+                out[tid] = {k: v for k, v in item.items() if k != "id"}
+            else:
+                for tid, val in item.items():
+                    out[str(tid)] = _slot(val)
+    return out
+
+
 def load(root: Path, jira: str) -> dict[str, Any]:
     p = status_path(root, jira)
     if not p.exists():
         return {"jira": jira, "phase": "open", "tickets": {}, "repos": []}
-    return yaml.safe_load(p.read_text()) or {}
+    data = yaml.safe_load(p.read_text()) or {}
+    data["tickets"] = tickets_map(data.get("tickets"))
+    return data
 
 
 def save(root: Path, jira: str, data: dict[str, Any]) -> None:
     p = status_path(root, jira)
     p.parent.mkdir(parents=True, exist_ok=True)
+    data = dict(data)
+    data["tickets"] = tickets_map(data.get("tickets"))
     p.write_text(yaml.safe_dump(data, sort_keys=False))
 
 
 def sync_tickets(data: dict[str, Any], tickets: list[Ticket]) -> dict[str, Any]:
-    existing = data.setdefault("tickets", {})
+    existing = tickets_map(data.get("tickets"))
+    keep = {t.id for t in tickets}
+    existing = {tid: slot for tid, slot in existing.items() if tid in keep}
+    data["tickets"] = existing
     for t in tickets:
         slot = existing.setdefault(t.id, {})
         slot.setdefault("state", "pending")
@@ -47,7 +84,8 @@ def sync_tickets(data: dict[str, Any], tickets: list[Ticket]) -> dict[str, Any]:
 
 
 def refresh_ready(data: dict[str, Any]) -> dict[str, Any]:
-    tickets = data.get("tickets") or {}
+    tickets = tickets_map(data.get("tickets"))
+    data["tickets"] = tickets
     for _tid, slot in tickets.items():
         deps = slot.get("depends_on") or []
         if slot.get("state") in {"done", "implementing", "implemented", "reviewing", "blocked"}:
@@ -60,9 +98,10 @@ def refresh_ready(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def ready_ids(data: dict[str, Any]) -> list[str]:
-    return [tid for tid, s in (data.get("tickets") or {}).items() if s.get("state") == "ready"]
+    tickets = tickets_map(data.get("tickets"))
+    return [tid for tid, s in tickets.items() if s.get("state") in {"ready", "implementing"}]
 
 
 def all_done(data: dict[str, Any]) -> bool:
-    tickets = data.get("tickets") or {}
+    tickets = tickets_map(data.get("tickets"))
     return bool(tickets) and all(s.get("state") == "done" for s in tickets.values())

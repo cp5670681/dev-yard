@@ -52,4 +52,4 @@ description: >
 ## Further Notes
 ```
 
-写完后告诉用户下一步 `/to-tickets`。
+写完后告诉用户下一步跑 `dev-yard tickets <JIRA>`。
