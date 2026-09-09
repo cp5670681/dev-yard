@@ -5,7 +5,164 @@ import pytest
 
 from dev_yard.runners import RunResult
 from dev_yard.service import init_yard, repo_add, req_open
-from dev_yard.web.jobs import JobRunner, default_execute
+from dev_yard.web.jobs import BoardSse, Job, JobRunner, JobSse, default_execute
+
+
+def _parse_sse(body: str) -> list[tuple[str, object]]:
+    import json
+
+    events: list[tuple[str, object]] = []
+    for block in body.split("\n\n"):
+        if not block.strip() or block.startswith(":"):
+            continue
+        event = "message"
+        data: list[str] = []
+        for line in block.split("\n"):
+            if line.startswith("event:"):
+                event = line[6:].strip()
+            elif line.startswith("data:"):
+                data.append(line[5:].lstrip())
+        if data:
+            events.append((event, json.loads("\n".join(data))))
+    return events
+
+
+def test_wait_seq_unblocks_on_append():
+    job = Job(id="abc", jira="AB-1", action="open")
+    seq = job.current_seq()
+    hit = threading.Event()
+
+    def wait():
+        job.wait_seq(seq, timeout=2)
+        hit.set()
+
+    threading.Thread(target=wait, daemon=True).start()
+    assert not hit.wait(0.05)
+    job.append("x")
+    assert hit.wait(1)
+
+
+def test_wait_board_unblocks_when_job_waits(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    gate = threading.Event()
+
+    def execute(root: Path, job) -> None:
+        job.set_waiting({"round": 1, "questions": [{"id": "Q1"}]})
+        job.wait_answers()
+        gate.set()
+
+    runner = JobRunner(yard, execute=execute, sync=False)
+    seq = runner.board_seq()
+    hit = threading.Event()
+
+    def wait():
+        runner.wait_board(seq, timeout=2)
+        hit.set()
+
+    threading.Thread(target=wait, daemon=True).start()
+    job = runner.submit("grill", "AB-1")
+    assert hit.wait(1)
+    deadline = __import__("time").time() + 2
+    while job.state != "waiting" and __import__("time").time() < deadline:
+        __import__("time").sleep(0.01)
+    briefs = runner.running_brief()
+    assert briefs[0]["jira"] == "AB-1"
+    assert briefs[0]["state"] == "waiting"
+    assert "log" not in briefs[0]
+    job.submit_answers([{"id": "Q1", "option": "A", "text": ""}])
+    assert job.done.wait(timeout=2)
+    assert gate.is_set()
+    assert runner.running_brief() == []
+
+
+def test_board_sse_poll_captures_seq_before_items():
+    class Fake:
+        def __init__(self) -> None:
+            self.seq = 1
+            self.items = [{"id": "a", "jira": "AB-1", "action": "grill", "state": "running"}]
+
+        def board_seq(self) -> int:
+            return self.seq
+
+        def running_brief(self) -> list[dict]:
+            self.seq += 1
+            return self.items
+
+    frames, seq = BoardSse(Fake()).poll()
+    assert seq == 1
+    events = _parse_sse("".join(frames))
+    assert events[0][0] == "jobs"
+    assert events[0][1][0]["id"] == "a"
+
+
+def test_board_sse_poll_emits_waiting_then_empty(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    gate = threading.Event()
+
+    def execute(root: Path, job) -> None:
+        job.set_waiting({"round": 1, "questions": [{"id": "Q1"}]})
+        job.wait_answers()
+        gate.set()
+
+    runner = JobRunner(yard, execute=execute, sync=False)
+    sse = BoardSse(runner)
+    frames, _seq = sse.poll()
+    assert _parse_sse("".join(frames)) == [("jobs", [])]
+    assert sse.poll()[0] == []
+    job = runner.submit("grill", "AB-1")
+    deadline = __import__("time").time() + 2
+    while job.state != "waiting" and __import__("time").time() < deadline:
+        __import__("time").sleep(0.01)
+    frames, _seq = sse.poll()
+    events = _parse_sse("".join(frames))
+    assert events[0][0] == "jobs"
+    assert events[0][1][0]["state"] == "waiting"
+    assert events[0][1][0]["jira"] == "AB-1"
+    job.submit_answers([{"id": "Q1", "option": "A", "text": ""}])
+    assert job.done.wait(timeout=2)
+    frames, _seq = sse.poll()
+    assert _parse_sse("".join(frames)) == [("jobs", [])]
+    assert gate.is_set()
+
+
+def test_sse_poll_finished_job_snapshot_and_done():
+    job = Job(id="abc", jira="AB-1", action="grill")
+    job.append("hello")
+    job.set_state("ok")
+    frames, done, _seq = JobSse(job).poll()
+    assert done is True
+    events = _parse_sse("".join(frames))
+    assert [name for name, _ in events] == ["snapshot", "done"]
+    assert events[0][1]["log"] == "hello\n"
+    assert events[0][1]["state"] == "ok"
+    assert "seq" not in events[0][1]
+
+
+def test_sse_poll_emits_log_delta_then_state():
+    job = Job(id="abc", jira="AB-1", action="grill")
+    job.set_state("running")
+    sse = JobSse(job)
+    frames, done, _seq = sse.poll()
+    assert done is False
+    events = _parse_sse("".join(frames))
+    assert events[0][0] == "snapshot"
+    assert events[0][1]["state"] == "running"
+
+    job.append("line-a")
+    frames, done, _seq = sse.poll()
+    assert done is False
+    assert _parse_sse("".join(frames)) == [("log", "line-a\n")]
+
+    job.set_waiting({"round": 1, "questions": [{"id": "Q1"}]})
+    frames, done, _seq = sse.poll()
+    assert done is False
+    events = _parse_sse("".join(frames))
+    assert events[0][0] == "state"
+    assert events[0][1]["state"] == "waiting"
+    assert events[0][1]["grill"]["round"] == 1
+    assert "log" not in events[0][1]
 
 
 def test_submit_runs_sync_and_logs(tmp_path: Path):
@@ -51,6 +208,30 @@ def test_rejects_second_job_for_same_jira(tmp_path: Path):
     gate.set()
     first.done.wait(timeout=5)
     assert first.state == "ok"
+
+
+def test_allows_parallel_implement_jobs_for_different_tickets(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    gate = threading.Event()
+    started = threading.Event()
+
+    def execute(root: Path, job) -> None:
+        started.set()
+        gate.wait(timeout=5)
+
+    runner = JobRunner(yard, execute=execute, sync=False)
+    first = runner.submit("implement", "AB-1", ticket_ids=["T1"])
+    second = runner.submit("implement", "AB-1", ticket_ids=["T2"])
+    assert started.wait(timeout=5)
+    assert {first.id, second.id} == {j.id for j in runner.running()}
+    with pytest.raises(ValueError, match="already"):
+        runner.submit("implement", "AB-1", ticket_ids=["T1"])
+    with pytest.raises(ValueError, match="already"):
+        runner.submit("grill", "AB-1")
+    gate.set()
+    assert first.done.wait(timeout=5)
+    assert second.done.wait(timeout=5)
 
 
 def test_open_job_errors_when_pi_skips_requirement(tmp_path: Path, monkeypatch):
@@ -228,3 +409,275 @@ def test_web_grill_waits_then_records_answers(tmp_path: Path, monkeypatch):
     assert "选 A — 只这张票" in grill
     assert not (yard / "reqs" / "AB-50" / ".grill-round.json").exists()
     assert "grill finished" in job.log
+
+
+def _write_pending_round(req: Path, round_n: int = 2) -> None:
+    import json
+
+    (req / "GRILL.md").write_text("# Grill\n\n## Round 1 — answers\n\n- **Q1**：选 A\n")
+    (req / ".grill-round.json").write_text(
+        json.dumps(
+            {
+                "done": False,
+                "round": round_n,
+                "intro": "继续",
+                "questions": [
+                    {
+                        "id": "Q1",
+                        "title": "范围",
+                        "options": [{"id": "A", "label": "只这张票"}],
+                        "suggested": "A",
+                        "suggested_text": "只这张票",
+                    }
+                ],
+            }
+        )
+    )
+
+
+def test_web_grill_resumes_pending_round_before_pi(tmp_path: Path, monkeypatch):
+    import time
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    d, _ = req_open(yard, "AB-51", source="none")
+    _write_pending_round(d)
+    calls = {"n": 0}
+
+    class FakeLog:
+        def __init__(self, job, root, bundle):
+            self.job = job
+
+        def start(self, prompt, cwd, extra_read_paths):
+            self.job.append("pi-after-resume")
+            return RunResult(ok=True, summary="ok")
+
+    def fake_launch(root, name, jira, dry_run=False, print_mode=False, runner=None, prompt_extra=""):
+        calls["n"] += 1
+        req = root / "reqs" / jira
+        leftover = req / ".grill-round.json"
+        if leftover.exists():
+            leftover.unlink()
+        (req / ".grill-round.json").write_text('{"done": true, "round": 3, "questions": []}')
+        return runner.start("p", root, [])
+
+    monkeypatch.setattr("dev_yard.web.jobs.JobLogRunner", FakeLog)
+    monkeypatch.setattr("dev_yard.web.jobs.service.launch_skill", fake_launch)
+    runner = JobRunner(yard, execute=default_execute, sync=False)
+    job = runner.submit("grill", "AB-51")
+    deadline = time.time() + 5
+    while job.state != "waiting" and time.time() < deadline:
+        time.sleep(0.05)
+    assert job.state == "waiting"
+    assert calls["n"] == 0
+    assert job.snapshot()["grill"]["round"] == 2
+    job.submit_answers([{"id": "Q1", "option": "A", "text": ""}])
+    assert job.done.wait(timeout=5)
+    assert job.state == "ok"
+    assert calls["n"] == 1
+    assert "选 A — 只这张票" in (d / "GRILL.md").read_text()
+
+
+def test_resume_pending_grills_restores_waiting_jobs(tmp_path: Path, monkeypatch):
+    import time
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    d, _ = req_open(yard, "AB-52", source="none")
+    _write_pending_round(d)
+
+    def fake_launch(*args, **kwargs):
+        raise AssertionError("pi should not start until answers are submitted")
+
+    monkeypatch.setattr("dev_yard.web.jobs.service.launch_skill", fake_launch)
+    runner = JobRunner(yard, execute=default_execute, sync=False)
+    restored = runner.resume_pending_grills()
+    assert len(restored) == 1
+    job = restored[0]
+    deadline = time.time() + 5
+    while job.state != "waiting" and time.time() < deadline:
+        time.sleep(0.05)
+    assert job.state == "waiting"
+    assert job.jira == "AB-52"
+    assert job.action == "grill"
+    assert job.snapshot()["grill"]["questions"][0]["id"] == "Q1"
+    briefs = runner.running_brief()
+    assert briefs[0]["jira"] == "AB-52"
+    assert runner.resume_pending_grills() == []
+
+
+def test_snapshot_includes_recorded_pi_runs(tmp_path: Path):
+    job = Job(id="abc", jira="AB-1", action="open")
+    cwd = tmp_path / "wt"
+    cwd.mkdir()
+    run = job.record_pi_run(cwd)
+    snap = job.snapshot()
+    assert run["index"] == 0
+    assert snap["pi_runs"][0]["cwd"] == str(cwd.resolve())
+    assert snap["pi_runs"][0]["started_at"]
+    assert "log" in snap
+
+
+def test_job_log_runner_records_pi_run_before_popen(tmp_path: Path, monkeypatch):
+    job = Job(id="abc", jira="AB-1", action="open")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+
+    class FakeProc:
+        stdout = iter(["hello\n"])
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr("dev_yard.web.jobs.shutil.which", lambda b: "/usr/bin/pi")
+    monkeypatch.setattr("dev_yard.web.jobs.subprocess.Popen", lambda *a, **k: FakeProc())
+    monkeypatch.setattr("dev_yard.web.jobs.pi_argv", lambda **k: ["pi", "-p", "x"])
+    from dev_yard.web.jobs import JobLogRunner
+
+    result = JobLogRunner(job, tmp_path, "open").start("p", cwd, [])
+    assert result.ok
+    runs = job.snapshot()["pi_runs"]
+    assert len(runs) == 1
+    assert runs[0]["cwd"] == str(cwd.resolve())
+    assert "cwd=" in job.log
+
+
+def test_sse_poll_emits_pi_runs_on_state(tmp_path: Path):
+    job = Job(id="abc", jira="AB-1", action="grill")
+    job.set_state("running")
+    sse = JobSse(job)
+    frames, done, _seq = sse.poll()
+    assert done is False
+    cwd = tmp_path / "w"
+    cwd.mkdir()
+    job.record_pi_run(cwd)
+    frames, done, _seq = sse.poll()
+    events = _parse_sse("".join(frames))
+    assert events[0][0] == "state"
+    assert events[0][1]["pi_runs"][0]["index"] == 0
+    assert "log" not in events[0][1]
+
+
+def test_pi_chat_sse_emits_entries_then_done(tmp_path: Path):
+    import json
+
+    from dev_yard.web.jobs import PiChatSse
+
+    job = Job(id="abc", jira="AB-1", action="spec")
+    cwd = tmp_path / "yard"
+    cwd.mkdir()
+    job.record_pi_run(cwd)
+    job.set_state("ok")
+    sessions = tmp_path / "sessions"
+    path = sessions / "dir" / "s.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "type": "session",
+                "version": 3,
+                "id": "sid",
+                "timestamp": "2099-01-01T00:00:00.000Z",
+                "cwd": str(cwd.resolve()),
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "message",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "hi"}],
+                },
+            }
+        )
+        + "\n"
+    )
+    sse = PiChatSse(job, 0, cwd, sessions_dir=sessions)
+    frames, done, _seq = sse.poll()
+    assert done is True
+    events = _parse_sse("".join(frames))
+    names = [n for n, _ in events]
+    assert names[0] == "snapshot"
+    assert names[-1] == "done"
+    assert events[0][1]["found"] is True
+    assert events[0][1]["session_id"] == "sid"
+    assert ("entry", {"role": "user", "text": "hi"}) in [
+        (n, {k: d[k] for k in ("role", "text") if k in d}) for n, d in events if n == "entry"
+    ]
+
+
+def test_pi_chat_sse_tails_new_lines_while_running(tmp_path: Path):
+    import json
+
+    from dev_yard.web.jobs import PiChatSse
+
+    job = Job(id="abc", jira="AB-1", action="spec")
+    cwd = tmp_path / "yard"
+    cwd.mkdir()
+    job.record_pi_run(cwd)
+    job.set_state("running")
+    sessions = tmp_path / "sessions"
+    path = sessions / "dir" / "s.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "type": "session",
+                "version": 3,
+                "id": "sid",
+                "timestamp": "2099-01-01T00:00:00.000Z",
+                "cwd": str(cwd.resolve()),
+            }
+        )
+        + "\n"
+    )
+    sse = PiChatSse(job, 0, cwd, sessions_dir=sessions)
+    frames, done, _seq = sse.poll()
+    assert done is False
+    assert [n for n, _ in _parse_sse("".join(frames))] == ["snapshot"]
+    with path.open("a") as f:
+        f.write(
+            json.dumps(
+                {
+                    "type": "message",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "next"}],
+                    },
+                }
+            )
+            + "\n"
+        )
+    frames, done, _seq = sse.poll()
+    assert done is False
+    events = _parse_sse("".join(frames))
+    assert events == [("entry", {"role": "assistant", "text": "next"})]
+    job.set_state("ok")
+    frames, done, _seq = sse.poll()
+    assert done is True
+    assert _parse_sse("".join(frames))[-1][0] == "done"
+
+
+def test_resume_pending_grills_skips_markdown_frontier(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    d, _ = req_open(yard, "AB-54", source="none")
+    (d / "GRILL.md").write_text(
+        "# Grill\n\n## Round 1 — frontier\n\n❓ **Q1** - **范围**：只做这张票？\n"
+        "- 选 A：只这张票\n\n➡️ 选 A。\n"
+    )
+
+    def fake_launch(*args, **kwargs):
+        raise AssertionError("CLI markdown frontier must not auto-start a web job")
+
+    monkeypatch.setattr("dev_yard.web.jobs.service.launch_skill", fake_launch)
+    runner = JobRunner(yard, execute=default_execute, sync=False)
+    assert runner.resume_pending_grills() == []
+    assert runner.running_brief() == []

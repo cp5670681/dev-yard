@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,19 @@ import yaml
 
 from dev_yard.paths import status_path
 from dev_yard.tickets import Ticket
+
+_LOCKS_GUARD = threading.Lock()
+_LOCKS: dict[str, threading.RLock] = {}
+
+
+def jira_lock(jira: str) -> threading.RLock:
+    with _LOCKS_GUARD:
+        lock = _LOCKS.get(jira)
+        if lock is None:
+            lock = threading.RLock()
+            _LOCKS[jira] = lock
+        return lock
+
 
 STATES = (
     "pending",

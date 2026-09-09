@@ -21,6 +21,21 @@ def test_list_empty(tmp_path: Path):
     assert list_requirements(yard) == []
 
 
+def test_list_skips_shared_docs_dir(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _yard(tmp_path)
+    req_open(yard, "AB-1", source="none")
+    adr = yard / "reqs" / "docs" / "adr"
+    adr.mkdir(parents=True)
+    (adr / "0001.md").write_text("# adr\n")
+    (yard / "reqs" / "CONTEXT.md").write_text("# glossary\n")
+    items = list_requirements(yard)
+    assert [i.jira for i in items] == ["AB-1"]
+    assert requirement_detail(yard, "docs") is None
+    assert requirement_detail(yard, "DOCS") is None
+
+
 def test_list_and_detail_after_open(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)
@@ -106,3 +121,29 @@ def test_save_doc_roundtrip(tmp_path: Path, monkeypatch):
     assert grill.filled
     assert "this ticket only" in grill.text
     assert detail.next_label == "spec"
+
+
+def test_pending_grill_round_keeps_next_as_grill(tmp_path: Path, monkeypatch):
+    import json
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _yard(tmp_path)
+    d, _ = req_open(yard, "AB-5", source="none")
+    (d / "GRILL.md").write_text("# Grill — AB-5\n\n## Round 1 — answers\n\n- **Q1**：选 A\n")
+    (d / ".grill-round.json").write_text(
+        json.dumps(
+            {
+                "done": False,
+                "round": 2,
+                "questions": [{"id": "Q1", "title": "范围", "options": [{"id": "A", "label": "只这张票"}]}],
+            }
+        )
+    )
+    detail = requirement_detail(yard, "AB-5")
+    grill = next(d for d in detail.docs if d.slug == "grill")
+    assert grill.filled
+    assert detail.next_label == "grill"
+    by_id = {s.id: s for s in detail.steps}
+    assert not by_id["grill"].done
+    assert by_id["grill"].current

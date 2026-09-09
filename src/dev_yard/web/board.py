@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dev_yard import paths, status as st
+from dev_yard import grill_round, paths, status as st
 from dev_yard.config import load_repos
 from dev_yard.service import GRILL_SKELETON, REQ_SKELETON, SPEC_SKELETON, TICKETS_SKELETON
 from dev_yard.tickets import load_tickets
@@ -94,13 +94,8 @@ class ReqDetail:
 
 
 def list_requirements(root: Path) -> list[ReqSummary]:
-    rd = paths.reqs_dir(root)
-    if not rd.exists():
-        return []
     out: list[ReqSummary] = []
-    for p in sorted(rd.iterdir(), key=lambda x: x.name):
-        if not p.is_dir() or p.name.startswith("."):
-            continue
+    for p in paths.iter_req_dirs(root):
         detail = requirement_detail(root, p.name)
         if detail is None:
             continue
@@ -121,8 +116,13 @@ def list_requirements(root: Path) -> list[ReqSummary]:
 
 
 def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
-    req = paths.req_dir(root, jira)
-    if not req.is_dir():
+    if paths.is_reserved_req_name(jira):
+        return None
+    try:
+        req = paths.req_dir(root, jira)
+    except ValueError:
+        return None
+    if not paths.is_req_dir(req):
         return None
     data = st.load(root, jira)
     parsed = load_tickets(req)
@@ -155,8 +155,9 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
     if wt_root.is_dir():
         worktrees = sorted(str(p) for p in wt_root.iterdir() if p.is_dir())
     assets = _list_assets(req)
-    next_label = _next_label(phase, docs, tickets)
-    steps = _steps(phase, docs, tickets)
+    awaiting = _grill_awaiting(req)
+    next_label = _next_label(phase, docs, tickets, awaiting)
+    steps = _steps(phase, docs, tickets, awaiting)
     detail = ReqDetail(
         jira=jira,
         phase=phase,
@@ -279,7 +280,17 @@ def _list_assets(req: Path) -> list[str]:
     return sorted(p.name for p in d.iterdir() if p.is_file() and not p.name.startswith("."))
 
 
-def _next_label(phase: str, docs: list[DocView], tickets: list[TicketView]) -> str:
+def _grill_awaiting(req: Path) -> bool:
+    rnd = grill_round.load_round(req)
+    return rnd is not None and rnd.awaiting()
+
+
+def _next_label(
+    phase: str,
+    docs: list[DocView],
+    tickets: list[TicketView],
+    grill_awaiting: bool = False,
+) -> str:
     by_slug = {d.slug: d for d in docs}
     if phase == "done":
         return "done"
@@ -291,6 +302,8 @@ def _next_label(phase: str, docs: list[DocView], tickets: list[TicketView]) -> s
         return "implement"
     if tickets:
         return "freeze"
+    if grill_awaiting:
+        return "grill"
     if by_slug["spec"].filled:
         return "tickets"
     if by_slug["grill"].filled:
@@ -298,11 +311,16 @@ def _next_label(phase: str, docs: list[DocView], tickets: list[TicketView]) -> s
     return "grill"
 
 
-def _steps(phase: str, docs: list[DocView], tickets: list[TicketView]) -> list[Step]:
+def _steps(
+    phase: str,
+    docs: list[DocView],
+    tickets: list[TicketView],
+    grill_awaiting: bool = False,
+) -> list[Step]:
     by_slug = {d.slug: d for d in docs}
     flags = {
         "open": by_slug["requirement"].exists,
-        "grill": by_slug["grill"].filled,
+        "grill": by_slug["grill"].filled and not grill_awaiting,
         "spec": by_slug["spec"].filled,
         "tickets": bool(tickets),
         "freeze": phase in {"frozen", "done"},

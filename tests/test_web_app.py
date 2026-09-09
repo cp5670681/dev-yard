@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -32,6 +33,26 @@ def test_dashboard_lists_requirement(tmp_path: Path, monkeypatch):
     assert r.status_code == 200
     assert "AB-30" in r.text
     assert "打开需求" in r.text
+
+
+def test_dashboard_skips_shared_docs(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    req_open(yard, "AB-30", source="none")
+    adr = yard / "reqs" / "docs" / "adr"
+    adr.mkdir(parents=True)
+    (adr / "0001.md").write_text("# adr\n")
+    client = _client(yard)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "AB-30" in r.text
+    assert 'href="/r/docs"' not in r.text
+    assert client.get("/r/docs").status_code == 404
+    opened = client.post("/open", data={"jira": "docs", "source": "none"}, follow_redirects=False)
+    assert opened.status_code == 303
+    assert "reserved" in opened.headers["location"]
 
 
 def test_board_reopen_has_no_hidden_force(tmp_path: Path, git_src: Path, monkeypatch):
@@ -98,6 +119,102 @@ def test_freeze_from_web(tmp_path: Path, git_src: Path, monkeypatch):
     assert (d / "worktrees" / "backend").exists()
     page = client.get("/r/AB-32")
     assert "implement" in page.text.lower() or "实现" in page.text
+
+
+def test_web_implement_runs_ready_tickets_in_parallel(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-80", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n\n"
+        "## T2: y\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    from dev_yard.service import req_freeze
+
+    req_freeze(yard, "AB-80")
+    gate = threading.Event()
+
+    def execute(root: Path, job) -> None:
+        gate.wait(timeout=5)
+
+    runner = JobRunner(yard, execute=execute, sync=False)
+    client = TestClient(create_app(yard, job_runner=runner))
+    first = client.post(
+        "/r/AB-80/actions/implement",
+        data={"ticket_id": "T1"},
+        follow_redirects=False,
+    )
+    assert first.status_code == 303
+    second = client.post(
+        "/r/AB-80/actions/implement",
+        data={"ticket_id": "T2"},
+        follow_redirects=False,
+    )
+    assert second.status_code == 303
+    listed = client.get("/api/jobs").json()
+    assert len(listed) == 2
+    assert {tuple(row.get("ticket_ids") or []) for row in listed} == {("T1",), ("T2",)}
+    again = client.post(
+        "/r/AB-80/actions/implement",
+        data={"ticket_id": "T1"},
+        follow_redirects=False,
+    )
+    assert again.status_code == 303
+    assert "already" in again.headers["location"]
+    page = client.get("/r/AB-80")
+    assert page.text.count("data-job-id=") == 2
+    from dev_yard import status as st
+
+    assert st.load(yard, "AB-80")["tickets"]["T1"]["state"] == "implementing"
+    assert st.load(yard, "AB-80")["tickets"]["T2"]["state"] == "implementing"
+    assert 'data-ticket="T1"' in page.text
+    impl_col = page.text.split('data-col="implementing"')[1].split("data-col=")[0]
+    assert 'data-ticket="T1"' in impl_col
+    assert 'data-ticket="T2"' in impl_col
+    gate.set()
+    for job in runner.running():
+        job.done.wait(timeout=5)
+
+
+def test_web_implement_ready_fans_out_remaining_tickets(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-81", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n\n"
+        "## T2: y\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    from dev_yard.service import req_freeze
+
+    req_freeze(yard, "AB-81")
+    gate = threading.Event()
+
+    def execute(root: Path, job) -> None:
+        gate.wait(timeout=5)
+
+    runner = JobRunner(yard, execute=execute, sync=False)
+    client = TestClient(create_app(yard, job_runner=runner))
+    client.post(
+        "/r/AB-81/actions/implement",
+        data={"ticket_id": "T1"},
+        follow_redirects=False,
+    )
+    bulk = client.post("/r/AB-81/actions/implement", follow_redirects=False)
+    assert bulk.status_code == 303
+    listed = client.get("/api/jobs").json()
+    assert len(listed) == 2
+    assert {tuple(row.get("ticket_ids") or []) for row in listed} == {("T1",), ("T2",)}
+    gate.set()
+    for job in runner.running():
+        job.done.wait(timeout=5)
 
 
 def test_save_doc_and_markdown_assets(tmp_path: Path, monkeypatch):
@@ -191,8 +308,145 @@ def test_running_job_is_bound_without_query(tmp_path: Path):
     job.done.wait(timeout=5)
 
 
+def _parse_sse(body: str) -> list[tuple[str, object]]:
+    import json
+
+    events: list[tuple[str, object]] = []
+    for block in body.split("\n\n"):
+        if not block.strip() or block.startswith(":"):
+            continue
+        event = "message"
+        data: list[str] = []
+        for line in block.split("\n"):
+            if line.startswith("event:"):
+                event = line[6:].strip()
+            elif line.startswith("data:"):
+                data.append(line[5:].lstrip())
+        if data:
+            events.append((event, json.loads("\n".join(data))))
+    return events
+
+
+def test_job_events_sse_for_finished_job(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+
+    def execute(root: Path, job) -> None:
+        job.append("hello from sse")
+
+    runner = JobRunner(yard, execute=execute, sync=True)
+    job = runner.submit("open", "AB-60")
+    client = TestClient(create_app(yard, job_runner=runner))
+    r = client.get(f"/api/jobs/{job.id}/events")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/event-stream")
+    events = _parse_sse(r.text)
+    names = [name for name, _ in events]
+    assert names[0] == "snapshot"
+    assert names[-1] == "done"
+    assert events[0][1]["log"] == "hello from sse\n"
+    assert events[-1][1]["state"] == "ok"
+    snap = client.get(f"/api/jobs/{job.id}").json()
+    assert "seq" not in snap
+
+
+def test_job_events_unknown_404(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    r = _client(yard).get("/api/jobs/nope/events")
+    assert r.status_code == 404
+
+
+def test_app_js_uses_event_source():
+    from dev_yard.web.app import HERE
+
+    js = (HERE / "static" / "app.js").read_text()
+    css = (HERE / "static" / "app.css").read_text()
+    assert "EventSource" in js
+    assert "/api/jobs/events" in js
+    assert "/api/requirements/" in js
+    assert "data-board" in js
+    assert "nav-dot" in js
+    assert "setTimeout(tick, 1000)" not in js
+    assert "setInterval" not in js
+    assert "/pi/" in js
+    assert "data-open-pi" in js
+    assert "pi-drawer" in css
+    assert ".nav-jobs { display: none; }" not in css
+
+
+def test_pi_chat_api_streams_session_and_rejects_outside_cwd(tmp_path: Path, monkeypatch):
+    import json
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    sessions = tmp_path / "sessions"
+    monkeypatch.setenv("YARD_PI_SESSIONS", str(sessions))
+
+    def execute(root: Path, job) -> None:
+        job.record_pi_run(root)
+        job.append("pi done")
+
+    runner = JobRunner(yard, execute=execute, sync=True)
+    job = runner.submit("spec", "AB-90")
+    path = sessions / "d" / "s.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "type": "session",
+                "version": 3,
+                "id": "sid-90",
+                "timestamp": "2099-01-01T00:00:00.000Z",
+                "cwd": str(yard.resolve()),
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "toolCall",
+                            "id": "c1",
+                            "name": "read",
+                            "arguments": {"path": "REQUIREMENT.md"},
+                        }
+                    ],
+                },
+            }
+        )
+        + "\n"
+    )
+    client = TestClient(create_app(yard, job_runner=runner))
+    snap = client.get(f"/api/jobs/{job.id}").json()
+    assert snap["pi_runs"][0]["cwd"] == str(yard.resolve())
+    page = client.get(f"/r/AB-90?job={job.id}")
+    assert "查看对话" in page.text
+    assert "data-open-pi" in page.text
+    data = client.get(f"/api/jobs/{job.id}/pi/0").json()
+    assert data["found"] is True
+    assert data["session_id"] == "sid-90"
+    assert data["entries"][0]["role"] == "assistant"
+    assert data["entries"][0]["tools"][0]["name"] == "read"
+    events = client.get(f"/api/jobs/{job.id}/pi/0/events")
+    assert events.status_code == 200
+    assert events.headers["content-type"].startswith("text/event-stream")
+    parsed = _parse_sse(events.text)
+    assert parsed[0][0] == "snapshot"
+    assert parsed[-1][0] == "done"
+    assert any(name == "entry" for name, _ in parsed)
+    assert client.get(f"/api/jobs/{job.id}/pi/9").status_code == 404
+    job.record_pi_run(tmp_path / "elsewhere")
+    denied = client.get(f"/api/jobs/{job.id}/pi/1")
+    assert denied.status_code == 404
+
+
 def test_waiting_job_is_bound_and_answers_api(tmp_path: Path):
-    import threading
     import time
 
     yard = tmp_path / "yard"
@@ -249,6 +503,65 @@ def test_waiting_job_is_bound_and_answers_api(tmp_path: Path):
     assert idle.status_code == 400
 
 
+def test_api_jobs_lists_waiting_with_sidebar_dot(tmp_path: Path):
+    import time
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    req_open(yard, "AB-71", source="none")
+    req_open(yard, "AB-72", source="none")
+
+    def execute(root: Path, job) -> None:
+        job.set_waiting(
+            {
+                "done": False,
+                "round": 1,
+                "questions": [{"id": "Q1", "title": "范围", "options": []}],
+            }
+        )
+        job.wait_answers()
+
+    runner = JobRunner(yard, execute=execute, sync=False)
+    job = runner.submit("grill", "AB-71")
+    other = runner.submit("spec", "AB-72")
+    deadline = time.time() + 5
+    while (job.state != "waiting" or other.state != "waiting") and time.time() < deadline:
+        time.sleep(0.05)
+    assert job.state == "waiting" and other.state == "waiting"
+    client = TestClient(create_app(yard, job_runner=runner))
+    listed = client.get("/api/jobs").json()
+    assert {row["jira"]: row["state"] for row in listed} == {
+        "AB-71": "waiting",
+        "AB-72": "waiting",
+    }
+    home = client.get("/")
+    assert home.status_code == 200
+    assert home.text.count('class="nav-dot"') == 2
+    assert "/r/AB-71" in home.text
+    assert "/r/AB-72" in home.text
+    assert any(getattr(r, "path", None) == "/api/jobs/events" for r in client.app.routes)
+    client.post(
+        f"/api/jobs/{job.id}/answers",
+        json={"answers": [{"id": "Q1", "option": "A", "text": ""}]},
+    )
+    assert job.done.wait(timeout=5)
+    left = client.get("/api/jobs").json()
+    assert [row["jira"] for row in left] == ["AB-72"]
+    assert left[0]["state"] == "waiting"
+    half = client.get("/")
+    assert half.text.count('class="nav-dot"') == 1
+    assert "AB-72" in half.text
+    client.post(
+        f"/api/jobs/{other.id}/answers",
+        json={"answers": [{"id": "Q1", "option": "A", "text": ""}]},
+    )
+    assert other.done.wait(timeout=5)
+    assert client.get("/api/jobs").json() == []
+    gone = client.get("/")
+    assert "nav-dot" not in gone.text
+    assert "is-waiting" not in gone.text
+
+
 def test_grill_action_uses_injected_execute(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)
@@ -264,6 +577,46 @@ def test_grill_action_uses_injected_execute(tmp_path: Path, monkeypatch):
     r = client.post("/r/AB-35/actions/grill", follow_redirects=True)
     assert r.status_code == 200
     assert "web-grill" in r.text
+
+
+def test_create_app_resumes_pending_grill(tmp_path: Path, monkeypatch):
+    import json
+    import time
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    d, _ = req_open(yard, "AB-53", source="none")
+    (d / "GRILL.md").write_text("# Grill — AB-53\n\n## Round 1 — answers\n\n- **Q1**：选 A\n")
+    (d / ".grill-round.json").write_text(
+        json.dumps(
+            {
+                "done": False,
+                "round": 2,
+                "questions": [{"id": "Q1", "title": "范围", "options": [{"id": "A", "label": "只这张票"}]}],
+            }
+        )
+    )
+
+    def fake_launch(*args, **kwargs):
+        raise AssertionError("pi should not start on resume")
+
+    monkeypatch.setattr("dev_yard.web.jobs.service.launch_skill", fake_launch)
+    client = TestClient(create_app(yard))
+    deadline = time.time() + 5
+    items = []
+    while time.time() < deadline:
+        items = client.get("/api/jobs").json()
+        if items and items[0].get("state") == "waiting":
+            break
+        time.sleep(0.05)
+    assert items and items[0]["action"] == "grill"
+    assert items[0]["jira"] == "AB-53"
+    assert items[0]["state"] == "waiting"
+    page = client.get("/r/AB-53")
+    assert f'data-job="{items[0]["id"]}"' in page.text
+    assert client.get("/api/requirements/AB-53").json()["next"] == "grill"
 
 
 def test_render_markdown_rewrites_assets():

@@ -9,7 +9,7 @@
 </header>
 
 {% if job %}
-<section class="job" data-job-panel>
+<section class="job" data-job-panel{% if job.state in ("queued", "running", "waiting") %} data-job-id="{{ job.id }}"{% endif %}>
   <div class="job-head">
     <strong>clone</strong>
     <span class="pill" data-job-state>{{ job.state }}</span>

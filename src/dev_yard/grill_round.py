@@ -98,15 +98,25 @@ def parse_round(data: Any) -> GrillRound:
     )
 
 
-def load_round(req: Path) -> GrillRound | None:
+def load_round_file(req: Path) -> GrillRound | None:
+    """Load `ROUND_FILE` only. No GRILL.md fallback — used to resume web rounds."""
     path = round_path(req)
-    if path.is_file():
-        try:
-            data = json.loads(path.read_text())
-        except json.JSONDecodeError:
-            data = None
-        if data is not None:
-            return parse_round(data)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return None
+    if data is None:
+        return None
+    return parse_round(data)
+
+
+def load_round(req: Path) -> GrillRound | None:
+    if round_path(req).is_file():
+        rnd = load_round_file(req)
+        if rnd is not None:
+            return rnd
     grill = req / "GRILL.md"
     if grill.is_file():
         return parse_markdown(grill.read_text())

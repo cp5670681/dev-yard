@@ -22,6 +22,16 @@ def test_grill_prompt_forbids_spec():
     assert "WEB_GRILL_ROUND" not in p
 
 
+def test_grill_prompt_puts_context_under_reqs():
+    root = Path("/tmp")
+    p = session_prompt(root, "grill", "AB-1")
+    assert str(root / "reqs" / "CONTEXT.md") in p
+    assert str(root / "reqs" / "docs" / "adr") in p
+    assert "reqs/CONTEXT.md" in p
+    assert "workspace-root" in p
+    assert "freeze worktrees" in p
+
+
 def test_pi_argv_implement_keeps_bash(monkeypatch):
     monkeypatch.delenv("YARD_PI_PROVIDER", raising=False)
     monkeypatch.delenv("YARD_PI_MODEL", raising=False)
@@ -103,3 +113,8 @@ def test_review_prompt_starts_at_spec():
     p = session_prompt(Path("/tmp"), "review", "AB-1")
     assert "SPEC.md" in p
     assert "REQUIREMENT.md" not in p
+
+
+def test_implement_prompt_keeps_context_out_of_worktree():
+    p = session_prompt(Path("/tmp"), "implement", "AB-1")
+    assert "Do not add CONTEXT.md or docs/adr to the business repo" in p
