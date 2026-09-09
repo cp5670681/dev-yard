@@ -105,3 +105,52 @@ def test_clone_reports_progress(tmp_path: Path, git_src: Path):
     blob = "\n".join(lines).lower()
     assert "clone" in blob
     assert str(dest) in "\n".join(lines)
+
+
+def test_run_disables_git_terminal_prompt(monkeypatch):
+    import os
+
+    import dev_yard.gitops as gitops_mod
+
+    captured: dict = {}
+
+    def fake_run(args, cwd=None, capture_output=None, text=None, env=None):
+        captured["env"] = env
+        captured["args"] = args
+
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(gitops_mod.subprocess, "run", fake_run)
+    gitops_mod.run(["git", "status"])
+    assert captured["env"]["GIT_TERMINAL_PROMPT"] == "0"
+    # inherit the rest of the environment rather than replacing it
+    assert captured["env"]["PATH"] == os.environ["PATH"]
+
+
+def test_merge_abort_clears_conflicted_state(git_src: Path, tmp_path: Path):
+    import subprocess
+
+    from dev_yard.gitops import merge_abort, worktree_add
+
+    (git_src / "f.txt").write_text("base\n")
+    subprocess.check_call(["git", "add", "f.txt"], cwd=git_src)
+    subprocess.check_call(["git", "commit", "-m", "base"], cwd=git_src)
+    worktree_add(git_src, tmp_path / "wt", "req/AB", "main")
+
+    # diverging edits on both sides
+    (git_src / "f.txt").write_text("main-side\n")
+    subprocess.check_call(["git", "commit", "-am", "main side"], cwd=git_src)
+    worktree_add(git_src, tmp_path / "wt2", "req/AB-c", "req/AB")
+    (tmp_path / "wt2" / "f.txt").write_text("child-side\n")
+    subprocess.check_call(["git", "commit", "-am", "child side"], cwd=tmp_path / "wt2")
+    (tmp_path / "wt" / "f.txt").write_text("parent-side\n")
+    subprocess.check_call(["git", "commit", "-am", "parent side"], cwd=tmp_path / "wt")
+    assert subprocess.call(["git", "merge", "req/AB-c"], cwd=tmp_path / "wt") != 0
+    merge_abort(tmp_path / "wt")
+    out = subprocess.check_output(["git", "status", "--porcelain"], cwd=tmp_path / "wt")
+    assert b"UU" not in out

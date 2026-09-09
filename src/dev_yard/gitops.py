@@ -48,7 +48,9 @@ def drain_git_output(buf: bytes, on_progress: Progress) -> bytes:
 
 
 def run(args: list[str], cwd: Path | None = None) -> str:
-    r = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    r = subprocess.run(args, cwd=cwd, capture_output=True, text=True, env=env)
     if r.returncode != 0:
         raise GitError(r.stderr.strip() or r.stdout.strip() or " ".join(args))
     return r.stdout.strip()
@@ -167,6 +169,14 @@ def branch_delete(source: Path, branch: str) -> None:
 
 def merge_into(worktree: Path, branch: str) -> None:
     run(["git", "merge", "--no-edit", branch], cwd=worktree)
+
+
+def merge_abort(worktree: Path) -> None:
+    """Best-effort cleanup after a failed merge; never raises."""
+    try:
+        run(["git", "merge", "--abort"], cwd=worktree)
+    except GitError:
+        pass
 
 
 def current_branch(worktree: Path) -> str:

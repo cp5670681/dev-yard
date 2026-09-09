@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from dev_yard import status as st
+from dev_yard.gitops import GitError
 from dev_yard.runners import DryRunRunner, RunResult, clip_summary
 from dev_yard.service import (
     from_contract_ids,
@@ -398,3 +399,102 @@ def test_clip_summary_keeps_review_tail():
     assert "REVIEW_FAILED" in clipped
     assert clipped.endswith("REVIEW_FAILED")
     assert len(clipped) <= 32000
+
+
+def test_review_merge_conflict_keeps_ticket_reviewable(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    import subprocess
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-31", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: true\n\n"
+        "## T2: y\n- repo: backend\n- depends_on:\n- parallel: true\n"
+    )
+    req_freeze(yard, "AB-31")
+
+    class Conflicter:
+        """Commits the same file with different content in each ticket worktree."""
+
+        def __init__(self) -> None:
+            self.n = 0
+
+        def start(self, prompt, cwd, extra_read_paths):
+            self.n += 1
+            (cwd / "shared.txt").write_text(f"side {self.n}\n")
+            subprocess.check_call(["git", "add", "shared.txt"], cwd=cwd)
+            subprocess.check_call(["git", "commit", "-m", f"c{self.n}"], cwd=cwd)
+            return RunResult(ok=True, summary="ok")
+
+    c = Conflicter()
+    implement(yard, "AB-31", ["T1"], runner=c)
+    implement(yard, "AB-31", ["T2"], runner=c)
+    parent = yard / "reqs" / "AB-31" / "worktrees" / "backend"
+    child2 = Path(st.load(yard, "AB-31")["tickets"]["T2"]["child_worktree"])
+    assert child2.exists()
+    # parent advances after the child branched off -> merge will conflict
+    (parent / "shared.txt").write_text("parent later\n")
+    subprocess.check_call(["git", "commit", "-am", "parent later"], cwd=parent)
+
+    ran = review(yard, "AB-31", None, runner=DryRunRunner())
+    assert ran == ["T1", "T2"]
+    data = st.load(yard, "AB-31")
+    assert data["tickets"]["T1"]["state"] == "done"
+    # T2's merge conflicted: it must stay reviewable, not be marked done
+    assert data["tickets"]["T2"]["state"] == "reviewing"
+    assert "merge" in (data["tickets"]["T2"]["last_summary"] or "").lower()
+    # parent worktree must not be left in a conflicted merge state
+    status = subprocess.check_output(["git", "status", "--porcelain"], cwd=parent)
+    assert b"UU" not in status
+    # child worktree/branch kept so the merge can be retried
+    assert child2.exists()
+
+
+def test_ticket_done_conflict_aborts_merge_and_raises(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    import subprocess
+
+    from dev_yard.service import ticket_done, ticket_start
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-32", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: true\n\n"
+        "## T2: y\n- repo: backend\n- depends_on:\n- parallel: true\n"
+    )
+    req_freeze(yard, "AB-32")
+
+    class Conflicter:
+        def __init__(self) -> None:
+            self.n = 0
+
+        def start(self, prompt, cwd, extra_read_paths):
+            self.n += 1
+            (cwd / "shared.txt").write_text(f"side {self.n}\n")
+            subprocess.check_call(["git", "add", "shared.txt"], cwd=cwd)
+            subprocess.check_call(["git", "commit", "-m", f"c{self.n}"], cwd=cwd)
+            return RunResult(ok=True, summary="ok")
+
+    c = Conflicter()
+    implement(yard, "AB-32", ["T1"], runner=c)
+    implement(yard, "AB-32", ["T2"], runner=c)
+    # parent advances after the child branched off -> ticket_done merge conflicts
+    parent = yard / "reqs" / "AB-32" / "worktrees" / "backend"
+    (parent / "shared.txt").write_text("parent later\n")
+    subprocess.check_call(["git", "commit", "-am", "parent later"], cwd=parent)
+    # mark T1 reviewed-done via review
+    review(yard, "AB-32", ["T1"], runner=DryRunRunner())
+    with pytest.raises(GitError):
+        ticket_done(yard, "AB-32", "T2")
+    status = subprocess.check_output(["git", "status", "--porcelain"], cwd=parent)
+    assert b"UU" not in status

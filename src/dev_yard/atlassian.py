@@ -37,23 +37,31 @@ class FetchResult:
     images: list[str] = field(default_factory=list)
 
 
-def _auth_header(user: str, secret: str) -> str:
+def _auth_header(user: str, secret: str) -> str | None:
+    """None means: send no Authorization header at all (untrusted host)."""
+    if not user or not secret:
+        return None
     import base64
 
     return "Basic " + base64.b64encode(f"{user}:{secret}".encode()).decode()
 
 
 def _http_json(url: str, user: str, secret: str) -> Any:
-    req = urllib.request.Request(
-        url,
-        headers={"Authorization": _auth_header(user, secret), "Accept": "application/json"},
-    )
+    headers = {"Accept": "application/json"}
+    auth = _auth_header(user, secret)
+    if auth:
+        headers["Authorization"] = auth
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode())
 
 
 def _http_bytes(url: str, user: str, secret: str) -> bytes:
-    req = urllib.request.Request(url, headers={"Authorization": _auth_header(user, secret)})
+    headers = {}
+    auth = _auth_header(user, secret)
+    if auth:
+        headers["Authorization"] = auth
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=60) as resp:
         return resp.read()
 
@@ -219,6 +227,14 @@ def collect_requirement(dest: Path, key: str, root: Path | None = None) -> Fetch
     cbase, cuser, csecret = _confluence_creds(jbase, juser, jsecret)
     if not cbase:
         cbase = _infer_cbase(cf_urls, "")
+        if cbase:
+            # The host came from issue text, which an issue author controls.
+            # Never send credentials (including the Jira fallback) to it.
+            cuser, csecret = "", ""
+            warnings.append(
+                "Confluence base inferred from issue links; fetching without credentials. "
+                "Set CONFLUENCE_BASE_URL to enable authenticated Confluence access."
+            )
     if not cbase and cf_urls:
         warnings.append("Confluence URLs found but CONFLUENCE_BASE_URL unset and could not infer host")
 

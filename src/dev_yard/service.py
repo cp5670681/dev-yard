@@ -371,7 +371,14 @@ def ticket_start(root: Path, jira: str, ticket_id: str) -> Path:
 
 def ticket_done(root: Path, jira: str, ticket_id: str) -> None:
     with st.jira_lock(jira):
-        _ticket_done_locked(root, jira, ticket_id)
+        data = st.load(root, jira)
+        parent = ((data.get("tickets") or {}).get(ticket_id) or {}).get("worktree")
+        try:
+            _ticket_done_locked(root, jira, ticket_id)
+        except gitops.GitError:
+            if parent:
+                gitops.merge_abort(Path(parent))
+            raise
 
 
 def _ticket_done_locked(root: Path, jira: str, ticket_id: str) -> None:
@@ -885,12 +892,31 @@ def review(
             data = st.load(root, jira)
             slot = data["tickets"][tid]
             if not _review_blocked(result):
-                slot["state"] = "done"
                 child = slot.get("child_worktree")
                 slot["last_summary"] = result.summary
-                st.save(root, jira, data)
                 if child:
-                    _ticket_done_locked(root, jira, tid)
+                    # Merge the child branch into the parent before persisting
+                    # `done`; a conflicted merge must not strand a half-done state.
+                    parent = slot.get("worktree")
+                    try:
+                        _ticket_done_locked(root, jira, tid)
+                    except gitops.GitError as e:
+                        if parent:
+                            gitops.merge_abort(Path(parent))
+                        slot = data["tickets"][tid]
+                        slot["state"] = "reviewing"
+                        slot["last_summary"] = (
+                            (result.summary or "").rstrip()
+                            + f"\n\nmerge conflict into {parent}: {e}\n"
+                            "Resolve the conflict in the parent worktree "
+                            "(`git merge --abort` to start over), then re-review."
+                        )
+                        st.save(root, jira, data)
+                        ran.append(tid)
+                        continue
+                else:
+                    slot["state"] = "done"
+                    st.save(root, jira, data)
                 data = st.load(root, jira)
                 st.refresh_ready(data)
                 st.save(root, jira, data)
