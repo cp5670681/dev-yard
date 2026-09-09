@@ -8,6 +8,15 @@ export default createVuetify({
     aliases,
     sets: { mdi },
   },
+  defaults: {
+    VBtn: { rounded: "lg" },
+    VCard: { rounded: "lg" },
+    VChip: { rounded: "lg" },
+    VTextField: { variant: "outlined", density: "comfortable" },
+    VSelect: { variant: "outlined", density: "comfortable" },
+    VTextarea: { variant: "outlined", density: "comfortable" },
+    VAlert: { rounded: "lg", variant: "tonal" },
+  },
   theme: {
     defaultTheme: "dark",
     themes: {
@@ -21,6 +30,7 @@ export default createVuetify({
           error: "#F07178",
           success: "#3ECF8E",
           info: "#5AA7FF",
+          warning: "#E0A04A",
         },
       },
     },

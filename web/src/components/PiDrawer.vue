@@ -7,16 +7,16 @@
     :width="smAndDown ? '100%' : 480"
     @update:model-value="onToggle"
   >
-    <div class="d-flex align-start justify-space-between pa-4">
-      <div>
+    <v-toolbar density="compact" color="surface">
+      <v-toolbar-title>
         <div class="text-subtitle-1">pi 对话</div>
-        <div class="text-caption text-medium-emphasis">{{ meta }}</div>
-      </div>
+        <div class="text-caption text-medium-emphasis text-truncate">{{ meta }}</div>
+      </v-toolbar-title>
       <v-btn icon="$close" variant="text" size="small" @click="closePi" />
-    </div>
+    </v-toolbar>
     <v-divider />
     <div ref="chatEl" class="pi-chat pa-4" @scroll="onScroll">
-      <div v-if="!entries.length" class="text-medium-emphasis">{{ empty }}</div>
+      <v-empty-state v-if="!entries.length" :title="empty" />
       <v-card
         v-for="(entry, i) in entries"
         :key="i"

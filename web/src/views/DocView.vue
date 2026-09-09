@@ -2,23 +2,21 @@
   <div>
     <div class="d-flex flex-column flex-sm-row align-sm-start justify-space-between ga-3 mb-4">
       <div>
-        <div class="text-caption text-medium-emphasis mb-1">
-          <router-link to="/">需求</router-link> /
-          <router-link :to="`/r/${jira}`">{{ jira }}</router-link> /
-          {{ doc?.filename }}
-        </div>
+        <v-breadcrumbs :items="crumbs" density="compact" class="px-0 mb-1" />
         <h1 class="text-h5 text-sm-h4">{{ doc?.filename }}</h1>
         <p class="text-medium-emphasis mb-0">
           {{ doc?.filled ? "已填写" : "还是骨架，可以让 agent 写，或在下面改" }}
         </p>
       </div>
-      <v-btn variant="tonal" @click="editing = !editing">
-        {{ editing ? "阅读" : "编辑" }}
-      </v-btn>
+      <v-btn-toggle v-model="mode" mandatory density="comfortable" color="primary" divided>
+        <v-btn value="read">阅读</v-btn>
+        <v-btn value="edit">编辑</v-btn>
+      </v-btn-toggle>
     </div>
-    <v-alert v-if="error" type="error" class="mb-4" variant="tonal">{{ error }}</v-alert>
-    <v-alert v-if="saved" type="success" class="mb-4" variant="tonal">已保存</v-alert>
-    <v-tabs class="mb-4" show-arrows>
+    <v-alert v-if="error" type="error" class="mb-4" closable @click:close="error = ''">
+      {{ error }}
+    </v-alert>
+    <v-tabs class="mb-4" show-arrows color="primary">
       <v-tab :to="`/r/${jira}`">看板</v-tab>
       <v-tab
         v-for="d in docs"
@@ -26,18 +24,22 @@
         :to="`/r/${jira}/docs/${d.slug}`"
       >
         {{ d.filename }}
+        <v-chip v-if="!d.filled" size="x-small" class="ml-2" variant="text">骨架</v-chip>
       </v-tab>
     </v-tabs>
     <v-card v-if="editing" variant="outlined">
       <v-card-text>
         <v-textarea v-model="text" rows="28" auto-grow hide-details spellcheck="false" />
-        <v-btn class="mt-4" color="primary" block :loading="busy" @click="save">保存</v-btn>
+        <div class="d-flex ga-2 mt-4">
+          <v-btn color="primary" :loading="busy" @click="save">保存</v-btn>
+          <v-btn variant="tonal" :disabled="busy" @click="mode = 'read'">取消</v-btn>
+        </div>
       </v-card-text>
     </v-card>
     <v-card v-else variant="outlined">
       <v-card-text>
         <div v-if="doc?.text" class="markdown" v-html="doc.html" />
-        <p v-else class="text-medium-emphasis">空文件</p>
+        <v-empty-state v-else title="空文件" text="切到编辑，或让 agent 填写。" />
       </v-card-text>
     </v-card>
   </div>
@@ -48,27 +50,28 @@ import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { getDoc, getRequirement, saveDoc } from "@/api/client";
 import type { DocMeta, DocPayload } from "@/api/types";
+import { useSnack } from "@/composables/snack";
 
 const route = useRoute();
+const snack = useSnack();
 const jira = computed(() => String(route.params.jira || ""));
 const slug = computed(() => String(route.params.slug || ""));
 const doc = ref<DocPayload | null>(null);
 const docs = ref<DocMeta[]>([]);
 const text = ref("");
-const editing = computed({
-  get: () => route.query.edit === "1" || internalEdit.value,
-  set: (v: boolean) => {
-    internalEdit.value = v;
-  },
-});
-const internalEdit = ref(false);
+const mode = ref<"read" | "edit">(route.query.edit === "1" ? "edit" : "read");
+const editing = computed(() => mode.value === "edit");
 const error = ref("");
-const saved = ref(false);
 const busy = ref(false);
+
+const crumbs = computed(() => [
+  { title: "需求", to: "/" },
+  { title: jira.value, to: `/r/${jira.value}` },
+  { title: doc.value?.filename || slug.value, disabled: true },
+]);
 
 async function load() {
   error.value = "";
-  saved.value = false;
   try {
     const [payload, detail] = await Promise.all([
       getDoc(jira.value, slug.value),
@@ -87,8 +90,8 @@ async function save() {
   error.value = "";
   try {
     doc.value = await saveDoc(jira.value, slug.value, text.value);
-    saved.value = true;
-    internalEdit.value = false;
+    snack.notify("已保存", "success");
+    mode.value = "read";
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {

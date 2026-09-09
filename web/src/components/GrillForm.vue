@@ -12,15 +12,26 @@
       <div v-if="q.body" class="text-body-2 text-medium-emphasis mb-3" style="white-space: pre-wrap">
         {{ q.body }}
       </div>
-      <v-radio-group v-if="q.options?.length" v-model="picked[q.id]" hide-details>
-        <v-radio
+      <v-chip-group
+        v-if="q.options?.length"
+        v-model="picked[q.id]"
+        selected-class="text-primary"
+        mandatory
+        column
+        class="mb-2"
+      >
+        <v-chip
           v-for="opt in q.options"
           :key="opt.id"
           :value="opt.id"
-          :label="`${opt.id}. ${opt.label}`"
-        />
-        <v-radio value="__custom__" label="自定义" />
-      </v-radio-group>
+          :color="picked[q.id] === opt.id ? 'primary' : undefined"
+          variant="outlined"
+          filter
+        >
+          {{ opt.id }}. {{ opt.label }}
+        </v-chip>
+        <v-chip value="__custom__" variant="outlined" filter>自定义</v-chip>
+      </v-chip-group>
       <v-textarea
         v-model="texts[q.id]"
         :placeholder="q.options?.length ? '选「自定义」时填写' : '填写或改写建议'"

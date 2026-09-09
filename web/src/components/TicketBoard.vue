@@ -18,7 +18,7 @@
             @review="$emit('review', $event)"
           />
           <div v-if="!(byState[col] || []).length" class="text-center text-medium-emphasis py-6">
-            —
+            空
           </div>
         </div>
       </div>
@@ -55,6 +55,7 @@ import { computed, ref } from "vue";
 import { useDisplay } from "vuetify";
 import type { Ticket } from "@/api/types";
 import TicketCard from "./TicketCard.vue";
+import { ticketColor } from "@/composables/labels";
 
 const props = defineProps<{ tickets: Ticket[] }>();
 defineEmits<{ implement: [id: string]; review: [id: string] }>();
@@ -100,16 +101,7 @@ const filtered = computed(() => {
 });
 
 function dotColor(col: string) {
-  const colors: Record<string, string> = {
-    pending: "grey",
-    ready: "info",
-    implementing: "primary",
-    implemented: "purple",
-    reviewing: "cyan",
-    blocked: "error",
-    done: "success",
-  };
-  return colors[col] || "grey";
+  return ticketColor(col);
 }
 </script>
 

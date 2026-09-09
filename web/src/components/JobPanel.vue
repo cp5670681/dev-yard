@@ -3,19 +3,31 @@
     <v-card-title class="d-flex align-center flex-wrap ga-3">
       <span>{{ job.action }}{{ tickets }}</span>
       <v-chip size="small" :color="stateColor" variant="tonal">{{ job.state }}</v-chip>
+      <v-progress-circular
+        v-if="job.state === 'running' || job.state === 'queued'"
+        indeterminate
+        size="16"
+        width="2"
+        color="primary"
+      />
       <v-spacer />
       <v-btn
         v-for="run in job.pi_runs || []"
         :key="run.index"
-        variant="text"
+        variant="tonal"
         size="small"
         @click="openPi(job.id, run.index)"
       >
         查看对话{{ (job.pi_runs || []).length > 1 ? ` · ${run.index + 1}` : "" }}
       </v-btn>
     </v-card-title>
+    <v-progress-linear
+      v-if="job.state === 'running' || job.state === 'queued'"
+      indeterminate
+      color="primary"
+    />
     <v-card-text>
-      <pre class="job-log" :class="{ folded: waiting }">{{ job.log }}</pre>
+      <pre class="job-log" :class="{ folded: waiting }">{{ job.log || "等待输出…" }}</pre>
       <GrillForm
         v-if="waiting && job.grill"
         :job-id="job.id"
