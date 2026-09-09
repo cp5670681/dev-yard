@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from dev_yard import gitops, paths, service as yard_service
+from dev_yard.service import extract_req_key
 from dev_yard.config import PI_STAGES, PiSettings, StageModel, load_pi_settings, save_pi_settings
 from dev_yard.pi_catalog import list_pi_catalog
 from dev_yard.web.board import (
@@ -82,8 +83,11 @@ class GrillAnswersIn(BaseModel):
 
 
 class OpenIn(BaseModel):
-    jira: str
+    jira: str = ""
+    key: str = ""
     source: str = "pi"
+    target: str = ""
+    payload: str = ""
     force: bool = False
 
 
@@ -368,24 +372,37 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
 
     @app.post("/open")
     def open_submit(
-        jira: str = Form(...),
+        jira: str = Form(""),
+        key: str = Form(""),
         source: str = Form("pi"),
+        target: str = Form(""),
+        payload: str = Form(""),
         force: str = Form(""),
     ):
-        key = jira.strip().upper()
+        raw_target = target or jira or key
+        req_key = (key or jira).strip()
+        if not req_key:
+            req_key = extract_req_key(raw_target)
+        if not req_key:
+            return RedirectResponse("/open?error=Missing+requirement+key+or+URL", status_code=303)
         try:
-            paths.req_dir(root, key)
+            paths.req_dir(root, req_key)
         except ValueError as e:
             return RedirectResponse(f"/open?error={quote(str(e))}", status_code=303)
         try:
             job = jobs.submit(
                 "open",
-                key,
-                extra={"source": source, "force": bool(force)},
+                req_key,
+                extra={
+                    "source": source,
+                    "target": raw_target,
+                    "payload": payload,
+                    "force": bool(force),
+                },
             )
         except ValueError as e:
             return RedirectResponse(f"/open?error={quote(str(e))}", status_code=303)
-        return RedirectResponse(f"/r/{quote(key)}?job={job.id}", status_code=303)
+        return RedirectResponse(f"/r/{quote(req_key)}?job={job.id}", status_code=303)
 
     @app.get("/r/{jira}")
     def req_page(jira: str):
@@ -495,16 +512,26 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
 
     @app.post("/api/open")
     def api_open(payload: OpenIn):
-        key = payload.jira.strip().upper()
+        raw_target = payload.target or payload.jira or payload.key
+        req_key = (payload.key or payload.jira).strip()
+        if not req_key:
+            req_key = extract_req_key(raw_target)
+        if not req_key:
+            raise HTTPException(400, "Requirement key or target URL is required")
         try:
-            paths.req_dir(root, key)
+            paths.req_dir(root, req_key)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         try:
             job = jobs.submit(
                 "open",
-                key,
-                extra={"source": payload.source, "force": payload.force},
+                req_key,
+                extra={
+                    "source": payload.source,
+                    "target": raw_target,
+                    "payload": payload.payload,
+                    "force": payload.force,
+                },
             )
         except ValueError as e:
             raise HTTPException(400, str(e)) from e

@@ -1,35 +1,47 @@
 ---
 name: fetch-requirement
 description: >
-  用 pi 的 mcp-atlassian-pro 抽取当前 Jira 的产品说明到 reqs/<JIRA>/REQUIREMENT.md。
+  Fetch and format requirement details into reqs/<KEY>/REQUIREMENT.md.
   Use when the user runs `dev-yard req open` or says 打开需求, 抽取需求.
 ---
 
 # fetch-requirement（dev-yard）
 
-用 pi 的 `mcp` 网关、服务器 **`mcp-atlassian-pro`**，只抽 **这一张票** 的当前产品说明。写 `reqs/<JIRA>/REQUIREMENT.md`，本票截图放 `reqs/<JIRA>/assets/`。
+根据给定的需求目标（可能是一个 URL、Issue 标识符、或简要描述），自主发现并调用可用工具，提取并整理完整的产品/功能需求说明。
 
-调用形状：`mcp({ server: "mcp-atlassian-pro", tool: "<name>", args: { ... } })`。不要用 HTTP 爬整站，不要用其它 MCP。
+写入目标：`reqs/<KEY>/REQUIREMENT.md`；相关截图或架构/原型图保存到 `reqs/<KEY>/assets/`。
 
-## 步骤
+## 目标与原则
 
-1. `jira_get_issue`：`issue_key` 为当前 Jira，`fields` 为 `*all`（要产品文档自定义字段），带 comments。
-2. 找本票产品文档：Product Document 字段、描述、remote links。标题常含 Jira key。
-3. `confluence_get_page` 拉 **本票产品页**（`page_id` 或 title+space_key，`convert_to_markdown: true`）。上级模块总览、更新记录旧行：最多一行说明 + URL。
-4. 本票截图：`confluence_get_page_images`（`content_id`）和/或 `jira_get_issue_images`。写到 `assets/`，在 REQUIREMENT.md 里链接。单文件用 `confluence_download_attachment`。
-5. 落盘后停。不要写 `GRILL.md` / `SPEC.md` / `TICKETS.md`。
+1. **自主发现与工具调用**：
+   - 检查当前环境中可用的工具（各类 MCP 工具、API、CLI 命令或 Web 提取工具）。
+   - 根据目标特征自主选择最合适的工具进行数据获取（如 Jira、GitHub、GitLab、飞书、Notion、通用 Web 页面等）。
+   - 提取需求标题、详细描述、关键业务字段（如 PRD 链接、验收标准）及重要讨论或评论。
+2. **处理附件与图片**：
+   - 将需求相关的原型图、UI 截图、架构流程图等下载保存到 `reqs/<KEY>/assets/`。
+   - 在 `REQUIREMENT.md` 中使用相对路径（如 `![UI](assets/screenshot.png)`）进行引用。
+3. **编写标准化 REQUIREMENT.md**：
+   - 保持结构清晰、信息完整：包含需求背景、核心功能目标、详细业务规则、边界与异常流程、验收标准（Acceptance Criteria）。
+   - 仅针对当前需求的范围，避免 dump 无关的历史页面或整站文档。
+4. **落盘边界**：
+   - 必须写入 `reqs/<KEY>/REQUIREMENT.md` 并正常结束退出。
+   - **不要**在此阶段编写 `GRILL.md` / `SPEC.md` / `TICKETS.md`。
 
-## REQUIREMENT.md
+## REQUIREMENT.md 参考结构
 
 ```markdown
-# <JIRA>
-<title>
+# <KEY>
+<需求标题>
 
-## Jira
-summary / type / status / description / 关键自定义字段
+## 需求背景与目标
+...
 
-## Product document (this ticket only)
+## 详细功能规格与业务规则
+...
 
-## Out of scope / not fetched
-跳过的历史页 URL
+## 验收标准 (Acceptance Criteria)
+...
+
+## 相关链接与参考
+...
 ```

@@ -81,15 +81,43 @@ def repo_list() -> None:
 
 @req_app.command("open")
 def req_open(
-    jira: str,
+    target: str = typer.Argument(..., help="Requirement key (e.g. PG-13068, GH-42), URL, or description"),
+    key: Optional[str] = typer.Option(None, "--key", "-k", help="Custom requirement key/ID (overrides auto-extraction)"),
+    text: Optional[str] = typer.Option(None, "--text", "-t", help="Raw requirement text to write directly"),
+    file: Optional[Path] = typer.Option(None, "--file", "-f", help="Local Markdown or text file to import"),
+    none: bool = typer.Option(False, "--none", help="Create empty skeleton only (skip remote fetching)"),
     http: bool = typer.Option(False, "--http", help="Crawl Jira/Confluence over HTTP (downloads extra history)"),
     dry_run: bool = False,
     force: bool = typer.Option(False, "--force", help="Re-open even if phase is past open"),
 ) -> None:
     root = root_opt()
-    source = "http" if http else "pi"
+    req_key = (key or "").strip() or service.extract_req_key(target)
+    if not req_key:
+        _die(ValueError("Could not determine requirement key. Please specify --key."))
+
+    source = "pi"
+    payload = None
+    if none:
+        source = "none"
+    elif text is not None:
+        source = "text"
+        payload = text
+    elif file is not None:
+        source = "file"
+        payload = str(file)
+    elif http:
+        source = "http"
+
     try:
-        d, warning = service.req_open(root, jira, source=source, dry_run=dry_run, force=force)
+        d, warning = service.req_open(
+            root,
+            req_key,
+            source=source,
+            target=target,
+            payload=payload,
+            dry_run=dry_run,
+            force=force,
+        )
     except (ValueError, FileNotFoundError, RuntimeError, GitError) as e:
         _die(e)
     typer.echo(str(d))

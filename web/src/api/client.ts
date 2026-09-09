@@ -61,10 +61,22 @@ export function saveDoc(jira: string, slug: string, body: string) {
   );
 }
 
-export function openRequirement(jira: string, source: string, force: boolean) {
+export function openRequirement(
+  jira: string,
+  source: string = "pi",
+  force: boolean = false,
+  extra?: { target?: string; payload?: string },
+) {
   return api<JobsOut>("/api/open", {
     method: "POST",
-    body: JSON.stringify({ jira, source, force }),
+    body: JSON.stringify({
+      jira,
+      key: jira,
+      source,
+      force,
+      target: extra?.target,
+      payload: extra?.payload,
+    }),
   });
 }
 

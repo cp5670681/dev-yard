@@ -33,8 +33,7 @@ def test_open_form_defaults_to_pi(tmp_path: Path):
     page = _client(yard).get("/open")
     _assert_spa_shell(page)
     text = (Path(__file__).resolve().parents[1] / "web" / "src" / "views" / "OpenView.vue").read_text()
-    assert 'ref("pi")' in text
-    assert "mcp-atlassian-pro" in text
+    assert 'actualSource = "pi"' in text
     assert "Claude" not in text
     assert "query: job ? { job } : {}" in text
 
@@ -871,6 +870,23 @@ def test_api_open_and_reserved_key(tmp_path: Path, monkeypatch):
     reserved = client.post("/api/open", json={"jira": "docs", "source": "none"})
     assert reserved.status_code == 400
     assert "reserved" in reserved.json()["detail"]
+
+    # Test opening with URL target and auto-extracted key
+    url_resp = client.post(
+        "/api/open",
+        json={"target": "https://github.com/my-org/my-repo/issues/101", "source": "none"},
+    )
+    assert url_resp.status_code == 200
+    assert url_resp.json()["jobs"][0]["jira"] == "my-repo-101"
+
+    # Test opening with text payload directly
+    text_resp = client.post(
+        "/api/open",
+        json={"key": "TEXT-REQ", "source": "text", "payload": "# Custom Title\n\nContent"},
+    )
+    assert text_resp.status_code == 200
+    assert text_resp.json()["jobs"][0]["jira"] == "TEXT-REQ"
+    assert (yard / "reqs" / "TEXT-REQ" / "REQUIREMENT.md").read_text() == "# Custom Title\n\nContent"
 
 
 def test_api_save_doc_roundtrip(tmp_path: Path, monkeypatch):

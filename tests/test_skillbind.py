@@ -78,12 +78,10 @@ def test_pi_argv_open_includes_mcp(monkeypatch):
     assert "fetch-requirement" in joined
 
 
-def test_open_prompt_uses_mcp():
+def test_open_prompt():
     p = session_prompt(Path("/tmp"), "open", "AB-1")
     assert "AB-1" in p
     assert "fetch-requirement" in p
-    assert "mcp-atlassian-pro" in p
-    assert "jira_get_issue" in p
     assert "REQUIREMENT.md" in p
 
 

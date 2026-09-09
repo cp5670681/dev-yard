@@ -200,21 +200,35 @@ cp .env.example .env
 ### 2.1 打开需求 — `req open`
 
 ```bash
+# 1. 传入需求 Key 或任意 URL（AI 自主探测环境中可用工具抓取内容与图片）
 uv run dev-yard req open PG-13068
+uv run dev-yard req open https://github.com/my-org/my-repo/issues/42
+uv run dev-yard req open https://jira.company.com/browse/PG-13068
+
+# 2. 直接传入需求文本（0 秒极速创建）
+uv run dev-yard req open --text "需求描述内容..." --key pay-v2
+
+# 3. 导入本地 Markdown / 文本文件
+uv run dev-yard req open --file ./docs/prd.md --key auth-v2
+
+# 4. 仅建空白骨架（后续在 Web 或本地手动写）
+uv run dev-yard req open my-feat --none
 ```
 
-- 创建 `reqs/PG-13068/`（整棵 `reqs/` 已 gitignore，只留本机）。
-- 调 pi + MCP：只抽 **这一张 Jira** 的产品说明和相关截图，写 `REQUIREMENT.md`，图片在 `assets/`。
-- 不爬历史 Confluence、不把上级模块文档整页拉下来。
+- 创建 `reqs/<KEY>/`（整棵 `reqs/` 已 gitignore，只留本机）。
+- 调 pi：AI 自主探测可用工具，只抽 **当前需求** 的产品说明和相关截图，写 `REQUIREMENT.md`，图片在 `assets/`。
 - 若还没有，会补骨架 `GRILL.md` / `SPEC.md` / `TICKETS.md`，并把 `STATUS.yaml` 的 `phase` 设为 `open`。
 
-成功时 stdout 打印需求目录路径。pi 没写 `REQUIREMENT.md` 时会写骨架并在 stderr 提示。
+成功时 stdout 打印需求目录路径。
 
 | 情况 | 命令 |
 |------|------|
 | 先看命令、不写盘 | `req open PG-13068 --dry-run` |
 | 需求已经 grill/freeze 过，要重新抽 | `req open PG-13068 --force`（否则会拒绝把 phase 打回去） |
-| 不用 MCP、走 HTTP（会带历史页，一般不要） | `req open PG-13068 --http` |
+| 直接传入文本内容 | `req open --text "..." --key <KEY>` |
+| 导入本地文档 | `req open --file <PATH> --key <KEY>` |
+| 仅建空白骨架 | `req open <KEY> --none` |
+| 不用 MCP、走旧版 HTTP（会带历史页，一般不要） | `req open PG-13068 --http` |
 
 `pi` 找不到会直接失败，**不会**先删掉已有 `assets/`。
 

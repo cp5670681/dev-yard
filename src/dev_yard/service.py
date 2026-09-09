@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 import shutil
+import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
 
@@ -96,29 +98,99 @@ def repo_add(
     return repo
 
 
+def extract_req_key(target: str) -> str:
+    """Extract or sanitize a requirement key from a URL, issue ID, or description."""
+    s = (target or "").strip()
+    if not s:
+        return ""
+    # 1. Plain identifier (alphanumeric with underscores, hyphens, dots)
+    if not (s.startswith("http://") or s.startswith("https://") or "/" in s or "\\" in s):
+        return s
+
+    # 2. Jira issue URL patterns (/browse/KEY-123, /issues/KEY-123, ?selectedIssue=KEY-123)
+    m = re.search(r"/(?:browse|issues|projects/[^/]+/issues)/([A-Za-z][A-Za-z0-9]+-\d+)", s)
+    if m:
+        return m.group(1).upper()
+    m = re.search(r"[?&]selectedIssue=([A-Za-z][A-Za-z0-9]+-\d+)", s)
+    if m:
+        return m.group(1).upper()
+
+    # 3. GitHub issues / pull requests: github.com/owner/repo/(issues|pull)/123
+    m = re.search(r"github\.com/[^/]+/([^/]+)/(?:issues|pull)/(\d+)", s)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+
+    # 4. GitLab issues / MRs: gitlab.com/.../repo/-/(issues|merge_requests)/123
+    m = re.search(r"/([^/]+)/-/(?:issues|merge_requests)/(\d+)", s)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+
+    # 5. Confluence pageId: pageId=123456
+    m = re.search(r"[?&]pageId=(\d+)", s)
+    if m:
+        return f"CONF-{m.group(1)}"
+
+    # 6. Feishu / Lark doc: feishu.cn/docx/xyz or feishu.cn/wiki/xyz
+    m = re.search(r"(?:feishu|larksuite)\.cn/(?:docx|wiki|docs)/([A-Za-z0-9]+)", s)
+    if m:
+        return f"FEISHU-{m.group(1)[:12]}"
+
+    # 7. General URL: extract sanitized last path segment
+    try:
+        parsed = urllib.parse.urlparse(s)
+        if parsed.scheme in ("http", "https"):
+            path = parsed.path.rstrip("/")
+            if path:
+                last_segment = path.split("/")[-1]
+                cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", last_segment).strip("-.")
+                if cleaned:
+                    return cleaned
+    except Exception:
+        pass
+
+    # 8. Fallback sanitize
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", s).strip("-.")
+    return cleaned or "REQ"
+
+
 def req_open(
     root: Path,
     jira: str,
     source: str = "pi",
+    target: str | None = None,
+    payload: str | None = None,
     dry_run: bool = False,
     force: bool = False,
     on_progress: Callable[[str], None] | None = None,
     runner: Runner | None = None,
 ) -> tuple[Path, str]:
     load_env(root)
-    d = paths.req_dir(root, jira)
+    actual_target = (target or jira).strip()
+    req_key = (
+        jira
+        if not (jira.startswith("http://") or jira.startswith("https://") or "/" in jira or "\\" in jira)
+        else ""
+    ) or extract_req_key(actual_target)
+    if not req_key:
+        req_key = "REQ"
+
+    d = paths.req_dir(root, req_key)
     if dry_run:
         if source == "pi":
             return d, " ".join(
                 pi_argv(root=root, bundle="open", prompt="(dry-run)", print_mode=True)
             )
         if source == "http":
-            return d, f"http fetch {jira} (no request)"
+            return d, f"http fetch {req_key} (no request)"
+        if source == "text":
+            return d, f"write text requirement for {req_key} (dry-run)"
+        if source == "file":
+            return d, f"read file {payload or actual_target} for {req_key} (dry-run)"
         return d, "skipped remote fetch"
     if d.exists() and (d / "STATUS.yaml").exists() and not force:
-        phase = st.load(root, jira).get("phase") or "open"
+        phase = st.load(root, req_key).get("phase") or "open"
         if phase != "open":
-            raise ValueError(f"{jira} is already phase={phase}; pass --force to re-open")
+            raise ValueError(f"{req_key} is already phase={phase}; pass --force to re-open")
     d.mkdir(parents=True, exist_ok=True)
     warning = ""
     if source == "pi":
@@ -136,7 +208,8 @@ def req_open(
             shutil.rmtree(assets)
         snap = _snapshot(d, STAGE_PROTECT["open"])
         r = runner or get_runner(root, "open", print_mode=True)
-        result = r.start(session_prompt(root, "open", jira), root, [d])
+        prompt = session_prompt(root, "open", req_key, target=actual_target)
+        result = r.start(prompt, root, [d])
         restored = _restore(d, snap)
         if on_progress and result.summary:
             on_progress(result.summary)
@@ -147,28 +220,39 @@ def req_open(
                 _unstash_tree(assets, saved_assets)
             raise RuntimeError(result.summary)
         req_md = d / "REQUIREMENT.md"
-        skeleton = REQ_SKELETON.format(key=jira, title=jira, body="")
+        skeleton = REQ_SKELETON.format(key=req_key, title=req_key, body="")
         if not req_md.exists() or req_md.read_text() == skeleton:
             req_md.write_text(skeleton)
             warning = "pi did not write REQUIREMENT.md; wrote skeleton"
+    elif source == "text":
+        content = (payload if payload is not None else actual_target) or ""
+        if not content.strip():
+            content = REQ_SKELETON.format(key=req_key, title=req_key, body="")
+        (d / "REQUIREMENT.md").write_text(content)
+    elif source == "file":
+        src_file = Path(payload or actual_target).expanduser().resolve()
+        if not src_file.exists():
+            raise FileNotFoundError(f"Source file not found: {src_file}")
+        content = src_file.read_text(encoding="utf-8")
+        (d / "REQUIREMENT.md").write_text(content)
     elif source == "http":
-        result = collect_requirement(d, jira, root)
+        result = collect_requirement(d, req_key, root)
         warning = "; ".join(result.warnings)
         (d / "REQUIREMENT.md").write_text(
-            result.markdown or REQ_SKELETON.format(key=jira, title=jira, body="")
+            result.markdown or REQ_SKELETON.format(key=req_key, title=req_key, body="")
         )
     else:
-        (d / "REQUIREMENT.md").write_text(REQ_SKELETON.format(key=jira, title=jira, body=""))
+        (d / "REQUIREMENT.md").write_text(REQ_SKELETON.format(key=req_key, title=req_key, body=""))
         warning = "skipped remote fetch"
     if not (d / "GRILL.md").exists():
-        (d / "GRILL.md").write_text(GRILL_SKELETON.format(key=jira))
+        (d / "GRILL.md").write_text(GRILL_SKELETON.format(key=req_key))
     if not (d / "SPEC.md").exists():
-        (d / "SPEC.md").write_text(SPEC_SKELETON.format(key=jira))
+        (d / "SPEC.md").write_text(SPEC_SKELETON.format(key=req_key))
     if not (d / "TICKETS.md").exists():
-        (d / "TICKETS.md").write_text(TICKETS_SKELETON.format(key=jira))
-    data = st.load(root, jira)
+        (d / "TICKETS.md").write_text(TICKETS_SKELETON.format(key=req_key))
+    data = st.load(root, req_key)
     data["phase"] = "open"
-    st.save(root, jira, data)
+    st.save(root, req_key, data)
     if warning == "pi did not write REQUIREMENT.md; wrote skeleton":
         raise RuntimeError(warning)
     return d, warning

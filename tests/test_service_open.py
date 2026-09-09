@@ -4,7 +4,7 @@ import pytest
 
 from dev_yard import status as st
 from dev_yard.runners import RunResult, Runner
-from dev_yard.service import REQ_SKELETON, init_yard, req_open, status_text
+from dev_yard.service import REQ_SKELETON, extract_req_key, init_yard, req_open, status_text
 
 
 class _OkEmpty(Runner):
@@ -161,3 +161,81 @@ def test_pi_open_restores_other_docs(tmp_path: Path):
     _, warning = req_open(tmp_path, "ABC-9", source="pi", force=True, runner=Hijack())
     assert (d / "GRILL.md").read_text() == grill_before
     assert "GRILL.md" in warning
+
+
+def test_extract_req_key_various_targets():
+    assert extract_req_key("PG-13090") == "PG-13090"
+    assert extract_req_key("https://jira.corp.com/browse/PG-13090") == "PG-13090"
+    assert extract_req_key("https://jira.corp.com/browse/PG-13090?filter=123") == "PG-13090"
+    assert extract_req_key("https://github.com/my-org/my-service/issues/42") == "my-service-42"
+    assert extract_req_key("https://gitlab.com/group/my-be/-/issues/99") == "my-be-99"
+    assert extract_req_key("https://example.feishu.cn/docx/doxcn123456789") == "FEISHU-doxcn1234567"
+    assert extract_req_key("https://example.com/prd/payment-v2") == "payment-v2"
+    assert extract_req_key("custom-feat_01.v2") == "custom-feat_01.v2"
+
+
+def test_req_open_with_text_payload(tmp_path: Path):
+    init_yard(tmp_path)
+    d, warning = req_open(
+        tmp_path,
+        "TEXT-1",
+        source="text",
+        payload="# Custom Text\n\nDirect requirement content.\n",
+    )
+    assert warning == ""
+    assert d == tmp_path / "reqs" / "TEXT-1"
+    assert (d / "REQUIREMENT.md").read_text() == "# Custom Text\n\nDirect requirement content.\n"
+    assert st.load(tmp_path, "TEXT-1")["phase"] == "open"
+
+
+def test_req_open_with_file_payload(tmp_path: Path):
+    init_yard(tmp_path)
+    src_file = tmp_path / "imported_prd.md"
+    src_file.write_text("# Imported PRD\n\nFrom local file.\n")
+    d, warning = req_open(
+        tmp_path,
+        "FILE-1",
+        source="file",
+        payload=str(src_file),
+    )
+    assert warning == ""
+    assert (d / "REQUIREMENT.md").read_text() == "# Imported PRD\n\nFrom local file.\n"
+    assert st.load(tmp_path, "FILE-1")["phase"] == "open"
+
+
+def test_req_open_with_missing_file_raises(tmp_path: Path):
+    init_yard(tmp_path)
+    with pytest.raises(FileNotFoundError, match="Source file not found"):
+        req_open(
+            tmp_path,
+            "FILE-ERR",
+            source="file",
+            payload=str(tmp_path / "nonexistent.md"),
+        )
+
+
+def test_req_open_url_auto_key_with_pi(tmp_path: Path):
+    init_yard(tmp_path)
+    dest = tmp_path / "reqs" / "PG-13090"
+
+    class CapturingRunner(Runner):
+        def __init__(self) -> None:
+            self.captured_prompt = ""
+
+        def start(self, prompt: str, cwd: Path, extra_read_paths: list[Path]) -> RunResult:
+            self.captured_prompt = prompt
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / "REQUIREMENT.md").write_text("# PG-13090\n\nExtracted from URL.\n")
+            return RunResult(ok=True, summary="ok", exit_code=0)
+
+    runner = CapturingRunner()
+    d, warning = req_open(
+        tmp_path,
+        "https://jira.example.com/browse/PG-13090",
+        source="pi",
+        runner=runner,
+    )
+    assert d == dest
+    assert "https://jira.example.com/browse/PG-13090" in runner.captured_prompt
+    assert (d / "REQUIREMENT.md").read_text() == "# PG-13090\n\nExtracted from URL.\n"
+

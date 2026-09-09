@@ -38,10 +38,10 @@ def load_skill(root: Path, name: str) -> str:
 
 
 STAGE_WRITE = {
-    "open": "Write REQUIREMENT.md and optional assets/ for this Jira only.",
+    "open": "Write REQUIREMENT.md and optional assets/ for this requirement only.",
     "grill": (
-        "Write only reqs/<JIRA>/GRILL.md. If a term or ADR is settled, write "
-        "reqs/CONTEXT.md and reqs/docs/adr/ (shared across Jiras). "
+        "Write only reqs/<REQ>/GRILL.md. If a term or ADR is settled, write "
+        "reqs/CONTEXT.md and reqs/docs/adr/ (shared across requirements). "
         "Do not write workspace-root CONTEXT.md or docs/adr. "
         "Do not copy them into source clones or freeze worktrees. "
         "Do not write SPEC.md or TICKETS.md."
@@ -56,16 +56,19 @@ STAGE_WRITE = {
 }
 
 
-def session_prompt(root: Path, name: str, jira: str, extra: str = "") -> str:
+def session_prompt(
+    root: Path, name: str, jira: str, extra: str = "", target: str = ""
+) -> str:
     req = paths.req_dir(root, jira)
     ctx = paths.context_md(root)
     adr = paths.adr_dir(root)
     entry = SKILL_NAMES.get(name, name)
     stage = STAGE_WRITE.get(name, "")
+    target_str = (target or jira).strip()
     if name == "open":
         start = (
-            f"Use `mcp` with server `mcp-atlassian-pro` to fetch {jira} "
-            f"(jira_get_issue, confluence_get_page, confluence_get_page_images). "
+            f"Requirement target: `{target_str}`.\n"
+            f"Autonomously inspect available tools/MCPs/fetchers to retrieve requirement details for `{target_str}`. "
             f"Write `{req / 'REQUIREMENT.md'}` and optional `{req / 'assets'}`."
         )
     else:
@@ -79,7 +82,7 @@ def session_prompt(root: Path, name: str, jira: str, extra: str = "") -> str:
         f"Req dir: {req}\n"
         f"{start}\n"
         f"{stage}\n"
-        f"Do not dump historical Confluence. Do not use ~/.pi/agent/skills copies.\n"
+        f"Do not dump unrelated historical documents. Do not use ~/.pi/agent/skills copies.\n"
         f"{extra}"
     ).strip()
 

@@ -318,6 +318,8 @@ def default_execute(root: Path, job: Job) -> None:
             root,
             job.jira,
             source=source,
+            target=extra.get("target"),
+            payload=extra.get("payload"),
             force=bool(extra.get("force")),
             on_progress=job.append if source != "pi" else None,
             runner=runner,
