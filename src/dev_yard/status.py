@@ -119,3 +119,13 @@ def ready_ids(data: dict[str, Any]) -> list[str]:
 def all_done(data: dict[str, Any]) -> bool:
     tickets = tickets_map(data.get("tickets"))
     return bool(tickets) and all(s.get("state") == "done" for s in tickets.values())
+
+
+def test_passed(data: dict[str, Any]) -> bool:
+    test = data.get("test")
+    return isinstance(test, dict) and test.get("latest_verdict") == "passed"
+
+
+def pipeline_complete(data: dict[str, Any]) -> bool:
+    """True only after a passed test report. Legacy phase=done (contract only) is not complete."""
+    return data.get("phase") == "done" and test_passed(data)

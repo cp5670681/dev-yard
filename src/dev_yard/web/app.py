@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -42,6 +44,8 @@ ACTIONS = {
     "review",
     "contract",
     "fix-contract",
+    "submit-test",
+    "fix-test",
 }
 STEP_LABELS = {
     "open": "抽取",
@@ -51,6 +55,7 @@ STEP_LABELS = {
     "freeze": "冻结",
     "implement": "实现",
     "review": "审查",
+    "testing": "提测",
     "done": "完成",
 }
 ACTION_LABELS = {
@@ -63,6 +68,9 @@ ACTION_LABELS = {
     "review": "审查",
     "contract": "契约审查",
     "fix-contract": "按契约修",
+    "submit-test": "提测",
+    "fill-test-report": "填写测试报告",
+    "fix-test": "按测试报告修",
 }
 
 _ASSET_SRC = re.compile(r'src=(["\'])(?:\./)?assets/([^"\']+)\1')
@@ -97,6 +105,14 @@ class DocSaveIn(BaseModel):
     body: str = ""
 
 
+class TestReportIn(BaseModel):
+    verdict: str
+    body: str
+    summary: str = ""
+    source: str = ""
+    findings: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class StageModelIn(BaseModel):
     provider: str = ""
     model: str = ""
@@ -106,6 +122,18 @@ class PiSettingsIn(BaseModel):
     provider: str = ""
     model: str = ""
     stages: dict[str, StageModelIn] = Field(default_factory=dict)
+
+
+def _bearer_ok(authorization: str | None, token: str) -> bool:
+    raw = (authorization or "").strip()
+    scheme, _, rest = raw.partition(" ")
+    if scheme.lower() != "bearer" or not rest:
+        return False
+    got = rest.strip().encode("utf-8")
+    want = token.encode("utf-8")
+    if len(got) != len(want):
+        return False
+    return hmac.compare_digest(got, want)
 
 
 def check_bind_host(host: str, allow_remote: bool = False) -> None:
@@ -183,7 +211,7 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
         ids: list[str] | None,
         extra: dict,
     ):
-        if action in {"implement", "review", "fix-contract"}:
+        if action in {"implement", "review", "fix-contract", "fix-test"}:
             busy = jobs.busy_tickets(jira, action)
             if busy is None:
                 raise ValueError(f"{jira} already has a running job")
@@ -192,6 +220,12 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
                 if action == "fix-contract":
                     tickets = {t.id: t for t in detail.tickets}
                     wanted = yard_service.from_contract_ids(tickets, None)
+                elif action == "fix-test":
+                    from dev_yard.test_report import from_test_ids
+
+                    tickets = {t.id: t for t in detail.tickets}
+                    findings = (detail.test or {}).get("findings") or []
+                    wanted = from_test_ids(tickets, None, findings)
                 else:
                     wanted = [
                         t.id
@@ -238,6 +272,7 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
             "next": detail.next_label,
             "contract": detail.contract,
             "contract_summary": detail.contract_summary,
+            "test": detail.test,
             "worktrees": detail.worktrees,
             "assets": detail.assets,
             "steps": [
@@ -470,6 +505,45 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         return _jobs_out(submitted)
+
+    def _accept_report(jira: str, payload: TestReportIn, default_source: str):
+        from dev_yard.test_report import (
+            ReportRejected,
+            accept_test_report,
+            parse_inbound,
+        )
+
+        try:
+            report = parse_inbound(payload.model_dump(), default_source)
+            data = accept_test_report(root, jira, report)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+        except ReportRejected as e:
+            msg = str(e)
+            code = 409 if "phase=" in msg or "only accepted" in msg else 422
+            raise HTTPException(code, msg) from e
+        return {
+            "jira": jira,
+            "phase": data.get("phase"),
+            "test": data.get("test"),
+        }
+
+    @app.post("/api/requirements/{jira}/test-report")
+    def api_test_report_local(jira: str, payload: TestReportIn):
+        if payload.source in ("", "api"):
+            payload = payload.model_copy(update={"source": "web"})
+        return _accept_report(jira, payload, "web")
+
+    @app.post("/api/inbound/reqs/{jira}/test-report")
+    def api_test_report_inbound(jira: str, request: Request, payload: TestReportIn):
+        token = os.environ.get("YARD_TEST_REPORT_TOKEN") or ""
+        if not token.strip():
+            raise HTTPException(503, "YARD_TEST_REPORT_TOKEN is not set")
+        if not _bearer_ok(request.headers.get("authorization"), token.strip()):
+            raise HTTPException(401, "invalid or missing bearer token")
+        if not payload.source:
+            payload = payload.model_copy(update={"source": "api"})
+        return _accept_report(jira, payload, "api")
 
     @app.get("/api/jobs")
     def api_jobs():

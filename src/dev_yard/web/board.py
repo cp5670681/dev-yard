@@ -13,9 +13,20 @@ DOC_FILES = {
     "grill": "GRILL.md",
     "spec": "SPEC.md",
     "tickets": "TICKETS.md",
+    "test-report": "TEST-REPORT.md",
 }
 
-PIPELINE = ("open", "grill", "spec", "tickets", "freeze", "implement", "review", "done")
+PIPELINE = (
+    "open",
+    "grill",
+    "spec",
+    "tickets",
+    "freeze",
+    "implement",
+    "review",
+    "testing",
+    "done",
+)
 
 _SKELETONS = {
     "REQUIREMENT.md": lambda jira: REQ_SKELETON.format(key=jira, title=jira, body=""),
@@ -93,6 +104,7 @@ class ReqDetail:
     assets: list[str]
     contract: str | None
     contract_summary: str | None
+    test: dict | None = None
 
 
 def parse_requirement_title(text: str, jira: str) -> str | None:
@@ -195,8 +207,11 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
         worktrees = sorted(str(p) for p in wt_root.iterdir() if p.is_dir())
     assets = _list_assets(req)
     awaiting = _grill_awaiting(req)
-    next_label = _next_label(phase, docs, tickets, awaiting)
-    steps = _steps(phase, docs, tickets, awaiting)
+    test = data.get("test") if isinstance(data.get("test"), dict) else None
+    next_label = _next_label(
+        phase, docs, tickets, awaiting, data.get("contract_review"), test
+    )
+    steps = _steps(phase, docs, tickets, awaiting, data.get("contract_review"), test)
     detail = ReqDetail(
         jira=jira,
         phase=phase,
@@ -210,6 +225,7 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
         assets=assets,
         contract=data.get("contract_review"),
         contract_summary=data.get("contract_summary"),
+        test=test,
     )
     detail.actions = available_actions(detail)
     return detail
@@ -217,9 +233,20 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
 
 def available_actions(detail: ReqDetail) -> list[Action]:
     has_tickets = bool(detail.tickets)
-    frozen = detail.phase in {"frozen", "done"}
+    frozen = detail.phase in {"frozen", "done", "testing"}
     any_implement = any(t.can_implement for t in detail.tickets)
     any_review = any(t.can_review for t in detail.tickets)
+    tickets_done = bool(detail.tickets) and all(t.state == "done" for t in detail.tickets)
+    contract_ok = detail.contract == "passed"
+    test = detail.test or {}
+    can_submit = (
+        tickets_done
+        and contract_ok
+        and detail.phase != "testing"
+        and not st.test_passed({"test": detail.test, "phase": detail.phase})
+    )
+    can_fill = detail.phase == "testing"
+    can_fix_test = detail.phase == "testing" and test.get("latest_verdict") == "failed"
     return [
         Action(
             "open",
@@ -261,6 +288,32 @@ def available_actions(detail: ReqDetail) -> list[Action]:
             ""
             if frozen and detail.contract_summary
             else "需要先 freeze，且已有契约审查摘要",
+        ),
+        Action(
+            "submit-test",
+            "提测",
+            can_submit,
+            ""
+            if can_submit
+            else (
+                "已在提测阶段"
+                if detail.phase == "testing"
+                else "测试报告已通过"
+                if st.test_passed({"test": detail.test})
+                else "需要全部票 done 且契约审查 passed"
+            ),
+        ),
+        Action(
+            "fill-test-report",
+            "填写测试报告",
+            can_fill,
+            "" if can_fill else "需要处于提测阶段",
+        ),
+        Action(
+            "fix-test",
+            "按测试报告修",
+            can_fix_test,
+            "" if can_fix_test else "需要提测阶段且最新报告为 failed",
         ),
     ]
 
@@ -314,7 +367,8 @@ def _doc_view(req: Path, slug: str, filename: str, jira: str) -> DocView:
     path = req / filename
     exists = path.is_file()
     text = path.read_text() if exists else ""
-    skeleton = _SKELETONS[filename](jira).strip()
+    make_skel = _SKELETONS.get(filename)
+    skeleton = make_skel(jira).strip() if make_skel else ""
     filled = exists and text.strip() != skeleton and bool(text.strip())
     if filename == "TICKETS.md" and filled:
         filled = bool(load_tickets(req))
@@ -338,15 +392,21 @@ def _next_label(
     docs: list[DocView],
     tickets: list[TicketView],
     grill_awaiting: bool = False,
+    contract: str | None = None,
+    test: dict | None = None,
 ) -> str:
     by_slug = {d.slug: d for d in docs}
-    if phase == "done":
+    if st.pipeline_complete({"phase": phase, "test": test}):
         return "done"
+    if phase == "testing":
+        if (test or {}).get("latest_verdict") == "failed":
+            return "fix-test"
+        return "fill-test-report"
     if tickets and all(t.state == "done" for t in tickets):
-        return "contract" if phase != "done" else "done"
+        return "submit-test" if contract == "passed" else "contract"
     if any(t.state in _REVIEW_STATES for t in tickets):
         return "review"
-    if phase in {"frozen", "done"}:
+    if phase in {"frozen", "done", "testing"}:
         return "implement"
     if tickets:
         return "freeze"
@@ -364,21 +424,35 @@ def _steps(
     docs: list[DocView],
     tickets: list[TicketView],
     grill_awaiting: bool = False,
+    contract: str | None = None,
+    test: dict | None = None,
 ) -> list[Step]:
     by_slug = {d.slug: d for d in docs}
+    tickets_done = bool(tickets) and all(t.state == "done" for t in tickets)
+    qa_passed = st.test_passed({"test": test})
     flags = {
         "open": by_slug["requirement"].exists,
         "grill": by_slug["grill"].filled and not grill_awaiting,
         "spec": by_slug["spec"].filled,
         "tickets": bool(tickets),
-        "freeze": phase in {"frozen", "done"},
+        "freeze": phase in {"frozen", "done", "testing"},
         "implement": bool(tickets) and all(t.state in _BEYOND_IMPLEMENT for t in tickets),
-        "review": bool(tickets) and all(t.state == "done" for t in tickets),
-        "done": phase == "done",
+        "review": tickets_done,
+        "testing": phase == "testing" or (phase == "done" and qa_passed),
+        "done": phase == "done" and qa_passed,
     }
     current = "done"
     for sid in PIPELINE:
         if not flags[sid]:
             current = sid
             break
-    return [Step(id=sid, done=flags[sid], current=(sid == current and not flags["done"])) for sid in PIPELINE]
+    if tickets_done and contract != "passed" and phase not in {"testing", "done"}:
+        current = "review"
+    if phase == "testing":
+        current = "testing"
+    if tickets_done and contract == "passed" and phase in {"frozen", "done"} and not qa_passed:
+        current = "testing"
+    return [
+        Step(id=sid, done=flags[sid], current=(sid == current and not flags["done"]))
+        for sid in PIPELINE
+    ]

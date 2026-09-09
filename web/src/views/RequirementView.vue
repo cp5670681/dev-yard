@@ -22,34 +22,33 @@
       @done="onJobDone"
     />
     <template v-if="detail">
-      <v-stepper :model-value="stepperValue" alt-labels class="mb-6" hide-actions>
-        <v-stepper-header>
-          <template v-for="(step, i) in detail.steps" :key="step.id">
-            <v-stepper-item
-              :value="i + 1"
-              :title="STEP_LABELS[step.id] || step.id"
-              :complete="step.done"
-              :color="step.current ? 'primary' : step.done ? 'success' : undefined"
-            />
-            <v-divider v-if="i < detail.steps.length - 1" />
-          </template>
-        </v-stepper-header>
-      </v-stepper>
+      <div class="d-flex flex-wrap align-center ga-2 mb-6">
+        <template v-for="(step, i) in detail.steps" :key="step.id">
+          <v-chip
+            :color="step.current ? 'primary' : step.done ? 'success' : undefined"
+            :variant="step.current ? 'flat' : step.done ? 'tonal' : 'outlined'"
+            size="small"
+          >
+            {{ i + 1 }}. {{ STEP_LABELS[step.id] || step.id }}
+          </v-chip>
+          <span v-if="i < detail.steps.length - 1" class="text-medium-emphasis">›</span>
+        </template>
+      </div>
 
       <div class="d-flex flex-wrap align-center ga-2 mb-4">
         <v-tooltip :text="nextAction?.reason || nextAction?.label || ''" :disabled="!nextAction?.reason">
           <template #activator="{ props: tip }">
-            <v-btn
-              v-if="nextAction"
-              v-bind="tip"
-              color="primary"
-              :disabled="!nextAction.enabled"
-              :loading="acting === nextAction.id"
-              :block="!mdAndUp"
-              @click="confirmAction(nextAction.id)"
-            >
-              {{ ACTION_LABELS[nextAction.id] || nextAction.label }}
-            </v-btn>
+            <span v-if="nextAction" v-bind="tip" class="d-inline-block">
+              <v-btn
+                color="primary"
+                :disabled="!nextAction.enabled"
+                :loading="acting === nextAction.id"
+                :block="!mdAndUp"
+                @click="confirmAction(nextAction.id, undefined, nextAction)"
+              >
+                {{ ACTION_LABELS[nextAction.id] || nextAction.label }}
+              </v-btn>
+            </span>
           </template>
         </v-tooltip>
         <template v-if="mdAndUp">
@@ -60,15 +59,16 @@
             :disabled="!a.reason"
           >
             <template #activator="{ props: tip }">
-              <v-btn
-                v-bind="tip"
-                variant="tonal"
-                :disabled="!a.enabled"
-                :loading="acting === a.id"
-                @click="confirmAction(a.id)"
-              >
-                {{ ACTION_LABELS[a.id] || a.label }}
-              </v-btn>
+              <span v-bind="tip" class="d-inline-block" @click="!a.enabled && confirmAction(a.id, undefined, a)">
+                <v-btn
+                  variant="tonal"
+                  :disabled="!a.enabled"
+                  :loading="acting === a.id"
+                  @click="confirmAction(a.id, undefined, a)"
+                >
+                  {{ ACTION_LABELS[a.id] || a.label }}
+                </v-btn>
+              </span>
             </template>
           </v-tooltip>
         </template>
@@ -83,7 +83,7 @@
               :title="ACTION_LABELS[a.id] || a.label"
               :disabled="!a.enabled"
               :subtitle="a.reason || undefined"
-              @click="confirmAction(a.id)"
+              @click="confirmAction(a.id, undefined, a)"
             />
           </v-list>
         </v-menu>
@@ -133,7 +133,11 @@
           </v-row>
         </v-card-text>
       </v-card>
-      <v-expansion-panels v-if="detail.worktrees.length || detail.contract_summary" class="mt-4" variant="accordion">
+      <v-expansion-panels
+        v-if="detail.worktrees.length || detail.contract_summary || detail.test"
+        class="mt-4"
+        variant="accordion"
+      >
         <v-expansion-panel v-if="detail.worktrees.length" title="Worktrees">
           <v-expansion-panel-text>
             <v-list density="compact">
@@ -155,8 +159,51 @@
             <pre class="job-log">{{ detail.contract_summary }}</pre>
           </v-expansion-panel-text>
         </v-expansion-panel>
+        <v-expansion-panel v-if="detail.test" title="测试报告">
+          <v-expansion-panel-text>
+            <p class="mb-2">
+              状态 {{ detail.test.status || "-" }}
+              · 结论 {{ detail.test.latest_verdict || "-" }}
+              · 来源 {{ detail.test.source || "-" }}
+            </p>
+            <p v-if="detail.test.summary" class="text-medium-emphasis">
+              {{ detail.test.summary }}
+            </p>
+          </v-expansion-panel-text>
+        </v-expansion-panel>
       </v-expansion-panels>
     </template>
+
+    <v-dialog v-model="reportForm.open" max-width="720">
+      <v-card>
+        <v-card-title>填写测试报告</v-card-title>
+        <v-card-text>
+          <v-select
+            v-model="reportForm.verdict"
+            label="结论"
+            :items="[
+              { title: '通过 passed', value: 'passed' },
+              { title: '失败 failed', value: 'failed' },
+              { title: '阻塞 blocked', value: 'blocked' },
+            ]"
+          />
+          <v-text-field v-model="reportForm.summary" label="摘要（可选）" class="mt-2" />
+          <v-textarea
+            v-model="reportForm.body"
+            label="报告正文（Markdown）"
+            rows="12"
+            class="mt-2"
+          />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="reportForm.open = false">取消</v-btn>
+          <v-btn color="primary" :loading="acting === 'fill-test-report'" @click="submitReport">
+            提交
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
 
     <v-dialog v-model="confirm.open" max-width="420">
       <v-card>
@@ -189,8 +236,8 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useDisplay } from "vuetify";
 import { mdiContentCopy } from "@mdi/js";
-import { getRequirement, runAction } from "@/api/client";
-import type { ReqDetail } from "@/api/types";
+import { getRequirement, runAction, submitTestReport } from "@/api/client";
+import type { Action, ReqDetail } from "@/api/types";
 import JobPanel from "@/components/JobPanel.vue";
 import TicketBoard from "@/components/TicketBoard.vue";
 import { runningJobs, watchJobs } from "@/state/jobs";
@@ -214,6 +261,12 @@ const previewOpen = computed({
   },
 });
 const confirm = reactive({ open: false, action: "", ticketId: "", text: "" });
+const reportForm = reactive({
+  open: false,
+  verdict: "failed",
+  summary: "",
+  body: "",
+});
 const extraJob = computed(() =>
   typeof route.query.job === "string" ? route.query.job : "",
 );
@@ -230,16 +283,11 @@ const crumbs = computed(() => [
   { title: jira.value, disabled: true },
 ]);
 
-const stepperValue = computed(() => {
-  if (!detail.value) return 1;
-  const idx = detail.value.steps.findIndex((s) => s.current);
-  return idx >= 0 ? idx + 1 : detail.value.steps.filter((s) => s.done).length;
-});
-
 const lede = computed(() => {
   if (!detail.value) return "目录还没写完，任务在跑。";
   const c = detail.value.contract ? ` · 契约 ${detail.value.contract}` : "";
-  const next = STEP_LABELS[detail.value.next] || detail.value.next;
+  const next =
+    ACTION_LABELS[detail.value.next] || STEP_LABELS[detail.value.next] || detail.value.next;
   return `下一步 ${next}${c}`;
 });
 
@@ -283,7 +331,19 @@ async function copy(text: string) {
   }
 }
 
-function confirmAction(action: string, ticketId?: string) {
+function confirmAction(action: string, ticketId?: string, act?: Action) {
+  const meta = act || detail.value?.actions.find((a) => a.id === action);
+  if (meta && !meta.enabled) {
+    snack.notify(meta.reason || "当前不能执行", "info");
+    return;
+  }
+  if (action === "fill-test-report") {
+    reportForm.verdict = "failed";
+    reportForm.summary = "";
+    reportForm.body = "";
+    reportForm.open = true;
+    return;
+  }
   const risky = action === "open" && forceOpen.value;
   const freeze = action === "freeze";
   if (risky || freeze) {
@@ -301,6 +361,25 @@ function confirmAction(action: string, ticketId?: string) {
 function runConfirmed() {
   confirm.open = false;
   void onAction(confirm.action, confirm.ticketId || undefined);
+}
+
+async function submitReport() {
+  error.value = "";
+  acting.value = "fill-test-report";
+  try {
+    await submitTestReport(jira.value, {
+      verdict: reportForm.verdict,
+      body: reportForm.body,
+      summary: reportForm.summary,
+    });
+    reportForm.open = false;
+    snack.notify("测试报告已写入", "success");
+    await load();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    acting.value = "";
+  }
 }
 
 async function onAction(action: string, ticketId?: string) {

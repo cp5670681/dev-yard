@@ -108,6 +108,44 @@ def req_freeze(jira: str) -> None:
         typer.echo(str(p))
 
 
+@req_app.command("submit-test")
+def req_submit_test(jira: str) -> None:
+    """Mark the requirement as submitted for third-party testing."""
+    from dev_yard.test_report import ReportRejected, submit_test
+
+    root = root_opt()
+    try:
+        data = submit_test(root, jira)
+    except (ValueError, FileNotFoundError, ReportRejected) as e:
+        _die(e)
+    typer.echo(f"{jira} phase={data.get('phase')} test={data.get('test', {}).get('status')}")
+
+
+@req_app.command("accept-test")
+def req_accept_test(
+    jira: str,
+    verdict: str = typer.Option(..., "--verdict", help="passed | failed | blocked"),
+    body_file: Path = typer.Option(..., "--body-file", help="Markdown report file"),
+    summary: str = typer.Option("", "--summary"),
+    source: str = typer.Option("cli", "--source"),
+) -> None:
+    """Ingest a test report while phase is testing."""
+    from dev_yard.test_report import ReportRejected, accept_test_report, parse_inbound
+
+    root = root_opt()
+    try:
+        text = body_file.read_text()
+        report = parse_inbound(
+            {"verdict": verdict, "body": text, "summary": summary, "source": source},
+            default_source="cli",
+        )
+        data = accept_test_report(root, jira, report)
+    except (ValueError, FileNotFoundError, ReportRejected, OSError) as e:
+        _die(e)
+    test = data.get("test") or {}
+    typer.echo(f"{jira} phase={data.get('phase')} verdict={test.get('latest_verdict')}")
+
+
 @ticket_app.command("start")
 def ticket_start(jira: str, ticket_id: str) -> None:
     root = root_opt()
@@ -181,6 +219,11 @@ def implement(
         "--from-contract",
         help="Re-implement using STATUS contract_summary (default: last ticket per repo)",
     ),
+    from_test: bool = typer.Option(
+        False,
+        "--from-test",
+        help="Re-implement using the latest failed TEST-REPORT.md",
+    ),
 ) -> None:
     root = root_opt()
     try:
@@ -191,6 +234,7 @@ def implement(
             dry_run=dry_run,
             print_mode=print_mode,
             from_contract=from_contract,
+            from_test=from_test,
         )
     except (ValueError, GitError, KeyError, FileNotFoundError) as e:
         _die(e)

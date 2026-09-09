@@ -335,9 +335,14 @@ def test_default_execute_implement_injects_runner(tmp_path: Path, git_src: Path,
     captured: dict = {}
 
     def fake_implement(
-        root, jira, ids, dry_run=False, print_mode=False, runner=None, from_contract=False
+        root, jira, ids, dry_run=False, print_mode=False, runner=None, from_contract=False, from_test=False
     ):
-        captured.update(print_mode=print_mode, runner=runner, from_contract=from_contract)
+        captured.update(
+            print_mode=print_mode,
+            runner=runner,
+            from_contract=from_contract,
+            from_test=from_test,
+        )
         return ["T1"]
 
     monkeypatch.setattr("dev_yard.web.jobs.service.implement", fake_implement)

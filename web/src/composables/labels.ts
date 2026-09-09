@@ -6,6 +6,7 @@ export const PHASE_COLOR: Record<string, string> = {
   freeze: "purple",
   implement: "warning",
   review: "secondary",
+  testing: "orange",
   done: "success",
 };
 
@@ -27,6 +28,7 @@ export const STEP_LABELS: Record<string, string> = {
   freeze: "冻结",
   implement: "实现",
   review: "审查",
+  testing: "提测",
   done: "完成",
 };
 
@@ -36,6 +38,9 @@ export const ACTION_LABELS: Record<string, string> = {
   freeze: "冻结 worktree",
   contract: "契约审查",
   "fix-contract": "按契约修",
+  "submit-test": "提测",
+  "fill-test-report": "填写测试报告",
+  "fix-test": "按测试报告修",
   repo_add: "仓库 · clone",
 };
 

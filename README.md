@@ -25,8 +25,10 @@ uv run dev-yard tickets PG-13068           # pi TUI：写 TICKETS.md（每张票
 uv run dev-yard req freeze PG-13068        # 按票里出现过的仓建 req/PG-13068 worktree
 uv run dev-yard implement PG-13068         # 所有 ready 票；成功后停在 implemented
 # 契约审查后修缺口：uv run dev-yard implement PG-13068 --from-contract
-uv run dev-yard review PG-13068            # 审查 implemented 的票 → done
-uv run dev-yard review PG-13068 --contract # 跨仓契约（必须已经 freeze）
+uv run dev-yard review PG-13068            # 审查 implemented 的票
+uv run dev-yard review PG-13068 --contract # 跨仓契约（必须已经 freeze；通过后才能提测）
+uv run dev-yard req submit-test PG-13068   # 提测；第三方测完推报告，或 Web 手填
+uv run dev-yard implement PG-13068 --from-test  # 按失败的 TEST-REPORT.md 修代码
 uv run dev-yard status PG-13068
 uv run dev-yard web                 # 本机看板：看状态、读/改文档、一键跑阶段（pi -p）
 
@@ -185,6 +187,7 @@ cp .env.example .env
 | `JIRA_USERNAME`、`JIRA_EMAIL` 或 `JIRA_USER` | 账号 |
 | `JIRA_PASSWORD`、`JIRA_API_TOKEN` 或 `JIRA_TOKEN` | 密码或 token |
 | `CONFLUENCE_BASE_URL` | 可选 |
+| `YARD_TEST_REPORT_TOKEN` | 第三方推测试报告：`POST /api/inbound/reqs/{jira}/test-report` 的 Bearer。未配置则该入口 503。Web 手填不走这个 token |
 | `CONFLUENCE_USERNAME` / `CONFLUENCE_PASSWORD` | 可选，缺省复用 Jira 账号 |
 | `YARD_PI` / `YARD_PI_PROVIDER` / `YARD_PI_MODEL` | 见上；阶段级覆盖写在 `repos.yaml` 的 `pi:` |
 

@@ -72,6 +72,21 @@ export function runAction(
   );
 }
 
+export function submitTestReport(
+  jira: string,
+  payload: {
+    verdict: string;
+    body: string;
+    summary?: string;
+    findings?: { id?: string; title?: string; detail?: string; repo?: string }[];
+  },
+) {
+  return api<{ jira: string; phase: string; test: ReqDetail["test"] }>(
+    `/api/requirements/${encodeURIComponent(jira)}/test-report`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
 export function listRepos() {
   return api<Repo[]>("/api/repos");
 }

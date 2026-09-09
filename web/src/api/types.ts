@@ -87,6 +87,15 @@ export interface ReqDetail {
   next: string;
   contract: string | null;
   contract_summary: string | null;
+  test: {
+    status?: string;
+    latest_id?: string;
+    latest_verdict?: string;
+    source?: string;
+    received_at?: string;
+    summary?: string;
+    findings?: { id?: string; title?: string; detail?: string; repo?: string }[];
+  } | null;
   worktrees: string[];
   assets: string[];
   steps: Step[];

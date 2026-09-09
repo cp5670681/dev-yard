@@ -62,6 +62,7 @@ def init_yard(root: Path) -> None:
     if not example.exists():
         example.write_text(
             "JIRA_BASE_URL=\nJIRA_USERNAME=\nJIRA_PASSWORD=\nCONFLUENCE_BASE_URL=\n"
+            "YARD_TEST_REPORT_TOKEN=\n"
         )
     paths.repos_dir(root).mkdir(exist_ok=True)
     paths.reqs_dir(root).mkdir(exist_ok=True)
@@ -443,6 +444,10 @@ _CLAIM = {
         "implementing",
         {"ready", "blocked", "implementing", "implemented", "reviewing", "done"},
     ),
+    "fix-test": (
+        "implementing",
+        {"ready", "blocked", "implementing", "implemented", "reviewing", "done"},
+    ),
 }
 
 _FROM_CONTRACT_STATES = {
@@ -461,6 +466,7 @@ def _implement_prompt_extra(
     repo: str,
     last_summary: str | None,
     contract_summary: str | None = None,
+    test_report: str | None = None,
 ) -> str:
     extra = f"Ticket: {tid} — {title}\nRepo alias: {repo}\nStay in this worktree."
     if last_summary and "REVIEW_FAILED" in last_summary:
@@ -475,6 +481,12 @@ def _implement_prompt_extra(
             "violations in this report that belong to this ticket's repo; do not "
             "expand scope; optional smells may stay.\n"
             f"{contract_summary}"
+        )
+    if test_report:
+        extra += (
+            "\n\nPrevious test report. Fix only failed findings in this report "
+            "that belong to this ticket's repo; do not expand scope.\n"
+            f"{test_report}"
         )
     return extra
 
@@ -525,26 +537,47 @@ def implement(
     print_mode: bool = False,
     runner: Runner | None = None,
     from_contract: bool = False,
+    from_test: bool = False,
 ) -> list[str]:
+    if from_contract and from_test:
+        raise ValueError("from_contract and from_test are mutually exclusive")
+    from dev_yard.test_report import from_test_ids, latest_report_path
+
     req = paths.req_dir(root, jira)
     tickets = {t.id: t for t in load_tickets(req)}
+    test_body = ""
     with st.jira_lock(jira):
         data = st.sync_tickets(st.load(root, jira), list(tickets.values()))
         st.refresh_ready(data)
         if not dry_run:
             st.save(root, jira, data)
         contract_summary = (data.get("contract_summary") or "").strip()
+        test_slot = data.get("test") if isinstance(data.get("test"), dict) else {}
         if from_contract:
             if not contract_summary:
                 raise ValueError("no contract_summary; run review --contract first")
             targets = from_contract_ids(tickets, ids)
+        elif from_test:
+            if (test_slot or {}).get("latest_verdict") != "failed":
+                raise ValueError(
+                    "no failed test report; submit-test and accept a failed report first"
+                )
+            report_path = latest_report_path(root, jira)
+            if not report_path.is_file():
+                raise ValueError(f"missing {report_path}")
+            test_body = report_path.read_text()
+            targets = from_test_ids(tickets, ids, test_slot.get("findings") or [])
         else:
             targets = ids or st.ready_ids(data)
     runner = runner or get_runner(root, "implement", dry_run=dry_run, print_mode=print_mode)
     ran: list[str] = []
     extra = [req / "SPEC.md", req / "TICKETS.md"]
-    allowed = _FROM_CONTRACT_STATES if from_contract else {"ready", "blocked", "implementing"}
-    skip_state_check = ids is not None and not from_contract
+    allowed = (
+        _FROM_CONTRACT_STATES
+        if from_contract or from_test
+        else {"ready", "blocked", "implementing"}
+    )
+    skip_state_check = ids is not None and not from_contract and not from_test
     for tid in targets:
         t = tickets.get(tid)
         if not t:
@@ -569,6 +602,11 @@ def implement(
             slot["state"] = "implementing"
             if from_contract and data.get("phase") == "done":
                 data["phase"] = "frozen"
+            if from_test and data.get("phase") == "testing":
+                data["phase"] = "frozen"
+                ts = data.get("test") if isinstance(data.get("test"), dict) else {}
+                ts["status"] = "fixing"
+                data["test"] = ts
             st.save(root, jira, data)
             if _needs_child(data, t) and not slot.get("child_worktree"):
                 ticket_start(root, jira, tid)
@@ -587,6 +625,7 @@ def implement(
                 t.repo,
                 last_summary,
                 contract_summary if from_contract else None,
+                test_body if from_test else None,
             ),
         )
         result = runner.start(prompt, cwd, extra)
@@ -657,8 +696,6 @@ def review(
         blocked = _review_blocked(result)
         data["contract_review"] = "failed" if blocked else "passed"
         data["contract_summary"] = result.summary
-        if not blocked and st.all_done(data):
-            data["phase"] = "done"
         st.save(root, jira, data)
         return ["__contract__"]
 
@@ -739,4 +776,9 @@ def status_text(root: Path, jira: str | None) -> str:
             lines.append(f"  {tid}  {slot.get('state')}  repo={slot.get('repo')}  child={child}")
         if data.get("contract_review"):
             lines.append(f"  contract={data.get('contract_review')}")
+        test = data.get("test") if isinstance(data.get("test"), dict) else None
+        if test:
+            lines.append(
+                f"  test={test.get('status')} verdict={test.get('latest_verdict') or '-'}"
+            )
     return "\n".join(lines) if lines else "(no requirements)"

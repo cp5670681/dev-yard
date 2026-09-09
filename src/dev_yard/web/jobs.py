@@ -16,7 +16,7 @@ from dev_yard.runners import RunResult, Runner, clip_summary, pi_argv
 
 Execute = Callable[[Path, "Job"], None]
 _TERMINAL = {"ok", "error"}
-_TICKET_ACTIONS = {"implement", "review", "fix-contract"}
+_TICKET_ACTIONS = {"implement", "review", "fix-contract", "fix-test"}
 
 
 def format_sse(event: str, data: Any) -> str:
@@ -331,6 +331,12 @@ def default_execute(root: Path, job: Job) -> None:
         for p in created:
             job.append(str(p))
         return
+    if job.action == "submit-test":
+        from dev_yard.test_report import submit_test
+
+        data = submit_test(root, job.jira)
+        job.append(f"{job.jira} phase={data.get('phase')}")
+        return
     bundle = {
         "grill": "grill",
         "spec": "spec",
@@ -339,6 +345,7 @@ def default_execute(root: Path, job: Job) -> None:
         "review": "review",
         "contract": "review",
         "fix-contract": "implement",
+        "fix-test": "implement",
     }.get(job.action)
     if bundle is None:
         raise ValueError(f"unknown action {job.action}")
@@ -354,7 +361,7 @@ def default_execute(root: Path, job: Job) -> None:
             raise RuntimeError(f"{job.action} failed")
         job.append(f"{job.action} finished")
         return
-    if job.action in {"implement", "fix-contract"}:
+    if job.action in {"implement", "fix-contract", "fix-test"}:
         ran = service.implement(
             root,
             job.jira,
@@ -362,6 +369,7 @@ def default_execute(root: Path, job: Job) -> None:
             print_mode=True,
             runner=runner,
             from_contract=job.action == "fix-contract",
+            from_test=job.action == "fix-test",
         )
         job.append("ran: " + (", ".join(ran) if ran else "(none)"))
         return

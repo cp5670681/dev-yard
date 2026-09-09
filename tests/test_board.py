@@ -55,7 +55,7 @@ def test_list_and_detail_after_open(tmp_path: Path, monkeypatch):
     assert detail.title is None
     assert detail.phase == "open"
     assert [d.filename for d in detail.docs] == list(DOC_FILES.values())
-    assert all(d.exists for d in detail.docs)
+    assert all(d.exists for d in detail.docs if d.slug != "test-report")
     assert not any(d.filled for d in detail.docs)
     assert detail.tickets == []
     ids = {a.id: a for a in detail.actions}
@@ -109,6 +109,55 @@ def test_frozen_ready_implement(tmp_path: Path, git_src: Path, monkeypatch):
     assert ids["contract"].enabled
     assert not ids["fix-contract"].enabled
     assert detail.worktrees
+
+
+def test_ready_for_submit_test_marks_testing_current(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _yard(tmp_path)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-7", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    req_freeze(yard, "AB-7")
+    data = st.load(yard, "AB-7")
+    data["tickets"]["T1"]["state"] = "done"
+    data["contract_review"] = "passed"
+    st.save(yard, "AB-7", data)
+    detail = requirement_detail(yard, "AB-7")
+    assert detail.next_label == "submit-test"
+    by_id = {s.id: s for s in detail.steps}
+    assert by_id["review"].done
+    assert not by_id["testing"].done
+    assert by_id["testing"].current
+    assert not by_id["done"].done
+    assert not by_id["done"].current
+    ids = {a.id: a for a in detail.actions}
+    assert ids["submit-test"].enabled
+    assert not ids["fill-test-report"].enabled
+
+
+def test_legacy_done_without_test_report_is_not_complete(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _yard(tmp_path)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-8", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    req_freeze(yard, "AB-8")
+    data = st.load(yard, "AB-8")
+    data["tickets"]["T1"]["state"] = "done"
+    data["phase"] = "done"
+    data["contract_review"] = "passed"
+    st.save(yard, "AB-8", data)
+    detail = requirement_detail(yard, "AB-8")
+    assert detail.next_label == "submit-test"
+    assert {s.id: s.current for s in detail.steps}["testing"]
+    ids = {a.id: a for a in detail.actions}
+    assert ids["submit-test"].enabled
 
 
 def test_fix_contract_enabled_with_summary(tmp_path: Path, git_src: Path, monkeypatch):
