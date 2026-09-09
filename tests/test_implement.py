@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from dev_yard import status as st
-from dev_yard.runners import DryRunRunner, RunResult
+from dev_yard.runners import DryRunRunner, RunResult, clip_summary
 from dev_yard.service import implement, init_yard, repo_add, req_freeze, req_open, review
 
 
@@ -183,3 +183,63 @@ def test_review_marker_blocks_even_on_exit_zero(tmp_path: Path, git_src: Path, m
     implement(yard, "AB-15", None, runner=DryRunRunner())
     review(yard, "AB-15", None, runner=_FailReview())
     assert st.load(yard, "AB-15")["tickets"]["T1"]["state"] == "blocked"
+
+
+class _Capture:
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    def start(self, prompt, cwd, extra_read_paths):
+        self.prompts.append(prompt)
+        return RunResult(ok=True, summary="fixed")
+
+
+def test_implement_blocked_after_review_includes_report(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-19")
+    implement(yard, "AB-19", None, runner=DryRunRunner())
+    review(yard, "AB-19", None, runner=_FailReview())
+    cap = _Capture()
+    ran = implement(yard, "AB-19", ["T1"], runner=cap)
+    assert ran == ["T1"]
+    assert "Previous review failed" in cap.prompts[0]
+    assert "REVIEW_FAILED" in cap.prompts[0]
+    assert "nits" in cap.prompts[0]
+    assert st.load(yard, "AB-19")["tickets"]["T1"]["state"] == "implemented"
+
+
+def test_implement_ready_does_not_include_review_report(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-20")
+    cap = _Capture()
+    implement(yard, "AB-20", None, runner=cap)
+    assert "Previous review failed" not in cap.prompts[0]
+
+
+def test_implement_blocked_without_review_marker_skips_report(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-21")
+    data = st.load(yard, "AB-21")
+    data["tickets"]["T1"]["state"] = "blocked"
+    data["tickets"]["T1"]["last_summary"] = "pi exit 1"
+    st.save(yard, "AB-21", data)
+    cap = _Capture()
+    implement(yard, "AB-21", ["T1"], runner=cap)
+    assert "Previous review failed" not in cap.prompts[0]
+
+
+def test_clip_summary_keeps_review_tail():
+    body = ("noise\n" * 20000) + "## Spec\nmissing field\nREVIEW_FAILED\n"
+    clipped = clip_summary(body, "review")
+    assert "REVIEW_FAILED" in clipped
+    assert clipped.endswith("REVIEW_FAILED")
+    assert len(clipped) <= 32000

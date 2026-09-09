@@ -11,11 +11,28 @@ from dev_yard.config import resolve_pi_choice
 from dev_yard.skillbind import skill_dirs
 
 
+_SUMMARY_MAX = 4000
+_REVIEW_SUMMARY_MAX = 32000
+
+
 @dataclass
 class RunResult:
     ok: bool
     summary: str
     exit_code: int = 0
+
+
+def clip_summary(raw: str, bundle: str = "") -> str:
+    text = raw.strip()
+    if not text:
+        return ""
+    limit = _REVIEW_SUMMARY_MAX if bundle == "review" else _SUMMARY_MAX
+    if len(text) <= limit:
+        return text
+    # Findings and REVIEW_FAILED sit at the end of pi -p output.
+    if bundle == "review":
+        return text[-limit:]
+    return text[:limit]
 
 
 class Runner:
@@ -119,7 +136,7 @@ class PiRunner(Runner):
             code = proc.wait()
             raw = "".join(chunks)
             blocked = code != 0 or "REVIEW_FAILED" in raw
-            summary = raw.strip()[:4000]
+            summary = clip_summary(raw, self.bundle)
             return RunResult(
                 ok=not blocked,
                 summary=summary,

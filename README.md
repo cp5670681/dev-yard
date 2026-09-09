@@ -341,7 +341,7 @@ PG-13068  phase=frozen
 
 票状态机：`pending → ready → implementing → implemented → reviewing → done | blocked`。
 
-`blocked` 处理：改代码或改票后，`implement <JIRA> T1` 指定票重跑（指定 id 不要求当前是 ready）。
+`blocked` 处理：改代码或改票后，`implement <JIRA> T1` 指定票重跑（指定 id 不要求当前是 ready）。若上次是审查失败（摘要含 `REVIEW_FAILED`，Web / `--print` 会留下报告正文），重跑 implement 会把该报告打进提示，只修硬违规和 Spec 缺口。交互 TUI 审查通常只记下退出码，不会带报告正文。
 
 ### 2.9 本机 Web 控制台 — `web`
 

@@ -16,6 +16,7 @@ description: >
 - 本票条目：id、repo、验收
 - `.pi/skills/tdd/SKILL.md` — 在 spec 已约定的缝上 red-green
 - 该仓代码与测试习惯
+- 启动提示若含 `Previous review failed` 与审查报告：只修硬违规和 Spec 缺口，不要扩范围；气味可留
 
 ## 做法
 

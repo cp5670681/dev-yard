@@ -422,6 +422,17 @@ _CLAIM = {
 }
 
 
+def _implement_prompt_extra(tid: str, title: str, repo: str, last_summary: str | None) -> str:
+    extra = f"Ticket: {tid} — {title}\nRepo alias: {repo}\nStay in this worktree."
+    if last_summary and "REVIEW_FAILED" in last_summary:
+        extra += (
+            "\n\nPrevious review failed. Fix only hard violations and Spec gaps "
+            "in this report; do not expand scope; optional smells may stay.\n"
+            f"{last_summary}"
+        )
+    return extra
+
+
 def claim_run(root: Path, jira: str, action: str, ids: list[str]) -> list[str]:
     spec = _CLAIM.get(action)
     if spec is None or not ids:
@@ -484,6 +495,7 @@ def implement(
                 continue
             if slot.get("state") not in {"ready", "blocked", "implementing"} and ids is None:
                 continue
+            last_summary = slot.get("last_summary")
             slot["state"] = "implementing"
             st.save(root, jira, data)
             if _needs_child(data, t) and not slot.get("child_worktree"):
@@ -497,7 +509,7 @@ def implement(
             root,
             "implement",
             jira,
-            extra=f"Ticket: {tid} — {t.title}\nRepo alias: {t.repo}\nStay in this worktree.",
+            extra=_implement_prompt_extra(tid, t.title, t.repo, last_summary),
         )
         result = runner.start(prompt, cwd, extra)
         with st.jira_lock(jira):

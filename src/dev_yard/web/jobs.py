@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 from dev_yard import grill_round, paths, service
 from dev_yard.pi_session import load_conversation
-from dev_yard.runners import RunResult, Runner, pi_argv
+from dev_yard.runners import RunResult, Runner, clip_summary, pi_argv
 
 Execute = Callable[[Path, "Job"], None]
 _TERMINAL = {"ok", "error"}
@@ -289,7 +289,7 @@ class JobLogRunner(Runner):
         code = proc.wait()
         raw = "".join(chunks)
         blocked = code != 0 or "REVIEW_FAILED" in raw
-        summary = raw.strip()[:4000] or f"pi exit {code}"
+        summary = clip_summary(raw, self.bundle) or f"pi exit {code}"
         return RunResult(
             ok=not blocked,
             summary=summary,
