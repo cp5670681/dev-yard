@@ -138,12 +138,12 @@ import {
   mdiTune,
   mdiViewDashboardOutline,
 } from "@mdi/js";
-import { getMeta } from "@/api/client";
+import { getMeta, listRequirements } from "@/api/client";
 import type { JobBrief, Meta } from "@/api/types";
 import { ACTION_LABELS } from "@/composables/labels";
 import { jobHref, runningJobs, watchJobs } from "@/state/jobs";
 import { provideSnack } from "@/composables/snack";
-import { recentJiras, touchRecent } from "@/composables/recents";
+import { pruneRecents, recentJiras, touchRecent } from "@/composables/recents";
 import PiDrawer from "@/components/PiDrawer.vue";
 
 const snack = provideSnack();
@@ -201,6 +201,12 @@ onMounted(async () => {
     meta.value = await getMeta();
   } catch {
     meta.value = null;
+  }
+  try {
+    const items = await listRequirements();
+    pruneRecents(items.map((i) => i.jira));
+  } catch {
+    /* keep recents if list fails */
   }
 });
 onUnmounted(() => stop?.());

@@ -16,7 +16,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from dev_yard import paths, service as yard_service
+from dev_yard import gitops, paths, service as yard_service
 from dev_yard.config import PI_STAGES, PiSettings, StageModel, load_pi_settings, save_pi_settings
 from dev_yard.pi_catalog import list_pi_catalog
 from dev_yard.web.board import (
@@ -461,6 +461,23 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
     @app.get("/api/requirements/{jira}")
     def api_detail(jira: str):
         return _requirement_payload(detail_or_404(jira))
+
+    @app.delete("/api/requirements/{jira}")
+    def api_delete(jira: str):
+        if paths.is_reserved_req_name(jira):
+            raise HTTPException(404, f"no requirement {jira}")
+        for job in jobs.running():
+            if job.jira.upper() == jira.strip().upper():
+                raise HTTPException(
+                    409, f"{jira} 有进行中的任务（{job.action}），结束后再删"
+                )
+        try:
+            yard_service.req_delete(root, jira)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+        except (ValueError, gitops.GitError, OSError) as e:
+            raise HTTPException(400, str(e)) from e
+        return {"ok": True, "jira": jira}
 
     @app.get("/api/requirements/{jira}/docs/{slug}")
     def api_doc(jira: str, slug: str):

@@ -8,9 +8,20 @@
           <span v-if="detail?.title" class="me-2">{{ jira }}</span>{{ lede }}
         </p>
       </div>
-      <v-chip v-if="detail" :color="phaseColor(detail.phase)" variant="tonal">
-        {{ detail.phase }}
-      </v-chip>
+      <div class="d-flex align-center ga-2">
+        <v-chip v-if="detail" :color="phaseColor(detail.phase)" variant="tonal">
+          {{ detail.phase }}
+        </v-chip>
+        <v-btn
+          v-if="detail"
+          variant="text"
+          color="error"
+          :prepend-icon="mdiDeleteOutline"
+          @click="deleteOpen = true"
+        >
+          删除需求
+        </v-btn>
+      </div>
     </div>
     <v-alert v-if="error" type="error" class="mb-4" closable @click:close="error = ''">
       {{ error }}
@@ -205,6 +216,21 @@
       </v-card>
     </v-dialog>
 
+    <v-dialog v-model="deleteOpen" max-width="480">
+      <v-card>
+        <v-card-title>删除需求？</v-card-title>
+        <v-card-text>
+          将删除 <strong>{{ jira }}</strong> 的文档、截图和本票 worktree，并去掉对应本地分支。
+          不会改 Jira，也不会动共用术语和 ADR。此操作不可恢复。
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="deleteOpen = false">取消</v-btn>
+          <v-btn color="error" :loading="acting === 'delete'" @click="doDelete">删除</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <v-dialog v-model="confirm.open" max-width="420">
       <v-card>
         <v-card-title>确认操作</v-card-title>
@@ -235,13 +261,14 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useDisplay } from "vuetify";
-import { mdiContentCopy } from "@mdi/js";
-import { getRequirement, runAction, submitTestReport } from "@/api/client";
+import { mdiContentCopy, mdiDeleteOutline } from "@mdi/js";
+import { deleteRequirement, getRequirement, runAction, submitTestReport } from "@/api/client";
 import type { Action, ReqDetail } from "@/api/types";
 import JobPanel from "@/components/JobPanel.vue";
 import TicketBoard from "@/components/TicketBoard.vue";
 import { runningJobs, watchJobs } from "@/state/jobs";
 import { ACTION_LABELS, phaseColor, STEP_LABELS } from "@/composables/labels";
+import { forgetRecent } from "@/composables/recents";
 import { useSnack } from "@/composables/snack";
 
 const { mdAndUp } = useDisplay();
@@ -261,6 +288,7 @@ const previewOpen = computed({
   },
 });
 const confirm = reactive({ open: false, action: "", ticketId: "", text: "" });
+const deleteOpen = ref(false);
 const reportForm = reactive({
   open: false,
   verdict: "failed",
@@ -361,6 +389,22 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
 function runConfirmed() {
   confirm.open = false;
   void onAction(confirm.action, confirm.ticketId || undefined);
+}
+
+async function doDelete() {
+  error.value = "";
+  acting.value = "delete";
+  try {
+    await deleteRequirement(jira.value);
+    forgetRecent(jira.value);
+    deleteOpen.value = false;
+    snack.notify(`已删除 ${jira.value}`, "success");
+    await router.push("/");
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    acting.value = "";
+  }
 }
 
 async function submitReport() {

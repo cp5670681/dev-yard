@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 
@@ -200,6 +201,61 @@ def req_freeze(root: Path, jira: str) -> list[Path]:
     st.refresh_ready(data)
     st.save(root, jira, data)
     return created
+
+
+def req_delete(root: Path, jira: str) -> None:
+    """Remove this Jira's docs, worktrees, and local branches. Shared glossary/ADR stay."""
+    d = paths.req_dir(root, jira)
+    if not d.exists() or not paths.is_req_dir(d):
+        raise FileNotFoundError(f"no requirement {jira}")
+    with st.jira_lock(jira):
+        _req_delete_locked(root, jira, d)
+
+
+def _req_delete_locked(root: Path, jira: str, d: Path) -> None:
+    repos = load_repos(root)
+    data = st.load(root, jira) if (d / "STATUS.yaml").is_file() else {"tickets": {}}
+    tickets = st.tickets_map(data.get("tickets"))
+
+    for tid, slot in tickets.items():
+        child = slot.get("child_worktree")
+        alias = slot.get("repo")
+        repo = repos.get(alias) if alias else None
+        if child and repo:
+            gitops.worktree_remove(repo.source_path(root), Path(child))
+            gitops.branch_delete(repo.source_path(root), _child_branch(jira, tid))
+
+    child_root = root / ".yard-worktrees" / jira
+    if child_root.is_dir():
+        for alias_dir in child_root.iterdir():
+            if not alias_dir.is_dir():
+                continue
+            repo = repos.get(alias_dir.name)
+            for ticket_dir in alias_dir.iterdir():
+                if not ticket_dir.is_dir() or not repo:
+                    continue
+                gitops.worktree_remove(repo.source_path(root), ticket_dir)
+                gitops.branch_delete(
+                    repo.source_path(root), _child_branch(jira, ticket_dir.name)
+                )
+        shutil.rmtree(child_root, ignore_errors=True)
+
+    aliases: set[str] = set()
+    wt_root = d / "worktrees"
+    if wt_root.is_dir():
+        aliases.update(p.name for p in wt_root.iterdir() if p.is_dir())
+    for slot in tickets.values():
+        if slot.get("repo"):
+            aliases.add(str(slot["repo"]))
+    for alias in aliases:
+        repo = repos.get(alias)
+        if not repo:
+            continue
+        source = repo.source_path(root)
+        gitops.worktree_remove(source, paths.req_worktree(root, jira, alias))
+        gitops.branch_delete(source, f"req/{jira}")
+
+    shutil.rmtree(d)
 
 
 def ticket_start(root: Path, jira: str, ticket_id: str) -> Path:

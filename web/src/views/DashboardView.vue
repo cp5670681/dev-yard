@@ -49,9 +49,20 @@
                     {{ item.jira }}
                   </div>
                 </div>
-                <v-chip size="small" :color="phaseColor(item.phase)" variant="tonal" class="flex-shrink-0">
-                  {{ item.phase }}
-                </v-chip>
+                <div class="d-flex align-center ga-1 flex-shrink-0">
+                  <v-chip size="small" :color="phaseColor(item.phase)" variant="tonal">
+                    {{ item.phase }}
+                  </v-chip>
+                  <v-btn
+                    icon
+                    size="small"
+                    variant="text"
+                    aria-label="删除需求"
+                    @click.prevent.stop="askDelete(item)"
+                  >
+                    <v-icon :icon="mdiDeleteOutline" size="18" />
+                  </v-btn>
+                </div>
               </div>
               <p class="text-medium-emphasis my-3">
                 下一步 · {{ STEP_LABELS[item.next] || item.next }}
@@ -70,27 +81,72 @@
         </v-hover>
       </v-col>
     </v-row>
+    <v-dialog v-model="confirm.open" max-width="480">
+      <v-card>
+        <v-card-title>删除需求？</v-card-title>
+        <v-card-text>
+          将删除 <strong>{{ confirm.jira }}</strong> 的文档、截图和本票 worktree，并去掉对应本地分支。
+          不会改 Jira，也不会动共用术语和 ADR。此操作不可恢复。
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="confirm.open = false">取消</v-btn>
+          <v-btn color="error" :loading="confirm.busy" @click="doDelete">删除</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
-import { mdiClipboardTextOffOutline, mdiPlus } from "@mdi/js";
-import { listRequirements } from "@/api/client";
+import { onMounted, reactive, ref } from "vue";
+import { mdiClipboardTextOffOutline, mdiDeleteOutline, mdiPlus } from "@mdi/js";
+import { deleteRequirement, listRequirements } from "@/api/client";
 import type { ReqSummary } from "@/api/types";
 import { phaseColor, STEP_LABELS } from "@/composables/labels";
+import { forgetRecent, pruneRecents } from "@/composables/recents";
+import { useSnack } from "@/composables/snack";
 
 const items = ref<ReqSummary[]>([]);
 const error = ref("");
 const loading = ref(true);
+const snack = useSnack();
+const confirm = reactive({ open: false, jira: "", busy: false });
 
-onMounted(async () => {
+async function load() {
+  error.value = "";
   try {
     items.value = await listRequirements();
+    pruneRecents(items.value.map((i) => i.jira));
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    loading.value = false;
   }
+}
+
+function askDelete(item: ReqSummary) {
+  confirm.jira = item.jira;
+  confirm.open = true;
+}
+
+async function doDelete() {
+  confirm.busy = true;
+  try {
+    await deleteRequirement(confirm.jira);
+    forgetRecent(confirm.jira);
+    confirm.open = false;
+    snack.notify(`已删除 ${confirm.jira}`, "success");
+    await load();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+    snack.notify(error.value, "error");
+  } finally {
+    confirm.busy = false;
+  }
+}
+
+onMounted(async () => {
+  loading.value = true;
+  await load();
+  loading.value = false;
 });
 </script>

@@ -454,6 +454,7 @@ pi 从 cwd 加载 `AGENTS.md`。文档阶段（grill/spec/tickets）没有 bash�
 | `dev-yard repo list` | 列出已登记仓 |
 | `dev-yard req open <JIRA>` | `--http` `--dry-run` `--force` |
 | `dev-yard req freeze <JIRA>` | 按 TICKETS 建需求 worktree |
+| `dev-yard req delete <JIRA>` | 删本票文档和 worktree（不动 Jira / 术语 / ADR） |
 | `dev-yard ticket start <JIRA> <票id>` | 并行子 worktree |
 | `dev-yard ticket done <JIRA> <票id>` | 合进需求分支并删子 wt / 子分支 |
 | `dev-yard grill <JIRA>` | `--dry-run` `--print` |
@@ -491,7 +492,6 @@ pi 从 cwd 加载 `AGENTS.md`。文档阶段（grill/spec/tickets）没有 bash�
 
 - 自动 `gh pr create`、自动建 Jira 子票
 - 同仓并行改同一文件的自动语义合并
-- 清理需求级 worktree（子 worktree 会清）
 - 把任一阶段换成 Claude / Grok（固定 pi）
 
 ---

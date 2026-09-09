@@ -97,6 +97,17 @@ def req_open(
         typer.echo(warning, err=True)
 
 
+@req_app.command("delete")
+def req_delete(jira: str) -> None:
+    """Remove this requirement's docs and worktrees. Does not touch Jira or shared glossary/ADR."""
+    root = root_opt()
+    try:
+        service.req_delete(root, jira)
+    except (ValueError, FileNotFoundError, GitError) as e:
+        _die(e)
+    typer.echo(f"deleted {jira}")
+
+
 @req_app.command("freeze")
 def req_freeze(jira: str) -> None:
     root = root_opt()

@@ -15,14 +15,32 @@ function load(): string[] {
 
 export const recentJiras = ref<string[]>(load());
 
-export function touchRecent(jira: string) {
-  const key = jira.trim();
-  if (!key) return;
-  const next = [key, ...recentJiras.value.filter((j) => j !== key)].slice(0, MAX);
+function persist(next: string[]) {
   recentJiras.value = next;
   try {
     sessionStorage.setItem(KEY, JSON.stringify(next));
   } catch {
     /* ignore quota */
   }
+}
+
+export function touchRecent(jira: string) {
+  const key = jira.trim();
+  if (!key) return;
+  persist([key, ...recentJiras.value.filter((j) => j !== key)].slice(0, MAX));
+}
+
+export function forgetRecent(jira: string) {
+  const key = jira.trim();
+  if (!key) return;
+  const next = recentJiras.value.filter((j) => j !== key);
+  if (next.length === recentJiras.value.length) return;
+  persist(next);
+}
+
+export function pruneRecents(valid: Iterable<string>) {
+  const keep = new Set(valid);
+  const next = recentJiras.value.filter((j) => keep.has(j));
+  if (next.length === recentJiras.value.length) return;
+  persist(next);
 }

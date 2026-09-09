@@ -41,6 +41,13 @@ export function getRequirement(jira: string) {
   return api<ReqDetail>(`/api/requirements/${encodeURIComponent(jira)}`);
 }
 
+export function deleteRequirement(jira: string) {
+  return api<{ ok: boolean; jira: string }>(
+    `/api/requirements/${encodeURIComponent(jira)}`,
+    { method: "DELETE" },
+  );
+}
+
 export function getDoc(jira: string, slug: string) {
   return api<DocPayload>(
     `/api/requirements/${encodeURIComponent(jira)}/docs/${encodeURIComponent(slug)}`,
