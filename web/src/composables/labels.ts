@@ -21,13 +21,21 @@ export const TICKET_COLOR: Record<string, string> = {
 
 export const STEP_LABELS: Record<string, string> = {
   open: "抽取",
-  grill: "Grill",
+  grill: "对齐",
   spec: "Spec",
   tickets: "拆票",
   freeze: "冻结",
   implement: "实现",
   review: "审查",
   done: "完成",
+};
+
+export const ACTION_LABELS: Record<string, string> = {
+  ...STEP_LABELS,
+  spec: "写 Spec",
+  freeze: "冻结 worktree",
+  contract: "契约审查",
+  repo_add: "仓库 · clone",
 };
 
 export function phaseColor(phase: string) {

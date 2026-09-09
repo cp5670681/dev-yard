@@ -187,7 +187,7 @@ def available_actions(detail: ReqDetail) -> list[Action]:
             True,
             "phase 已过 open 时需勾选重置，否则拒绝；重置会删 assets/",
         ),
-        Action("grill", "Grill", True),
+        Action("grill", "对齐", True),
         Action("spec", "写 Spec", True),
         Action("tickets", "拆票", True),
         Action(

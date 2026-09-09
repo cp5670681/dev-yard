@@ -1,7 +1,7 @@
 <template>
   <v-card class="mb-4" variant="outlined">
     <v-card-title class="d-flex align-center flex-wrap ga-3">
-      <span>{{ job.action }}{{ tickets }}</span>
+      <span>{{ actionLabel }}{{ tickets }}</span>
       <v-chip size="small" :color="stateColor" variant="tonal">{{ job.state }}</v-chip>
       <v-progress-circular
         v-if="job.state === 'running' || job.state === 'queued'"
@@ -44,6 +44,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { getJob } from "@/api/client";
 import type { JobSnapshot } from "@/api/types";
 import { openPi } from "@/state/pi";
+import { ACTION_LABELS } from "@/composables/labels";
 import GrillForm from "./GrillForm.vue";
 
 const props = defineProps<{ jobId: string; initial?: JobSnapshot | null }>();
@@ -62,6 +63,9 @@ const job = ref<JobSnapshot>(
   },
 );
 
+const actionLabel = computed(
+  () => ACTION_LABELS[job.value.action] || job.value.action,
+);
 const waiting = computed(() => job.value.state === "waiting");
 const tickets = computed(() => {
   const ids = job.value.ticket_ids || [];
@@ -79,7 +83,7 @@ const hint = computed(() => {
     if (job.value.state === "running" || job.value.state === "queued") {
       return "正在生成本轮问题…";
     }
-    return "Grill 按轮提问。每轮生成后在上方表单里选或改，提交后再问下一轮。";
+    return "对齐按轮提问。每轮生成后在上方表单里选或改，提交后再问下一轮。";
   }
   return "抽取 / Spec / Tickets / Implement / Review 在网页里用 pi -p 一次性跑完。";
 });

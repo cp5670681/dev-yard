@@ -7,6 +7,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from dev_yard.config import resolve_pi_choice
 from dev_yard.skillbind import skill_dirs
 
 
@@ -60,8 +61,7 @@ def pi_argv(
     # Do not --append-system-prompt AGENTS.md: pi already loads it from cwd.
     # Do not @-attach REQUIREMENT.md: large dumps break tool-call arguments.
     argv = [cmd, "--approve", "--no-skills"]
-    provider = os.environ.get("YARD_PI_PROVIDER")
-    model = os.environ.get("YARD_PI_MODEL")
+    provider, model = resolve_pi_choice(root, bundle)
     if provider:
         argv.extend(["--provider", provider])
     if model:

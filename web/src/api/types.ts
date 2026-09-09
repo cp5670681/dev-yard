@@ -116,6 +116,29 @@ export interface Meta {
   root_name: string;
 }
 
+export interface StageModelCfg {
+  provider: string;
+  model: string;
+}
+
+export interface PiCatalogProvider {
+  id: string;
+  models: string[];
+}
+
+export interface PiCatalog {
+  providers: PiCatalogProvider[];
+  error: string | null;
+}
+
+export interface PiSettings {
+  provider: string;
+  model: string;
+  stages: Record<string, StageModelCfg>;
+  stage_ids: string[];
+  catalog: PiCatalog;
+}
+
 export interface PiEntry {
   role?: string;
   text?: string;

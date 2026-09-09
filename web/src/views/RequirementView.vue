@@ -46,7 +46,7 @@
               :block="!mdAndUp"
               @click="confirmAction(nextAction.id)"
             >
-              {{ nextAction.label }}
+              {{ ACTION_LABELS[nextAction.id] || nextAction.label }}
             </v-btn>
           </template>
         </v-tooltip>
@@ -54,7 +54,7 @@
           <v-tooltip
             v-for="a in otherActions"
             :key="a.id"
-            :text="a.reason || a.label"
+            :text="a.reason || ACTION_LABELS[a.id] || a.label"
             :disabled="!a.reason"
           >
             <template #activator="{ props: tip }">
@@ -65,7 +65,7 @@
                 :loading="acting === a.id"
                 @click="confirmAction(a.id)"
               >
-                {{ a.label }}
+                {{ ACTION_LABELS[a.id] || a.label }}
               </v-btn>
             </template>
           </v-tooltip>
@@ -78,7 +78,7 @@
             <v-list-item
               v-for="a in otherActions"
               :key="a.id"
-              :title="a.label"
+              :title="ACTION_LABELS[a.id] || a.label"
               :disabled="!a.enabled"
               :subtitle="a.reason || undefined"
               @click="confirmAction(a.id)"
@@ -192,7 +192,7 @@ import type { ReqDetail } from "@/api/types";
 import JobPanel from "@/components/JobPanel.vue";
 import TicketBoard from "@/components/TicketBoard.vue";
 import { runningJobs, watchJobs } from "@/state/jobs";
-import { phaseColor, STEP_LABELS } from "@/composables/labels";
+import { ACTION_LABELS, phaseColor, STEP_LABELS } from "@/composables/labels";
 import { useSnack } from "@/composables/snack";
 
 const { mdAndUp } = useDisplay();
@@ -313,7 +313,7 @@ async function onAction(action: string, ticketId?: string) {
     if (job) {
       await router.replace({ query: { ...route.query, job } });
     }
-    snack.notify(`已启动 ${action}`, "success");
+    snack.notify(`已启动 ${ACTION_LABELS[action] || action}`, "success");
     await load();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);

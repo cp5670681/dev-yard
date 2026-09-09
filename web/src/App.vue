@@ -61,6 +61,12 @@
           subtitle="抽取一张 Jira"
           :prepend-icon="mdiPlusBoxOutline"
         />
+        <v-list-item
+          to="/settings"
+          title="模型"
+          subtitle="按阶段选 pi 模型"
+          :prepend-icon="mdiTune"
+        />
       </v-list>
       <v-divider class="my-2" />
       <v-list-subheader v-if="runningJobs.length">进行中</v-list-subheader>
@@ -129,10 +135,12 @@ import {
   mdiPlusBoxOutline,
   mdiProgressClock,
   mdiSourceRepository,
+  mdiTune,
   mdiViewDashboardOutline,
 } from "@mdi/js";
 import { getMeta } from "@/api/client";
 import type { JobBrief, Meta } from "@/api/types";
+import { ACTION_LABELS } from "@/composables/labels";
 import { jobHref, runningJobs, watchJobs } from "@/state/jobs";
 import { provideSnack } from "@/composables/snack";
 import { recentJiras, touchRecent } from "@/composables/recents";
@@ -182,6 +190,7 @@ const barTitle = computed(() => {
   const name = String(route.name || "");
   if (name === "requirement" || name === "doc") return String(route.params.jira || "需求");
   if (name === "repos") return "仓库";
+  if (name === "settings") return "模型";
   if (name === "open") return "打开需求";
   return "需求";
 });
@@ -201,9 +210,10 @@ function onNav() {
 }
 
 function jobLabel(job: JobBrief) {
-  if (job.action === "repo_add") return "仓库 · clone";
+  const action = ACTION_LABELS[job.action] || job.action;
+  if (job.action === "repo_add") return action;
   const tickets = (job.ticket_ids || []).join(",");
-  return `${job.jira} · ${job.action}${tickets ? " " + tickets : ""}`;
+  return `${job.jira} · ${action}${tickets ? " " + tickets : ""}`;
 }
 </script>
 

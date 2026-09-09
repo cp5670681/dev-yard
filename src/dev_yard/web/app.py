@@ -15,6 +15,8 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from dev_yard import paths, service as yard_service
+from dev_yard.config import PI_STAGES, PiSettings, StageModel, load_pi_settings, save_pi_settings
+from dev_yard.pi_catalog import list_pi_catalog
 from dev_yard.web.board import (
     DOC_FILES,
     PIPELINE,
@@ -33,7 +35,7 @@ SPA = HERE / "spa"
 ACTIONS = {"open", "grill", "spec", "tickets", "freeze", "implement", "review", "contract"}
 STEP_LABELS = {
     "open": "抽取",
-    "grill": "Grill",
+    "grill": "对齐",
     "spec": "Spec",
     "tickets": "拆票",
     "freeze": "冻结",
@@ -43,7 +45,7 @@ STEP_LABELS = {
 }
 ACTION_LABELS = {
     "open": "抽取需求",
-    "grill": "Grill",
+    "grill": "对齐",
     "spec": "写 Spec",
     "tickets": "拆票",
     "freeze": "冻结 worktree",
@@ -82,6 +84,17 @@ class ActionIn(BaseModel):
 
 class DocSaveIn(BaseModel):
     body: str = ""
+
+
+class StageModelIn(BaseModel):
+    provider: str = ""
+    model: str = ""
+
+
+class PiSettingsIn(BaseModel):
+    provider: str = ""
+    model: str = ""
+    stages: dict[str, StageModelIn] = Field(default_factory=dict)
 
 
 def check_bind_host(host: str, allow_remote: bool = False) -> None:
@@ -279,6 +292,10 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
         except ValueError as e:
             return RedirectResponse(f"/repos?error={quote(str(e))}", status_code=303)
         return RedirectResponse(f"/repos?job={submitted.id}", status_code=303)
+
+    @app.get("/settings")
+    def settings_page():
+        return spa_index()
 
     @app.get("/open")
     def open_page():
@@ -554,6 +571,51 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         return {"ok": True}
+
+    def _pi_settings_out():
+        s = load_pi_settings(root)
+        stages = {
+            name: {
+                "provider": (s.stages.get(name).provider if name in s.stages else None) or "",
+                "model": (s.stages.get(name).model if name in s.stages else None) or "",
+            }
+            for name in PI_STAGES
+        }
+        return {
+            "provider": s.provider or "",
+            "model": s.model or "",
+            "stages": stages,
+            "stage_ids": list(PI_STAGES),
+            "catalog": list_pi_catalog(),
+        }
+
+    @app.get("/api/pi")
+    def api_pi_get():
+        return _pi_settings_out()
+
+    @app.put("/api/pi")
+    def api_pi_put(payload: PiSettingsIn):
+        unknown = [n for n in payload.stages if n not in PI_STAGES]
+        if unknown:
+            raise HTTPException(400, f"unknown pi stages: {', '.join(unknown)}")
+        try:
+            save_pi_settings(
+                root,
+                PiSettings(
+                    provider=payload.provider.strip() or None,
+                    model=payload.model.strip() or None,
+                    stages={
+                        name: StageModel(
+                            provider=entry.provider.strip() or None,
+                            model=entry.model.strip() or None,
+                        )
+                        for name, entry in payload.stages.items()
+                    },
+                ),
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return _pi_settings_out()
 
     @app.get("/api/repos")
     def api_repos():

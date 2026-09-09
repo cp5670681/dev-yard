@@ -100,13 +100,32 @@ def test_pi_argv_print_mode(monkeypatch):
     assert "bash" not in tools
 
 
-def test_pi_argv_model_from_env(monkeypatch):
+def test_pi_argv_model_from_env(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("YARD_PI_PROVIDER", "rcc")
     monkeypatch.setenv("YARD_PI_MODEL", "MiniMax-M3")
-    root = Path(__file__).resolve().parents[1]
-    argv = pi_argv(root=root, bundle="review", prompt="r", binary="pi")
+    (tmp_path / "repos.yaml").write_text("repos: {}\n")
+    argv = pi_argv(root=tmp_path, bundle="review", prompt="r", binary="pi")
     assert argv[argv.index("--provider") + 1] == "rcc"
     assert argv[argv.index("--model") + 1] == "MiniMax-M3"
+
+
+def test_pi_argv_model_from_yaml_stage(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("YARD_PI_PROVIDER", raising=False)
+    monkeypatch.delenv("YARD_PI_MODEL", raising=False)
+    (tmp_path / "repos.yaml").write_text(
+        "repos: {}\n"
+        "pi:\n"
+        "  provider: rcc\n"
+        "  model: MiniMax-M3\n"
+        "  stages:\n"
+        "    grill:\n"
+        "      model: gpt-5\n"
+    )
+    grill = pi_argv(root=tmp_path, bundle="grill", prompt="g", binary="pi")
+    spec = pi_argv(root=tmp_path, bundle="spec", prompt="s", binary="pi")
+    assert grill[grill.index("--provider") + 1] == "rcc"
+    assert grill[grill.index("--model") + 1] == "gpt-5"
+    assert spec[spec.index("--model") + 1] == "MiniMax-M3"
 
 
 def test_review_prompt_starts_at_spec():

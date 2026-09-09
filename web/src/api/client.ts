@@ -3,6 +3,7 @@ import type {
   JobsOut,
   JobSnapshot,
   Meta,
+  PiSettings,
   Repo,
   ReqDetail,
   ReqSummary,
@@ -84,6 +85,21 @@ export function addRepo(payload: {
 }) {
   return api<JobsOut>("/api/repos", {
     method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getPiSettings() {
+  return api<PiSettings>("/api/pi");
+}
+
+export function savePiSettings(payload: {
+  provider: string;
+  model: string;
+  stages: Record<string, { provider: string; model: string }>;
+}) {
+  return api<PiSettings>("/api/pi", {
+    method: "PUT",
     body: JSON.stringify(payload),
   });
 }

@@ -1,6 +1,18 @@
 # Copy entries into repos.yaml, or use `dev-yard repo add`.
 # path: optional existing clone. grill/spec/tickets will NOT checkout it;
 # it must already be on default_base.
+#
+# pi: optional. Names must already exist in your pi config.
+# Stage entries override the top-level provider/model; those override
+# YARD_PI_PROVIDER / YARD_PI_MODEL. Empty = omit --provider/--model.
+# pi:
+#   provider: rcc
+#   model: MiniMax-M3
+#   stages:
+#     grill:
+#       model: gpt-5
+#     implement:
+#       model: claude-sonnet
 repos:
   backend:
     url: git@host:team/backend.git

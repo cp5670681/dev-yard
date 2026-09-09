@@ -140,9 +140,25 @@ pi install npm:pi-mcp-adapter    # 若还没有
 
 ```bash
 export YARD_PI=/绝对路径/pi          # 仅当 `pi` 不在 PATH
-export YARD_PI_PROVIDER=rcc          # 可选，传给 pi --provider
-export YARD_PI_MODEL=MiniMax-M3      # 可选，传给 pi --model
+export YARD_PI_PROVIDER=rcc          # 可选，全局默认，传给 pi --provider
+export YARD_PI_MODEL=MiniMax-M3      # 可选，全局默认，传给 pi --model
 ```
+
+按阶段用不同模型时，写在 `repos.yaml` 的 `pi:`（控制台「模型」页也会改这里）。名称必须已经在本机 pi 里配好：
+
+```yaml
+pi:
+  provider: rcc
+  model: MiniMax-M3          # 未单独写的阶段用这个
+  stages:
+    grill:
+      model: gpt-5           # 只覆盖 grill
+    implement:
+      provider: anthropic
+      model: claude-sonnet
+```
+
+解析顺序：**阶段覆盖 → `pi.provider`/`pi.model` → 环境变量**。都空则不传 `--provider`/`--model`，交给 pi 自己的默认。
 
 可写进仓库根 `.env`（已 gitignore）。`dev-yard` 启动时会加载它，不覆盖已经 export 的变量。
 
@@ -169,7 +185,7 @@ cp .env.example .env
 | `JIRA_PASSWORD`、`JIRA_API_TOKEN` 或 `JIRA_TOKEN` | 密码或 token |
 | `CONFLUENCE_BASE_URL` | 可选 |
 | `CONFLUENCE_USERNAME` / `CONFLUENCE_PASSWORD` | 可选，缺省复用 Jira 账号 |
-| `YARD_PI` / `YARD_PI_PROVIDER` / `YARD_PI_MODEL` | 见上 |
+| `YARD_PI` / `YARD_PI_PROVIDER` / `YARD_PI_MODEL` | 见上；阶段级覆盖写在 `repos.yaml` 的 `pi:` |
 
 ---
 
@@ -334,7 +350,7 @@ uv run dev-yard web              # http://127.0.0.1:8765 ，并打开浏览器
 uv run dev-yard web --no-open --port 8765
 ```
 
-页面可以：看需求列表和票看板、读/改四份 Markdown、登记仓库、打开 Jira、点抽取 / Grill / Spec / 拆票 / 冻结 / 实现 / 审查。Agent 阶段在网页里一律 `pi -p` 一次性跑完并刷日志；需要 Grill 访谈时仍用 CLI 的 pi TUI。默认只监听 `127.0.0.1`；绑 `0.0.0.0` 之类非回环地址会被拒绝（控制台无鉴权，还能跑 `pi --approve`）。真要对外听，显式传 `--allow-remote`。JSON 在 `/api/requirements`、`/api/docs`。
+页面可以：看需求列表和票看板、读/改四份 Markdown、登记仓库、打开 Jira、点抽取 / 对齐 / Spec / 拆票 / 冻结 / 实现 / 审查。Agent 阶段在网页里一律 `pi -p` 一次性跑完并刷日志；需要对齐访谈时仍用 CLI 的 pi TUI。默认只监听 `127.0.0.1`；绑 `0.0.0.0` 之类非回环地址会被拒绝（控制台无鉴权，还能跑 `pi --approve`）。真要对外听，显式传 `--allow-remote`。JSON 在 `/api/requirements`、`/api/docs`。
 
 ### 2.10 开 PR（CLI 不会做）
 

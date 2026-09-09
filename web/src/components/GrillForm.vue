@@ -12,26 +12,11 @@
       <div v-if="q.body" class="text-body-2 text-medium-emphasis mb-3" style="white-space: pre-wrap">
         {{ q.body }}
       </div>
-      <v-chip-group
+      <GrillOptionList
         v-if="q.options?.length"
         v-model="picked[q.id]"
-        selected-class="text-primary"
-        mandatory
-        column
-        class="mb-2"
-      >
-        <v-chip
-          v-for="opt in q.options"
-          :key="opt.id"
-          :value="opt.id"
-          :color="picked[q.id] === opt.id ? 'primary' : undefined"
-          variant="outlined"
-          filter
-        >
-          {{ opt.id }}. {{ opt.label }}
-        </v-chip>
-        <v-chip value="__custom__" variant="outlined" filter>自定义</v-chip>
-      </v-chip-group>
+        :options="q.options"
+      />
       <v-textarea
         v-model="texts[q.id]"
         :placeholder="q.options?.length ? '选「自定义」时填写' : '填写或改写建议'"
@@ -52,6 +37,7 @@
 import { reactive, ref } from "vue";
 import { submitAnswers } from "@/api/client";
 import type { GrillRound } from "@/api/types";
+import GrillOptionList from "@/components/GrillOptionList.vue";
 
 const props = defineProps<{ jobId: string; grill: GrillRound }>();
 const emit = defineEmits<{ submitted: [] }>();

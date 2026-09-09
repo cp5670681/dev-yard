@@ -2,7 +2,15 @@ from pathlib import Path
 
 import pytest
 
-from dev_yard.config import git_project_name, load_repos
+from dev_yard.config import (
+    PiSettings,
+    StageModel,
+    git_project_name,
+    load_pi_settings,
+    load_repos,
+    resolve_pi_choice,
+    save_pi_settings,
+)
 from dev_yard.service import init_yard, repo_add
 
 
@@ -49,3 +57,42 @@ def test_repo_add_blank_alias_uses_project_name(tmp_path: Path, git_src: Path):
     )
     assert repo.alias == git_src.name
     assert git_src.name in load_repos(yard)
+
+
+def test_save_repos_keeps_pi_section(tmp_path: Path, git_src: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    save_pi_settings(
+        yard,
+        PiSettings(provider="rcc", model="MiniMax-M3", stages={"grill": StageModel(model="gpt-5")}),
+    )
+    repo_add(yard, "be", str(git_src), "main", "be", str(git_src))
+    pi = load_pi_settings(yard)
+    assert pi.provider == "rcc"
+    assert pi.model == "MiniMax-M3"
+    assert pi.stages["grill"].model == "gpt-5"
+
+
+def test_resolve_pi_choice_stage_beats_env(tmp_path: Path, monkeypatch):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    monkeypatch.setenv("YARD_PI_PROVIDER", "env-p")
+    monkeypatch.setenv("YARD_PI_MODEL", "env-m")
+    save_pi_settings(
+        yard,
+        PiSettings(
+            provider="yaml-p",
+            model="yaml-m",
+            stages={"implement": StageModel(provider="stage-p", model="stage-m")},
+        ),
+    )
+    assert resolve_pi_choice(yard, "implement") == ("stage-p", "stage-m")
+    assert resolve_pi_choice(yard, "grill") == ("yaml-p", "yaml-m")
+
+
+def test_resolve_pi_choice_falls_back_to_env(tmp_path: Path, monkeypatch):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    monkeypatch.setenv("YARD_PI_PROVIDER", "rcc")
+    monkeypatch.setenv("YARD_PI_MODEL", "MiniMax-M3")
+    assert resolve_pi_choice(yard, "review") == ("rcc", "MiniMax-M3")

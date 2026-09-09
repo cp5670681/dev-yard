@@ -684,6 +684,42 @@ def test_spa_shell_and_assets(tmp_path: Path):
     assert css.status_code == 200
 
 
+def test_pi_settings_api(tmp_path: Path, monkeypatch):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    monkeypatch.setattr(
+        "dev_yard.web.app.list_pi_catalog",
+        lambda: {
+            "providers": [{"id": "rcc", "models": ["glm-5.3", "MiniMax-M3"]}],
+            "error": None,
+        },
+    )
+    client = _client(yard)
+    empty = client.get("/api/pi").json()
+    assert empty["provider"] == ""
+    assert empty["model"] == ""
+    assert empty["stage_ids"] == ["open", "grill", "spec", "tickets", "implement", "review"]
+    assert empty["catalog"]["providers"][0]["id"] == "rcc"
+    saved = client.put(
+        "/api/pi",
+        json={
+            "provider": "rcc",
+            "model": "MiniMax-M3",
+            "stages": {"grill": {"provider": "", "model": "gpt-5"}},
+        },
+    )
+    assert saved.status_code == 200
+    body = saved.json()
+    assert body["provider"] == "rcc"
+    assert body["stages"]["grill"]["model"] == "gpt-5"
+    assert body["stages"]["spec"]["model"] == ""
+    bad = client.put(
+        "/api/pi",
+        json={"provider": "", "model": "", "stages": {"nope": {"provider": "", "model": "x"}}},
+    )
+    assert bad.status_code == 400
+
+
 def test_cli_web_help():
     from typer.testing import CliRunner
 
