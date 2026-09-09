@@ -4,7 +4,15 @@ import pytest
 
 from dev_yard import status as st
 from dev_yard.runners import DryRunRunner, RunResult, clip_summary
-from dev_yard.service import implement, init_yard, repo_add, req_freeze, req_open, review
+from dev_yard.service import (
+    from_contract_ids,
+    implement,
+    init_yard,
+    repo_add,
+    req_freeze,
+    req_open,
+    review,
+)
 
 
 def test_implement_dry_run(tmp_path: Path, git_src: Path, monkeypatch):
@@ -235,6 +243,153 @@ def test_implement_blocked_without_review_marker_skips_report(
     cap = _Capture()
     implement(yard, "AB-21", ["T1"], runner=cap)
     assert "Previous review failed" not in cap.prompts[0]
+
+
+def test_from_contract_requires_summary(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-22")
+    with pytest.raises(ValueError, match="contract_summary"):
+        implement(yard, "AB-22", None, from_contract=True, runner=DryRunRunner())
+
+
+def test_from_contract_picks_last_ticket_per_repo_and_injects_report(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-23", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n\n"
+        "## T2: y\n- repo: backend\n- depends_on: T1\n- parallel: false\n"
+    )
+    req_freeze(yard, "AB-23")
+    implement(yard, "AB-23", None, runner=DryRunRunner())
+    review(yard, "AB-23", None, runner=DryRunRunner())
+    implement(yard, "AB-23", ["T2"], runner=DryRunRunner())
+    review(yard, "AB-23", ["T2"], runner=DryRunRunner())
+    data = st.load(yard, "AB-23")
+    data["phase"] = "done"
+    data["contract_review"] = "passed"
+    data["contract_summary"] = "CONTRACT DEFECT: missing follow_members_names"
+    st.save(yard, "AB-23", data)
+    cap = _Capture()
+    ran = implement(yard, "AB-23", None, from_contract=True, runner=cap)
+    assert ran == ["T2"]
+    assert "Previous contract review" in cap.prompts[0]
+    assert "follow_members_names" in cap.prompts[0]
+    after = st.load(yard, "AB-23")
+    assert after["tickets"]["T2"]["state"] == "implemented"
+    assert after["tickets"]["T1"]["state"] == "done"
+    assert after["phase"] == "frozen"
+
+
+def test_from_contract_explicit_ids(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-24")
+    implement(yard, "AB-24", None, runner=DryRunRunner())
+    review(yard, "AB-24", None, runner=DryRunRunner())
+    data = st.load(yard, "AB-24")
+    data["contract_summary"] = "gap in T1"
+    st.save(yard, "AB-24", data)
+    cap = _Capture()
+    ran = implement(yard, "AB-24", ["T1"], from_contract=True, runner=cap)
+    assert ran == ["T1"]
+    assert "gap in T1" in cap.prompts[0]
+
+
+def test_from_contract_dry_run_does_not_mutate(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-25")
+    implement(yard, "AB-25", None, runner=DryRunRunner())
+    review(yard, "AB-25", None, runner=DryRunRunner())
+    data = st.load(yard, "AB-25")
+    data["phase"] = "done"
+    data["contract_summary"] = "nits"
+    st.save(yard, "AB-25", data)
+    ran = implement(yard, "AB-25", None, from_contract=True, dry_run=True)
+    assert ran == ["T1"]
+    after = st.load(yard, "AB-25")
+    assert after["tickets"]["T1"]["state"] == "done"
+    assert after["phase"] == "done"
+
+
+def test_from_contract_ids_last_per_repo():
+    class T:
+        def __init__(self, repo):
+            self.repo = repo
+
+    tickets = {"T1": T("be"), "T2": T("fe"), "T3": T("be")}
+    assert from_contract_ids(tickets, None) == ["T3", "T2"]
+    assert from_contract_ids(tickets, ["T1"]) == ["T1"]
+
+
+def test_review_skips_ids_not_implemented(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-26")
+    ran = review(yard, "AB-26", ["T1"], runner=DryRunRunner())
+    assert ran == []
+    assert st.load(yard, "AB-26")["tickets"]["T1"]["state"] == "ready"
+
+
+def test_review_diff_is_since_previous_same_repo_ticket(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    import subprocess
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-27", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n\n"
+        "## T2: y\n- repo: backend\n- depends_on: T1\n- parallel: false\n"
+    )
+    req_freeze(yard, "AB-27")
+    wt = d / "worktrees" / "backend"
+
+    class Committer:
+        def __init__(self, filename: str) -> None:
+            self.filename = filename
+            self.prompts: list[str] = []
+
+        def start(self, prompt, cwd, extra_read_paths):
+            self.prompts.append(prompt)
+            (cwd / self.filename).write_text(self.filename)
+            subprocess.check_call(["git", "add", self.filename], cwd=cwd)
+            subprocess.check_call(["git", "commit", "-m", self.filename], cwd=cwd)
+            return RunResult(ok=True, summary="ok")
+
+    implement(yard, "AB-27", ["T1"], runner=Committer("t1.txt"))
+    review(yard, "AB-27", ["T1"], runner=DryRunRunner())
+    implement(yard, "AB-27", ["T2"], runner=Committer("t2.txt"))
+    cap = _Capture()
+    review(yard, "AB-27", ["T2"], runner=cap)
+    assert "t2.txt" in cap.prompts[0]
+    assert "t1.txt" not in cap.prompts[0]
+
+
+def test_review_diff_includes_uncommitted_work(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-28")
+    implement(yard, "AB-28", None, runner=DryRunRunner())
+    wt = yard / "reqs" / "AB-28" / "worktrees" / "backend"
+    (wt / "wip.txt").write_text("uncommitted t5")
+    cap = _Capture()
+    review(yard, "AB-28", ["T1"], runner=cap)
+    assert "wip.txt" in cap.prompts[0]
+    assert "uncommitted t5" in cap.prompts[0]
 
 
 def test_clip_summary_keeps_review_tail():

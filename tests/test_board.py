@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from dev_yard import status as st
 from dev_yard.service import init_yard, repo_add, req_freeze, req_open
 from dev_yard.web.board import (
     DOC_FILES,
@@ -64,6 +65,7 @@ def test_list_and_detail_after_open(tmp_path: Path, monkeypatch):
     assert not ids["implement"].enabled
     assert not ids["review"].enabled
     assert not ids["contract"].enabled
+    assert not ids["fix-contract"].enabled
 
 
 def test_tickets_enable_freeze(tmp_path: Path, monkeypatch):
@@ -105,7 +107,25 @@ def test_frozen_ready_implement(tmp_path: Path, git_src: Path, monkeypatch):
     assert ids["implement"].enabled
     assert not ids["review"].enabled
     assert ids["contract"].enabled
+    assert not ids["fix-contract"].enabled
     assert detail.worktrees
+
+
+def test_fix_contract_enabled_with_summary(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _yard(tmp_path)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-6", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    req_freeze(yard, "AB-6")
+    data = st.load(yard, "AB-6")
+    data["contract_summary"] = "gap"
+    st.save(yard, "AB-6", data)
+    ids = {a.id: a for a in requirement_detail(yard, "AB-6").actions}
+    assert ids["fix-contract"].enabled
 
 
 def test_missing_requirement_is_none(tmp_path: Path):

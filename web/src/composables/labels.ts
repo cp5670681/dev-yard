@@ -22,7 +22,7 @@ export const TICKET_COLOR: Record<string, string> = {
 export const STEP_LABELS: Record<string, string> = {
   open: "抽取",
   grill: "对齐",
-  spec: "Spec",
+  spec: "规约",
   tickets: "拆票",
   freeze: "冻结",
   implement: "实现",
@@ -32,9 +32,10 @@ export const STEP_LABELS: Record<string, string> = {
 
 export const ACTION_LABELS: Record<string, string> = {
   ...STEP_LABELS,
-  spec: "写 Spec",
+  spec: "写规约",
   freeze: "冻结 worktree",
   contract: "契约审查",
+  "fix-contract": "按契约修",
   repo_add: "仓库 · clone",
 };
 

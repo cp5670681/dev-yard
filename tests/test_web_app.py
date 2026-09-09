@@ -197,6 +197,44 @@ def test_web_implement_runs_ready_tickets_in_parallel(tmp_path: Path, git_src: P
         job.done.wait(timeout=5)
 
 
+def test_web_rejects_review_while_same_ticket_implementing(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-82", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    from dev_yard.service import req_freeze
+
+    req_freeze(yard, "AB-82")
+    gate = threading.Event()
+
+    def execute(root: Path, job) -> None:
+        gate.wait(timeout=5)
+
+    runner = JobRunner(yard, execute=execute, sync=False)
+    live = TestClient(create_app(yard, job_runner=runner))
+    impl = live.post(
+        "/api/requirements/AB-82/actions/implement",
+        json={"ticket_id": "T1"},
+    )
+    assert impl.status_code == 200
+    blocked = live.post(
+        "/api/requirements/AB-82/actions/review",
+        json={"ticket_id": "T1"},
+    )
+    assert blocked.status_code == 400
+    assert "already" in blocked.json()["detail"]
+    gate.set()
+    for job in runner.running():
+        job.done.wait(timeout=5)
+
+
 def test_web_implement_ready_fans_out_remaining_tickets(
     tmp_path: Path, git_src: Path, monkeypatch
 ):

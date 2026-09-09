@@ -402,12 +402,32 @@ def launch_skill(
     return result
 
 
-def _diff_vs_base(worktree: Path, default_base: str) -> str:
+def _diff_vs_base(worktree: Path, default_base: str, since: str | None = None) -> str:
     try:
-        base = gitops.start_point(worktree, default_base)
+        base = since or gitops.start_point(worktree, default_base)
         return gitops.diff_against(worktree, base)
     except gitops.GitError as e:
-        return f"(could not diff vs {default_base}: {e})"
+        return f"(could not diff vs {since or default_base}: {e})"
+
+
+def _previous_head_sha(data: dict, parsed: list, tid: str, repo: str) -> str | None:
+    prev: str | None = None
+    for t in parsed:
+        if t.id == tid:
+            break
+        if getattr(t, "repo", None) != repo:
+            continue
+        sha = ((data.get("tickets") or {}).get(t.id) or {}).get("head_sha")
+        if sha:
+            prev = str(sha)
+    return prev
+
+
+def _record_head_sha(slot: dict, cwd: Path) -> None:
+    try:
+        slot["head_sha"] = gitops.run(["git", "rev-parse", "HEAD"], cwd=cwd)
+    except gitops.GitError:
+        return
 
 
 def _review_blocked(result: RunResult) -> bool:
@@ -419,10 +439,29 @@ def _review_blocked(result: RunResult) -> bool:
 _CLAIM = {
     "implement": ("implementing", {"ready", "blocked", "implementing"}),
     "review": ("reviewing", {"implemented", "reviewing"}),
+    "fix-contract": (
+        "implementing",
+        {"ready", "blocked", "implementing", "implemented", "reviewing", "done"},
+    ),
+}
+
+_FROM_CONTRACT_STATES = {
+    "ready",
+    "blocked",
+    "implementing",
+    "implemented",
+    "reviewing",
+    "done",
 }
 
 
-def _implement_prompt_extra(tid: str, title: str, repo: str, last_summary: str | None) -> str:
+def _implement_prompt_extra(
+    tid: str,
+    title: str,
+    repo: str,
+    last_summary: str | None,
+    contract_summary: str | None = None,
+) -> str:
     extra = f"Ticket: {tid} — {title}\nRepo alias: {repo}\nStay in this worktree."
     if last_summary and "REVIEW_FAILED" in last_summary:
         extra += (
@@ -430,7 +469,29 @@ def _implement_prompt_extra(tid: str, title: str, repo: str, last_summary: str |
             "in this report; do not expand scope; optional smells may stay.\n"
             f"{last_summary}"
         )
+    if contract_summary:
+        extra += (
+            "\n\nPrevious contract review. Fix only Spec contract gaps and hard "
+            "violations in this report that belong to this ticket's repo; do not "
+            "expand scope; optional smells may stay.\n"
+            f"{contract_summary}"
+        )
     return extra
+
+
+def from_contract_ids(
+    tickets: dict[str, object],
+    ids: list[str] | None,
+) -> list[str]:
+    """Default: last ticket per repo (document order). Explicit ids keep order."""
+    if ids:
+        return [tid for tid in ids if tid in tickets]
+    by_repo: dict[str, str] = {}
+    for tid, t in tickets.items():
+        repo = getattr(t, "repo", None)
+        if repo:
+            by_repo[repo] = tid
+    return list(by_repo.values())
 
 
 def claim_run(root: Path, jira: str, action: str, ids: list[str]) -> list[str]:
@@ -463,6 +524,7 @@ def implement(
     dry_run: bool = False,
     print_mode: bool = False,
     runner: Runner | None = None,
+    from_contract: bool = False,
 ) -> list[str]:
     req = paths.req_dir(root, jira)
     tickets = {t.id: t for t in load_tickets(req)}
@@ -471,10 +533,18 @@ def implement(
         st.refresh_ready(data)
         if not dry_run:
             st.save(root, jira, data)
-        targets = ids or st.ready_ids(data)
+        contract_summary = (data.get("contract_summary") or "").strip()
+        if from_contract:
+            if not contract_summary:
+                raise ValueError("no contract_summary; run review --contract first")
+            targets = from_contract_ids(tickets, ids)
+        else:
+            targets = ids or st.ready_ids(data)
     runner = runner or get_runner(root, "implement", dry_run=dry_run, print_mode=print_mode)
     ran: list[str] = []
     extra = [req / "SPEC.md", req / "TICKETS.md"]
+    allowed = _FROM_CONTRACT_STATES if from_contract else {"ready", "blocked", "implementing"}
+    skip_state_check = ids is not None and not from_contract
     for tid in targets:
         t = tickets.get(tid)
         if not t:
@@ -483,7 +553,7 @@ def implement(
             slot = data["tickets"].get(tid)
             if not slot:
                 continue
-            if slot.get("state") not in {"ready", "blocked", "implementing"} and ids is None:
+            if not skip_state_check and slot.get("state") not in allowed:
                 continue
             ran.append(tid)
             continue
@@ -493,10 +563,12 @@ def implement(
             slot = data["tickets"].get(tid)
             if not slot:
                 continue
-            if slot.get("state") not in {"ready", "blocked", "implementing"} and ids is None:
+            if not skip_state_check and slot.get("state") not in allowed:
                 continue
             last_summary = slot.get("last_summary")
             slot["state"] = "implementing"
+            if from_contract and data.get("phase") == "done":
+                data["phase"] = "frozen"
             st.save(root, jira, data)
             if _needs_child(data, t) and not slot.get("child_worktree"):
                 ticket_start(root, jira, tid)
@@ -509,7 +581,13 @@ def implement(
             root,
             "implement",
             jira,
-            extra=_implement_prompt_extra(tid, t.title, t.repo, last_summary),
+            extra=_implement_prompt_extra(
+                tid,
+                t.title,
+                t.repo,
+                last_summary,
+                contract_summary if from_contract else None,
+            ),
         )
         result = runner.start(prompt, cwd, extra)
         with st.jira_lock(jira):
@@ -518,6 +596,7 @@ def implement(
             if result.ok:
                 slot["state"] = "implemented"
                 slot["last_summary"] = result.summary
+                _record_head_sha(slot, cwd)
             else:
                 slot["state"] = "blocked"
                 slot["last_summary"] = result.summary
@@ -583,10 +662,12 @@ def review(
         st.save(root, jira, data)
         return ["__contract__"]
 
+    _REVIEWABLE = {"implemented", "reviewing"}
+    parsed = list(tickets.values())
     targets = ids or [
         tid
         for tid, s in (data.get("tickets") or {}).items()
-        if s.get("state") in {"implemented", "reviewing"}
+        if s.get("state") in _REVIEWABLE
     ]
     repos = load_repos(root)
     for tid in targets:
@@ -595,28 +676,31 @@ def review(
             continue
         if dry_run:
             slot = data["tickets"].get(tid)
-            if not slot:
+            if not slot or slot.get("state") not in _REVIEWABLE:
                 continue
             ran.append(tid)
             continue
         with st.jira_lock(jira):
             data = st.load(root, jira)
             slot = data["tickets"].get(tid)
-            if not slot:
+            if not slot or slot.get("state") not in _REVIEWABLE:
                 continue
             cwd = _cwd_for_ticket(root, jira, t, slot)
             if not (cwd / ".git").exists():
                 raise ValueError(f"missing worktree {cwd}; freeze first")
+            since = _previous_head_sha(data, parsed, tid, t.repo)
             slot["state"] = "reviewing"
             st.save(root, jira, data)
         base = repos[t.repo].default_base if t.repo in repos else "main"
+        label = since or base
         prompt = session_prompt(
             root,
             "review",
             jira,
             extra=(
                 f"Ticket: {tid} — {t.title}\nRepo alias: {t.repo}\n"
-                f"Diff vs {base}:\n{_diff_vs_base(cwd, base)}"
+                f"Diff vs {label} (this ticket only; working tree included):\n"
+                f"{_diff_vs_base(cwd, base, since)}"
             ),
         )
         result = runner.start(prompt, cwd, extra)

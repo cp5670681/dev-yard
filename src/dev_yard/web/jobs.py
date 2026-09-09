@@ -16,7 +16,7 @@ from dev_yard.runners import RunResult, Runner, clip_summary, pi_argv
 
 Execute = Callable[[Path, "Job"], None]
 _TERMINAL = {"ok", "error"}
-_TICKET_ACTIONS = {"implement", "review"}
+_TICKET_ACTIONS = {"implement", "review", "fix-contract"}
 
 
 def format_sse(event: str, data: Any) -> str:
@@ -338,6 +338,7 @@ def default_execute(root: Path, job: Job) -> None:
         "implement": "implement",
         "review": "review",
         "contract": "review",
+        "fix-contract": "implement",
     }.get(job.action)
     if bundle is None:
         raise ValueError(f"unknown action {job.action}")
@@ -353,9 +354,14 @@ def default_execute(root: Path, job: Job) -> None:
             raise RuntimeError(f"{job.action} failed")
         job.append(f"{job.action} finished")
         return
-    if job.action == "implement":
+    if job.action in {"implement", "fix-contract"}:
         ran = service.implement(
-            root, job.jira, job.ticket_ids, print_mode=True, runner=runner
+            root,
+            job.jira,
+            job.ticket_ids,
+            print_mode=True,
+            runner=runner,
+            from_contract=job.action == "fix-contract",
         )
         job.append("ran: " + (", ".join(ran) if ran else "(none)"))
         return
@@ -478,18 +484,17 @@ class JobRunner:
         return [picked] + rest
 
     def busy_tickets(self, jira: str, action: str) -> set[str] | None:
-        """Ticket ids occupied by a running job. None means the whole Jira is busy."""
+        """Ticket ids occupied by any running ticket job. None means the whole Jira is busy."""
         occupied: set[str] = set()
         for job in self.running():
             if job.jira != jira:
                 continue
             scope = _ticket_scope(job)
             if scope is None:
-                if job.action == action or job.action not in _TICKET_ACTIONS:
+                if action is None or job.action == action or job.action not in _TICKET_ACTIONS:
                     return None
                 continue
-            if job.action == action:
-                occupied.update(scope)
+            occupied.update(scope)
         return occupied
 
     def running(self) -> list[Job]:

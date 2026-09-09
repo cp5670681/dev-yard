@@ -13,9 +13,9 @@ description: >
 
 ## 1. Fixed point
 
-- 票级：启动提示里已内联该仓相对 `default_base` 的 `git log` / `git diff`。不要自己跑 git（本阶段没有 bash）。
+- 票级：启动提示已内联**本票**相对上一张同仓票（或 `default_base`）的 `git log` / `git diff`，含工作区未提交改动。不要自己跑 git（本阶段没有 bash）。
 - 用户若指定 commit/branch，用用户的。
-- diff 为空或提示 git 失败则停。
+- 仅当提示里是 `(no changes vs …)` 或 `(could not diff …)` 才停。同仓上一张票的改动不在本票 diff 里是正常的；要用 `read` 打开本票涉及的文件核对是否已实现，不要把「本票窗口里没有某文件」直接写成整仓未实现。
 
 契约审查（`dev-yard review --contract`）：cwd 是 yard 根。启动提示已内联每个需求 worktree 相对 `default_base` 的 diff。对照 `SPEC.md` 跨仓契约。不跑 Fowler 气味轴也可以，但必须列出契约缺口。不要在 yard 仓库根上 `git diff`。
 

@@ -229,6 +229,14 @@ def test_allows_parallel_implement_jobs_for_different_tickets(tmp_path: Path):
         runner.submit("implement", "AB-1", ticket_ids=["T1"])
     with pytest.raises(ValueError, match="already"):
         runner.submit("grill", "AB-1")
+    with pytest.raises(ValueError, match="already"):
+        runner.submit("review", "AB-1", ticket_ids=["T1"])
+    with pytest.raises(ValueError, match="already"):
+        runner.submit("fix-contract", "AB-1", ticket_ids=["T1"])
+    busy = runner.busy_tickets("AB-1", "review")
+    assert busy is not None
+    assert "T1" in busy
+    assert "T2" in busy
     gate.set()
     assert first.done.wait(timeout=5)
     assert second.done.wait(timeout=5)
@@ -326,8 +334,10 @@ def test_default_execute_implement_injects_runner(tmp_path: Path, git_src: Path,
 
     captured: dict = {}
 
-    def fake_implement(root, jira, ids, dry_run=False, print_mode=False, runner=None):
-        captured.update(print_mode=print_mode, runner=runner)
+    def fake_implement(
+        root, jira, ids, dry_run=False, print_mode=False, runner=None, from_contract=False
+    ):
+        captured.update(print_mode=print_mode, runner=runner, from_contract=from_contract)
         return ["T1"]
 
     monkeypatch.setattr("dev_yard.web.jobs.service.implement", fake_implement)

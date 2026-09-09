@@ -32,11 +32,21 @@ from dev_yard.web.sanitize import sanitize_html
 
 HERE = Path(__file__).parent
 SPA = HERE / "spa"
-ACTIONS = {"open", "grill", "spec", "tickets", "freeze", "implement", "review", "contract"}
+ACTIONS = {
+    "open",
+    "grill",
+    "spec",
+    "tickets",
+    "freeze",
+    "implement",
+    "review",
+    "contract",
+    "fix-contract",
+}
 STEP_LABELS = {
     "open": "抽取",
     "grill": "对齐",
-    "spec": "Spec",
+    "spec": "规约",
     "tickets": "拆票",
     "freeze": "冻结",
     "implement": "实现",
@@ -46,12 +56,13 @@ STEP_LABELS = {
 ACTION_LABELS = {
     "open": "抽取需求",
     "grill": "对齐",
-    "spec": "写 Spec",
+    "spec": "写规约",
     "tickets": "拆票",
     "freeze": "冻结 worktree",
     "implement": "实现",
     "review": "审查",
     "contract": "契约审查",
+    "fix-contract": "按契约修",
 }
 
 _ASSET_SRC = re.compile(r'src=(["\'])(?:\./)?assets/([^"\']+)\1')
@@ -172,29 +183,47 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
         ids: list[str] | None,
         extra: dict,
     ):
-        if action in {"implement", "review"}:
+        if action in {"implement", "review", "fix-contract"}:
+            busy = jobs.busy_tickets(jira, action)
+            if busy is None:
+                raise ValueError(f"{jira} already has a running job")
             if not ids:
                 detail = detail_or_404(jira)
-                wanted = [
-                    t.id
-                    for t in detail.tickets
-                    if (t.can_implement if action == "implement" else t.can_review)
-                ]
-                busy = jobs.busy_tickets(jira, action)
-                if busy is None:
-                    raise ValueError(f"{jira} already has a running job")
+                if action == "fix-contract":
+                    tickets = {t.id: t for t in detail.tickets}
+                    wanted = yard_service.from_contract_ids(tickets, None)
+                else:
+                    wanted = [
+                        t.id
+                        for t in detail.tickets
+                        if (t.can_implement if action == "implement" else t.can_review)
+                    ]
                 wanted = [tid for tid in wanted if tid not in busy]
                 if not wanted:
-                    if busy:
-                        raise ValueError(
-                            f"{jira} already has a running job ({action})"
+                    raise ValueError(
+                        f"{jira} already has a running job ({action})"
+                        if busy
+                        else (
+                            "没有处于 implemented 的票"
+                            if action == "review"
+                            else "没有可运行的票"
                         )
-                    return [jobs.submit(action, jira, ticket_ids=None, extra=extra)]
+                    )
                 ids = wanted
-            yard_service.claim_run(root, jira, action, ids)
+            else:
+                ids = [tid for tid in ids if tid not in busy]
+                if not ids:
+                    raise ValueError(f"{jira} already has a running job ({action})")
+            claimed = yard_service.claim_run(root, jira, action, ids)
+            if not claimed:
+                raise ValueError(
+                    "没有处于 implemented 的票"
+                    if action == "review"
+                    else "没有可运行的票"
+                )
             return [
                 jobs.submit(action, jira, ticket_ids=[tid], extra=extra)
-                for tid in ids
+                for tid in claimed
             ]
         return [jobs.submit(action, jira, ticket_ids=ids, extra=extra)]
 

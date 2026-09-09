@@ -228,7 +228,7 @@ def available_actions(detail: ReqDetail) -> list[Action]:
             "phase 已过 open 时需勾选重置，否则拒绝；重置会删 assets/",
         ),
         Action("grill", "对齐", True),
-        Action("spec", "写 Spec", True),
+        Action("spec", "写规约", True),
         Action("tickets", "拆票", True),
         Action(
             "freeze",
@@ -253,6 +253,14 @@ def available_actions(detail: ReqDetail) -> list[Action]:
             "契约审查",
             frozen,
             "" if frozen else "需要先 freeze",
+        ),
+        Action(
+            "fix-contract",
+            "按契约修",
+            frozen and bool(detail.contract_summary),
+            ""
+            if frozen and detail.contract_summary
+            else "需要先 freeze，且已有契约审查摘要",
         ),
     ]
 

@@ -176,10 +176,22 @@ def implement(
     ticket_ids: Optional[list[str]] = typer.Argument(None),
     dry_run: bool = False,
     print_mode: bool = typer.Option(False, "--print", help="pi -p one-shot instead of TUI"),
+    from_contract: bool = typer.Option(
+        False,
+        "--from-contract",
+        help="Re-implement using STATUS contract_summary (default: last ticket per repo)",
+    ),
 ) -> None:
     root = root_opt()
     try:
-        ran = service.implement(root, jira, ticket_ids, dry_run=dry_run, print_mode=print_mode)
+        ran = service.implement(
+            root,
+            jira,
+            ticket_ids,
+            dry_run=dry_run,
+            print_mode=print_mode,
+            from_contract=from_contract,
+        )
     except (ValueError, GitError, KeyError, FileNotFoundError) as e:
         _die(e)
     typer.echo("ran: " + (", ".join(ran) if ran else "(none)"))

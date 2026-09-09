@@ -184,9 +184,35 @@ def checkout_default_base(source: Path, default_base: str) -> None:
     run(["git", "merge", "--ff-only", f"origin/{default_base}"], cwd=source)
 
 
+def _untracked_diff(worktree: Path) -> str:
+    names = run(
+        ["git", "ls-files", "--others", "--exclude-standard"], cwd=worktree
+    )
+    chunks: list[str] = []
+    for rel in names.splitlines():
+        path = worktree / rel
+        if not path.is_file():
+            continue
+        try:
+            body = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if len(body) > 100_000:
+            body = body[:100_000] + "\n…(truncated)"
+        chunks.append(f"--- /dev/null\n+++ b/{rel}\n{body}")
+    return "\n".join(chunks)
+
+
 def diff_against(worktree: Path, base: str) -> str:
     log = run(["git", "log", "--oneline", f"{base}..HEAD"], cwd=worktree)
-    diff = run(["git", "diff", f"{base}...HEAD"], cwd=worktree)
-    if not diff.strip():
+    # Working tree vs base: committed since base plus unstaged files.
+    diff = run(["git", "diff", base], cwd=worktree)
+    untracked = _untracked_diff(worktree)
+    if not log.strip() and not diff.strip() and not untracked.strip():
         return f"(no changes vs {base})"
-    return f"git log {base}..HEAD:\n{log}\n\ngit diff {base}...HEAD:\n{diff}"
+    parts = [f"git log {base}..HEAD:\n{log or '(no commits)'}"]
+    if diff.strip():
+        parts.append(f"git diff {base}:\n{diff}")
+    if untracked.strip():
+        parts.append(f"untracked:\n{untracked}")
+    return "\n\n".join(parts)

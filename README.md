@@ -24,6 +24,7 @@ uv run dev-yard spec PG-13068              # pi TUI：写 SPEC.md
 uv run dev-yard tickets PG-13068           # pi TUI：写 TICKETS.md（每张票一个 repo alias）
 uv run dev-yard req freeze PG-13068        # 按票里出现过的仓建 req/PG-13068 worktree
 uv run dev-yard implement PG-13068         # 所有 ready 票；成功后停在 implemented
+# 契约审查后修缺口：uv run dev-yard implement PG-13068 --from-contract
 uv run dev-yard review PG-13068            # 审查 implemented 的票 → done
 uv run dev-yard review PG-13068 --contract # 跨仓契约（必须已经 freeze）
 uv run dev-yard status PG-13068
@@ -299,6 +300,8 @@ stdout 打印建好的 worktree 路径。需求级 worktree **一直留着**，�
 ```bash
 uv run dev-yard implement PG-13068           # 所有 ready（含上次卡在 implementing 的）
 uv run dev-yard implement PG-13068 T1 T3     # 指定票（会跳过 ready 检查，连 done 也能再跑，慎用）
+uv run dev-yard implement PG-13068 --from-contract   # 把契约审查摘要打进提示；默认每仓最后一张票
+uv run dev-yard implement PG-13068 T3 --from-contract
 uv run dev-yard implement PG-13068 --dry-run    # 列出将跑的票，不改 STATUS、不动 git
 ```
 
@@ -308,6 +311,7 @@ uv run dev-yard implement PG-13068 --dry-run    # 列出将跑的票，不改 ST
 - 需要同仓并行时自动 `ticket start`（子分支 `req/<JIRA>/<票id>`，目录在 `.yard-worktrees/…`）。
 - 进程被杀停在 `implementing`：再跑无参数 `implement` 会重入。
 - 结束时打印 `ran: T1, T3` 或 `ran: (none)`（没有 ready 票）。
+- `--from-contract`：必须已有 `STATUS.yaml` 的 `contract_summary`（先 `review --contract`）。默认每个仓跑该仓在 TICKETS 里最后一张票；指定票 id 则只跑那些。提示里带上契约报告，只修本仓的 Spec 缺口和硬违规。`done` 的票会重开到 `implementing`，`phase=done` 会退回 `frozen`。修完后再 `review` 那些票，然后 `review --contract`。
 
 实现完成后自己跑 review，不要等 CLI 自动审。
 
@@ -342,6 +346,8 @@ PG-13068  phase=frozen
 票状态机：`pending → ready → implementing → implemented → reviewing → done | blocked`。
 
 `blocked` 处理：改代码或改票后，`implement <JIRA> T1` 指定票重跑（指定 id 不要求当前是 ready）。若上次是审查失败（摘要含 `REVIEW_FAILED`，Web / `--print` 会留下报告正文），重跑 implement 会把该报告打进提示，只修硬违规和 Spec 缺口。交互 TUI 审查通常只记下退出码，不会带报告正文。
+
+契约审查已经跑过、摘要里有缺口但票仍是 `done`：用 `implement <JIRA> --from-contract`（Web 上是「按契约修」）。没有 `contract_summary` 会直接失败。
 
 ### 2.9 本机 Web 控制台 — `web`
 
@@ -450,7 +456,7 @@ pi 从 cwd 加载 `AGENTS.md`。文档阶段（grill/spec/tickets）没有 bash�
 | `dev-yard grill <JIRA>` | `--dry-run` `--print` |
 | `dev-yard spec <JIRA>` | `--dry-run` `--print` |
 | `dev-yard tickets <JIRA>` | `--dry-run` `--print` |
-| `dev-yard implement <JIRA> [票id…]` | `--dry-run` `--print` |
+| `dev-yard implement <JIRA> [票id…]` | `--dry-run` `--print` `--from-contract` |
 | `dev-yard review <JIRA> [票id…]` | `--contract` `--dry-run` `--print` |
 | `dev-yard status [JIRA]` | 阶段、票状态、子 worktree |
 | `dev-yard web` | 本机 Web 控制台；`--host` `--port` `--open/--no-open`；非回环需 `--allow-remote` |
@@ -472,6 +478,7 @@ pi 从 cwd 加载 `AGENTS.md`。文档阶段（grill/spec/tickets）没有 bash�
 | `unknown repo alias …` | 票上的名字和 `repo add` 不一致 | 改 TICKETS 或补登记 |
 | `missing requirement worktree … freeze first` | 没 freeze 就 implement / ticket start / `--contract` | 先 `req freeze` |
 | `ran: (none)` | 没有 ready 票 | `status`：看是 pending（等上游 done）还是 blocked（指定票重跑） |
+| `no contract_summary; run review --contract first` | `--from-contract` 时还没跑过契约审查 | 先 `review --contract` |
 | freeze 时报 git 错 | fetch 失败，或 ff 不了 | 检查网络 / 本地与 origin 是否分叉 |
 | 路径已存在且不是 worktree | freeze 中途留下的脏目录 | 清掉该目录再 freeze；空目录 CLI 会自己删 |
 
