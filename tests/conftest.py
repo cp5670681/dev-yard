@@ -19,3 +19,20 @@ def make_git_repo(path: Path) -> Path:
 @pytest.fixture
 def git_src(tmp_path: Path) -> Path:
     return make_git_repo(tmp_path / "srcbe")
+
+
+SPA_INDEX = Path(__file__).resolve().parents[1] / "src" / "dev_yard" / "web" / "spa" / "index.html"
+
+needs_spa = pytest.mark.skipif(
+    not SPA_INDEX.is_file(),
+    reason="frontend not built; run: pnpm --dir web build",
+)
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    if SPA_INDEX.is_file():
+        return
+    skip = pytest.mark.skip(reason="frontend not built; run: pnpm --dir web build")
+    for item in items:
+        if item.get_closest_marker("spa"):
+            item.add_marker(skip)

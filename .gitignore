@@ -14,3 +14,7 @@ uv.lock
 .omc
 reqs
 .playwright-cli/
+desktop-home.yaml
+desktop-*.yaml
+node_modules/
+src/dev_yard/web/spa/

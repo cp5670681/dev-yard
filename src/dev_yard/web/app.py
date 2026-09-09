@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 import markdown
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -29,6 +29,7 @@ from dev_yard.web.jobs import BoardSse, JobRunner, JobSse, PiChatSse, _pi_run_un
 from dev_yard.web.sanitize import sanitize_html
 
 HERE = Path(__file__).parent
+SPA = HERE / "spa"
 ACTIONS = {"open", "grill", "spec", "tickets", "freeze", "implement", "review", "contract"}
 STEP_LABELS = {
     "open": "抽取",
@@ -57,6 +58,30 @@ _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 
 class GrillAnswersIn(BaseModel):
     answers: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class OpenIn(BaseModel):
+    jira: str
+    source: str = "pi"
+    force: bool = False
+
+
+class RepoAddIn(BaseModel):
+    alias: str = ""
+    url: str
+    default_base: str = "main"
+    role: str = "svc"
+    path: str = ""
+
+
+class ActionIn(BaseModel):
+    ticket_id: str = ""
+    force: bool = False
+    source: str = "pi"
+
+
+class DocSaveIn(BaseModel):
+    body: str = ""
 
 
 def check_bind_host(host: str, allow_remote: bool = False) -> None:
@@ -96,11 +121,21 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
     templates.env.globals["pipeline"] = PIPELINE
 
     app = FastAPI(title="dev-yard", docs_url="/api/docs", redoc_url=None)
+
+    def spa_index():
+        index = SPA / "index.html"
+        if not index.is_file():
+            raise HTTPException(503, "frontend not built; run pnpm --dir web build")
+        return FileResponse(index)
+
     @app.get("/favicon.ico")
     def favicon():
         return FileResponse(HERE / "static" / "favicon.svg")
 
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
+    spa_assets = SPA / "assets"
+    if spa_assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(spa_assets)), name="spa-assets")
 
     def base(request: Request, **extra):
         ctx = {
@@ -150,26 +185,76 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
             ]
         return [jobs.submit(action, jira, ticket_ids=ids, extra=extra)]
 
-    @app.get("/", response_class=HTMLResponse)
-    def dashboard(request: Request):
-        return templates.TemplateResponse(
-            request=request,
-            name="dashboard.html",
-            context=base(request, items=list_requirements(root), repos=list_repos(root)),
-        )
+    def _jobs_out(submitted):
+        return {"jobs": [j.snapshot() for j in submitted]}
 
-    @app.get("/repos", response_class=HTMLResponse)
-    def repos_page(request: Request, job: str | None = None):
-        job_obj = jobs.get(job) if job else None
-        return templates.TemplateResponse(
-            request=request,
-            name="repos.html",
-            context=base(
-                request,
-                repos=list_repos(root),
-                job=job_obj.snapshot() if job_obj else None,
-            ),
-        )
+    def _requirement_payload(detail):
+        return {
+            "jira": detail.jira,
+            "phase": detail.phase,
+            "next": detail.next_label,
+            "contract": detail.contract,
+            "contract_summary": detail.contract_summary,
+            "worktrees": detail.worktrees,
+            "assets": detail.assets,
+            "steps": [
+                {"id": s.id, "done": s.done, "current": s.current} for s in detail.steps
+            ],
+            "tickets": [
+                {
+                    "id": t.id,
+                    "title": t.title,
+                    "repo": t.repo,
+                    "state": t.state,
+                    "depends_on": t.depends_on,
+                    "parallel": t.parallel,
+                    "can_implement": t.can_implement,
+                    "can_review": t.can_review,
+                    "last_summary": t.last_summary,
+                }
+                for t in detail.tickets
+            ],
+            "actions": [
+                {
+                    "id": a.id,
+                    "label": a.label,
+                    "enabled": a.enabled,
+                    "reason": a.reason,
+                }
+                for a in detail.actions
+            ],
+            "docs": [
+                {
+                    "slug": d.slug,
+                    "filename": d.filename,
+                    "filled": d.filled,
+                    "exists": d.exists,
+                }
+                for d in detail.docs
+            ],
+        }
+
+    def _doc_payload(detail, slug: str):
+        doc = next((d for d in detail.docs if d.slug == slug), None)
+        if doc is None:
+            raise HTTPException(404, f"unknown doc {slug}")
+        return {
+            "jira": detail.jira,
+            "slug": doc.slug,
+            "filename": doc.filename,
+            "filled": doc.filled,
+            "exists": doc.exists,
+            "text": doc.text,
+            "html": render_markdown(doc.text, detail.jira),
+        }
+
+    @app.get("/")
+    def dashboard():
+        return spa_index()
+
+    @app.get("/repos")
+    def repos_page():
+        return spa_index()
 
     @app.post("/repos")
     def repos_add(
@@ -195,11 +280,9 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
             return RedirectResponse(f"/repos?error={quote(str(e))}", status_code=303)
         return RedirectResponse(f"/repos?job={submitted.id}", status_code=303)
 
-    @app.get("/open", response_class=HTMLResponse)
-    def open_page(request: Request):
-        return templates.TemplateResponse(
-            request=request, name="open.html", context=base(request)
-        )
+    @app.get("/open")
+    def open_page():
+        return spa_index()
 
     @app.post("/open")
     def open_submit(
@@ -222,43 +305,17 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
             return RedirectResponse(f"/open?error={quote(str(e))}", status_code=303)
         return RedirectResponse(f"/r/{quote(key)}?job={job.id}", status_code=303)
 
-    @app.get("/r/{jira}", response_class=HTMLResponse)
-    def req_page(request: Request, jira: str, job: str | None = None):
-        detail = requirement_detail(root, jira)
-        page_job_objs = jobs.page_jobs(jira, job)
-        job_obj = page_job_objs[0] if page_job_objs else None
-        if detail is None and job_obj is None:
+    @app.get("/r/{jira}")
+    def req_page(jira: str):
+        if paths.is_reserved_req_name(jira):
             raise HTTPException(404, f"no requirement {jira}")
-        return templates.TemplateResponse(
-            request=request,
-            name="requirement.html",
-            context=base(
-                request,
-                jira=jira,
-                detail=detail,
-                job=job_obj.snapshot() if job_obj else None,
-                page_jobs=[j.snapshot() for j in page_job_objs],
-            ),
-        )
+        return spa_index()
 
-    @app.get("/r/{jira}/docs/{slug}", response_class=HTMLResponse)
-    def doc_page(request: Request, jira: str, slug: str, edit: str | None = None):
+    @app.get("/r/{jira}/docs/{slug}")
+    def doc_page(jira: str, slug: str):
         if slug not in DOC_FILES:
             raise HTTPException(404, f"unknown doc {slug}")
-        detail = detail_or_404(jira)
-        doc = next(d for d in detail.docs if d.slug == slug)
-        return templates.TemplateResponse(
-            request=request,
-            name="doc.html",
-            context=base(
-                request,
-                jira=jira,
-                detail=detail,
-                doc=doc,
-                rendered=render_markdown(doc.text, jira),
-                editing=bool(edit),
-            ),
-        )
+        return spa_index()
 
     @app.post("/r/{jira}/docs/{slug}")
     def doc_save(jira: str, slug: str, body: str = Form("")):
@@ -300,6 +357,10 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
             )
         return RedirectResponse(f"/r/{quote(jira)}", status_code=303)
 
+    @app.get("/api/meta")
+    def api_meta():
+        return {"root": str(root), "root_name": root.name}
+
     @app.get("/api/requirements")
     def api_list():
         items = list_requirements(root)
@@ -316,33 +377,51 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
 
     @app.get("/api/requirements/{jira}")
     def api_detail(jira: str):
-        detail = detail_or_404(jira)
-        return {
-            "jira": detail.jira,
-            "phase": detail.phase,
-            "next": detail.next_label,
-            "contract": detail.contract,
-            "tickets": [
-                {
-                    "id": t.id,
-                    "title": t.title,
-                    "repo": t.repo,
-                    "state": t.state,
-                    "depends_on": t.depends_on,
-                    "parallel": t.parallel,
-                    "can_implement": t.can_implement,
-                    "can_review": t.can_review,
-                    "last_summary": t.last_summary,
-                }
-                for t in detail.tickets
-            ],
-            "actions": [
-                {"id": a.id, "enabled": a.enabled, "reason": a.reason} for a in detail.actions
-            ],
-            "docs": [
-                {"slug": d.slug, "filename": d.filename, "filled": d.filled} for d in detail.docs
-            ],
-        }
+        return _requirement_payload(detail_or_404(jira))
+
+    @app.get("/api/requirements/{jira}/docs/{slug}")
+    def api_doc(jira: str, slug: str):
+        if slug not in DOC_FILES:
+            raise HTTPException(404, f"unknown doc {slug}")
+        return _doc_payload(detail_or_404(jira), slug)
+
+    @app.put("/api/requirements/{jira}/docs/{slug}")
+    def api_doc_save(jira: str, slug: str, payload: DocSaveIn):
+        try:
+            save_doc(root, jira, slug, payload.body)
+        except (ValueError, FileNotFoundError) as e:
+            raise HTTPException(400, str(e)) from e
+        return _doc_payload(detail_or_404(jira), slug)
+
+    @app.post("/api/open")
+    def api_open(payload: OpenIn):
+        key = payload.jira.strip().upper()
+        try:
+            paths.req_dir(root, key)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        try:
+            job = jobs.submit(
+                "open",
+                key,
+                extra={"source": payload.source, "force": payload.force},
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return _jobs_out([job])
+
+    @app.post("/api/requirements/{jira}/actions/{action}")
+    def api_run_action(jira: str, action: str, payload: ActionIn | None = None):
+        if action not in ACTIONS:
+            raise HTTPException(400, f"unknown action {action}")
+        body = payload or ActionIn()
+        ids = [body.ticket_id] if body.ticket_id.strip() else None
+        extra = {"force": body.force, "source": body.source}
+        try:
+            submitted = _submit_action(action, jira, ids, extra)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return _jobs_out(submitted)
 
     @app.get("/api/jobs")
     def api_jobs():
@@ -479,6 +558,24 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
     @app.get("/api/repos")
     def api_repos():
         return list_repos(root)
+
+    @app.post("/api/repos")
+    def api_repos_add(payload: RepoAddIn):
+        try:
+            submitted = jobs.submit(
+                "repo_add",
+                "_repo_",
+                extra={
+                    "alias": payload.alias.strip(),
+                    "url": payload.url.strip(),
+                    "default_base": payload.default_base.strip() or "main",
+                    "role": payload.role.strip() or "svc",
+                    "path": payload.path.strip() or None,
+                },
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return _jobs_out([submitted])
 
     @app.exception_handler(StarletteHTTPException)
     async def http_exc(request: Request, exc: StarletteHTTPException):
