@@ -23,9 +23,10 @@
   {% for item in items %}
   <a class="req-card" href="/r/{{ item.jira }}">
     <div class="req-card-top">
-      <span class="key">{{ item.jira }}</span>
+      <span class="key">{{ item.title or item.jira }}</span>
       <span class="pill phase-{{ item.phase }}">{{ item.phase }}</span>
     </div>
+    {% if item.title %}<p class="meta">{{ item.jira }}</p>{% endif %}
     <p class="next">下一步 · {{ item.next_label }}</p>
     <div class="bar">
       {% set pct = (item.ticket_done / item.ticket_total * 100) if item.ticket_total else 0 %}

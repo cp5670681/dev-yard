@@ -4,7 +4,7 @@
 <header class="page-head">
   <div>
     <p class="crumb"><a href="/">需求</a> / {{ jira }}</p>
-    <h1>{{ jira }}</h1>
+    <h1>{{ detail.title if detail and detail.title else jira }}</h1>
     {% if detail %}
     <p class="lede">phase={{ detail.phase }} · 下一步 {{ detail.next_label }}{% if detail.contract %} · 契约 {{ detail.contract }}{% endif %}</p>
     {% else %}

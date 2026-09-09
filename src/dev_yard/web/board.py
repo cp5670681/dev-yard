@@ -73,6 +73,7 @@ class ReqSummary:
     jira: str
     phase: str
     next_label: str
+    title: str | None = None
     ticket_counts: dict[str, int] = field(default_factory=dict)
     ticket_total: int = 0
     ticket_done: int = 0
@@ -83,6 +84,7 @@ class ReqDetail:
     jira: str
     phase: str
     next_label: str
+    title: str | None
     docs: list[DocView]
     tickets: list[TicketView]
     actions: list[Action]
@@ -91,6 +93,40 @@ class ReqDetail:
     assets: list[str]
     contract: str | None
     contract_summary: str | None
+
+
+def parse_requirement_title(text: str, jira: str) -> str | None:
+    """Prefer the Jira Summary table cell; else the lede under `# KEY`."""
+    summary: str | None = None
+    lede: str | None = None
+    after_h1 = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("|"):
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if (
+                len(cells) >= 2
+                and cells[0].lower() == "summary"
+                and cells[1]
+                and cells[1] not in {"---", "内容"}
+                and cells[1] != jira
+            ):
+                summary = cells[1]
+            continue
+        if line.startswith("#") and not line.startswith("##"):
+            after_h1 = True
+            heading = line.lstrip("#").strip()
+            if heading and heading != jira and lede is None:
+                lede = heading
+            continue
+        if after_h1 and line.startswith("##"):
+            after_h1 = False
+            continue
+        if after_h1 and line != jira and lede is None:
+            lede = line
+    return summary or lede
 
 
 def list_requirements(root: Path) -> list[ReqSummary]:
@@ -107,6 +143,7 @@ def list_requirements(root: Path) -> list[ReqSummary]:
                 jira=detail.jira,
                 phase=detail.phase,
                 next_label=detail.next_label,
+                title=detail.title,
                 ticket_counts=counts,
                 ticket_total=len(detail.tickets),
                 ticket_done=sum(1 for t in detail.tickets if t.state == "done"),
@@ -149,6 +186,8 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
             )
         )
     docs = [_doc_view(req, slug, filename, jira) for slug, filename in DOC_FILES.items()]
+    req_doc = next((d for d in docs if d.slug == "requirement"), None)
+    title = parse_requirement_title(req_doc.text if req_doc else "", jira)
     phase = data.get("phase") or "open"
     worktrees: list[str] = []
     wt_root = req / "worktrees"
@@ -162,6 +201,7 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
         jira=jira,
         phase=phase,
         next_label=next_label,
+        title=title,
         docs=docs,
         tickets=tickets,
         actions=[],

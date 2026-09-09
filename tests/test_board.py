@@ -5,6 +5,7 @@ from dev_yard.web.board import (
     DOC_FILES,
     available_actions,
     list_requirements,
+    parse_requirement_title,
     requirement_detail,
     save_doc,
 )
@@ -44,11 +45,13 @@ def test_list_and_detail_after_open(tmp_path: Path, monkeypatch):
     items = list_requirements(yard)
     assert len(items) == 1
     assert items[0].jira == "AB-1"
+    assert items[0].title is None
     assert items[0].phase == "open"
     assert items[0].next_label == "grill"
 
     detail = requirement_detail(yard, "AB-1")
     assert detail is not None
+    assert detail.title is None
     assert detail.phase == "open"
     assert [d.filename for d in detail.docs] == list(DOC_FILES.values())
     assert all(d.exists for d in detail.docs)
@@ -147,3 +150,46 @@ def test_pending_grill_round_keeps_next_as_grill(tmp_path: Path, monkeypatch):
     by_id = {s.id: s for s in detail.steps}
     assert not by_id["grill"].done
     assert by_id["grill"].current
+
+
+def test_parse_title_from_paragraph_after_h1():
+    text = "# PG-1\n\n促单任务支持指定给所属人\n\n## Jira\n"
+    assert parse_requirement_title(text, "PG-1") == "促单任务支持指定给所属人"
+
+
+def test_parse_title_prefers_summary_over_lede():
+    text = (
+        "# PG-1\n\n长说明（不是票标题）\n\n## Jira\n\n"
+        "| 项目 | 内容 |\n| --- | --- |\n"
+        "| Summary | 列表增加跟进人 |\n"
+    )
+    assert parse_requirement_title(text, "PG-1") == "列表增加跟进人"
+
+
+def test_parse_title_from_summary_table_when_no_lede():
+    text = (
+        "# PG-1\n\n## Jira\n\n"
+        "| 项目 | 内容 |\n| --- | --- |\n"
+        "| Key | PG-1 |\n"
+        "| Summary | 列表增加跟进人 |\n"
+    )
+    assert parse_requirement_title(text, "PG-1") == "列表增加跟进人"
+
+
+def test_parse_title_ignores_skeleton_key_repeat():
+    assert parse_requirement_title("# AB-1\n\nAB-1\n\n", "AB-1") is None
+
+
+def test_list_and_detail_expose_requirement_title(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _yard(tmp_path)
+    d, _ = req_open(yard, "AB-9", source="none")
+    (d / "REQUIREMENT.md").write_text(
+        "# AB-9\n\n给所属人指派促单任务\n\n## Jira\n", encoding="utf-8"
+    )
+    items = list_requirements(yard)
+    assert items[0].title == "给所属人指派促单任务"
+    detail = requirement_detail(yard, "AB-9")
+    assert detail is not None
+    assert detail.title == "给所属人指派促单任务"

@@ -5,19 +5,19 @@
         <div v-for="col in columns" :key="col" class="col">
           <div class="d-flex align-center mb-2 text-caption text-medium-emphasis">
             <v-badge :color="dotColor(col)" dot inline class="mr-2" />
-            {{ col }}
+            <span class="text-truncate font-weight-medium">{{ col }}</span>
             <v-spacer />
-            {{ (byState[col] || []).length }}
+            <span class="ml-1">{{ (byState[col] || []).length }}</span>
           </div>
           <TicketCard
             v-for="t in byState[col] || []"
             :key="t.id"
-            class="mb-2"
+            class="mb-2.5"
             :ticket="t"
             @implement="$emit('implement', $event)"
             @review="$emit('review', $event)"
           />
-          <div v-if="!(byState[col] || []).length" class="text-center text-medium-emphasis py-6">
+          <div v-if="!(byState[col] || []).length" class="text-center text-medium-emphasis py-6 text-caption">
             空
           </div>
         </div>
@@ -108,20 +108,22 @@ function dotColor(col: string) {
 <style scoped>
 .board {
   display: flex;
-  gap: 12px;
+  gap: 8px;
   overflow-x: auto;
   scroll-snap-type: x proximity;
   padding-bottom: 8px;
 }
 .col {
-  flex: 0 0 260px;
+  flex: 1 1 170px;
+  min-width: 160px;
+  max-width: 220px;
   scroll-snap-align: start;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  min-height: 12rem;
-  max-height: calc(100vh - 280px);
+  border-radius: 8px;
+  min-height: 16rem;
+  max-height: calc(100vh - 220px);
   overflow-y: auto;
-  padding: 0.7rem;
+  padding: 0.6rem 0.5rem;
 }
 </style>

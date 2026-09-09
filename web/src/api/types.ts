@@ -41,6 +41,7 @@ export interface JobsOut {
 
 export interface ReqSummary {
   jira: string;
+  title: string | null;
   phase: string;
   next: string;
   tickets: number;
@@ -81,6 +82,7 @@ export interface Step {
 
 export interface ReqDetail {
   jira: string;
+  title: string | null;
   phase: string;
   next: string;
   contract: string | null;

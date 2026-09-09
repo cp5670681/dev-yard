@@ -3,8 +3,10 @@
     <v-breadcrumbs :items="crumbs" density="compact" class="px-0 mb-2" />
     <div class="d-flex flex-wrap align-start justify-space-between ga-3 mb-4">
       <div>
-        <h1 class="text-h5 text-md-h4">{{ jira }}</h1>
-        <p class="text-medium-emphasis mb-0">{{ lede }}</p>
+        <h1 class="text-h5 text-md-h4">{{ detail?.title || jira }}</h1>
+        <p class="text-medium-emphasis mb-0">
+          <span v-if="detail?.title" class="me-2">{{ jira }}</span>{{ lede }}
+        </p>
       </div>
       <v-chip v-if="detail" :color="phaseColor(detail.phase)" variant="tonal">
         {{ detail.phase }}

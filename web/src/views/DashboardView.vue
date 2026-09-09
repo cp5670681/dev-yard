@@ -40,9 +40,16 @@
             border
           >
             <v-card-text>
-              <div class="d-flex justify-space-between align-center">
-                <span class="font-weight-medium text-subtitle-1">{{ item.jira }}</span>
-                <v-chip size="small" :color="phaseColor(item.phase)" variant="tonal">
+              <div class="d-flex justify-space-between align-start ga-2">
+                <div class="overflow-hidden">
+                  <div class="font-weight-medium text-subtitle-1 text-wrap">
+                    {{ item.title || item.jira }}
+                  </div>
+                  <div v-if="item.title" class="text-caption text-medium-emphasis">
+                    {{ item.jira }}
+                  </div>
+                </div>
+                <v-chip size="small" :color="phaseColor(item.phase)" variant="tonal" class="flex-shrink-0">
                   {{ item.phase }}
                 </v-chip>
               </div>

@@ -50,6 +50,7 @@ def test_dashboard_lists_requirement(tmp_path: Path, monkeypatch):
     _assert_spa_shell(r)
     listed = client.get("/api/requirements").json()
     assert listed[0]["jira"] == "AB-30"
+    assert listed[0]["title"] is None
 
 
 def test_dashboard_skips_shared_docs(tmp_path: Path, monkeypatch):

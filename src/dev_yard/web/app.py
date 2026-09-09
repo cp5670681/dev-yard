@@ -204,6 +204,7 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
     def _requirement_payload(detail):
         return {
             "jira": detail.jira,
+            "title": detail.title,
             "phase": detail.phase,
             "next": detail.next_label,
             "contract": detail.contract,
@@ -384,6 +385,7 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
         return [
             {
                 "jira": i.jira,
+                "title": i.title,
                 "phase": i.phase,
                 "next": i.next_label,
                 "tickets": i.ticket_total,
