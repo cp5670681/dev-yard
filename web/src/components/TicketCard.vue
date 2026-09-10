@@ -26,14 +26,7 @@
             class="mr-0.5 flex-shrink-0"
           />
           <span class="jira-ticket-key font-weight-bold text-truncate">{{ ticket.id }}</span>
-          <v-chip v-if="showState || isRunning" size="x-small" :color="dotColor" variant="tonal" class="jira-lozenge">
-            <v-progress-circular
-              v-if="isRunning"
-              indeterminate
-              size="9"
-              width="1.5"
-              class="mr-1"
-            />
+          <v-chip v-if="showState" size="x-small" :color="dotColor" variant="tonal" class="jira-lozenge">
             {{ ticket.state }}
           </v-chip>
           <v-chip v-if="ticket.parallel" size="x-small" color="info" variant="text" class="px-0.5 font-weight-bold text-caption">para</v-chip>
