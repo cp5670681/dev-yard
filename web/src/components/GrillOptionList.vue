@@ -42,10 +42,12 @@
   </v-list>
 </template>
 
+<script lang="ts">
+export const CUSTOM = "__custom__";
+</script>
+
 <script setup lang="ts">
 import { mdiRadioboxBlank, mdiRadioboxMarked } from "@mdi/js";
-
-const CUSTOM = "__custom__";
 
 defineProps<{
   options: { id: string; label: string }[];

@@ -18,8 +18,9 @@
         :options="q.options"
       />
       <v-textarea
+        v-if="!q.options?.length || picked[q.id] === CUSTOM"
         v-model="texts[q.id]"
-        :placeholder="q.options?.length ? '选「自定义」时填写' : '填写或改写建议'"
+        :placeholder="q.options?.length ? '填写自定义内容' : '填写或改写建议'"
         rows="3"
         auto-grow
         hide-details
@@ -37,7 +38,7 @@
 import { reactive, ref } from "vue";
 import { submitAnswers } from "@/api/client";
 import type { GrillRound } from "@/api/types";
-import GrillOptionList from "@/components/GrillOptionList.vue";
+import GrillOptionList, { CUSTOM } from "@/components/GrillOptionList.vue";
 
 const props = defineProps<{ jobId: string; grill: GrillRound }>();
 const emit = defineEmits<{ submitted: [] }>();
@@ -47,22 +48,26 @@ const texts = reactive<Record<string, string>>({});
 const busy = ref(false);
 
 for (const q of props.grill.questions) {
-  picked[q.id] = q.suggested || (q.options?.length ? q.options[0].id : "__custom__");
+  picked[q.id] = q.suggested || (q.options?.length ? q.options[0].id : CUSTOM);
   texts[q.id] = q.options?.length ? "" : q.suggested_text || "";
 }
 
 function collect() {
-  return props.grill.questions.map((q) => ({
-    id: q.id,
-    option: picked[q.id] || q.suggested || "__custom__",
-    text: (texts[q.id] || "").trim(),
-  }));
+  return props.grill.questions.map((q) => {
+    const isCustom = !q.options?.length || picked[q.id] === CUSTOM;
+    return {
+      id: q.id,
+      option: picked[q.id] || q.suggested || CUSTOM,
+      text: isCustom ? (texts[q.id] || "").trim() : "",
+    };
+  });
 }
 
 function acceptSuggested() {
   for (const q of props.grill.questions) {
     if (q.suggested) picked[q.id] = q.suggested;
     if (!q.options?.length) texts[q.id] = q.suggested_text || "";
+    else texts[q.id] = "";
   }
   void submit();
 }
