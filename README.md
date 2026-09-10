@@ -22,13 +22,18 @@ req open ──► grill ──► spec ──► tickets ──► req freeze �
 
 ## 快速上手
 
-### 1. 安装与初始化
+### 1. 安装、升级与初始化
 
-使用 [uv](https://docs.astral.sh/uv/) 一键安装全局 CLI 工具（依赖 Python 3.12+、Git 与 [pi](https://pi.dev)）：
+使用 [uv](https://docs.astral.sh/uv/) 安装或升级全局 CLI 工具（依赖 Python 3.12+、Git 与 [pi](https://pi.dev)）：
 
 ```bash
-# 通过 uv tool 从 GitHub 仓库一键安装全局 CLI
+# 全局安装
 uv tool install git+https://github.com/cp5670681/dev-yard.git
+
+# 后续升级到最新版本
+uv tool upgrade dev-yard
+# 或强制拉取最新主干重装
+uv tool install --force git+https://github.com/cp5670681/dev-yard.git
 ```
 
 在任意目录创建并初始化工作区：
