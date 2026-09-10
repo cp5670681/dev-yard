@@ -16,7 +16,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from dev_yard import gitops, paths, service as yard_service
+from dev_yard import __version__, gitops, paths, service as yard_service
 from dev_yard.service import extract_req_key
 from dev_yard.config import PI_STAGES, PiSettings, StageModel, load_pi_settings, save_pi_settings
 from dev_yard.pi_catalog import list_pi_catalog
@@ -183,7 +183,7 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
     templates.env.globals["doc_files"] = DOC_FILES
     templates.env.globals["pipeline"] = PIPELINE
 
-    app = FastAPI(title="dev-yard", docs_url="/api/docs", redoc_url=None)
+    app = FastAPI(title="dev-yard", version=__version__, docs_url="/api/docs", redoc_url=None)
 
     def spa_index():
         index = SPA / "index.html"
@@ -469,7 +469,7 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
 
     @app.get("/api/meta")
     def api_meta():
-        return {"root": str(root), "root_name": root.name}
+        return {"root": str(root), "root_name": root.name, "version": __version__}
 
     @app.get("/api/requirements")
     def api_list():

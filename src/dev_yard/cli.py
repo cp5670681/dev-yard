@@ -5,7 +5,7 @@ from typing import Optional
 
 import typer
 
-from dev_yard import paths, service
+from dev_yard import __version__, paths, service
 from dev_yard.config import load_repos
 from dev_yard.env import load_env
 from dev_yard.gitops import GitError
@@ -18,6 +18,27 @@ ticket_app = typer.Typer(help="Tickets / child worktrees")
 app.add_typer(repo_app, name="repo")
 app.add_typer(req_app, name="req")
 app.add_typer(ticket_app, name="ticket")
+
+
+def version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"dev-yard {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def main(
+    version: Optional[bool] = typer.Option(
+        None,
+        "--version",
+        "-V",
+        help="Show version and exit.",
+        callback=version_callback,
+        is_eager=True,
+    ),
+) -> None:
+    """dev-yard: multi-repo requirement worktrees."""
+    pass
 
 
 def root_opt() -> Path:
