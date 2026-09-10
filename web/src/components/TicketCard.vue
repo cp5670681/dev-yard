@@ -5,12 +5,35 @@
       :elevation="isHovering ? 3 : 0"
       variant="outlined"
       class="ticket-card"
+      :class="{ 'ticket-card--running': isRunning }"
       :style="{ '--ticket-stripe-color': stripeColor }"
     >
+      <v-progress-linear
+        v-if="isRunning"
+        indeterminate
+        color="primary"
+        height="2.5"
+        class="ticket-card-progress"
+      />
       <v-card-text class="pa-2.5">
         <div class="d-flex align-center ga-1 mb-1">
+          <v-progress-circular
+            v-if="isRunning"
+            indeterminate
+            size="12"
+            width="2"
+            color="primary"
+            class="mr-0.5 flex-shrink-0"
+          />
           <span class="jira-ticket-key font-weight-bold text-truncate">{{ ticket.id }}</span>
-          <v-chip v-if="showState" size="x-small" :color="dotColor" variant="tonal" class="jira-lozenge">
+          <v-chip v-if="showState || isRunning" size="x-small" :color="dotColor" variant="tonal" class="jira-lozenge">
+            <v-progress-circular
+              v-if="isRunning"
+              indeterminate
+              size="9"
+              width="1.5"
+              class="mr-1"
+            />
             {{ ticket.state }}
           </v-chip>
           <v-chip v-if="ticket.parallel" size="x-small" color="info" variant="text" class="px-0.5 font-weight-bold text-caption">para</v-chip>
@@ -114,7 +137,8 @@
               density="compact"
               variant="tonal"
               color="primary"
-              class="flex-grow-1"
+              class="flex-grow-1 font-weight-medium"
+              loading
               disabled
             >
               实现中
@@ -161,7 +185,8 @@
               density="compact"
               variant="tonal"
               color="secondary"
-              class="flex-grow-1"
+              class="flex-grow-1 font-weight-medium"
+              loading
               disabled
             >
               审查中
@@ -274,6 +299,7 @@
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import type { Ticket } from "@/api/types";
 import { ticketColor } from "@/composables/labels";
+import { runningJobs } from "@/state/jobs";
 
 const props = defineProps<{ ticket: Ticket; showState?: boolean }>();
 defineEmits<{
@@ -284,6 +310,17 @@ defineEmits<{
 }>();
 
 const dotColor = computed(() => ticketColor(props.ticket.state));
+
+const isRunning = computed(() => {
+  if (props.ticket.state === "implementing" || props.ticket.state === "reviewing") {
+    return true;
+  }
+  return runningJobs.value.some(
+    (j) =>
+      (j.state === "running" || j.state === "queued" || j.state === "waiting") &&
+      j.ticket_ids?.includes(props.ticket.id),
+  );
+});
 
 const stripeColor = computed(() => {
   const s = props.ticket.state;
@@ -357,6 +394,8 @@ watch(
 
 <style scoped>
 .ticket-card {
+  position: relative;
+  overflow: hidden;
   background: rgb(var(--v-theme-surface)) !important;
   border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
   border-left: 3.5px solid var(--ticket-stripe-color, #0052CC) !important;
@@ -368,6 +407,17 @@ watch(
   border-color: rgba(var(--v-theme-primary), 0.6);
   border-left-color: var(--ticket-stripe-color, #0052CC) !important;
   box-shadow: 0 3px 8px rgba(9, 30, 66, 0.16);
+}
+.ticket-card--running {
+  border-color: rgba(var(--v-theme-primary), 0.6) !important;
+  box-shadow: 0 0 0 1px rgba(var(--v-theme-primary), 0.35), 0 2px 8px rgba(var(--v-theme-primary), 0.12) !important;
+}
+.ticket-card-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1;
 }
 .jira-ticket-key {
   color: rgb(var(--v-theme-primary));
