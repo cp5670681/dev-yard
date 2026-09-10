@@ -17,5 +17,4 @@ reqs
 desktop-home.yaml
 desktop-*.yaml
 node_modules/
-src/dev_yard/web/spa/
 reqs/

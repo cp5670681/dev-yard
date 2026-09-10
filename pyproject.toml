@@ -26,11 +26,6 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/dev_yard"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"src/dev_yard/web/templates" = "dev_yard/web/templates"
-"src/dev_yard/web/static" = "dev_yard/web/static"
-"src/dev_yard/web/spa" = "dev_yard/web/spa"
-
 [dependency-groups]
 dev = [
     "pytest>=8.0",
