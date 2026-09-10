@@ -970,3 +970,205 @@ def status_text(root: Path, jira: str | None) -> str:
                 f"  test={test.get('status')} verdict={test.get('latest_verdict') or '-'}"
             )
     return "\n".join(lines) if lines else "(no requirements)"
+
+
+def ticket_diff(root: Path, jira: str, ticket_id: str) -> dict[str, Any]:
+    req = paths.req_dir(root, jira)
+    if not req.exists() or not paths.is_req_dir(req):
+        raise FileNotFoundError(f"no requirement {jira}")
+    tickets = {t.id: t for t in load_tickets(req)}
+    t = tickets.get(ticket_id)
+    if not t:
+        raise ValueError(f"unknown ticket {ticket_id}")
+    data = st.load(root, jira)
+    slot = (data.get("tickets") or {}).get(ticket_id) or {}
+    state = slot.get("state") or "pending"
+    title = t.title or t.id
+    repo_alias = t.repo
+
+    if state in {"pending", "ready"}:
+        return {
+            "jira": jira,
+            "ticket_id": ticket_id,
+            "title": title,
+            "repo": repo_alias,
+            "state": state,
+            "base": "",
+            "head": "",
+            "log": "",
+            "stat": "",
+            "diff": "",
+            "files": [],
+            "message": f"任务尚未开始实现 (状态: {state})",
+        }
+
+    repos = load_repos(root)
+    repo_obj = repos.get(repo_alias)
+    default_base = repo_obj.default_base if repo_obj else "main"
+    parsed = list(tickets.values())
+    since = _previous_head_sha(data, parsed, ticket_id, repo_alias)
+
+    cwd = _cwd_for_ticket(root, jira, t, slot)
+    if not cwd.exists() or not (cwd / ".git").exists():
+        parent = paths.req_worktree(root, jira, repo_alias)
+        if parent.exists() and (parent / ".git").exists():
+            cwd = parent
+        else:
+            return {
+                "jira": jira,
+                "ticket_id": ticket_id,
+                "title": title,
+                "repo": repo_alias,
+                "state": state,
+                "base": "",
+                "head": "",
+                "log": "",
+                "stat": "",
+                "diff": "",
+                "files": [],
+                "message": f"工作区不存在 ({cwd})，可能尚未冻结或已清理",
+            }
+
+    base = since or gitops.start_point(cwd, default_base)
+    head_sha = slot.get("head_sha")
+
+    diff_target = f"{base}..{head_sha}" if (state == "done" and head_sha) else base
+    log_target = f"{base}..{head_sha}" if (state == "done" and head_sha) else f"{base}..HEAD"
+
+    try:
+        log = gitops.run(["git", "log", "--oneline", log_target], cwd=cwd)
+    except gitops.GitError:
+        log = ""
+
+    try:
+        stat = gitops.run(["git", "diff", "--stat", diff_target], cwd=cwd)
+    except gitops.GitError:
+        stat = ""
+
+    try:
+        raw_diff = gitops.run(["git", "diff", diff_target], cwd=cwd)
+    except gitops.GitError as e:
+        raw_diff = f"(git diff 出错: {e})"
+
+    try:
+        name_status = gitops.run(["git", "diff", "--name-status", diff_target], cwd=cwd)
+    except gitops.GitError:
+        name_status = ""
+
+    files: list[dict[str, str]] = []
+    seen_paths: set[str] = set()
+    for line in name_status.splitlines():
+        parts = line.strip().split(maxsplit=1)
+        if len(parts) == 2:
+            st_code, file_path = parts[0], parts[1]
+            files.append({"status": st_code, "path": file_path})
+            seen_paths.add(file_path)
+
+    untracked_diff_text = ""
+    if state != "done":
+        try:
+            untracked_names = gitops.run(
+                ["git", "ls-files", "--others", "--exclude-standard"], cwd=cwd
+            )
+            for rel in untracked_names.splitlines():
+                rel = rel.strip()
+                if not rel or rel in seen_paths:
+                    continue
+                files.append({"status": "A", "path": rel})
+            untracked_diff_text = gitops._untracked_diff(cwd)
+        except gitops.GitError:
+            pass
+
+    full_diff = raw_diff
+    if untracked_diff_text:
+        if full_diff.strip():
+            full_diff = full_diff + "\n\n" + untracked_diff_text
+        else:
+            full_diff = untracked_diff_text
+
+    if not full_diff.strip() and not log.strip():
+        full_diff = f"(与 {base} 相比无代码改动)"
+
+    return {
+        "jira": jira,
+        "ticket_id": ticket_id,
+        "title": title,
+        "repo": repo_alias,
+        "state": state,
+        "base": base,
+        "head": head_sha if (state == "done" and head_sha) else "HEAD",
+        "log": log,
+        "stat": stat,
+        "diff": full_diff,
+        "files": files,
+    }
+
+
+def requirement_diff(root: Path, jira: str) -> dict[str, Any]:
+    req = paths.req_dir(root, jira)
+    if not req.exists() or not paths.is_req_dir(req):
+        raise FileNotFoundError(f"no requirement {jira}")
+    data = st.load(root, jira)
+    aliases = list(data.get("repos") or [])
+    repos = load_repos(root)
+    out_repos: list[dict[str, Any]] = []
+    for alias in aliases:
+        wt = paths.req_worktree(root, jira, alias)
+        repo_obj = repos.get(alias)
+        default_base = repo_obj.default_base if repo_obj else "main"
+        if not wt.exists() or not (wt / ".git").exists():
+            continue
+        base = gitops.start_point(wt, default_base)
+        try:
+            log = gitops.run(["git", "log", "--oneline", f"{base}..HEAD"], cwd=wt)
+        except gitops.GitError:
+            log = ""
+        try:
+            stat = gitops.run(["git", "diff", "--stat", base], cwd=wt)
+        except gitops.GitError:
+            stat = ""
+        try:
+            raw_diff = gitops.run(["git", "diff", base], cwd=wt)
+        except gitops.GitError:
+            raw_diff = ""
+        try:
+            name_status = gitops.run(["git", "diff", "--name-status", base], cwd=wt)
+        except gitops.GitError:
+            name_status = ""
+        files: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for line in name_status.splitlines():
+            parts = line.strip().split(maxsplit=1)
+            if len(parts) == 2:
+                files.append({"status": parts[0], "path": parts[1]})
+                seen.add(parts[1])
+        try:
+            untracked = gitops._untracked_diff(wt)
+            for rel in gitops.run(
+                ["git", "ls-files", "--others", "--exclude-standard"], cwd=wt
+            ).splitlines():
+                rel = rel.strip()
+                if rel and rel not in seen:
+                    files.append({"status": "A", "path": rel})
+        except gitops.GitError:
+            untracked = ""
+        full_diff = raw_diff
+        if untracked:
+            full_diff = (full_diff + "\n\n" + untracked).strip()
+        out_repos.append(
+            {
+                "repo": alias,
+                "default_base": default_base,
+                "base": base,
+                "log": log,
+                "stat": stat,
+                "diff": full_diff or f"(与 {base} 相比无代码改动)",
+                "files": files,
+            }
+        )
+    return {
+        "jira": jira,
+        "phase": data.get("phase", "open"),
+        "repos": out_repos,
+    }
+

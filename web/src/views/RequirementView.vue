@@ -122,6 +122,7 @@
         :tickets="detail.tickets"
         @implement="(id) => confirmAction('implement', id)"
         @review="(id) => confirmAction('review', id)"
+        @diff="(id) => openDiff(id)"
       />
       <v-card v-if="detail.assets.length" class="mt-6" variant="outlined">
         <v-card-title>截图</v-card-title>
@@ -254,6 +255,11 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
+    <TicketDiffDialog
+      v-model="diffDialog.open"
+      :jira="jira"
+      :ticket-id="diffDialog.ticketId"
+    />
   </div>
 </template>
 
@@ -266,6 +272,7 @@ import { deleteRequirement, getRequirement, runAction, submitTestReport } from "
 import type { Action, ReqDetail } from "@/api/types";
 import JobPanel from "@/components/JobPanel.vue";
 import TicketBoard from "@/components/TicketBoard.vue";
+import TicketDiffDialog from "@/components/TicketDiffDialog.vue";
 import { runningJobs, watchJobs } from "@/state/jobs";
 import { ACTION_LABELS, phaseColor, STEP_LABELS } from "@/composables/labels";
 import { forgetRecent } from "@/composables/recents";
@@ -289,6 +296,12 @@ const previewOpen = computed({
 });
 const confirm = reactive({ open: false, action: "", ticketId: "", text: "" });
 const deleteOpen = ref(false);
+const diffDialog = reactive({ open: false, ticketId: "" });
+
+function openDiff(ticketId: string) {
+  diffDialog.ticketId = ticketId;
+  diffDialog.open = true;
+}
 const reportForm = reactive({
   open: false,
   verdict: "failed",

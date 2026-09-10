@@ -160,3 +160,40 @@ export interface PiEntry {
   is_error?: boolean;
   tools?: { name?: string; args?: string }[];
 }
+
+export interface TicketDiffFile {
+  path: string;
+  status: string;
+}
+
+export interface TicketDiff {
+  jira: string;
+  ticket_id: string;
+  title: string;
+  repo: string;
+  state: string;
+  base?: string;
+  head?: string;
+  log?: string;
+  stat?: string;
+  diff: string;
+  files: TicketDiffFile[];
+  message?: string;
+}
+
+export interface ReqDiffRepo {
+  repo: string;
+  default_base: string;
+  base: string;
+  log: string;
+  stat: string;
+  diff: string;
+  files: TicketDiffFile[];
+}
+
+export interface ReqDiff {
+  jira: string;
+  phase: string;
+  repos: ReqDiffRepo[];
+}
+

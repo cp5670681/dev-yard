@@ -513,6 +513,28 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
             raise HTTPException(404, f"unknown doc {slug}")
         return _doc_payload(detail_or_404(jira), slug)
 
+    @app.get("/api/requirements/{jira}/tickets/{ticket_id}/diff")
+    def api_ticket_diff(jira: str, ticket_id: str):
+        if paths.is_reserved_req_name(jira):
+            raise HTTPException(404, f"no requirement {jira}")
+        try:
+            return yard_service.ticket_diff(root, jira, ticket_id)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.get("/api/requirements/{jira}/diff")
+    def api_req_diff(jira: str):
+        if paths.is_reserved_req_name(jira):
+            raise HTTPException(404, f"no requirement {jira}")
+        try:
+            return yard_service.requirement_diff(root, jira)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
     @app.put("/api/requirements/{jira}/docs/{slug}")
     def api_doc_save(jira: str, slug: str, payload: DocSaveIn):
         try:

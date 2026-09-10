@@ -16,6 +16,7 @@
             :ticket="t"
             @implement="$emit('implement', $event)"
             @review="$emit('review', $event)"
+            @diff="$emit('diff', $event)"
           />
           <div v-if="!(byState[col] || []).length" class="text-center text-medium-emphasis py-6 text-caption">
             空
@@ -44,6 +45,7 @@
         show-state
         @implement="$emit('implement', $event)"
         @review="$emit('review', $event)"
+        @diff="$emit('diff', $event)"
       />
       <div v-if="!filtered.length" class="text-center text-medium-emphasis py-8">这一栏没有票</div>
     </template>
@@ -58,7 +60,11 @@ import TicketCard from "./TicketCard.vue";
 import { ticketColor } from "@/composables/labels";
 
 const props = defineProps<{ tickets: Ticket[] }>();
-defineEmits<{ implement: [id: string]; review: [id: string] }>();
+defineEmits<{
+  implement: [id: string];
+  review: [id: string];
+  diff: [id: string];
+}>();
 
 const { mdAndUp } = useDisplay();
 const columns = [

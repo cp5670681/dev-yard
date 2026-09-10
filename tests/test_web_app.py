@@ -991,3 +991,65 @@ def test_api_repo_set_pi(tmp_path: Path, git_src: Path):
     cleared = client.put("/api/repos/backend", json={"provider": "", "model": ""})
     assert cleared.json()[0]["provider"] == ""
     assert cleared.json()[0]["model"] == ""
+
+
+def test_api_ticket_diff_and_requirement_diff(tmp_path: Path, git_src: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "DIFF-01", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: add auth feature\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    client = _client(yard)
+
+    # Before freeze / pending: returns friendly pending message
+    r_pending = client.get("/api/requirements/DIFF-01/tickets/T1/diff")
+    assert r_pending.status_code == 200
+    data_pending = r_pending.json()
+    assert data_pending["ticket_id"] == "T1"
+    assert data_pending["state"] == "pending"
+    assert "尚未开始实现" in data_pending["message"]
+
+    # Unknown ticket returns 400
+    r_bad = client.get("/api/requirements/DIFF-01/tickets/T999/diff")
+    assert r_bad.status_code == 400
+
+    # Unknown req returns 404
+    r_bad_req = client.get("/api/requirements/UNKNOWN-99/tickets/T1/diff")
+    assert r_bad_req.status_code == 404
+
+    # Freeze requirement to create worktrees
+    client.post("/api/requirements/DIFF-01/actions/freeze", json={})
+    wt = d / "worktrees" / "backend"
+    assert wt.is_dir()
+
+    # Modify a file and create a new file in worktree
+    (wt / "new_module.py").write_text("def hello():\n    return 'world'\n")
+    (wt / "README.md").write_text("# Updated README\n")
+
+    # Set ticket state to implemented in status
+    from dev_yard import status as st
+    status_data = st.load(yard, "DIFF-01")
+    status_data["tickets"]["T1"]["state"] = "implemented"
+    st.save(yard, "DIFF-01", status_data)
+
+    r_diff = client.get("/api/requirements/DIFF-01/tickets/T1/diff")
+    assert r_diff.status_code == 200
+    data_diff = r_diff.json()
+    assert data_diff["ticket_id"] == "T1"
+    assert data_diff["repo"] == "backend"
+    assert data_diff["state"] == "implemented"
+    assert "hello" in data_diff["diff"]
+    assert any(f["path"] == "new_module.py" for f in data_diff["files"])
+    assert any(f["path"] == "README.md" for f in data_diff["files"])
+
+    # Requirement level diff
+    r_req_diff = client.get("/api/requirements/DIFF-01/diff")
+    assert r_req_diff.status_code == 200
+    req_diff_data = r_req_diff.json()
+    assert req_diff_data["jira"] == "DIFF-01"
+    assert len(req_diff_data["repos"]) == 1
+    assert req_diff_data["repos"][0]["repo"] == "backend"
+    assert "hello" in req_diff_data["repos"][0]["diff"]
+

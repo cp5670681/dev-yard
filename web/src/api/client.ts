@@ -6,7 +6,9 @@ import type {
   PiSettings,
   Repo,
   ReqDetail,
+  ReqDiff,
   ReqSummary,
+  TicketDiff,
 } from "./types";
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -160,3 +162,14 @@ export function submitAnswers(
     body: JSON.stringify({ answers }),
   });
 }
+
+export function getTicketDiff(jira: string, ticketId: string) {
+  return api<TicketDiff>(
+    `/api/requirements/${encodeURIComponent(jira)}/tickets/${encodeURIComponent(ticketId)}/diff`,
+  );
+}
+
+export function getRequirementDiff(jira: string) {
+  return api<ReqDiff>(`/api/requirements/${encodeURIComponent(jira)}/diff`);
+}
+
