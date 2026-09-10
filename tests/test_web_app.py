@@ -1041,6 +1041,8 @@ def test_api_ticket_diff_and_requirement_diff(tmp_path: Path, git_src: Path):
     assert data_diff["repo"] == "backend"
     assert data_diff["state"] == "implemented"
     assert "hello" in data_diff["diff"]
+    assert "diff --git a/new_module.py b/new_module.py" in data_diff["diff"]
+    assert "+def hello():" in data_diff["diff"]
     assert any(f["path"] == "new_module.py" for f in data_diff["files"])
     assert any(f["path"] == "README.md" for f in data_diff["files"])
 

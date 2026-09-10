@@ -200,6 +200,9 @@ def _untracked_diff(worktree: Path) -> str:
     )
     chunks: list[str] = []
     for rel in names.splitlines():
+        rel = rel.strip()
+        if not rel:
+            continue
         path = worktree / rel
         if not path.is_file():
             continue
@@ -209,8 +212,19 @@ def _untracked_diff(worktree: Path) -> str:
             continue
         if len(body) > 100_000:
             body = body[:100_000] + "\n…(truncated)"
-        chunks.append(f"--- /dev/null\n+++ b/{rel}\n{body}")
-    return "\n".join(chunks)
+        body_lines = body.splitlines()
+        line_count = len(body_lines)
+        diff_lines = [
+            f"diff --git a/{rel} b/{rel}",
+            "new file mode 100644",
+            "--- /dev/null",
+            f"+++ b/{rel}",
+            f"@@ -0,0 +1,{line_count} @@",
+        ]
+        for bl in body_lines:
+            diff_lines.append(f"+{bl}")
+        chunks.append("\n".join(diff_lines))
+    return "\n\n".join(chunks)
 
 
 def diff_against(worktree: Path, base: str) -> str:

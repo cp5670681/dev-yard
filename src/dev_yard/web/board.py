@@ -36,7 +36,7 @@ _SKELETONS = {
 }
 
 _IMPLEMENT_STATES = {"ready", "blocked", "implementing"}
-_REVIEW_STATES = {"implemented", "reviewing"}
+_REVIEW_STATES = {"implemented", "reviewing", "blocked"}
 _BEYOND_IMPLEMENT = {"implemented", "reviewing", "done"}
 
 
@@ -271,9 +271,9 @@ def available_actions(detail: ReqDetail) -> list[Action]:
         ),
         Action(
             "review",
-            "审查 implemented",
+            "审查",
             any_review,
-            "" if any_review else "没有处于 implemented 的票",
+            "" if any_review else "没有处于可审查状态的票",
         ),
         Action(
             "contract",

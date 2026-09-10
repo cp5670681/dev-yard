@@ -7,7 +7,7 @@
   >
     <v-card class="diff-card">
       <!-- Title Bar -->
-      <v-card-title class="d-flex align-center flex-wrap ga-2 py-2.5 px-4 bg-surface-variant">
+      <v-card-title class="d-flex align-center flex-wrap ga-2 py-2.5 px-4 bg-surface-variant flex-shrink-0">
         <span class="text-subtitle-1 font-weight-bold text-primary">{{ ticketId }}</span>
         <span v-if="data?.title" class="text-subtitle-1 font-weight-medium text-truncate mr-1">
           {{ data.title }}
@@ -77,7 +77,78 @@
 
       <v-divider />
 
-      <v-card-text class="pa-4 diff-card-body">
+      <!-- Pinned Fixed File Navigation Bar -->
+      <div
+        v-if="!loading && !error && data && parsedFiles.length > 0"
+        class="pinned-file-nav px-4 py-2.5 bg-surface flex-shrink-0"
+      >
+        <div class="d-flex align-center justify-space-between mb-1.5 flex-wrap ga-2">
+          <div
+            class="d-flex align-center cursor-pointer select-none"
+            :title="navCollapsed ? '展开文件列表' : '折叠文件列表'"
+            @click="navCollapsed = !navCollapsed"
+          >
+            <v-icon
+              :icon="navCollapsed ? mdiChevronRight : mdiChevronDown"
+              size="18"
+              class="text-medium-emphasis me-1"
+            />
+            <span class="text-caption font-weight-bold text-high-emphasis me-1.5">
+              文件列表
+            </span>
+            <span class="text-caption text-medium-emphasis">
+              (共 {{ parsedFiles.length }} 个变更文件，点击跳转)
+            </span>
+          </div>
+
+          <!-- Base / Head info -->
+          <div v-if="data.base || data.head" class="d-flex align-center ga-2 text-caption text-medium-emphasis">
+            <span v-if="data.base">基准: <code>{{ data.base }}</code></span>
+            <span v-if="data.base && data.head">›</span>
+            <span v-if="data.head">当前: <code>{{ data.head }}</code></span>
+          </div>
+        </div>
+
+        <v-expand-transition>
+          <div
+            v-show="!navCollapsed"
+            class="d-flex flex-wrap ga-1.5 file-nav-chips"
+          >
+            <v-chip
+              v-for="file in parsedFiles"
+              :key="file.id"
+              size="small"
+              variant="outlined"
+              class="font-mono text-caption file-jump-chip cursor-pointer"
+              :class="{ 'file-jump-chip-active': activeFileId === file.id }"
+              :title="file.path"
+              @click="jumpToFile(file.id)"
+            >
+              <v-badge
+                inline
+                dot
+                :color="fileStatusColor(file.status)"
+                class="me-1"
+              />
+              <span class="font-weight-bold me-1 text-uppercase text-medium-emphasis">
+                {{ fileStatusLabel(file.status) }}
+              </span>
+              <span class="file-chip-path text-truncate">{{ file.path }}</span>
+              <span v-if="file.additions > 0" class="text-success ms-1.5 font-weight-bold">+{{ file.additions }}</span>
+              <span v-if="file.deletions > 0" class="text-error ms-1 font-weight-bold">-{{ file.deletions }}</span>
+            </v-chip>
+          </div>
+        </v-expand-transition>
+      </div>
+
+      <v-divider v-if="!loading && !error && data && parsedFiles.length > 0" />
+
+      <!-- Scrollable Diff Content Body -->
+      <v-card-text
+        ref="cardTextRef"
+        class="pa-4 diff-card-body"
+        @scroll.passive="onScroll"
+      >
         <div v-if="loading" class="d-flex justify-center align-center py-12">
           <v-progress-circular indeterminate color="primary" size="48" />
         </div>
@@ -96,49 +167,6 @@
           >
             {{ data.message }}
           </v-alert>
-
-          <!-- Ref info & Base / Head -->
-          <div v-if="data.base || data.head" class="d-flex align-center ga-2 mb-3 text-caption text-medium-emphasis">
-            <span v-if="data.base">基准: <code>{{ data.base }}</code></span>
-            <span v-if="data.base && data.head">›</span>
-            <span v-if="data.head">当前: <code>{{ data.head }}</code></span>
-          </div>
-
-          <!-- Quick Jump File Navigation Bar -->
-          <div v-if="parsedFiles.length > 0" class="file-nav-container mb-4">
-            <div class="d-flex align-center justify-space-between mb-2">
-              <span class="text-caption font-weight-bold text-medium-emphasis">
-                文件列表（点击直接跳转至对应文件）：
-              </span>
-              <span class="text-caption text-medium-emphasis font-mono">
-                共 {{ parsedFiles.length }} 个变更文件
-              </span>
-            </div>
-            <div class="d-flex flex-wrap ga-1.5 file-nav-chips">
-              <v-chip
-                v-for="file in parsedFiles"
-                :key="file.id"
-                size="small"
-                variant="outlined"
-                class="font-mono text-caption file-jump-chip cursor-pointer"
-                :class="{ 'file-jump-chip-active': activeFileId === file.id }"
-                @click="jumpToFile(file.id)"
-              >
-                <v-badge
-                  inline
-                  dot
-                  :color="fileStatusColor(file.status)"
-                  class="me-1"
-                />
-                <span class="font-weight-bold me-1 text-uppercase text-medium-emphasis">
-                  {{ fileStatusLabel(file.status) }}
-                </span>
-                <span class="file-chip-path text-truncate">{{ file.path }}</span>
-                <span v-if="file.additions > 0" class="text-success ms-1.5 font-weight-bold">+{{ file.additions }}</span>
-                <span v-if="file.deletions > 0" class="text-error ms-1 font-weight-bold">-{{ file.deletions }}</span>
-              </v-chip>
-            </div>
-          </div>
 
           <!-- Git Stat Summary -->
           <div v-if="data.stat" class="mb-4">
@@ -245,7 +273,7 @@
 
       <v-divider />
 
-      <v-card-actions class="px-4 py-2">
+      <v-card-actions class="px-4 py-2 flex-shrink-0">
         <v-spacer />
         <v-btn variant="text" @click="$emit('update:modelValue', false)">关闭</v-btn>
       </v-card-actions>
@@ -302,6 +330,8 @@ const data = ref<TicketDiff | null>(null);
 const copied = ref(false);
 const copiedPath = ref("");
 const activeFileId = ref("");
+const navCollapsed = ref(false);
+const cardTextRef = ref<any>(null);
 
 const stateColor = computed(() => (data.value ? ticketColor(data.value.state) : ""));
 
@@ -423,6 +453,26 @@ function parseUnifiedDiff(
           l.startsWith("untracked:")
         ) {
           // skip raw git header metadata to keep view clean, or render header
+        } else if (status === "A" && (l.startsWith("+") || l.trim())) {
+          // Fallback for new file lines without hunk header
+          inHunk = true;
+          oldLine = 0;
+          newLine = 1;
+          if (l.startsWith("+") && !l.startsWith("+++")) {
+            additions++;
+            parsedLines.push({
+              type: "add",
+              newLineNo: newLine++,
+              content: l.slice(1),
+            });
+          } else {
+            additions++;
+            parsedLines.push({
+              type: "add",
+              newLineNo: newLine++,
+              content: l,
+            });
+          }
         } else if (l.trim()) {
           parsedLines.push({
             type: "header",
@@ -450,6 +500,14 @@ function parseUnifiedDiff(
             oldLineNo: oldLine++,
             newLineNo: newLine++,
             content: l.startsWith(" ") ? l.slice(1) : l,
+          });
+        } else if (status === "A") {
+          // Fallback for new file lines
+          additions++;
+          parsedLines.push({
+            type: "add",
+            newLineNo: newLine++,
+            content: l,
           });
         } else if (l.startsWith("\\ No newline at end of file")) {
           parsedLines.push({
@@ -518,6 +576,37 @@ function fileStatusLabel(status: string): string {
   return status;
 }
 
+let scrollTimer: ReturnType<typeof setTimeout> | null = null;
+function onScroll(event: Event) {
+  const container = (event.target as HTMLElement) || (cardTextRef.value?.$el ?? cardTextRef.value);
+  if (!container || !parsedFiles.value.length) return;
+
+  if (scrollTimer) return;
+  scrollTimer = setTimeout(() => {
+    scrollTimer = null;
+    updateActiveFileOnScroll(container);
+  }, 60);
+}
+
+function updateActiveFileOnScroll(container: HTMLElement) {
+  const containerRect = container.getBoundingClientRect();
+  let currentActiveId = "";
+
+  for (const file of parsedFiles.value) {
+    const el = document.getElementById(file.id);
+    if (!el) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.bottom > containerRect.top + 60) {
+      currentActiveId = file.id;
+      break;
+    }
+  }
+
+  if (currentActiveId && activeFileId.value !== currentActiveId) {
+    activeFileId.value = currentActiveId;
+  }
+}
+
 async function jumpToFile(fileId: string) {
   const target = parsedFiles.value.find((f) => f.id === fileId);
   if (target) {
@@ -553,6 +642,9 @@ async function loadDiff() {
       data.value.diff || "",
       data.value.files || [],
     );
+    if (parsedFiles.value.length > 0 && !activeFileId.value) {
+      activeFileId.value = parsedFiles.value[0].id;
+    }
   } catch (e) {
     error.value = (e as Error).message || "获取 Diff 失败";
   } finally {
@@ -578,6 +670,7 @@ watch(
   ([open]) => {
     if (open && props.jira && props.ticketId) {
       activeFileId.value = "";
+      navCollapsed.value = false;
       loadDiff();
     }
   },
@@ -594,17 +687,32 @@ watch(
 
 .diff-card-body {
   overflow-y: auto;
+  flex: 1 1 auto;
 }
 
 .font-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
-.file-nav-container {
-  background: rgba(var(--v-theme-surface-variant), 0.35);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
-  padding: 10px 12px;
+.pinned-file-nav {
+  background: rgba(var(--v-theme-surface-variant), 0.3);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.file-nav-chips {
+  max-height: 120px;
+  overflow-y: auto;
+  padding-bottom: 2px;
+}
+
+.file-nav-chips::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.file-nav-chips::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 3px;
 }
 
 .file-jump-chip {
@@ -618,7 +726,8 @@ watch(
 
 .file-jump-chip-active {
   border-color: rgb(var(--v-theme-primary)) !important;
-  background: rgba(var(--v-theme-primary), 0.15) !important;
+  background: rgba(var(--v-theme-primary), 0.18) !important;
+  font-weight: 600;
 }
 
 .file-chip-path {

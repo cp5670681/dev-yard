@@ -256,7 +256,7 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
                         f"{jira} already has a running job ({action})"
                         if busy
                         else (
-                            "没有处于 implemented 的票"
+                            "没有处于待审查或阻断状态的票"
                             if action == "review"
                             else "没有可运行的票"
                         )
@@ -269,7 +269,7 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
             claimed = yard_service.claim_run(root, jira, action, ids)
             if not claimed:
                 raise ValueError(
-                    "没有处于 implemented 的票"
+                    "没有处于待审查或阻断状态的票"
                     if action == "review"
                     else "没有可运行的票"
                 )

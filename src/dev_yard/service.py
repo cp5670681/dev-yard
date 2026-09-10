@@ -612,7 +612,7 @@ def _review_blocked(result: RunResult) -> bool:
 
 _CLAIM = {
     "implement": ("implementing", {"ready", "blocked", "implementing"}),
-    "review": ("reviewing", {"implemented", "reviewing"}),
+    "review": ("reviewing", {"implemented", "reviewing", "blocked"}),
     "fix-contract": (
         "implementing",
         {"ready", "blocked", "implementing", "implemented", "reviewing", "done"},
@@ -872,7 +872,7 @@ def review(
         st.save(root, jira, data)
         return ["__contract__"]
 
-    _REVIEWABLE = {"implemented", "reviewing"}
+    _REVIEWABLE = {"implemented", "reviewing", "blocked"}
     parsed = list(tickets.values())
     targets = ids or [
         tid

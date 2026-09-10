@@ -77,9 +77,9 @@
           </div>
         </v-tooltip>
 
-        <div class="d-flex align-center ga-1.5 mt-3">
+        <div class="ticket-card-actions mt-3">
           <!-- ready -->
-          <template v-if="ticket.state === 'ready'">
+          <div v-if="ticket.state === 'ready'" class="d-flex ga-1.5 w-100">
             <v-btn
               size="small"
               density="compact"
@@ -100,10 +100,10 @@
             >
               改动
             </v-btn>
-          </template>
+          </div>
 
           <!-- implementing -->
-          <template v-else-if="ticket.state === 'implementing'">
+          <div v-else-if="ticket.state === 'implementing'" class="d-flex ga-1.5 w-100">
             <v-btn
               size="small"
               density="compact"
@@ -124,10 +124,10 @@
             >
               改动
             </v-btn>
-          </template>
+          </div>
 
           <!-- implemented -->
-          <template v-else-if="ticket.state === 'implemented'">
+          <div v-else-if="ticket.state === 'implemented'" class="d-flex ga-1.5 w-100">
             <v-btn
               size="small"
               density="compact"
@@ -148,10 +148,10 @@
             >
               改动
             </v-btn>
-          </template>
+          </div>
 
           <!-- reviewing -->
-          <template v-else-if="ticket.state === 'reviewing'">
+          <div v-else-if="ticket.state === 'reviewing'" class="d-flex ga-1.5 w-100">
             <v-btn
               size="small"
               density="compact"
@@ -172,46 +172,60 @@
             >
               改动
             </v-btn>
-          </template>
+          </div>
 
           <!-- blocked (review failed or execution blocked) -->
-          <template v-else-if="ticket.state === 'blocked'">
-            <v-btn
-              size="small"
-              density="compact"
-              variant="tonal"
-              color="warning"
-              class="flex-grow-1"
-              title="人工复核 / 修改审查要求"
-              @click="$emit('feedback', ticket)"
-            >
-              复核
-            </v-btn>
-            <v-btn
-              size="small"
-              density="compact"
-              variant="tonal"
-              color="primary"
-              class="px-2"
-              title="重新实现"
-              @click="$emit('implement', ticket.id)"
-            >
-              实现
-            </v-btn>
-            <v-btn
-              size="small"
-              density="compact"
-              variant="outlined"
-              class="px-2"
-              title="查看代码改动"
-              @click="$emit('diff', ticket.id)"
-            >
-              改动
-            </v-btn>
-          </template>
+          <div v-else-if="ticket.state === 'blocked'" class="d-flex flex-column ga-1.5 w-100">
+            <div class="d-flex ga-1.5 w-100">
+              <v-btn
+                size="small"
+                density="compact"
+                variant="tonal"
+                color="primary"
+                class="flex-grow-1"
+                title="重新触发 AI 审查"
+                @click="$emit('review', ticket.id)"
+              >
+                审查
+              </v-btn>
+              <v-btn
+                size="small"
+                density="compact"
+                variant="tonal"
+                class="flex-grow-1"
+                title="重新实现 / AI 修复"
+                @click="$emit('implement', ticket.id)"
+              >
+                实现
+              </v-btn>
+            </div>
+            <div class="d-flex ga-1.5 w-100">
+              <v-btn
+                size="small"
+                density="compact"
+                variant="tonal"
+                color="warning"
+                class="flex-grow-1"
+                title="人工复核 / 修改审查要求"
+                @click="$emit('feedback', ticket)"
+              >
+                复核
+              </v-btn>
+              <v-btn
+                size="small"
+                density="compact"
+                variant="outlined"
+                class="flex-grow-1"
+                title="查看代码改动"
+                @click="$emit('diff', ticket.id)"
+              >
+                改动
+              </v-btn>
+            </div>
+          </div>
 
           <!-- done -->
-          <template v-else-if="ticket.state === 'done'">
+          <div v-else-if="ticket.state === 'done'" class="d-flex ga-1.5 w-100">
             <v-btn
               size="small"
               density="compact"
@@ -233,10 +247,10 @@
             >
               复核
             </v-btn>
-          </template>
+          </div>
 
           <!-- pending / other -->
-          <template v-else>
+          <div v-else class="d-flex ga-1.5 w-100">
             <v-btn
               size="small"
               density="compact"
@@ -246,7 +260,7 @@
             >
               等待中
             </v-btn>
-          </template>
+          </div>
         </div>
       </v-card-text>
     </v-card>
