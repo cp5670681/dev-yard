@@ -498,3 +498,58 @@ def test_ticket_done_conflict_aborts_merge_and_raises(
         ticket_done(yard, "AB-32", "T2")
     status = subprocess.check_output(["git", "status", "--porcelain"], cwd=parent)
     assert b"UU" not in status
+
+
+def test_sequential_tickets_auto_commit_and_diff_isolation(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard.service import ticket_diff
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-99", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: first\n- repo: backend\n- depends_on:\n- parallel: false\n\n"
+        "## T2: second\n- repo: backend\n- depends_on:\n- T1\n- parallel: false\n"
+    )
+    req_freeze(yard, "AB-99")
+
+    class Ticket1Runner:
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            (cwd / "file1.txt").write_text("file 1 content\n")
+            return RunResult(ok=True, summary="t1 implemented")
+
+    class Ticket2Runner:
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            (cwd / "file2.txt").write_text("file 2 content\n")
+            return RunResult(ok=True, summary="t2 implemented")
+
+    # Implement & review T1
+    implement(yard, "AB-99", ["T1"], runner=Ticket1Runner())
+    review(yard, "AB-99", ["T1"], runner=DryRunRunner())
+
+    status_data = st.load(yard, "AB-99")
+    t1_sha = status_data["tickets"]["T1"].get("head_sha")
+    assert t1_sha is not None
+    assert status_data["tickets"]["T1"]["state"] == "done"
+
+    # T1 diff should show file1.txt
+    t1_diff = ticket_diff(yard, "AB-99", "T1")
+    assert any(f["path"] == "file1.txt" for f in t1_diff["files"])
+    assert not any(f["path"] == "file2.txt" for f in t1_diff["files"])
+
+    # Implement T2
+    implement(yard, "AB-99", ["T2"], runner=Ticket2Runner())
+    status_data = st.load(yard, "AB-99")
+    t2_sha = status_data["tickets"]["T2"].get("head_sha")
+    assert t2_sha is not None
+    assert t2_sha != t1_sha
+
+    # T2 diff should ONLY show file2.txt, NOT file1.txt!
+    t2_diff = ticket_diff(yard, "AB-99", "T2")
+    assert any(f["path"] == "file2.txt" for f in t2_diff["files"])
+    assert not any(f["path"] == "file1.txt" for f in t2_diff["files"])
+

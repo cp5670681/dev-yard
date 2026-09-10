@@ -154,3 +154,23 @@ def test_merge_abort_clears_conflicted_state(git_src: Path, tmp_path: Path):
     merge_abort(tmp_path / "wt")
     out = subprocess.check_output(["git", "status", "--porcelain"], cwd=tmp_path / "wt")
     assert b"UU" not in out
+
+
+def test_commit_all_and_has_changes(git_src: Path, tmp_path: Path):
+    from dev_yard.gitops import commit_all, has_changes, worktree_add
+
+    wt = tmp_path / "wt"
+    worktree_add(git_src, wt, "req/COMMIT-TEST", "main")
+    assert not has_changes(wt)
+    sha_clean = commit_all(wt, "nothing to commit")
+    assert sha_clean is not None
+
+    (wt / "new_file.txt").write_text("hello")
+    assert has_changes(wt)
+    sha_dirty = commit_all(wt, "feat: add new_file")
+    assert sha_dirty is not None
+    assert sha_dirty != sha_clean
+    assert not has_changes(wt)
+    log = run(["git", "log", "-n", "1", "--oneline"], cwd=wt)
+    assert "feat: add new_file" in log
+

@@ -240,3 +240,44 @@ def diff_against(worktree: Path, base: str) -> str:
     if untracked.strip():
         parts.append(f"untracked:\n{untracked}")
     return "\n\n".join(parts)
+
+
+def has_changes(worktree: Path) -> bool:
+    try:
+        status = run(["git", "status", "--porcelain"], cwd=worktree)
+        return bool(status.strip())
+    except GitError:
+        return False
+
+
+def commit_all(worktree: Path, message: str) -> str | None:
+    """Stage all changes and commit if working tree is dirty. Returns HEAD SHA."""
+    try:
+        if not (worktree / ".git").exists():
+            return None
+        if not has_changes(worktree):
+            return run(["git", "rev-parse", "HEAD"], cwd=worktree)
+        run(["git", "add", "-A"], cwd=worktree)
+        staged = run(["git", "diff", "--cached", "--name-only"], cwd=worktree)
+        if not staged.strip():
+            return run(["git", "rev-parse", "HEAD"], cwd=worktree)
+        env = os.environ.copy()
+        env.setdefault("GIT_AUTHOR_NAME", "dev-yard")
+        env.setdefault("GIT_AUTHOR_EMAIL", "dev-yard@local")
+        env.setdefault("GIT_COMMITTER_NAME", "dev-yard")
+        env.setdefault("GIT_COMMITTER_EMAIL", "dev-yard@local")
+        subprocess.run(
+            ["git", "commit", "-m", message],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            env=env,
+            check=True,
+        )
+        return run(["git", "rev-parse", "HEAD"], cwd=worktree)
+    except (GitError, subprocess.CalledProcessError):
+        try:
+            return run(["git", "rev-parse", "HEAD"], cwd=worktree)
+        except GitError:
+            return None
+

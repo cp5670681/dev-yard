@@ -378,6 +378,8 @@ def ticket_start(root: Path, jira: str, ticket_id: str) -> Path:
     parent = paths.req_worktree(root, jira, t.repo)
     if not parent.exists():
         raise ValueError(f"missing requirement worktree {parent}; freeze first")
+    if (parent / ".git").exists() and gitops.has_changes(parent):
+        gitops.commit_all(parent, f"chore: sync uncommitted changes before {ticket_id}")
     child = paths.child_worktree(root, jira, t.repo, ticket_id)
     gitops.worktree_add(
         source, child, _child_branch(jira, ticket_id), f"req/{jira}", reset_existing=True
@@ -420,10 +422,18 @@ def _ticket_done_locked(
         raise ValueError(f"unknown repo alias {t.repo}")
     source = repo.source_path(root)
     if child and parent:
+        gitops.commit_all(Path(child), f"feat({ticket_id}): {t.title or ticket_id}")
         gitops.merge_into(Path(parent), _child_branch(jira, ticket_id))
+        sha = gitops.commit_all(Path(parent), f"merge: {ticket_id}")
+        if sha:
+            slot["head_sha"] = sha
         gitops.worktree_remove(source, Path(child))
         gitops.branch_delete(source, _child_branch(jira, ticket_id))
         slot["child_worktree"] = None
+    elif parent:
+        sha = gitops.commit_all(Path(parent), f"feat({ticket_id}): {t.title or ticket_id}")
+        if sha:
+            slot["head_sha"] = sha
     if summary is not None:
         slot["last_summary"] = summary
     slot["state"] = "done"
@@ -808,7 +818,13 @@ def implement(
             if result.ok:
                 slot["state"] = "implemented"
                 slot["last_summary"] = result.summary
-                _record_head_sha(slot, cwd)
+                is_fix = from_contract or from_test or (slot.get("state") == "blocked")
+                prefix = "fix" if is_fix else "feat"
+                sha = gitops.commit_all(cwd, f"{prefix}({tid}): {t.title or tid}")
+                if sha:
+                    slot["head_sha"] = sha
+                else:
+                    _record_head_sha(slot, cwd)
             else:
                 slot["state"] = "blocked"
                 slot["last_summary"] = result.summary
@@ -941,6 +957,10 @@ def review(
                         ran.append(tid)
                         continue
                 else:
+                    parent = slot.get("worktree") or str(paths.req_worktree(root, jira, t.repo))
+                    sha = gitops.commit_all(Path(parent), f"feat({tid}): {t.title or tid}")
+                    if sha:
+                        slot["head_sha"] = sha
                     slot["state"] = "done"
                     st.save(root, jira, data)
                 data = st.load(root, jira)
