@@ -44,7 +44,9 @@ STAGE_WRITE = {
         "reqs/CONTEXT.md and reqs/docs/adr/ (shared across requirements). "
         "Do not write workspace-root CONTEXT.md or docs/adr. "
         "Do not copy them into source clones or freeze worktrees. "
-        "Do not write SPEC.md or TICKETS.md."
+        "Do not write SPEC.md or TICKETS.md. "
+        "Focus on P0/P1 decisions, apply sensible defaults for minor implementation details, "
+        "and converge quickly within 1-2 rounds."
     ),
     "spec": "Write only SPEC.md from GRILL.md. Do not interview. Do not write TICKETS.md.",
     "tickets": "Write only TICKETS.md from SPEC.md.",
