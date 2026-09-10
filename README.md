@@ -43,6 +43,15 @@ mkdir my-workspace && cd my-workspace
 dev-yard init
 ```
 
+> **关于 MCP 与需求链接访问**：  
+> 若需求来源于 Jira / Confluence 或私有平台链接，`pi` 需借助对应的 MCP 或 Skill 访问数据。`pi` 加载 MCP 需要先安装适配器插件：  
+> ```bash
+> # 1. 安装 pi MCP 适配器插件
+> pi install npm:pi-mcp-adapter
+> # 2. 在 MCP 配置文件（如 ~/.config/mcp/mcp.json）中配置目标服务的 MCP（如 mcp-atlassian-pro）
+> ```  
+> 确保 `pi` 具备目标服务的读取权限，否则 `req open` 无法访问需求链接。本地 Markdown 文件或纯文本录入则无需任何 MCP。
+
 ### 2. 登记业务仓（写入 `repos.yaml`）
 
 ```bash
