@@ -27,11 +27,8 @@ req open ──► grill ──► spec ──► tickets ──► req freeze �
 使用 [uv](https://docs.astral.sh/uv/) 一键安装全局 CLI 工具（依赖 Python 3.12+、Git 与 [pi](https://pi.dev)）：
 
 ```bash
-# 通过 uv tool 全局安装
-uv tool install dev-yard
-
-# 或直接从 GitHub 仓库安装最新版
-uv tool install git+https://github.com/your-org/dev-yard.git
+# 通过 uv tool 从 GitHub 仓库一键安装全局 CLI
+uv tool install git+https://github.com/cp5670681/dev-yard.git
 ```
 
 在任意目录创建并初始化工作区：
@@ -180,7 +177,7 @@ dev-yard web # 默认打开 http://127.0.0.1:8765
 
 ```bash
 # 源码安装与运行测试
-git clone https://github.com/your-org/dev-yard.git && cd dev-yard
+git clone https://github.com/cp5670681/dev-yard.git && cd dev-yard
 uv sync --group dev
 uv run pytest
 
