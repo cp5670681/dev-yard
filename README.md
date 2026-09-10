@@ -158,9 +158,15 @@ my-workspace/
 ## 本地 Web 控制台
 
 ```bash
-dev-yard web # 默认打开 http://127.0.0.1:8765
+dev-yard web # 默认打开 http://127.0.0.1:8765（仅本机）
+
+# 局域网其它设备访问：绑 0.0.0.0，用本机局域网 IP
+dev-yard web --host 0.0.0.0 --allow-remote
+# 例如 http://192.168.x.x:8765
 ```
 提供可视化需求看板、在线文档读写、阶段一键触发与实时日志。
+
+`--allow-remote` 无鉴权，且会暴露 `pi --approve`，只在可信内网使用。
 
 ---
 
@@ -183,7 +189,7 @@ dev-yard web # 默认打开 http://127.0.0.1:8765
 | `dev-yard implement <key> [T..]` | 编码实现 | `--print`, `--from-contract`, `--from-test` |
 | `dev-yard review <key> [T..]` | 代码评审 / 契约检查 | `--contract`, `--print` |
 | `dev-yard status [key]` | 查看需求与任务状态 | |
-| `dev-yard web` | 启动 Web 看板 | `--port 8765`, `--allow-remote` |
+| `dev-yard web` | 启动 Web 看板 | `--port 8765`, `--host 0.0.0.0 --allow-remote` |
 
 ---
 
