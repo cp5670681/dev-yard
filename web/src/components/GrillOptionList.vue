@@ -5,7 +5,7 @@
       :key="opt.id"
       :active="model === opt.id"
       :class="{ 'grill-opt--on': model === opt.id }"
-      rounded="lg"
+      rounded="sm"
       class="grill-opt mb-2"
       @click="model = opt.id"
     >
@@ -25,7 +25,7 @@
     <v-list-item
       :active="model === CUSTOM"
       :class="{ 'grill-opt--on': model === CUSTOM }"
-      rounded="lg"
+      rounded="sm"
       class="grill-opt"
       @click="model = CUSTOM"
     >

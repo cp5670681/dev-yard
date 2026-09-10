@@ -9,7 +9,7 @@
         </p>
       </div>
       <div class="d-flex align-center ga-2">
-        <v-chip v-if="detail" :color="phaseColor(detail.phase)" variant="tonal">
+        <v-chip v-if="detail" :color="phaseColor(detail.phase)" variant="tonal" class="jira-lozenge">
           {{ detail.phase }}
         </v-chip>
         <v-btn
@@ -39,6 +39,7 @@
             :color="step.current ? 'primary' : step.done ? 'success' : undefined"
             :variant="step.current ? 'flat' : step.done ? 'tonal' : 'outlined'"
             size="small"
+            class="jira-lozenge font-weight-bold"
           >
             {{ i + 1 }}. {{ STEP_LABELS[step.id] || step.id }}
           </v-chip>
@@ -502,12 +503,15 @@ watch(runningJobs, () => {
 
 <style scoped>
 .job-log {
-  background: rgb(var(--v-theme-background));
-  color: #d5deea;
-  border-radius: 8px;
-  padding: 0.8rem;
+  background: rgba(var(--v-theme-surface-variant), 0.5);
+  color: rgb(var(--v-theme-on-surface));
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 4px;
+  padding: 0.8rem 1rem;
   white-space: pre-wrap;
-  font-size: 0.8rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
 }
 .cursor-pointer {
   cursor: pointer;

@@ -1,8 +1,8 @@
 <template>
-  <v-card class="mb-4" variant="outlined">
-    <v-card-title class="d-flex align-center flex-wrap ga-3">
-      <span>{{ actionLabel }}{{ tickets }}</span>
-      <v-chip size="small" :color="stateColor" variant="tonal">{{ job.state }}</v-chip>
+  <v-card class="mb-4 job-panel-card" variant="outlined">
+    <v-card-title class="d-flex align-center flex-wrap ga-3 py-2 px-3 bg-surface-variant">
+      <span class="font-weight-bold text-subtitle-2">{{ actionLabel }}{{ tickets }}</span>
+      <v-chip size="small" :color="stateColor" variant="tonal" class="jira-lozenge">{{ job.state }}</v-chip>
       <v-progress-circular
         v-if="job.state === 'running' || job.state === 'queued'"
         indeterminate
@@ -25,8 +25,9 @@
       v-if="job.state === 'running' || job.state === 'queued'"
       indeterminate
       color="primary"
+      height="2"
     />
-    <v-card-text>
+    <v-card-text class="pa-3">
       <pre class="job-log" :class="{ folded: waiting }">{{ job.log || "等待输出…" }}</pre>
       <GrillForm
         v-if="waiting && job.grill"
@@ -34,7 +35,7 @@
         :grill="job.grill"
         @submitted="refresh"
       />
-      <p class="text-caption text-medium-emphasis mt-3 mb-0">{{ hint }}</p>
+      <p class="text-caption text-medium-emphasis mt-2.5 mb-0">{{ hint }}</p>
     </v-card-text>
   </v-card>
 </template>
@@ -134,15 +135,22 @@ watch(
 </script>
 
 <style scoped>
+.job-panel-card {
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 4px;
+}
 .job-log {
-  background: #0a0d12;
-  color: #d5deea;
-  border-radius: 8px;
-  padding: 0.8rem;
+  background: rgba(var(--v-theme-surface-variant), 0.5);
+  color: rgb(var(--v-theme-on-surface));
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 4px;
+  padding: 0.8rem 1rem;
   max-height: 22rem;
   overflow: auto;
-  font-size: 0.8rem;
-  line-height: 1.45;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
   white-space: pre-wrap;
   margin: 0;
 }

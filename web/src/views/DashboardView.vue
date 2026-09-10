@@ -36,8 +36,9 @@
           <v-card
             v-bind="hoverProps"
             :to="`/r/${item.jira}`"
-            :elevation="isHovering ? 8 : 0"
+            :elevation="isHovering ? 3 : 0"
             border
+            class="dashboard-req-card"
           >
             <v-card-text>
               <div class="d-flex justify-space-between align-start ga-2">
@@ -50,7 +51,7 @@
                   </div>
                 </div>
                 <div class="d-flex align-center ga-1 flex-shrink-0">
-                  <v-chip size="small" :color="phaseColor(item.phase)" variant="tonal">
+                  <v-chip size="small" :color="phaseColor(item.phase)" variant="tonal" class="jira-lozenge">
                     {{ item.phase }}
                   </v-chip>
                   <v-btn
@@ -150,3 +151,17 @@ onMounted(async () => {
   loading.value = false;
 });
 </script>
+
+<style scoped>
+.dashboard-req-card {
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 4px;
+  box-shadow: 0 1px 2px rgba(9, 30, 66, 0.08);
+  transition: all 0.2s ease;
+}
+.dashboard-req-card:hover {
+  border-color: rgba(var(--v-theme-primary), 0.6);
+  box-shadow: 0 4px 10px rgba(9, 30, 66, 0.15);
+}
+</style>

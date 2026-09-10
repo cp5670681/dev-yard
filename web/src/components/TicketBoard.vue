@@ -3,11 +3,11 @@
     <template v-if="mdAndUp">
       <div class="board">
         <div v-for="col in columns" :key="col" class="col">
-          <div class="d-flex align-center mb-2 text-caption text-medium-emphasis">
+          <div class="d-flex align-center mb-2 px-1 text-caption">
             <v-badge :color="dotColor(col)" dot inline class="mr-2" />
-            <span class="text-truncate font-weight-medium">{{ col }}</span>
+            <span class="col-header text-truncate">{{ col }}</span>
             <v-spacer />
-            <span class="ml-1">{{ (byState[col] || []).length }}</span>
+            <span class="col-count-badge">{{ (byState[col] || []).length }}</span>
           </div>
           <TicketCard
             v-for="t in byState[col] || []"
@@ -117,22 +117,39 @@ function dotColor(col: string) {
 <style scoped>
 .board {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   overflow-x: auto;
   scroll-snap-type: x proximity;
   padding-bottom: 8px;
 }
 .col {
-  flex: 1 1 170px;
-  min-width: 160px;
-  max-width: 220px;
+  flex: 1 1 180px;
+  min-width: 170px;
+  max-width: 235px;
   scroll-snap-align: start;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
+  background: rgba(var(--v-theme-surface-variant), 0.75);
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 4px;
   min-height: 16rem;
   max-height: calc(100vh - 220px);
   overflow-y: auto;
   padding: 0.6rem 0.5rem;
 }
+.col-header {
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: rgb(var(--v-theme-on-surface-variant));
+  letter-spacing: 0.04em;
+}
+.col-count-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: rgba(var(--v-theme-surface), 0.9);
+  color: rgb(var(--v-theme-on-surface));
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+}
 </style>
+

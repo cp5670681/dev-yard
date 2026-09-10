@@ -2,11 +2,11 @@ export const PHASE_COLOR: Record<string, string> = {
   open: "grey",
   grill: "primary",
   spec: "info",
-  tickets: "cyan",
-  freeze: "purple",
-  implement: "warning",
+  tickets: "secondary",
+  freeze: "secondary",
+  implement: "primary",
   review: "secondary",
-  testing: "orange",
+  testing: "warning",
   done: "success",
 };
 
@@ -14,8 +14,8 @@ export const TICKET_COLOR: Record<string, string> = {
   pending: "grey",
   ready: "info",
   implementing: "primary",
-  implemented: "purple",
-  reviewing: "cyan",
+  implemented: "secondary",
+  reviewing: "secondary",
   blocked: "error",
   done: "success",
 };

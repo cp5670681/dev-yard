@@ -112,10 +112,14 @@ watch([jira, slug], () => void load(), { immediate: true });
   margin: 1.2rem 0 0.5rem;
 }
 .markdown pre {
-  background: #0a0d12;
-  padding: 0.8rem;
-  border-radius: 8px;
+  background: rgba(var(--v-theme-surface-variant), 0.6);
+  color: rgb(var(--v-theme-on-surface));
+  padding: 0.8rem 1rem;
+  border-radius: 4px;
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
   overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85rem;
 }
 .markdown img {
   max-width: 100%;
@@ -127,7 +131,7 @@ watch([jira, slug], () => void load(), { immediate: true });
 }
 .markdown th,
 .markdown td {
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
   padding: 0.4rem 0.55rem;
 }
 </style>

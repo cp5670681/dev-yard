@@ -1,15 +1,21 @@
 <template>
   <v-hover v-slot="{ isHovering, props: hoverProps }">
-    <v-card v-bind="hoverProps" :elevation="isHovering ? 4 : 0" variant="outlined" class="ticket-card">
-      <v-card-text class="pa-3">
-        <div class="d-flex align-center ga-1 mb-1.5">
-          <span class="text-caption text-primary font-weight-medium text-truncate">{{ ticket.id }}</span>
-          <v-chip v-if="showState" size="x-small" :color="dotColor" variant="tonal">
+    <v-card
+      v-bind="hoverProps"
+      :elevation="isHovering ? 3 : 0"
+      variant="outlined"
+      class="ticket-card"
+      :style="{ '--ticket-stripe-color': stripeColor }"
+    >
+      <v-card-text class="pa-2.5">
+        <div class="d-flex align-center ga-1 mb-1">
+          <span class="jira-ticket-key font-weight-bold text-truncate">{{ ticket.id }}</span>
+          <v-chip v-if="showState" size="x-small" :color="dotColor" variant="tonal" class="jira-lozenge">
             {{ ticket.state }}
           </v-chip>
-          <v-chip v-if="ticket.parallel" size="x-small" color="info" variant="text" class="px-1">para</v-chip>
+          <v-chip v-if="ticket.parallel" size="x-small" color="info" variant="text" class="px-0.5 font-weight-bold text-caption">para</v-chip>
           <v-spacer />
-          <v-chip size="x-small" variant="tonal" class="repo-chip text-truncate">{{ ticket.repo }}</v-chip>
+          <v-chip size="x-small" variant="tonal" class="repo-chip text-truncate jira-component-tag">{{ ticket.repo }}</v-chip>
         </div>
 
         <v-tooltip
@@ -23,7 +29,7 @@
             <div
               ref="titleEl"
               v-bind="titleTip"
-              class="font-weight-medium text-body-2 text-break title-clamped"
+              class="jira-card-title text-break title-clamped"
             >
               {{ ticket.title || ticket.id }}
             </div>
@@ -63,8 +69,8 @@
             <div
               ref="summaryEl"
               v-bind="sumTip"
-              class="text-caption mt-2 summary-clamped"
-              :class="isErrorSummary ? 'text-error' : 'text-medium-emphasis'"
+              class="text-caption mt-1.5 summary-clamped"
+              :class="isErrorSummary ? 'text-error font-weight-medium' : 'text-medium-emphasis'"
             >
               {{ ticket.last_summary }}
             </div>
@@ -77,15 +83,14 @@
           </div>
         </v-tooltip>
 
-        <div class="ticket-card-actions mt-3">
+        <div class="ticket-card-actions mt-2.5">
           <!-- ready -->
           <div v-if="ticket.state === 'ready'" class="d-flex ga-1.5 w-100">
             <v-btn
               size="small"
               density="compact"
-              variant="tonal"
               color="primary"
-              class="flex-grow-1"
+              class="flex-grow-1 font-weight-medium"
               @click="$emit('implement', ticket.id)"
             >
               实现
@@ -131,9 +136,8 @@
             <v-btn
               size="small"
               density="compact"
-              variant="tonal"
               color="primary"
-              class="flex-grow-1"
+              class="flex-grow-1 font-weight-medium"
               @click="$emit('review', ticket.id)"
             >
               审查
@@ -180,7 +184,6 @@
               <v-btn
                 size="small"
                 density="compact"
-                variant="tonal"
                 color="primary"
                 class="flex-grow-1"
                 title="重新触发 AI 审查"
@@ -282,6 +285,16 @@ defineEmits<{
 
 const dotColor = computed(() => ticketColor(props.ticket.state));
 
+const stripeColor = computed(() => {
+  const s = props.ticket.state;
+  if (s === "done") return "#00875A";
+  if (s === "blocked") return "#DE350B";
+  if (s === "implementing") return "#0052CC";
+  if (s === "ready") return "#0065FF";
+  if (s === "implemented" || s === "reviewing") return "#6554C0";
+  return "#8590A2";
+});
+
 // 成功摘要也会写 "无 error / warning"；用票状态，不要扫正文。
 const isErrorSummary = computed(() => {
   if (!props.ticket.last_summary) return false;
@@ -343,6 +356,46 @@ watch(
 </script>
 
 <style scoped>
+.ticket-card {
+  background: rgb(var(--v-theme-surface)) !important;
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-left: 3.5px solid var(--ticket-stripe-color, #0052CC) !important;
+  border-radius: 4px;
+  box-shadow: 0 1px 2px rgba(9, 30, 66, 0.08);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.ticket-card:hover {
+  border-color: rgba(var(--v-theme-primary), 0.6);
+  border-left-color: var(--ticket-stripe-color, #0052CC) !important;
+  box-shadow: 0 3px 8px rgba(9, 30, 66, 0.16);
+}
+.jira-ticket-key {
+  color: rgb(var(--v-theme-primary));
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+}
+.jira-card-title {
+  color: rgb(var(--v-theme-on-surface));
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+.jira-lozenge {
+  font-size: 10.5px !important;
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.02em !important;
+  border-radius: 3px !important;
+  height: 18px !important;
+  padding: 0 5px !important;
+}
+.jira-component-tag {
+  font-size: 10.5px !important;
+  border-radius: 3px !important;
+  height: 18px !important;
+  padding: 0 5px !important;
+  background: rgba(var(--v-theme-surface-variant), 0.8) !important;
+}
 .title-clamped {
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -350,7 +403,6 @@ watch(
   overflow: hidden;
   text-overflow: ellipsis;
   word-break: break-word;
-  line-height: 1.4;
 }
 .summary-clamped {
   display: -webkit-box;
@@ -378,3 +430,4 @@ watch(
   max-width: 80px;
 }
 </style>
+
