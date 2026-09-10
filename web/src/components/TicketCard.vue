@@ -102,8 +102,20 @@
           <v-btn
             size="small"
             density="compact"
+            variant="tonal"
+            color="secondary"
+            class="flex-grow-1"
+            title="人工复核 / 修改审查要求"
+            :disabled="ticket.state === 'pending' || ticket.state === 'ready'"
+            @click="$emit('feedback', ticket)"
+          >
+            复核
+          </v-btn>
+          <v-btn
+            size="small"
+            density="compact"
             variant="outlined"
-            class="px-2"
+            class="px-1.5"
             title="查看代码改动"
             :disabled="ticket.state === 'pending' || ticket.state === 'ready'"
             @click="$emit('diff', ticket.id)"
@@ -122,7 +134,12 @@ import type { Ticket } from "@/api/types";
 import { ticketColor } from "@/composables/labels";
 
 const props = defineProps<{ ticket: Ticket; showState?: boolean }>();
-defineEmits<{ implement: [id: string]; review: [id: string]; diff: [id: string] }>();
+defineEmits<{
+  implement: [id: string];
+  review: [id: string];
+  diff: [id: string];
+  feedback: [ticket: Ticket];
+}>();
 
 const dotColor = computed(() => ticketColor(props.ticket.state));
 

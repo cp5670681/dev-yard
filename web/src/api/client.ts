@@ -9,6 +9,8 @@ import type {
   ReqDiff,
   ReqSummary,
   TicketDiff,
+  TicketReviewIn,
+  TicketReviewOut,
 } from "./types";
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -172,4 +174,19 @@ export function getTicketDiff(jira: string, ticketId: string) {
 export function getRequirementDiff(jira: string) {
   return api<ReqDiff>(`/api/requirements/${encodeURIComponent(jira)}/diff`);
 }
+
+export function submitTicketReview(
+  jira: string,
+  ticketId: string,
+  payload: TicketReviewIn,
+) {
+  return api<TicketReviewOut>(
+    `/api/requirements/${encodeURIComponent(jira)}/tickets/${encodeURIComponent(ticketId)}/review`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
 

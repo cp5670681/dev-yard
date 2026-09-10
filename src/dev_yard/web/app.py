@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from dev_yard import __version__, gitops, paths, service as yard_service
+from dev_yard.gitops import GitError
 from dev_yard.service import extract_req_key
 from dev_yard.config import PI_STAGES, PiSettings, StageModel, load_pi_settings, save_pi_settings
 from dev_yard.pi_catalog import list_pi_catalog
@@ -114,6 +115,12 @@ class ActionIn(BaseModel):
 
 class DocSaveIn(BaseModel):
     body: str = ""
+
+
+class TicketReviewIn(BaseModel):
+    verdict: str
+    summary: str = ""
+    auto_implement: bool = False
 
 
 class TestReportIn(BaseModel):
@@ -523,6 +530,37 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
             raise HTTPException(404, str(e)) from e
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
+
+    @app.post("/api/requirements/{jira}/tickets/{ticket_id}/review")
+    def api_ticket_review_override(jira: str, ticket_id: str, payload: TicketReviewIn):
+        if paths.is_reserved_req_name(jira):
+            raise HTTPException(404, f"no requirement {jira}")
+        try:
+            updated = yard_service.ticket_review_override(
+                root,
+                jira,
+                ticket_id,
+                verdict=payload.verdict,
+                summary=payload.summary,
+            )
+        except (ValueError, GitError, KeyError, FileNotFoundError) as e:
+            raise HTTPException(400, str(e)) from e
+
+        job_snapshots = []
+        norm = payload.verdict.strip().lower()
+        if norm in {"failed", "fail", "blocked"} and payload.auto_implement:
+            try:
+                submitted = _submit_action("implement", jira, [ticket_id], extra={})
+                job_snapshots = [j.snapshot() for j in submitted]
+            except Exception:
+                pass
+
+        return {
+            "jira": jira,
+            "ticket_id": ticket_id,
+            "ticket": updated,
+            "jobs": job_snapshots,
+        }
 
     @app.get("/api/requirements/{jira}/diff")
     def api_req_diff(jira: str):

@@ -403,7 +403,9 @@ def ticket_done(root: Path, jira: str, ticket_id: str) -> None:
             raise
 
 
-def _ticket_done_locked(root: Path, jira: str, ticket_id: str) -> None:
+def _ticket_done_locked(
+    root: Path, jira: str, ticket_id: str, summary: str | None = None
+) -> None:
     data = st.load(root, jira)
     slot = (data.get("tickets") or {}).get(ticket_id) or {}
     child = slot.get("child_worktree")
@@ -422,6 +424,8 @@ def _ticket_done_locked(root: Path, jira: str, ticket_id: str) -> None:
         gitops.worktree_remove(source, Path(child))
         gitops.branch_delete(source, _child_branch(jira, ticket_id))
         slot["child_worktree"] = None
+    if summary is not None:
+        slot["last_summary"] = summary
     slot["state"] = "done"
     st.refresh_ready(data)
     st.save(root, jira, data)
@@ -638,9 +642,9 @@ def _implement_prompt_extra(
     test_report: str | None = None,
 ) -> str:
     extra = f"Ticket: {tid} — {title}\nRepo alias: {repo}\nStay in this worktree."
-    if last_summary and "REVIEW_FAILED" in last_summary:
+    if last_summary and ("REVIEW_FAILED" in last_summary or "[Human Review" in last_summary):
         extra += (
-            "\n\nPrevious review failed. Fix only hard violations and Spec gaps "
+            "\n\nPrevious review failed / feedback provided. Fix hard violations, Spec gaps, and review feedback "
             "in this report; do not expand scope; optional smells may stay.\n"
             f"{last_summary}"
         )
@@ -921,7 +925,7 @@ def review(
                     # `done`; a conflicted merge must not strand a half-done state.
                     parent = slot.get("worktree")
                     try:
-                        _ticket_done_locked(root, jira, tid)
+                        _ticket_done_locked(root, jira, tid, summary=result.summary)
                     except gitops.GitError as e:
                         if parent:
                             gitops.merge_abort(Path(parent))
@@ -948,6 +952,69 @@ def review(
                 st.save(root, jira, data)
         ran.append(tid)
     return ran
+
+
+def ticket_review_override(
+    root: Path,
+    jira: str,
+    ticket_id: str,
+    verdict: str,
+    summary: str | None = None,
+) -> dict[str, Any]:
+    norm_verdict = (verdict or "").strip().lower()
+    if norm_verdict in {"pass", "passed", "ok", "done"}:
+        norm_verdict = "passed"
+    elif norm_verdict in {"fail", "failed", "blocked"}:
+        norm_verdict = "failed"
+    else:
+        raise ValueError(f"invalid verdict {verdict!r}; must be 'passed' or 'failed'")
+
+    req = paths.req_dir(root, jira)
+    tickets = {t.id: t for t in load_tickets(req)}
+    if ticket_id not in tickets:
+        raise ValueError(f"unknown ticket {ticket_id}")
+
+    with st.jira_lock(jira):
+        data = st.load(root, jira)
+        t_slots = data.get("tickets") or {}
+        if ticket_id not in t_slots:
+            raise ValueError(f"ticket {ticket_id} not found in STATUS.yaml")
+        slot = t_slots[ticket_id]
+
+        if norm_verdict == "passed":
+            parent = slot.get("worktree")
+            try:
+                _ticket_done_locked(root, jira, ticket_id, summary=summary)
+            except gitops.GitError as e:
+                if parent:
+                    gitops.merge_abort(Path(parent))
+                data = st.load(root, jira)
+                slot = data["tickets"][ticket_id]
+                slot["state"] = "reviewing"
+                slot["last_summary"] = (
+                    ((summary if summary is not None else slot.get("last_summary")) or "").rstrip()
+                    + f"\n\nmerge conflict into {parent}: {e}\n"
+                    "Resolve the conflict in the parent worktree "
+                    "(`git merge --abort` to start over), then re-review."
+                )
+                st.save(root, jira, data)
+                raise ValueError(f"merge conflict into {parent}: {e}") from e
+        else:
+            text = (summary or "").strip()
+            if text:
+                if "REVIEW_FAILED" not in text:
+                    formatted = f"REVIEW_FAILED\n\n{text}"
+                else:
+                    formatted = text
+            else:
+                formatted = "REVIEW_FAILED\n\nRejected by reviewer."
+            slot["last_summary"] = formatted
+            slot["state"] = "blocked"
+            st.refresh_ready(data)
+            st.save(root, jira, data)
+
+        data = st.load(root, jira)
+        return dict(data["tickets"][ticket_id])
 
 
 def status_text(root: Path, jira: str | None) -> str:

@@ -197,3 +197,17 @@ export interface ReqDiff {
   repos: ReqDiffRepo[];
 }
 
+export interface TicketReviewIn {
+  verdict: "passed" | "failed" | "blocked" | string;
+  summary?: string;
+  auto_implement?: boolean;
+}
+
+export interface TicketReviewOut {
+  jira: string;
+  ticket_id: string;
+  ticket: Record<string, unknown>;
+  jobs: JobSnapshot[];
+}
+
+

@@ -17,6 +17,7 @@
             @implement="$emit('implement', $event)"
             @review="$emit('review', $event)"
             @diff="$emit('diff', $event)"
+            @feedback="$emit('feedback', $event)"
           />
           <div v-if="!(byState[col] || []).length" class="text-center text-medium-emphasis py-6 text-caption">
             空
@@ -46,6 +47,7 @@
         @implement="$emit('implement', $event)"
         @review="$emit('review', $event)"
         @diff="$emit('diff', $event)"
+        @feedback="$emit('feedback', $event)"
       />
       <div v-if="!filtered.length" class="text-center text-medium-emphasis py-8">这一栏没有票</div>
     </template>
@@ -64,6 +66,7 @@ defineEmits<{
   implement: [id: string];
   review: [id: string];
   diff: [id: string];
+  feedback: [ticket: Ticket];
 }>();
 
 const { mdAndUp } = useDisplay();

@@ -123,6 +123,7 @@
         @implement="(id) => confirmAction('implement', id)"
         @review="(id) => confirmAction('review', id)"
         @diff="(id) => openDiff(id)"
+        @feedback="(ticket) => openReview(ticket)"
       />
       <v-card v-if="detail.assets.length" class="mt-6" variant="outlined">
         <v-card-title>截图</v-card-title>
@@ -260,6 +261,12 @@
       :jira="jira"
       :ticket-id="diffDialog.ticketId"
     />
+    <TicketReviewDialog
+      v-model="reviewDialog.open"
+      :jira="jira"
+      :ticket="reviewDialog.ticket"
+      @reviewed="onTicketReviewed"
+    />
   </div>
 </template>
 
@@ -269,10 +276,11 @@ import { useRoute, useRouter } from "vue-router";
 import { useDisplay } from "vuetify";
 import { mdiContentCopy, mdiDeleteOutline } from "@mdi/js";
 import { deleteRequirement, getRequirement, runAction, submitTestReport } from "@/api/client";
-import type { Action, ReqDetail } from "@/api/types";
+import type { Action, JobSnapshot, ReqDetail, Ticket } from "@/api/types";
 import JobPanel from "@/components/JobPanel.vue";
 import TicketBoard from "@/components/TicketBoard.vue";
 import TicketDiffDialog from "@/components/TicketDiffDialog.vue";
+import TicketReviewDialog from "@/components/TicketReviewDialog.vue";
 import { runningJobs, watchJobs } from "@/state/jobs";
 import { ACTION_LABELS, phaseColor, STEP_LABELS } from "@/composables/labels";
 import { forgetRecent } from "@/composables/recents";
@@ -297,10 +305,27 @@ const previewOpen = computed({
 const confirm = reactive({ open: false, action: "", ticketId: "", text: "" });
 const deleteOpen = ref(false);
 const diffDialog = reactive({ open: false, ticketId: "" });
+const reviewDialog = reactive({ open: false, ticket: null as Ticket | null });
 
 function openDiff(ticketId: string) {
   diffDialog.ticketId = ticketId;
   diffDialog.open = true;
+}
+
+function openReview(ticket: Ticket) {
+  reviewDialog.ticket = ticket;
+  reviewDialog.open = true;
+}
+
+async function onTicketReviewed(ticketId: string, jobs: JobSnapshot[]) {
+  reviewDialog.open = false;
+  if (jobs.length > 0 && jobs[0]?.id) {
+    await router.replace({ query: { ...route.query, job: jobs[0].id } });
+    snack.notify(`已保存反馈并启动修复 (${ticketId})`, "success");
+  } else {
+    snack.notify(`已更新 ${ticketId} 审查结果`, "success");
+  }
+  await load();
 }
 const reportForm = reactive({
   open: false,

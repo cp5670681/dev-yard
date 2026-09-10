@@ -342,6 +342,24 @@ def review(
     typer.echo("reviewed: " + (", ".join(ran) if ran else "(none)"))
 
 
+@app.command(name="review-override")
+def review_override(
+    jira: str,
+    ticket_id: str,
+    verdict: str = typer.Option(..., "--verdict", "-v", help="Verdict: 'passed' or 'failed'"),
+    summary: Optional[str] = typer.Option(None, "--summary", "-m", help="Review comments / feedback"),
+) -> None:
+    """Manually override a ticket's review verdict and feedback."""
+    root = root_opt()
+    try:
+        updated = service.ticket_review_override(
+            root, jira, ticket_id, verdict=verdict, summary=summary
+        )
+        typer.echo(f"Updated {ticket_id}: state={updated.get('state')}")
+    except (ValueError, GitError, KeyError, FileNotFoundError) as e:
+        _die(e)
+
+
 @app.command()
 def status(jira: Optional[str] = typer.Argument(None)) -> None:
     root = root_opt()
