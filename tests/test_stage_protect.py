@@ -9,7 +9,7 @@ class HijackTickets(DryRunRunner):
         super().__init__()
         self.req = req
 
-    def start(self, prompt: str, cwd: Path, extra_read_paths: list[Path]) -> RunResult:
+    def start(self, prompt: str, cwd: Path, extra_read_paths: list[Path], repo=None) -> RunResult:
         (self.req / "TICKETS.md").write_text("# hijacked\n")
         (self.req / "SPEC.md").write_text("# hijacked spec\n")
         return super().start(prompt, cwd, extra_read_paths)

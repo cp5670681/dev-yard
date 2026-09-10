@@ -136,7 +136,7 @@ def test_skeleton_cannot_freeze(tmp_path: Path, monkeypatch):
 
 
 class _FailReview(DryRunRunner):
-    def start(self, prompt: str, cwd: Path, extra_read_paths: list[Path]) -> RunResult:
+    def start(self, prompt: str, cwd: Path, extra_read_paths: list[Path], repo=None) -> RunResult:
         return RunResult(ok=True, summary="nits\nREVIEW_FAILED\n", exit_code=0)
 
 
@@ -160,7 +160,7 @@ def test_same_repo_ready_ticket_gets_child_while_sibling_implementing(
     release = threading.Event()
 
     class Gate:
-        def start(self, prompt, cwd, extra_read_paths):
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
             if "Ticket: T1" in prompt:
                 t1_in.set()
                 release.wait(timeout=5)
@@ -198,7 +198,7 @@ class _Capture:
     def __init__(self) -> None:
         self.prompts: list[str] = []
 
-    def start(self, prompt, cwd, extra_read_paths):
+    def start(self, prompt, cwd, extra_read_paths, repo=None):
         self.prompts.append(prompt)
         return RunResult(ok=True, summary="fixed")
 
@@ -362,7 +362,7 @@ def test_review_diff_is_since_previous_same_repo_ticket(
             self.filename = filename
             self.prompts: list[str] = []
 
-        def start(self, prompt, cwd, extra_read_paths):
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
             self.prompts.append(prompt)
             (cwd / self.filename).write_text(self.filename)
             subprocess.check_call(["git", "add", self.filename], cwd=cwd)
@@ -424,7 +424,7 @@ def test_review_merge_conflict_keeps_ticket_reviewable(
         def __init__(self) -> None:
             self.n = 0
 
-        def start(self, prompt, cwd, extra_read_paths):
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
             self.n += 1
             (cwd / "shared.txt").write_text(f"side {self.n}\n")
             subprocess.check_call(["git", "add", "shared.txt"], cwd=cwd)
@@ -478,7 +478,7 @@ def test_ticket_done_conflict_aborts_merge_and_raises(
         def __init__(self) -> None:
             self.n = 0
 
-        def start(self, prompt, cwd, extra_read_paths):
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
             self.n += 1
             (cwd / "shared.txt").write_text(f"side {self.n}\n")
             subprocess.check_call(["git", "add", "shared.txt"], cwd=cwd)

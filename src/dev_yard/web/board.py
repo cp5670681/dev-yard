@@ -358,6 +358,8 @@ def list_repos(root: Path) -> list[dict[str, str]]:
                 "default_base": repo.default_base,
                 "role": repo.role,
                 "path": str(repo.path) if repo.path else "",
+                "provider": repo.provider or "",
+                "model": repo.model or "",
             }
         )
     return out

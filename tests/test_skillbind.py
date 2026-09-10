@@ -122,8 +122,36 @@ def test_pi_argv_model_from_yaml_stage(tmp_path: Path, monkeypatch):
     grill = pi_argv(root=tmp_path, bundle="grill", prompt="g", binary="pi")
     spec = pi_argv(root=tmp_path, bundle="spec", prompt="s", binary="pi")
     assert grill[grill.index("--provider") + 1] == "rcc"
-    assert grill[grill.index("--model") + 1] == "gpt-5"
+    assert grill[grill.index("--model") + 1] == "MiniMax-M3"
     assert spec[spec.index("--model") + 1] == "MiniMax-M3"
+
+
+def test_pi_argv_implement_uses_repo_pair(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("YARD_PI_PROVIDER", raising=False)
+    monkeypatch.delenv("YARD_PI_MODEL", raising=False)
+    (tmp_path / "repos.yaml").write_text(
+        "repos:\n"
+        "  backend:\n"
+        "    url: git@x:y.git\n"
+        "    provider: repo-p\n"
+        "    model: repo-m\n"
+        "pi:\n"
+        "  provider: rcc\n"
+        "  model: MiniMax-M3\n"
+        "  stages:\n"
+        "    implement:\n"
+        "      provider: stage-p\n"
+        "      model: stage-m\n"
+        "    review:\n"
+        "      provider: rev-p\n"
+        "      model: rev-m\n"
+    )
+    impl = pi_argv(root=tmp_path, bundle="implement", prompt="g", binary="pi", repo="backend")
+    review = pi_argv(root=tmp_path, bundle="review", prompt="r", binary="pi", repo="backend")
+    assert impl[impl.index("--provider") + 1] == "repo-p"
+    assert impl[impl.index("--model") + 1] == "repo-m"
+    assert review[review.index("--provider") + 1] == "rev-p"
+    assert review[review.index("--model") + 1] == "rev-m"
 
 
 def test_review_prompt_starts_at_spec():

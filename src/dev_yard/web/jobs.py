@@ -265,8 +265,20 @@ class JobLogRunner(Runner):
         self.root = root
         self.bundle = bundle
 
-    def start(self, prompt: str, cwd: Path, extra_read_paths: list[Path]) -> RunResult:
-        argv = pi_argv(root=self.root, bundle=self.bundle, prompt=prompt, print_mode=True)
+    def start(
+        self,
+        prompt: str,
+        cwd: Path,
+        extra_read_paths: list[Path],
+        repo: str | None = None,
+    ) -> RunResult:
+        argv = pi_argv(
+            root=self.root,
+            bundle=self.bundle,
+            prompt=prompt,
+            print_mode=True,
+            repo=repo,
+        )
         binary = argv[0]
         if not shutil.which(binary) and not Path(binary).exists():
             msg = f"pi not found (`{binary}`). Install pi or set YARD_PI to its path."
@@ -308,6 +320,8 @@ def default_execute(root: Path, job: Job) -> None:
             str(extra.get("role") or "svc"),
             extra.get("path") or None,
             on_progress=job.append,
+            provider=extra.get("provider") or None,
+            model=extra.get("model") or None,
         )
         job.append(f"added {repo.alias} -> {repo.source_path(root)}")
         return

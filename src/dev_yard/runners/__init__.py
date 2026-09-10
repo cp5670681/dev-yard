@@ -36,7 +36,13 @@ def clip_summary(raw: str, bundle: str = "") -> str:
 
 
 class Runner:
-    def start(self, prompt: str, cwd: Path, extra_read_paths: list[Path]) -> RunResult:
+    def start(
+        self,
+        prompt: str,
+        cwd: Path,
+        extra_read_paths: list[Path],
+        repo: str | None = None,
+    ) -> RunResult:
         raise NotImplementedError
 
 
@@ -71,6 +77,7 @@ def pi_argv(
     prompt: str,
     print_mode: bool = False,
     binary: str | None = None,
+    repo: str | None = None,
 ) -> list[str]:
     cmd = binary or agent_binary()
     # --no-skills: skip ~/.pi/agent/skills and extra project skills.
@@ -78,7 +85,7 @@ def pi_argv(
     # Do not --append-system-prompt AGENTS.md: pi already loads it from cwd.
     # Do not @-attach REQUIREMENT.md: large dumps break tool-call arguments.
     argv = [cmd, "--approve", "--no-skills"]
-    provider, model = resolve_pi_choice(root, bundle)
+    provider, model = resolve_pi_choice(root, bundle, repo=repo)
     if provider:
         argv.extend(["--provider", provider])
     if model:
@@ -105,7 +112,13 @@ class PiRunner(Runner):
         self.print_mode = print_mode
         self.binary = binary or agent_binary()
 
-    def start(self, prompt: str, cwd: Path, extra_read_paths: list[Path]) -> RunResult:
+    def start(
+        self,
+        prompt: str,
+        cwd: Path,
+        extra_read_paths: list[Path],
+        repo: str | None = None,
+    ) -> RunResult:
         if not shutil.which(self.binary) and not Path(self.binary).exists():
             return RunResult(
                 ok=False,
@@ -118,6 +131,7 @@ class PiRunner(Runner):
             prompt=prompt,
             print_mode=self.print_mode,
             binary=self.binary,
+            repo=repo,
         )
         if self.print_mode:
             proc = subprocess.Popen(
@@ -154,7 +168,13 @@ class DryRunRunner(Runner):
     def __init__(self, argv: list[str] | None = None) -> None:
         self.argv = argv or []
 
-    def start(self, prompt: str, cwd: Path, extra_read_paths: list[Path]) -> RunResult:
+    def start(
+        self,
+        prompt: str,
+        cwd: Path,
+        extra_read_paths: list[Path],
+        repo: str | None = None,
+    ) -> RunResult:
         extra = f" argv={self.argv}" if self.argv else ""
         return RunResult(
             ok=True,

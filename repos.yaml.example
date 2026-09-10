@@ -3,23 +3,30 @@
 # it must already be on default_base.
 #
 # pi: optional. Names must already exist in your pi config.
-# Stage entries override the top-level provider/model; those override
-# YARD_PI_PROVIDER / YARD_PI_MODEL. Empty = omit --provider/--model.
+# provider+model are a pair at each layer; incomplete pairs are skipped.
+# implement: repo pair → stages.implement → top-level pi → env.
+# review and other stages ignore repo pairs.
 # pi:
 #   provider: rcc
 #   model: MiniMax-M3
 #   stages:
 #     grill:
+#       provider: rcc
 #       model: gpt-5
 #     implement:
+#       provider: anthropic
 #       model: claude-sonnet
 repos:
   backend:
     url: git@host:team/backend.git
     default_base: main
     role: be
+    # provider: rcc
+    # model: glm-5.3
     # path: /home/you/src/backend
   frontend:
     url: git@host:team/frontend.git
     default_base: main
     role: fe
+    # provider: omniroute
+    # model: gc/grok-4.6

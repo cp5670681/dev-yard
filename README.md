@@ -155,13 +155,27 @@ pi:
   model: MiniMax-M3          # 未单独写的阶段用这个
   stages:
     grill:
-      model: gpt-5           # 只覆盖 grill
+      provider: rcc
+      model: gpt-5
     implement:
       provider: anthropic
       model: claude-sonnet
 ```
 
-解析顺序：**阶段覆盖 → `pi.provider`/`pi.model` → 环境变量**。都空则不传 `--provider`/`--model`，交给 pi 自己的默认。
+provider 和 model **成对**回退：某一层只写了一个字段则整层跳过。
+
+- 实现：仓库 `provider`/`model` → `pi.stages.implement` → 全局 `pi` → 环境变量
+- 审查及其他阶段：**不读仓库模型**。阶段对 → 全局对 → 环境变量
+
+都空则不传 `--provider`/`--model`，交给 pi 自己的默认。仓库对只影响 implement，在 `repos.yaml` 的每个仓上写：
+
+```yaml
+repos:
+  research-front:
+    url: git@host:group/research-front.git
+    provider: omniroute
+    model: gc/grok-4.6
+```
 
 可写进仓库根 `.env`（已 gitignore）。`dev-yard` 启动时会加载它，不覆盖已经 export 的变量。
 

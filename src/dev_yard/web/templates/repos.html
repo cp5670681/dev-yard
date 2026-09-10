@@ -25,7 +25,7 @@
   {% else %}
   <table class="table">
     <thead>
-      <tr><th>alias</th><th>role</th><th>base</th><th>url</th><th>path</th></tr>
+      <tr><th>alias</th><th>role</th><th>base</th><th>url</th><th>path</th><th>implement</th></tr>
     </thead>
     <tbody>
       {% for r in repos %}
@@ -35,6 +35,7 @@
         <td>{{ r.default_base }}</td>
         <td class="clip">{{ r.url }}</td>
         <td class="clip">{{ r.path or "（托管 clone）" }}</td>
+        <td class="clip">{% if r.provider and r.model %}{{ r.provider }}/{{ r.model }}{% else %}（继承）{% endif %}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -52,6 +53,12 @@
     <label>default_base <input name="default_base" value="main"></label>
     <label>role（可选标记，不参与调度）
       <input name="role" value="svc" placeholder="be / fe / 任意">
+    </label>
+    <label>implement provider（可选）
+      <input name="provider" placeholder="rcc / anthropic">
+    </label>
+    <label>implement model（可选）
+      <input name="model" placeholder="gpt-5 / claude-sonnet">
     </label>
   </div>
   <label>本地 path（可选，已有工作副本时填写）

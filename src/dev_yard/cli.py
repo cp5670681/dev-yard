@@ -51,6 +51,8 @@ def repo_add(
     default_base: str = "main",
     role: str = "svc",
     path: Optional[str] = None,
+    provider: Optional[str] = typer.Option(None, "--provider"),
+    model: Optional[str] = typer.Option(None, "--model"),
 ) -> None:
     root = root_opt()
     try:
@@ -62,6 +64,8 @@ def repo_add(
             role,
             path,
             on_progress=lambda line: typer.echo(line, err=True),
+            provider=provider,
+            model=model,
         )
     except (ValueError, GitError) as e:
         _die(e)
@@ -76,7 +80,26 @@ def repo_list() -> None:
         typer.echo("(no repos)")
         return
     for a, r in repos.items():
-        typer.echo(f"{a}\t{r.role}\t{r.default_base}\t{r.url}")
+        pi = f"\t{r.provider}/{r.model}" if r.provider and r.model else ""
+        typer.echo(f"{a}\t{r.role}\t{r.default_base}\t{r.url}{pi}")
+
+
+@repo_app.command("set-model")
+def repo_set_model(
+    alias: str,
+    provider: Optional[str] = typer.Option(None, "--provider"),
+    model: Optional[str] = typer.Option(None, "--model"),
+) -> None:
+    """Set implement provider/model for a repo. Omit both to clear."""
+    root = root_opt()
+    try:
+        repo = service.repo_set_pi(root, alias, provider, model)
+    except ValueError as e:
+        _die(e)
+    if repo.provider and repo.model:
+        typer.echo(f"{repo.alias} implement {repo.provider}/{repo.model}")
+    else:
+        typer.echo(f"{repo.alias} implement (inherit)")
 
 
 @req_app.command("open")

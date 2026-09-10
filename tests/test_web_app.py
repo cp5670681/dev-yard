@@ -776,8 +776,8 @@ def test_repo_form_role_is_free_text(tmp_path: Path, git_src: Path):
     _assert_spa_shell(page)
     vue = (Path(__file__).resolve().parents[1] / "web" / "src" / "views" / "ReposView.vue").read_text()
     assert 'v-model="role"' in vue
-    assert "<v-select" not in vue
     assert 'label="role' in vue
+    assert 'v-text-field v-model="role"' in vue
     r = client.post(
         "/repos",
         data={
@@ -798,6 +798,8 @@ def test_repo_form_role_is_free_text(tmp_path: Path, git_src: Path):
             "default_base": "main",
             "role": "mobile",
             "path": str(git_src),
+            "provider": "",
+            "model": "",
         }
     ]
 
@@ -972,3 +974,20 @@ def test_api_repo_add(tmp_path: Path, git_src: Path):
     assert r.json()["jobs"][0]["action"] == "repo_add"
     listed = client.get("/api/repos").json()
     assert listed[0]["alias"] == "backend"
+
+
+def test_api_repo_set_pi(tmp_path: Path, git_src: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    client = _client(yard)
+    bad = client.put("/api/repos/backend", json={"provider": "rcc", "model": ""})
+    assert bad.status_code == 400
+    ok = client.put("/api/repos/backend", json={"provider": "rcc", "model": "glm-5.3"})
+    assert ok.status_code == 200
+    row = next(r for r in ok.json() if r["alias"] == "backend")
+    assert row["provider"] == "rcc"
+    assert row["model"] == "glm-5.3"
+    cleared = client.put("/api/repos/backend", json={"provider": "", "model": ""})
+    assert cleared.json()[0]["provider"] == ""
+    assert cleared.json()[0]["model"] == ""

@@ -34,6 +34,8 @@ class Repo:
     default_base: str = "main"
     role: str = "svc"
     path: Path | None = None
+    provider: str | None = None
+    model: str | None = None
 
     def source_path(self, root: Path) -> Path:
         if self.path:
@@ -132,19 +134,51 @@ def save_pi_settings(root: Path, settings: PiSettings) -> None:
     dump_workspace(root, data)
 
 
-def resolve_pi_choice(root: Path, bundle: str) -> tuple[str | None, str | None]:
-    """Stage yaml → workspace default → env. Empty means omit --provider/--model."""
+def _pair(provider: Any, model: Any) -> tuple[str, str] | None:
+    p, m = _blank(provider), _blank(model)
+    if p and m:
+        return p, m
+    return None
+
+
+def require_pair(provider: Any, model: Any) -> tuple[str, str] | None:
+    pair = _pair(provider, model)
+    if pair:
+        return pair
+    if _blank(provider) or _blank(model):
+        raise ValueError("provider and model must be set together")
+    return None
+
+
+def resolve_pi_choice(
+    root: Path,
+    bundle: str,
+    repo: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Whole-pair fallback. Empty means omit --provider/--model.
+
+    implement: repo pair → stage implement pair → workspace pair → env pair.
+    Other stages (including review): stage pair → workspace pair → env pair.
+    Incomplete pairs (only provider or only model) are skipped.
+    """
     import os
 
     settings = load_pi_settings(root)
+    layers: list[tuple[str, str] | None] = []
+    if bundle == "implement" and repo:
+        found = load_repos(root).get(repo)
+        if found:
+            layers.append(_pair(found.provider, found.model))
     stage = settings.stages.get(bundle) or StageModel()
-    provider = (
-        stage.provider
-        or settings.provider
-        or _blank(os.environ.get("YARD_PI_PROVIDER"))
+    layers.append(_pair(stage.provider, stage.model))
+    layers.append(_pair(settings.provider, settings.model))
+    layers.append(
+        _pair(os.environ.get("YARD_PI_PROVIDER"), os.environ.get("YARD_PI_MODEL"))
     )
-    model = stage.model or settings.model or _blank(os.environ.get("YARD_PI_MODEL"))
-    return provider, model
+    for item in layers:
+        if item:
+            return item
+    return None, None
 
 
 def load_repos(root: Path) -> dict[str, Repo]:
@@ -159,19 +193,27 @@ def load_repos(root: Path) -> dict[str, Repo]:
             default_base=raw.get("default_base", "main"),
             role=raw.get("role", "svc"),
             path=Path(raw["path"]) if raw.get("path") else None,
+            provider=_blank(raw.get("provider")),
+            model=_blank(raw.get("model")),
         )
     return out
 
 
 def save_repos(root: Path, repos: dict[str, Repo]) -> None:
     data = load_workspace(root)
-    data["repos"] = {
-        a: {
+    data["repos"] = {}
+    for a, r in repos.items():
+        entry: dict[str, Any] = {
             "url": r.url,
             "default_base": r.default_base,
             "role": r.role,
-            **({"path": str(r.path)} if r.path else {}),
         }
-        for a, r in repos.items()
-    }
+        if r.path:
+            entry["path"] = str(r.path)
+        pair = _pair(r.provider, r.model)
+        if pair:
+            entry["provider"], entry["model"] = pair
+        elif _blank(r.provider) or _blank(r.model):
+            raise ValueError(f"{a}: provider and model must be set together")
+        data["repos"][a] = entry
     dump_workspace(root, data)

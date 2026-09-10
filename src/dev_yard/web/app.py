@@ -97,6 +97,13 @@ class RepoAddIn(BaseModel):
     default_base: str = "main"
     role: str = "svc"
     path: str = ""
+    provider: str = ""
+    model: str = ""
+
+
+class RepoPiIn(BaseModel):
+    provider: str = ""
+    model: str = ""
 
 
 class ActionIn(BaseModel):
@@ -345,6 +352,8 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
         default_base: str = Form("main"),
         role: str = Form("svc"),
         path: str = Form(""),
+        provider: str = Form(""),
+        model: str = Form(""),
     ):
         try:
             submitted = jobs.submit(
@@ -356,6 +365,8 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
                     "default_base": default_base.strip() or "main",
                     "role": role.strip() or "svc",
                     "path": path.strip() or None,
+                    "provider": provider.strip() or None,
+                    "model": model.strip() or None,
                 },
             )
         except ValueError as e:
@@ -782,11 +793,26 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
                     "default_base": payload.default_base.strip() or "main",
                     "role": payload.role.strip() or "svc",
                     "path": payload.path.strip() or None,
+                    "provider": payload.provider.strip() or None,
+                    "model": payload.model.strip() or None,
                 },
             )
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         return _jobs_out([submitted])
+
+    @app.put("/api/repos/{alias}")
+    def api_repos_set_pi(alias: str, payload: RepoPiIn):
+        try:
+            yard_service.repo_set_pi(
+                root,
+                alias,
+                payload.provider.strip() or None,
+                payload.model.strip() or None,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return list_repos(root)
 
     @app.exception_handler(StarletteHTTPException)
     async def http_exc(request: Request, exc: StarletteHTTPException):

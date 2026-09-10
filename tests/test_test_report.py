@@ -109,7 +109,7 @@ def test_failed_report_enables_from_test(tmp_path: Path, git_src: Path, monkeypa
         def __init__(self):
             self.prompts: list[str] = []
 
-        def start(self, prompt, cwd, extra):
+        def start(self, prompt, cwd, extra, repo=None):
             self.prompts.append(prompt)
             from dev_yard.runners import RunResult
 

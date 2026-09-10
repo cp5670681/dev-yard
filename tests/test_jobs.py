@@ -252,7 +252,7 @@ def test_open_job_errors_when_pi_skips_requirement(tmp_path: Path, monkeypatch):
         exit_code = 0
 
     class Fake:
-        def start(self, prompt, cwd, extra_read_paths):
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
             return Result()
 
     monkeypatch.setattr("dev_yard.web.jobs.JobLogRunner", lambda *a, **k: Fake())
@@ -293,7 +293,7 @@ def test_default_execute_grill_uses_print_mode(tmp_path: Path, monkeypatch):
         def __init__(self, job, root, bundle):
             self.job = job
 
-        def start(self, prompt, cwd, extra_read_paths):
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
             self.job.append("grilled-stream")
             return RunResult(ok=True, summary="grilled-stream")
 
@@ -368,7 +368,7 @@ def test_web_grill_waits_then_records_answers(tmp_path: Path, monkeypatch):
         def __init__(self, job, root, bundle):
             self.job = job
 
-        def start(self, prompt, cwd, extra_read_paths):
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
             self.job.append(f"pi-round-{calls['n']}")
             return RunResult(ok=True, summary="ok")
 
@@ -465,7 +465,7 @@ def test_web_grill_resumes_pending_round_before_pi(tmp_path: Path, monkeypatch):
         def __init__(self, job, root, bundle):
             self.job = job
 
-        def start(self, prompt, cwd, extra_read_paths):
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
             self.job.append("pi-after-resume")
             return RunResult(ok=True, summary="ok")
 

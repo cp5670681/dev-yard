@@ -3,8 +3,9 @@
     <div class="mb-6">
       <h1 class="text-h5 text-sm-h4 mb-1">模型</h1>
       <p class="text-medium-emphasis mb-0">
-        选项来自本机 <code>pi --list-models</code>。留空用上一层默认（阶段 → 全局 → 环境变量 →
-        pi 自己的默认）。保存到 <code>repos.yaml</code> 的 <code>pi:</code>。
+        选项来自本机 <code>pi --list-models</code>。provider 和 model 成对回退。实现：仓库对 →
+        阶段 implement → 全局 → 环境变量 → pi 默认。审查只用 review 阶段/全局，不用仓库模型。保存到
+        <code>repos.yaml</code> 的 <code>pi:</code>。
       </p>
     </div>
     <v-alert v-if="error" type="error" class="mb-4" closable @click:close="error = ''">

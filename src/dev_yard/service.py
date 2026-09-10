@@ -7,7 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from dev_yard import gitops, paths, status as st
-from dev_yard.config import Repo, git_project_name, load_repos, save_repos
+from dev_yard.config import Repo, git_project_name, load_repos, require_pair, save_repos
 from dev_yard.atlassian import collect_requirement
 from dev_yard.env import load_env
 from dev_yard.runners import RunResult, Runner, agent_binary, get_runner, pi_argv
@@ -79,15 +79,20 @@ def repo_add(
     role: str,
     path: str | None,
     on_progress: gitops.Progress | None = None,
+    provider: str | None = None,
+    model: str | None = None,
 ) -> Repo:
     repos = load_repos(root)
     alias = (alias or "").strip() or git_project_name(url)
+    pair = require_pair(provider, model)
     repo = Repo(
         alias=alias,
         url=url,
         default_base=default_base,
         role=role,
         path=Path(path) if path else None,
+        provider=pair[0] if pair else None,
+        model=pair[1] if pair else None,
     )
     source = repo.source_path(root)
     if repo.path and not (source / ".git").exists():
@@ -95,6 +100,23 @@ def repo_add(
     repos[alias] = repo
     save_repos(root, repos)
     gitops.ensure_clone(repo.url, source, on_progress=on_progress)
+    return repo
+
+
+def repo_set_pi(
+    root: Path,
+    alias: str,
+    provider: str | None,
+    model: str | None,
+) -> Repo:
+    repos = load_repos(root)
+    repo = repos.get(alias)
+    if repo is None:
+        raise ValueError(f"unknown repo {alias}")
+    pair = require_pair(provider, model)
+    repo.provider = pair[0] if pair else None
+    repo.model = pair[1] if pair else None
+    save_repos(root, repos)
     return repo
 
 
@@ -775,7 +797,7 @@ def implement(
                 test_body if from_test else None,
             ),
         )
-        result = runner.start(prompt, cwd, extra)
+        result = runner.start(prompt, cwd, extra, repo=t.repo)
         with st.jira_lock(jira):
             data = st.load(root, jira)
             slot = data["tickets"][tid]

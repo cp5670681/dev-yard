@@ -116,10 +116,19 @@ export function addRepo(payload: {
   default_base: string;
   role: string;
   path: string;
+  provider?: string;
+  model?: string;
 }) {
   return api<JobsOut>("/api/repos", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export function setRepoPi(alias: string, provider: string, model: string) {
+  return api<Repo[]>(`/api/repos/${encodeURIComponent(alias)}`, {
+    method: "PUT",
+    body: JSON.stringify({ provider, model }),
   });
 }
 

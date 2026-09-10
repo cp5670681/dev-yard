@@ -120,6 +120,8 @@ export interface Repo {
   default_base: string;
   role: string;
   path: string;
+  provider: string;
+  model: string;
 }
 
 export interface Meta {
