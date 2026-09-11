@@ -1,10 +1,11 @@
 <template>
   <v-app>
-    <v-app-bar :color="isDark ? 'surface' : '#0747A6'" elevation="0" :border="isDark" class="jira-app-bar">
+    <v-app-bar :color="isDark ? 'surface' : '#0052CC'" elevation="0" :border="isDark" class="jira-app-bar" height="56">
       <v-app-bar-nav-icon v-if="!mdAndUp" :color="isDark ? undefined : 'white'" @click="drawer = !drawer" />
-      <v-avatar :color="isDark ? 'primary' : '#0052CC'" rounded="lg" size="32" class="ml-2 mr-3 jira-avatar-border">
+      <v-avatar color="#2684FF" rounded="sm" size="28" class="ml-2 mr-2 jira-avatar-border">
         <span class="text-white font-weight-black text-subtitle-2">Y</span>
       </v-avatar>
+      <span class="jira-product" :class="{ 'text-white': !isDark }">dev-yard</span>
       <v-app-bar-title :class="isDark ? 'text-truncate font-weight-medium' : 'text-truncate font-weight-medium text-white'">
         {{ barTitle }}
       </v-app-bar-title>
@@ -48,13 +49,13 @@
       v-model="drawer"
       :permanent="mdAndUp"
       :temporary="!mdAndUp"
-      width="280"
+      width="260"
       color="surface"
       border
     >
-      <v-list-item :title="'dev-yard'" :subtitle="meta?.root_name || ''" class="mt-2 jira-brand-item" to="/">
+      <v-list-item :title="'dev-yard'" :subtitle="meta?.root_name || ''" class="mt-2" to="/">
         <template #prepend>
-          <v-avatar color="primary" rounded="lg" size="36">
+          <v-avatar color="primary" rounded="sm" size="36">
             <span class="text-white font-weight-black text-subtitle-1">Y</span>
           </v-avatar>
         </template>
@@ -263,16 +264,22 @@ function jobLabel(job: JobBrief) {
 
 <style>
 .page-wrap {
-  max-width: 1400px;
+  max-width: 1480px;
   padding: 16px !important;
 }
 @media (min-width: 960px) {
   .page-wrap {
-    padding: 24px 32px !important;
+    padding: 20px 24px !important;
   }
 }
 .jira-app-bar {
   transition: background-color 0.2s ease;
+}
+.jira-product {
+  font-weight: 600;
+  font-size: 16px;
+  margin-right: 16px;
+  white-space: nowrap;
 }
 .jira-avatar-border {
   box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.35);

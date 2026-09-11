@@ -2,7 +2,7 @@
   <div>
     <div class="d-flex flex-column flex-sm-row align-sm-start justify-space-between ga-3 mb-6">
       <div>
-        <h1 class="text-h5 text-sm-h4">需求</h1>
+        <h1 class="ghx-sprint-title">需求</h1>
         <p class="text-medium-emphasis mt-1 mb-0">
           一个 Jira 一张看板。文档阶段可在网页用 pi -p 跑。
         </p>
@@ -153,6 +153,16 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.ghx-sprint-title {
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 1.25;
+  color: #172b4d;
+  margin: 0;
+}
+.v-theme--dark .ghx-sprint-title {
+  color: rgb(var(--v-theme-on-surface));
+}
 .dashboard-req-card {
   background: rgb(var(--v-theme-surface));
   border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));

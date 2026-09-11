@@ -2,11 +2,10 @@
   <v-hover v-slot="{ isHovering, props: hoverProps }">
     <v-card
       v-bind="hoverProps"
-      :elevation="isHovering ? 3 : 0"
-      variant="outlined"
+      :elevation="0"
+      variant="flat"
       class="ticket-card"
-      :class="{ 'ticket-card--running': isRunning }"
-      :style="{ '--ticket-stripe-color': stripeColor }"
+      :class="{ 'ticket-card--running': isRunning, 'ticket-card--hover': isHovering }"
     >
       <v-progress-linear
         v-if="isRunning"
@@ -15,7 +14,7 @@
         height="2.5"
         class="ticket-card-progress"
       />
-      <v-card-text class="pa-2.5">
+      <v-card-text class="pa-2">
         <div class="d-flex align-center ga-1 mb-1">
           <v-progress-circular
             v-if="isRunning"
@@ -25,13 +24,13 @@
             color="primary"
             class="mr-0.5 flex-shrink-0"
           />
-          <span class="jira-ticket-key font-weight-bold text-truncate">{{ ticket.id }}</span>
+          <span class="jira-ticket-key text-truncate">{{ ticket.id }}</span>
           <v-chip v-if="showState" size="x-small" :color="dotColor" variant="tonal" class="jira-lozenge">
-            {{ ticket.state }}
+            {{ TICKET_STATE_LABELS[ticket.state] || ticket.state }}
           </v-chip>
           <v-chip v-if="ticket.parallel" size="x-small" color="info" variant="text" class="px-0.5 font-weight-bold text-caption">para</v-chip>
           <v-spacer />
-          <v-chip size="x-small" variant="tonal" class="repo-chip text-truncate jira-component-tag">{{ ticket.repo }}</v-chip>
+          <span v-if="ticket.repo" class="jira-repo-tag text-truncate">{{ ticket.repo }}</span>
         </div>
 
         <v-tooltip
@@ -99,7 +98,7 @@
           </div>
         </v-tooltip>
 
-        <div class="ticket-card-actions mt-2.5">
+        <div class="ticket-card-actions mt-2">
           <!-- ready -->
           <div v-if="ticket.state === 'ready'" class="d-flex ga-1.5 w-100">
             <v-btn
@@ -291,7 +290,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import type { Ticket } from "@/api/types";
-import { ticketColor } from "@/composables/labels";
+import { ticketColor, TICKET_STATE_LABELS } from "@/composables/labels";
 import { runningJobs } from "@/state/jobs";
 
 const props = defineProps<{ ticket: Ticket; showState?: boolean }>();
@@ -313,16 +312,6 @@ const isRunning = computed(() => {
       (j.state === "running" || j.state === "queued" || j.state === "waiting") &&
       j.ticket_ids?.includes(props.ticket.id),
   );
-});
-
-const stripeColor = computed(() => {
-  const s = props.ticket.state;
-  if (s === "done") return "#00875A";
-  if (s === "blocked") return "#DE350B";
-  if (s === "implementing") return "#0052CC";
-  if (s === "ready") return "#0065FF";
-  if (s === "implemented" || s === "reviewing") return "#6554C0";
-  return "#8590A2";
 });
 
 // 成功摘要也会写 "无 error / warning"；用票状态，不要扫正文。
@@ -389,21 +378,22 @@ watch(
 .ticket-card {
   position: relative;
   overflow: hidden;
-  background: rgb(var(--v-theme-surface)) !important;
-  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
-  border-left: 3.5px solid var(--ticket-stripe-color, #0052CC) !important;
+  background: #fff !important;
+  border: 1px solid #dfe1e6 !important;
   border-radius: 4px;
-  box-shadow: 0 1px 2px rgba(9, 30, 66, 0.08);
-  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+  box-shadow: none;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
 }
-.ticket-card:hover {
-  border-color: rgba(var(--v-theme-primary), 0.6);
-  border-left-color: var(--ticket-stripe-color, #0052CC) !important;
-  box-shadow: 0 3px 8px rgba(9, 30, 66, 0.16);
+.v-theme--dark .ticket-card {
+  background: rgb(var(--v-theme-surface)) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+.ticket-card--hover {
+  background: #fafbfc !important;
+  border-color: #c1c7d0 !important;
 }
 .ticket-card--running {
-  border-color: rgba(var(--v-theme-primary), 0.6) !important;
-  box-shadow: 0 0 0 1px rgba(var(--v-theme-primary), 0.35), 0 2px 8px rgba(var(--v-theme-primary), 0.12) !important;
+  border-color: #4c9aff !important;
 }
 .ticket-card-progress {
   position: absolute;
@@ -413,15 +403,36 @@ watch(
   z-index: 1;
 }
 .jira-ticket-key {
-  color: rgb(var(--v-theme-primary));
-  font-size: 11.5px;
-  letter-spacing: 0.02em;
+  color: #5e6c84;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.v-theme--dark .jira-ticket-key {
+  color: rgb(var(--v-theme-on-surface-variant));
 }
 .jira-card-title {
+  color: #172b4d;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+.v-theme--dark .jira-card-title {
   color: rgb(var(--v-theme-on-surface));
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 1.4;
+}
+.jira-repo-tag {
+  max-width: 88px;
+  font-size: 11px;
+  color: #5e6c84;
+  background: #f4f5f7;
+  border-radius: 3px;
+  padding: 0 5px;
+  line-height: 18px;
+  flex-shrink: 0;
+}
+:global(.v-theme--dark) .jira-repo-tag {
+  color: rgb(var(--v-theme-on-surface-variant));
+  background: rgb(var(--v-theme-surface-variant));
 }
 .jira-lozenge {
   font-size: 10.5px !important;

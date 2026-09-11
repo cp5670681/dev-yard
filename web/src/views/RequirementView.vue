@@ -1,27 +1,29 @@
 <template>
   <div>
-    <v-breadcrumbs :items="crumbs" density="compact" class="px-0 mb-2" />
-    <div class="d-flex flex-wrap align-start justify-space-between ga-3 mb-4">
-      <div>
-        <h1 class="text-h5 text-md-h4">{{ detail?.title || jira }}</h1>
-        <p class="text-medium-emphasis mb-0">
-          <span v-if="detail?.title" class="me-2">{{ jira }}</span>{{ lede }}
-        </p>
+    <v-breadcrumbs :items="crumbs" density="compact" class="px-0 mb-1" />
+    <div class="ghx-header">
+      <div class="ghx-header-top">
+        <div>
+          <div v-if="detail?.title" class="ghx-board-name">{{ jira }}</div>
+          <h1 class="ghx-sprint-title">{{ detail?.title || jira }}</h1>
+        </div>
+        <div class="d-flex align-center ga-2">
+          <v-chip v-if="detail" :color="phaseColor(detail.phase)" variant="tonal" class="jira-lozenge">
+            {{ detail.phase }}
+          </v-chip>
+          <v-btn
+            v-if="detail"
+            variant="text"
+            color="error"
+            size="small"
+            :prepend-icon="mdiDeleteOutline"
+            @click="deleteOpen = true"
+          >
+            删除需求
+          </v-btn>
+        </div>
       </div>
-      <div class="d-flex align-center ga-2">
-        <v-chip v-if="detail" :color="phaseColor(detail.phase)" variant="tonal" class="jira-lozenge">
-          {{ detail.phase }}
-        </v-chip>
-        <v-btn
-          v-if="detail"
-          variant="text"
-          color="error"
-          :prepend-icon="mdiDeleteOutline"
-          @click="deleteOpen = true"
-        >
-          删除需求
-        </v-btn>
-      </div>
+      <p class="ghx-lede mb-0">{{ lede }}</p>
     </div>
     <v-alert v-if="error" type="error" class="mb-4" closable @click:close="error = ''">
       {{ error }}
@@ -33,7 +35,7 @@
       @done="onJobDone"
     />
     <template v-if="detail">
-      <div class="d-flex flex-wrap align-center ga-2 mb-6">
+      <div class="d-flex flex-wrap align-center ga-2 mb-4">
         <template v-for="(step, i) in detail.steps" :key="step.id">
           <v-chip
             :color="step.current ? 'primary' : step.done ? 'success' : undefined"
@@ -53,6 +55,7 @@
             <span v-if="nextAction" v-bind="tip" class="d-inline-block">
               <v-btn
                 color="primary"
+                class="ghx-create-btn"
                 :disabled="!nextAction.enabled"
                 :loading="acting === nextAction.id"
                 :block="!mdAndUp"
@@ -502,6 +505,39 @@ watch(runningJobs, () => {
 </script>
 
 <style scoped>
+.ghx-header-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.ghx-board-name {
+  font-size: 12px;
+  color: #5e6c84;
+  margin-bottom: 2px;
+}
+.ghx-sprint-title {
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 1.25;
+  color: #172b4d;
+  margin: 0;
+}
+.v-theme--dark .ghx-sprint-title {
+  color: rgb(var(--v-theme-on-surface));
+}
+.ghx-lede {
+  font-size: 13px;
+  color: #5e6c84;
+  margin-bottom: 12px !important;
+}
+.ghx-create-btn {
+  text-transform: none !important;
+  font-weight: 600;
+  letter-spacing: 0;
+}
 .job-log {
   background: rgba(var(--v-theme-surface-variant), 0.5);
   color: rgb(var(--v-theme-on-surface));

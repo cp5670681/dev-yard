@@ -20,6 +20,16 @@ export const TICKET_COLOR: Record<string, string> = {
   done: "success",
 };
 
+export const TICKET_STATE_LABELS: Record<string, string> = {
+  pending: "待办",
+  ready: "就绪",
+  implementing: "实现中",
+  implemented: "已实现",
+  reviewing: "审查中",
+  blocked: "阻塞",
+  done: "完成",
+};
+
 export const STEP_LABELS: Record<string, string> = {
   open: "抽取",
   grill: "对齐",

@@ -1,26 +1,25 @@
 <template>
   <div>
     <template v-if="mdAndUp">
-      <div class="board">
-        <div v-for="col in columns" :key="col" class="col">
-          <div class="d-flex align-center mb-2 px-1 text-caption">
-            <v-badge :color="dotColor(col)" dot inline class="mr-2" />
-            <span class="col-header text-truncate">{{ col }}</span>
-            <v-spacer />
-            <span class="col-count-badge">{{ (byState[col] || []).length }}</span>
+      <div class="ghx-board">
+        <div class="ghx-column-headers">
+          <div v-for="col in columns" :key="col" class="ghx-column-header">
+            <span class="ghx-column-title">{{ stateLabel(col) }}</span>
+            <span class="ghx-column-count">{{ (byState[col] || []).length }}</span>
           </div>
-          <TicketCard
-            v-for="t in byState[col] || []"
-            :key="t.id"
-            class="mb-2.5"
-            :ticket="t"
-            @implement="$emit('implement', $event)"
-            @review="$emit('review', $event)"
-            @diff="$emit('diff', $event)"
-            @feedback="$emit('feedback', $event)"
-          />
-          <div v-if="!(byState[col] || []).length" class="text-center text-medium-emphasis py-6 text-caption">
-            空
+        </div>
+        <div class="ghx-columns">
+          <div v-for="col in columns" :key="col" class="ghx-column">
+            <TicketCard
+              v-for="t in byState[col] || []"
+              :key="t.id"
+              class="ghx-card-gap"
+              :ticket="t"
+              @implement="$emit('implement', $event)"
+              @review="$emit('review', $event)"
+              @diff="$emit('diff', $event)"
+              @feedback="$emit('feedback', $event)"
+            />
           </div>
         </div>
       </div>
@@ -59,7 +58,7 @@ import { computed, ref } from "vue";
 import { useDisplay } from "vuetify";
 import type { Ticket } from "@/api/types";
 import TicketCard from "./TicketCard.vue";
-import { ticketColor } from "@/composables/labels";
+import { TICKET_STATE_LABELS } from "@/composables/labels";
 
 const props = defineProps<{ tickets: Ticket[] }>();
 defineEmits<{
@@ -98,7 +97,7 @@ const filterOptions = computed(() => {
     { id: "active", label: "进行中", count: active },
     ...columns.map((c) => ({
       id: c,
-      label: c,
+      label: stateLabel(c),
       count: (byState.value[c] || []).length,
     })),
   ];
@@ -109,47 +108,64 @@ const filtered = computed(() => {
   return byState.value[filter.value] || [];
 });
 
-function dotColor(col: string) {
-  return ticketColor(col);
+function stateLabel(col: string) {
+  return TICKET_STATE_LABELS[col] || col;
 }
+
 </script>
 
 <style scoped>
-.board {
+.ghx-board {
   display: flex;
-  gap: 10px;
+  flex-direction: column;
+  min-height: calc(100vh - 220px);
   overflow-x: auto;
-  scroll-snap-type: x proximity;
-  padding-bottom: 8px;
+  background: #fff;
+  padding: 0 2px 8px;
 }
-.col {
-  flex: 1 1 180px;
-  min-width: 170px;
-  max-width: 235px;
-  scroll-snap-align: start;
-  background: rgba(var(--v-theme-surface-variant), 0.75);
-  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
-  border-radius: 4px;
-  min-height: 16rem;
-  max-height: calc(100vh - 220px);
-  overflow-y: auto;
-  padding: 0.6rem 0.5rem;
+:global(.v-theme--dark) .ghx-board {
+  background: rgb(var(--v-theme-surface));
 }
-.col-header {
-  font-size: 11.5px;
-  font-weight: 700;
-  text-transform: uppercase;
-  color: rgb(var(--v-theme-on-surface-variant));
-  letter-spacing: 0.04em;
+.ghx-column-headers,
+.ghx-columns {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(196px, 1fr));
+  column-gap: 12px;
 }
-.col-count-badge {
-  font-size: 0.72rem;
-  font-weight: 700;
-  padding: 1px 7px;
-  border-radius: 10px;
-  background: rgba(var(--v-theme-surface), 0.9);
+.ghx-column-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 10px 10px;
+  border-bottom: 2px solid #c1c7d0;
+  background: #fff;
+}
+.ghx-column-title {
+  font-size: 14px;
+  font-weight: 500;
   color: rgb(var(--v-theme-on-surface));
-  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+}
+.ghx-column-count {
+  font-size: 14px;
+  color: rgb(var(--v-theme-on-surface-variant));
+}
+.ghx-column {
+  background: #f4f5f7;
+  min-height: 12rem;
+  padding: 8px;
+  border-radius: 0 0 2px 2px;
+}
+:global(.v-theme--dark) .ghx-column {
+  background: #22272b;
+}
+:global(.v-theme--dark) .ghx-column-header {
+  background: rgb(var(--v-theme-surface));
+  border-bottom-color: rgba(255, 255, 255, 0.18);
+}
+.ghx-card-gap {
+  margin-bottom: 8px;
+}
+.ghx-card-gap:last-child {
+  margin-bottom: 0;
 }
 </style>
-
