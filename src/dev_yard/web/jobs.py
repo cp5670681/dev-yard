@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -12,7 +11,7 @@ from typing import Any, Callable
 
 from dev_yard import grill_round, paths, service
 from dev_yard.pi_session import load_conversation
-from dev_yard.runners import RunResult, Runner, clip_summary, pi_argv
+from dev_yard.runners import RunResult, Runner, clip_summary, pi_argv, run_pi_print
 
 Execute = Callable[[Path, "Job"], None]
 _TERMINAL = {"ok", "error"}
@@ -275,7 +274,7 @@ class JobLogRunner(Runner):
         argv = pi_argv(
             root=self.root,
             bundle=self.bundle,
-            prompt=prompt,
+            prompt=None,
             print_mode=True,
             repo=repo,
         )
@@ -286,20 +285,11 @@ class JobLogRunner(Runner):
             return RunResult(ok=False, summary=msg, exit_code=127)
         self.job.record_pi_run(cwd)
         self.job.append(f"$ {binary} -p …  cwd={cwd}")
-        proc = subprocess.Popen(
-            argv,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        chunks: list[str] = []
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            chunks.append(line)
+
+        def _log(line: str) -> None:
             self.job.append(line if line.endswith("\n") else line + "\n")
-        code = proc.wait()
-        raw = "".join(chunks)
+
+        code, raw = run_pi_print(argv, cwd, prompt, on_line=_log)
         blocked = code != 0 or "REVIEW_FAILED" in raw
         summary = clip_summary(raw, self.bundle) or f"pi exit {code}"
         return RunResult(
@@ -359,7 +349,7 @@ def default_execute(root: Path, job: Job) -> None:
         "tickets": "tickets",
         "implement": "implement",
         "review": "review",
-        "contract": "review",
+        "contract": "contract",
         "fix-contract": "implement",
         "fix-test": "implement",
     }.get(job.action)

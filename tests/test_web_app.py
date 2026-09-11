@@ -736,7 +736,7 @@ def test_pi_settings_api(tmp_path: Path, monkeypatch):
     empty = client.get("/api/pi").json()
     assert empty["provider"] == ""
     assert empty["model"] == ""
-    assert empty["stage_ids"] == ["open", "grill", "spec", "tickets", "implement", "review"]
+    assert empty["stage_ids"] == ["open", "grill", "spec", "tickets", "implement", "review", "contract"]
     assert empty["catalog"]["providers"][0]["id"] == "rcc"
     saved = client.put(
         "/api/pi",

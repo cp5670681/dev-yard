@@ -1,6 +1,7 @@
+import subprocess
 from pathlib import Path
 
-from dev_yard.runners import pi_argv
+from dev_yard.runners import pi_argv, run_pi_print
 from dev_yard.skillbind import load_skill, session_prompt
 
 
@@ -98,6 +99,53 @@ def test_pi_argv_print_mode(monkeypatch):
     assert "bash" not in tools
 
 
+def test_run_pi_print_sends_prompt_on_stdin(tmp_path, monkeypatch):
+    class FakeStdin:
+        def __init__(self):
+            self.written = ""
+
+        def write(self, data):
+            self.written += data
+
+        def close(self):
+            self.closed = True
+
+    class FakeProc:
+        def __init__(self):
+            self.stdin = FakeStdin()
+            self.stdout = iter(["ok\n"])
+
+        def wait(self):
+            return 0
+
+    proc = FakeProc()
+    captured = {}
+
+    def fake_popen(*a, **k):
+        captured["argv"] = a[0]
+        captured["stdin"] = k.get("stdin")
+        return proc
+
+    monkeypatch.setattr("dev_yard.runners.subprocess.Popen", fake_popen)
+    prompt = "x" * 10000
+    code, raw = run_pi_print(["pi", "-p"], tmp_path, prompt)
+    assert code == 0
+    assert raw == "ok\n"
+    assert captured["argv"] == ["pi", "-p"]
+    assert captured["stdin"] is subprocess.PIPE
+    assert proc.stdin.written == prompt
+    assert proc.stdin.closed
+
+
+def test_pi_argv_print_mode_can_omit_prompt(monkeypatch):
+    monkeypatch.delenv("YARD_PI_PROVIDER", raising=False)
+    monkeypatch.delenv("YARD_PI_MODEL", raising=False)
+    root = Path(__file__).resolve().parents[1]
+    argv = pi_argv(root=root, bundle="contract", prompt=None, print_mode=True, binary="pi")
+    assert argv[-1] == "-p"
+    assert "huge" not in argv
+
+
 def test_pi_argv_model_from_env(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("YARD_PI_PROVIDER", "rcc")
     monkeypatch.setenv("YARD_PI_MODEL", "MiniMax-M3")
@@ -158,6 +206,24 @@ def test_review_prompt_starts_at_spec():
     p = session_prompt(Path("/tmp"), "review", "AB-1")
     assert "SPEC.md" in p
     assert "REQUIREMENT.md" not in p
+    p_contract = session_prompt(Path("/tmp"), "contract", "AB-1")
+    assert "SPEC.md" in p_contract
+    assert "code-review" in p_contract
+
+
+def test_pi_argv_contract_bundle(monkeypatch):
+    monkeypatch.delenv("YARD_PI_PROVIDER", raising=False)
+    monkeypatch.delenv("YARD_PI_MODEL", raising=False)
+    root = Path(__file__).resolve().parents[1]
+    argv = pi_argv(root=root, bundle="contract", prompt="c", print_mode=True, binary="pi")
+    assert "-p" in argv
+    tools = argv[argv.index("--tools") + 1]
+    assert "read" in tools
+    assert "grep" in tools
+    assert "edit" not in tools
+    assert "bash" not in tools
+    joined = " ".join(argv)
+    assert "code-review" in joined
 
 
 def test_implement_prompt_keeps_context_out_of_worktree():

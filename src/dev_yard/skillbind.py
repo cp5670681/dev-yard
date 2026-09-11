@@ -11,6 +11,7 @@ SKILL_NAMES = {
     "tickets": "to-tickets",
     "implement": "implement",
     "review": "code-review",
+    "contract": "code-review",
     "tdd": "tdd",
 }
 
@@ -22,6 +23,7 @@ SKILL_BUNDLES: dict[str, list[str]] = {
     "tickets": ["to-tickets"],
     "implement": ["implement", "tdd", "codebase-design"],
     "review": ["code-review"],
+    "contract": ["code-review"],
 }
 
 
@@ -55,6 +57,7 @@ STAGE_WRITE = {
         "Do not add CONTEXT.md or docs/adr to the business repo."
     ),
     "review": "Do not implement; report Standards and Spec axes.",
+    "contract": "Do not implement; report Spec contract gaps across worktrees.",
 }
 
 
@@ -74,7 +77,7 @@ def session_prompt(
             f"Write `{req / 'REQUIREMENT.md'}` and optional `{req / 'assets'}`."
         )
     else:
-        start_file = req / ("SPEC.md" if name == "review" else "REQUIREMENT.md")
+        start_file = req / ("SPEC.md" if name in {"review", "contract"} else "REQUIREMENT.md")
         start = (
             f"Read files with the read tool as needed, starting with {start_file}. "
             f"Shared glossary: `{ctx}`. ADRs: `{adr}`."

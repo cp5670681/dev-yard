@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,11 +28,11 @@ def clip_summary(raw: str, bundle: str = "") -> str:
     text = raw.strip()
     if not text:
         return ""
-    limit = _REVIEW_SUMMARY_MAX if bundle == "review" else _SUMMARY_MAX
+    limit = _REVIEW_SUMMARY_MAX if bundle in {"review", "contract"} else _SUMMARY_MAX
     if len(text) <= limit:
         return text
     # Findings and REVIEW_FAILED sit at the end of pi -p output.
-    if bundle == "review":
+    if bundle in {"review", "contract"}:
         return text[-limit:]
     return text[:limit]
 
@@ -61,7 +63,7 @@ _IMPLEMENT_TOOLS = "read,bash,grep,find,ls,edit,write"
 
 
 def _tools_for(bundle: str) -> str:
-    if bundle == "review":
+    if bundle in {"review", "contract"}:
         return _REVIEW_TOOLS
     if bundle == "open":
         return _OPEN_TOOLS
@@ -74,7 +76,7 @@ def pi_argv(
     *,
     root: Path,
     bundle: str,
-    prompt: str,
+    prompt: str | None = None,
     print_mode: bool = False,
     binary: str | None = None,
     repo: str | None = None,
@@ -95,8 +97,44 @@ def pi_argv(
         argv.extend(["--skill", str(d)])
     if print_mode:
         argv.append("-p")
-    argv.append(prompt)
+    if prompt is not None:
+        argv.append(prompt)
     return argv
+
+
+def run_pi_print(
+    argv: list[str],
+    cwd: Path,
+    prompt: str,
+    on_line: Callable[[str], None] | None = None,
+) -> tuple[int, str]:
+    """Run `pi -p` with the prompt on stdin so large diffs do not hit ARG_MAX."""
+    try:
+        proc = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except OSError as e:
+        if e.errno == errno.E2BIG:
+            return 1, f"[Errno {errno.E2BIG}] Argument list too long: {argv[0]!r}"
+        raise
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+    try:
+        proc.stdin.write(prompt)
+    finally:
+        proc.stdin.close()
+    chunks: list[str] = []
+    for line in proc.stdout:
+        chunks.append(line)
+        if on_line is not None:
+            on_line(line)
+    code = proc.wait()
+    return code, "".join(chunks)
 
 
 class PiRunner(Runner):
@@ -125,30 +163,21 @@ class PiRunner(Runner):
                 summary=f"pi not found (`{self.binary}`). Install pi or set YARD_PI to its path.",
                 exit_code=127,
             )
-        argv = pi_argv(
-            root=self.root,
-            bundle=self.bundle,
-            prompt=prompt,
-            print_mode=self.print_mode,
-            binary=self.binary,
-            repo=repo,
-        )
         if self.print_mode:
-            proc = subprocess.Popen(
-                argv,
-                cwd=cwd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
+            argv = pi_argv(
+                root=self.root,
+                bundle=self.bundle,
+                prompt=None,
+                print_mode=True,
+                binary=self.binary,
+                repo=repo,
             )
-            chunks: list[str] = []
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                chunks.append(line)
+
+            def _echo(line: str) -> None:
                 sys.stdout.write(line)
                 sys.stdout.flush()
-            code = proc.wait()
-            raw = "".join(chunks)
+
+            code, raw = run_pi_print(argv, cwd, prompt, on_line=_echo)
             blocked = code != 0 or "REVIEW_FAILED" in raw
             summary = clip_summary(raw, self.bundle)
             return RunResult(
@@ -156,6 +185,14 @@ class PiRunner(Runner):
                 summary=summary,
                 exit_code=code if code else (1 if blocked else 0),
             )
+        argv = pi_argv(
+            root=self.root,
+            bundle=self.bundle,
+            prompt=prompt,
+            print_mode=False,
+            binary=self.binary,
+            repo=repo,
+        )
         r = subprocess.run(argv, cwd=cwd)
         return RunResult(
             ok=r.returncode == 0,

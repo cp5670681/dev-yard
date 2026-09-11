@@ -847,7 +847,9 @@ def review(
     data = st.sync_tickets(st.load(root, jira), list(tickets.values()))
     if not dry_run:
         st.save(root, jira, data)
-    runner = runner or get_runner(root, "review", dry_run=dry_run, print_mode=print_mode)
+    runner = runner or get_runner(
+        root, "contract" if contract else "review", dry_run=dry_run, print_mode=print_mode
+    )
     extra = [req / "SPEC.md", req / "TICKETS.md"]
     ran: list[str] = []
     if contract:
@@ -870,7 +872,7 @@ def review(
         listed = "\n".join(wt_lines)
         prompt = session_prompt(
             root,
-            "review",
+            "contract",
             jira,
             extra=(
                 "Mode: --contract. Review every requirement worktree against SPEC.md contracts.\n"

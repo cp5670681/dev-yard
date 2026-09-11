@@ -38,6 +38,7 @@ export const STEP_LABELS: Record<string, string> = {
   freeze: "冻结",
   implement: "实现",
   review: "审查",
+  contract: "契约审查",
   testing: "提测",
   done: "完成",
 };

@@ -4,7 +4,7 @@
       <h1 class="text-h5 text-sm-h4 mb-1">模型</h1>
       <p class="text-medium-emphasis mb-0">
         选项来自本机 <code>pi --list-models</code>。provider 和 model 成对回退。实现：仓库对 →
-        阶段 implement → 全局 → 环境变量 → pi 默认。审查只用 review 阶段/全局，不用仓库模型。保存到
+        阶段 implement → 全局 → 环境变量 → pi 默认。契约审查只用 contract 阶段/全局，审查只用 review 阶段/全局，不用仓库模型。保存到
         <code>repos.yaml</code> 的 <code>pi:</code>。
       </p>
     </div>

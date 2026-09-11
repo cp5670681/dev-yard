@@ -140,6 +140,7 @@ def test_resolve_implement_repo_pair_beats_stage(tmp_path: Path, git_src: Path, 
     assert resolve_pi_choice(yard, "implement", repo="be") == ("repo-p", "repo-m")
     assert resolve_pi_choice(yard, "implement") == ("stage-p", "stage-m")
     assert resolve_pi_choice(yard, "review", repo="be") == ("yaml-p", "yaml-m")
+    assert resolve_pi_choice(yard, "contract", repo="be") == ("yaml-p", "yaml-m")
 
 
 def test_repo_incomplete_pair_rejected(tmp_path: Path, git_src: Path):

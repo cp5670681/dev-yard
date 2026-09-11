@@ -542,15 +542,30 @@ def test_job_log_runner_records_pi_run_before_popen(tmp_path: Path, monkeypatch)
     cwd = tmp_path / "work"
     cwd.mkdir()
 
+    class FakeStdin:
+        def write(self, data):
+            self.data = data
+
+        def close(self):
+            return None
+
     class FakeProc:
         stdout = iter(["hello\n"])
+        stdin = FakeStdin()
 
         def wait(self):
             return 0
 
+    captured: dict = {}
+
+    def fake_popen(*a, **k):
+        captured["argv"] = a[0] if a else k.get("args")
+        captured["stdin"] = k.get("stdin")
+        return FakeProc()
+
     monkeypatch.setattr("dev_yard.web.jobs.shutil.which", lambda b: "/usr/bin/pi")
-    monkeypatch.setattr("dev_yard.web.jobs.subprocess.Popen", lambda *a, **k: FakeProc())
-    monkeypatch.setattr("dev_yard.web.jobs.pi_argv", lambda **k: ["pi", "-p", "x"])
+    monkeypatch.setattr("dev_yard.runners.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("dev_yard.web.jobs.pi_argv", lambda **k: ["pi", "-p"])
     from dev_yard.web.jobs import JobLogRunner
 
     result = JobLogRunner(job, tmp_path, "open").start("p", cwd, [])
@@ -559,6 +574,10 @@ def test_job_log_runner_records_pi_run_before_popen(tmp_path: Path, monkeypatch)
     assert len(runs) == 1
     assert runs[0]["cwd"] == str(cwd.resolve())
     assert "cwd=" in job.log
+    import subprocess
+
+    assert captured["argv"] == ["pi", "-p"]
+    assert captured["stdin"] is subprocess.PIPE
 
 
 def test_sse_poll_emits_pi_runs_on_state(tmp_path: Path):

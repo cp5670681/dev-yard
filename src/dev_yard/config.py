@@ -9,7 +9,7 @@ import yaml
 
 from dev_yard import paths
 
-PI_STAGES = ("open", "grill", "spec", "tickets", "implement", "review")
+PI_STAGES = ("open", "grill", "spec", "tickets", "implement", "review", "contract")
 
 
 def git_project_name(url: str) -> str:
@@ -158,7 +158,7 @@ def resolve_pi_choice(
     """Whole-pair fallback. Empty means omit --provider/--model.
 
     implement: repo pair → stage implement pair → workspace pair → env pair.
-    Other stages (including review): stage pair → workspace pair → env pair.
+    Other stages (including review, contract): stage pair → workspace pair → env pair.
     Incomplete pairs (only provider or only model) are skipped.
     """
     import os
