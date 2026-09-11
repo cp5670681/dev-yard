@@ -1,7 +1,14 @@
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
+
+os.environ.setdefault("GIT_AUTHOR_NAME", "Test")
+os.environ.setdefault("GIT_AUTHOR_EMAIL", "test@example.com")
+os.environ.setdefault("GIT_COMMITTER_NAME", "Test")
+os.environ.setdefault("GIT_COMMITTER_EMAIL", "test@example.com")
+
 
 
 def make_git_repo(path: Path) -> Path:

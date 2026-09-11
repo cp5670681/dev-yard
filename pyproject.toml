@@ -45,3 +45,6 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "spa: mark test as requiring built SPA",
+]

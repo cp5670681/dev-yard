@@ -40,6 +40,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Configure Git user
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
       - name: Run tests
         run: uv run pytest
 
