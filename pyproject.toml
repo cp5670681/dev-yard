@@ -23,8 +23,18 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
+artifacts = [
+    "src/dev_yard/web/spa",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/dev_yard"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
+[tool.hatch.build.targets.sdist.hooks.custom]
+path = "hatch_build.py"
 
 [dependency-groups]
 dev = [

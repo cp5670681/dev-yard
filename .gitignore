@@ -18,3 +18,6 @@ desktop-home.yaml
 desktop-*.yaml
 node_modules/
 reqs/
+src/dev_yard/web/spa/
+web/dist/
+

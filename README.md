@@ -27,12 +27,15 @@ req open ──► grill ──► spec ──► tickets ──► req freeze �
 使用 [uv](https://docs.astral.sh/uv/) 安装或升级全局 CLI 工具（依赖 Python 3.12+、Git 与 [pi](https://pi.dev)）：
 
 ```bash
-# 全局安装
+# 方式 A：从 GitHub Release 安装预构建 Wheel 包（推荐，开箱即用，无需 Node.js/pnpm）
+uv tool install https://github.com/cp5670681/dev-yard/releases/latest/download/dev_yard-0.1.0-py3-none-any.whl
+
+# 方式 B：从 GitHub 源码安装（本机若有 Node.js/pnpm 会自动编译前端）
 uv tool install git+https://github.com/cp5670681/dev-yard.git
 
 # 后续升级到最新版本
 uv tool upgrade dev-yard
-# 或强制拉取最新主干重装
+# 或强制拉取主干重装
 uv tool install --force git+https://github.com/cp5670681/dev-yard.git
 ```
 
@@ -196,11 +199,16 @@ dev-yard web --host 0.0.0.0 --allow-remote
 ## 开发与测试
 
 ```bash
-# 源码安装与运行测试
+# 1. 克隆代码并安装 Python 依赖
 git clone https://github.com/cp5670681/dev-yard.git && cd dev-yard
 uv sync --group dev
+
+# 2. 运行后端测试（若本地未编译前端会跳过 spa 相关测试）
 uv run pytest
 
-# 构建前端 Web 资源
-cd web && pnpm install && pnpm build
+# 3. 前端独立开发（支持秒级热重载，自动反代后端 8765 端口）
+cd web && pnpm install && pnpm dev
+
+# 4. 构建与全包测试（Hatch 构建钩子会自动触发前端打包并打包为 wheel）
+uv build
 ```
