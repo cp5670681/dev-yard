@@ -28,6 +28,15 @@
           <v-chip v-if="showState" size="x-small" :color="dotColor" variant="tonal" class="jira-lozenge">
             {{ TICKET_STATE_LABELS[ticket.state] || ticket.state }}
           </v-chip>
+          <v-chip
+            v-if="ticket.source === 'test' || ticket.source === 'contract'"
+            size="x-small"
+            :color="ticket.source === 'test' ? 'warning' : 'error'"
+            variant="tonal"
+            class="px-0.5 font-weight-bold text-caption"
+          >
+            {{ ticket.source === "test" ? "bug" : "契约" }}
+          </v-chip>
           <v-chip v-if="ticket.parallel" size="x-small" color="info" variant="text" class="px-0.5 font-weight-bold text-caption">para</v-chip>
           <v-spacer />
           <span v-if="ticket.repo" class="jira-repo-tag text-truncate">{{ ticket.repo }}</span>

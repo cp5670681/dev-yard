@@ -233,18 +233,32 @@ def req_submit_test(jira: str) -> None:
 def req_accept_test(
     jira: str,
     verdict: str = typer.Option(..., "--verdict", help="passed | failed | blocked"),
-    body_file: Path = typer.Option(..., "--body-file", help="Markdown report file"),
+    body_file: Optional[Path] = typer.Option(None, "--body-file", help="Optional notes (Markdown)"),
+    findings_file: Optional[Path] = typer.Option(
+        None, "--findings-file", help="JSON list of bugs (required when failed)"
+    ),
     summary: str = typer.Option("", "--summary"),
     source: str = typer.Option("cli", "--source"),
 ) -> None:
-    """Ingest a test report while phase is testing."""
+    """Submit QA bugs (or pass this round). Spawns B tickets; does not keep TEST-REPORT.md."""
     from dev_yard.test_report import ReportRejected, accept_test_report, parse_inbound
 
     root = root_opt()
     try:
-        text = body_file.read_text(encoding="utf-8")
+        text = body_file.read_text(encoding="utf-8") if body_file else ""
+        findings = []
+        if findings_file:
+            import json
+
+            findings = json.loads(findings_file.read_text(encoding="utf-8"))
         report = parse_inbound(
-            {"verdict": verdict, "body": text, "summary": summary, "source": source},
+            {
+                "verdict": verdict,
+                "body": text,
+                "summary": summary,
+                "source": source,
+                "findings": findings,
+            },
             default_source="cli",
         )
         data = accept_test_report(root, jira, report)
@@ -325,12 +339,12 @@ def implement(
     from_contract: bool = typer.Option(
         False,
         "--from-contract",
-        help="Re-implement using STATUS contract_summary (default: last ticket per repo)",
+        help="Spawn/implement contract bug tickets (independent B tickets, DAG-aware)",
     ),
     from_test: bool = typer.Option(
         False,
         "--from-test",
-        help="Re-implement using the latest failed TEST-REPORT.md",
+        help="Implement ready test bug tickets (B tickets from 提 bug)",
     ),
 ) -> None:
     root = root_opt()

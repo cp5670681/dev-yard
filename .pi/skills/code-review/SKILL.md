@@ -17,7 +17,7 @@ description: >
 - 用户若指定 commit/branch，用用户的。
 - 仅当提示里是 `(no changes vs …)` 或 `(could not diff …)` 才停。同仓上一张票的改动不在本票 diff 里是正常的；要用 `read` 打开本票涉及的文件核对是否已实现，不要把「本票窗口里没有某文件」直接写成整仓未实现。
 
-契约审查（`dev-yard review --contract`）：cwd 是 yard 根。启动提示已内联每个需求 worktree 相对 `default_base` 的 diff。对照 `SPEC.md` 跨仓契约。不跑 Fowler 气味轴也可以，但必须列出契约缺口。不要在 yard 仓库根上 `git diff`。
+契约审查（`dev-yard review --contract`）：cwd 是 yard 根。启动提示已内联每个需求 worktree 相对 `default_base` 的 diff。对照 `SPEC.md` 跨仓契约。不跑 Fowler 气味轴也可以，但必须列出契约缺口。不要在 yard 仓库根上 `git diff`。失败时在报告末尾输出 YAML `findings:` 列表（每条独立缺口一条，含 `id` / `title` / `repo` / `detail` / 可选 `depends_on`），yard 会按条拆成 B 票。
 
 pi 没有子 agent。两轴都自己做，先 Spec 再 Standards（契约模式可只做 Spec）。工具：`read` 参数是 `path`。
 
@@ -55,4 +55,5 @@ pi 没有子 agent。两轴都自己做，先 Spec 再 Standards（契约模式�
 `## Standards` 与 `## Spec` 分开贴。末行：每轴发现数 + 该轴最严重问题。
 
 - 有硬违规或 Spec 缺需求 → 审查失败：报告里写 `REVIEW_FAILED`，并以非零退出（yard 据此把票标 `blocked`）
+- 契约模式失败：在 `REVIEW_FAILED` 之后附 YAML `findings:`（`repo` 必须是 `repos.yaml` alias；同仓互不依赖的缺口分开写，有先后的用 `depends_on` 指向其它 finding id）
 - 仅判断题气味 → 通过，但写在报告里

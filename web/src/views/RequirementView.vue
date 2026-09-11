@@ -293,40 +293,80 @@
             <pre v-else class="job-log">{{ detail.contract_summary }}</pre>
           </v-expansion-panel-text>
         </v-expansion-panel>
-        <v-expansion-panel v-if="detail.test" title="测试报告">
+        <v-expansion-panel v-if="detail.test" title="提测 / bug">
           <v-expansion-panel-text>
             <p class="mb-2">
               状态 {{ detail.test.status || "-" }}
-              · 结论 {{ detail.test.latest_verdict || "-" }}
+              · 最近一轮 {{ detail.test.latest_verdict || "-" }}
               · 来源 {{ detail.test.source || "-" }}
             </p>
             <p v-if="detail.test.summary" class="text-medium-emphasis">
               {{ detail.test.summary }}
+            </p>
+            <p class="text-caption text-medium-emphasis mt-2">
+              缺陷内容在看板 B 票里，可单票实现 / 审查。
             </p>
           </v-expansion-panel-text>
         </v-expansion-panel>
       </v-expansion-panels>
     </template>
 
-    <v-dialog v-model="reportForm.open" max-width="720">
+    <v-dialog v-model="reportForm.open" max-width="780">
       <v-card>
-        <v-card-title>填写测试报告</v-card-title>
+        <v-card-title>提 bug</v-card-title>
         <v-card-text>
           <v-select
             v-model="reportForm.verdict"
-            label="结论"
+            label="本轮"
             :items="[
-              { title: '通过 passed', value: 'passed' },
-              { title: '失败 failed', value: 'failed' },
-              { title: '阻塞 blocked', value: 'blocked' },
+              { title: '提交缺陷 failed', value: 'failed' },
+              { title: '本轮通过（无新 bug） passed', value: 'passed' },
             ]"
           />
           <v-text-field v-model="reportForm.summary" label="摘要（可选）" class="mt-2" />
+          <template v-if="reportForm.verdict !== 'passed'">
+            <div
+              v-for="(row, i) in reportForm.findings"
+              :key="i"
+              class="mt-4 pa-3 rounded-lg"
+              style="border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity))"
+            >
+              <div class="d-flex align-center ga-2 mb-2">
+                <span class="text-caption text-medium-emphasis">{{ row.id }}</span>
+                <v-spacer />
+                <v-btn
+                  size="x-small"
+                  variant="text"
+                  :disabled="reportForm.findings.length < 2"
+                  @click="reportForm.findings.splice(i, 1)"
+                >
+                  删除
+                </v-btn>
+              </div>
+              <v-text-field v-model="row.title" label="标题" density="compact" />
+              <v-select
+                v-model="row.repo"
+                label="仓库"
+                :items="detail?.repos || []"
+                density="compact"
+                class="mt-2"
+                :rules="[(v: string) => !!v || '必须选择仓库']"
+              />
+              <v-textarea v-model="row.detail" label="复现 / 期望" rows="3" class="mt-2" />
+              <v-text-field
+                v-model="row.dependsOn"
+                label="依赖（本批 finding id，空格分隔，如 F1）"
+                density="compact"
+                class="mt-2"
+              />
+            </div>
+            <v-btn class="mt-3" size="small" variant="tonal" @click="addFindingRow">再加一条</v-btn>
+          </template>
           <v-textarea
             v-model="reportForm.body"
-            label="报告正文（Markdown）"
-            rows="12"
-            class="mt-2"
+            label="备注（可选）"
+            rows="3"
+            class="mt-4"
           />
         </v-card-text>
         <v-card-actions>
@@ -486,7 +526,26 @@ const reportForm = reactive({
   verdict: "failed",
   summary: "",
   body: "",
+  findings: [
+    { id: "F1", title: "", repo: "", detail: "", dependsOn: "" },
+  ],
 });
+
+function addFindingRow() {
+  const n = reportForm.findings.length + 1;
+  reportForm.findings.push({
+    id: `F${n}`,
+    title: "",
+    repo: detail.value?.repos?.[0] || "",
+    detail: "",
+    dependsOn: "",
+  });
+}
+
+function resetFindingRows() {
+  const repo = detail.value?.repos?.[0] || "";
+  reportForm.findings = [{ id: "F1", title: "", repo, detail: "", dependsOn: "" }];
+}
 const extraJob = computed(() =>
   typeof route.query.job === "string" ? route.query.job : "",
 );
@@ -561,6 +620,7 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
     reportForm.verdict = "failed";
     reportForm.summary = "";
     reportForm.body = "";
+    resetFindingRows();
     reportForm.open = true;
     return;
   }
@@ -606,13 +666,40 @@ async function submitReport() {
   error.value = "";
   acting.value = "fill-test-report";
   try {
+    let findings: {
+      id: string;
+      title: string;
+      detail: string;
+      repo: string;
+      depends_on: string[];
+    }[] = [];
+    if (reportForm.verdict !== "passed") {
+      const missing = reportForm.findings.find((row) => !row.repo.trim());
+      if (missing) {
+        snack.notify("每条缺陷必须选择仓库", "error");
+        return;
+      }
+      for (const row of reportForm.findings) {
+        findings.push({
+          id: row.id,
+          title: row.title,
+          detail: row.detail,
+          repo: row.repo,
+          depends_on: row.dependsOn.trim() ? row.dependsOn.trim().split(/\s+/) : [],
+        });
+      }
+    }
     await submitTestReport(jira.value, {
       verdict: reportForm.verdict,
       body: reportForm.body,
       summary: reportForm.summary,
+      findings,
     });
     reportForm.open = false;
-    snack.notify("测试报告已写入", "success");
+    snack.notify(
+      reportForm.verdict === "passed" ? "本轮已通过" : "已拆成 bug 票",
+      "success",
+    );
     await load();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);

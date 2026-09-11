@@ -33,7 +33,7 @@ description: >
 - parallel: false
 ```
 
-二级标题必须是 `## T<n>: <title>`（如 `T1`、`T2`）。其它二级标题（「验收」「Further Notes」）CLI 会忽略。字段名必须是 `repo` / `depends_on` / `parallel`。没有 `- repo:` 的票不会入列。
+二级标题必须是 `## T<n>: <title>`（如 `T1`、`T2`）。契约/提测缺陷由 CLI 追加 `## B<n>` 票，不要手写去覆盖。其它二级标题（「验收」「Further Notes」）CLI 会忽略。字段名必须是 `repo` / `depends_on` / `parallel`（bug 票还可有 `source` / `finding`）。没有 `- repo:` 的票不会入列。
 
 在标题下可用普通段落写「做什么 / 验收」。`parallel: true` 仅当同仓两张无依赖票要同时开子 worktree。
 

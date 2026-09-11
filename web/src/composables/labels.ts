@@ -50,8 +50,8 @@ export const ACTION_LABELS: Record<string, string> = {
   contract: "契约审查",
   "fix-contract": "按契约修",
   "submit-test": "提测",
-  "fill-test-report": "填写测试报告",
-  "fix-test": "按测试报告修",
+  "fill-test-report": "提 bug",
+  "fix-test": "修 bug",
   push: "推送到远端",
   repo_add: "仓库 · clone",
 };

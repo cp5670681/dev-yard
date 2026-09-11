@@ -13,7 +13,6 @@ DOC_FILES = {
     "grill": "GRILL.md",
     "spec": "SPEC.md",
     "tickets": "TICKETS.md",
-    "test-report": "TEST-REPORT.md",
 }
 
 PIPELINE = (
@@ -70,6 +69,8 @@ class TicketView:
     can_implement: bool
     can_review: bool
     worktree: str | None = None
+    source: str = ""
+    finding: str = ""
 
 
 @dataclass
@@ -106,6 +107,7 @@ class ReqDetail:
     contract: str | None
     contract_summary: str | None
     test: dict | None = None
+    repos: list[str] = field(default_factory=list)
 
 
 def parse_requirement_title(text: str, jira: str) -> str | None:
@@ -197,6 +199,8 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
                 can_implement=state in _IMPLEMENT_STATES,
                 can_review=state in _REVIEW_STATES,
                 worktree=slot.get("worktree"),
+                source=t.source,
+                finding=t.finding,
             )
         )
     docs = [_doc_view(req, slug, filename, jira) for slug, filename in DOC_FILES.items()]
@@ -228,6 +232,7 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
         contract=data.get("contract_review"),
         contract_summary=data.get("contract_summary"),
         test=test,
+        repos=list(data.get("repos") or []),
     )
     detail.actions = available_actions(detail)
     return detail
@@ -247,8 +252,18 @@ def available_actions(detail: ReqDetail) -> list[Action]:
         and detail.phase != "testing"
         and not st.test_passed({"test": detail.test, "phase": detail.phase})
     )
-    can_fill = detail.phase == "testing"
-    can_fix_test = detail.phase == "testing" and test.get("latest_verdict") == "failed"
+    can_fill = (
+        contract_ok
+        and detail.phase in {"testing", "frozen"}
+        and not st.test_passed({"test": detail.test})
+    )
+    can_fix_test = any(
+        t.source == "test" and t.can_implement for t in detail.tickets
+    )
+    can_fix_contract = frozen and (
+        detail.contract == "failed"
+        or any(t.source == "contract" and t.can_implement for t in detail.tickets)
+    )
     has_worktrees = bool(detail.worktrees)
     can_push = (detail.phase in {"frozen", "done", "testing"}) and has_worktrees
     return [
@@ -288,10 +303,10 @@ def available_actions(detail: ReqDetail) -> list[Action]:
         Action(
             "fix-contract",
             "按契约修",
-            frozen and bool(detail.contract_summary),
+            can_fix_contract,
             ""
-            if frozen and detail.contract_summary
-            else "需要先 freeze，且已有契约审查摘要",
+            if can_fix_contract
+            else "需要契约审查 failed，或已有就绪的契约 bug 票",
         ),
         Action(
             "submit-test",
@@ -309,15 +324,21 @@ def available_actions(detail: ReqDetail) -> list[Action]:
         ),
         Action(
             "fill-test-report",
-            "填写测试报告",
+            "提 bug",
             can_fill,
-            "" if can_fill else "需要处于提测阶段",
+            ""
+            if can_fill
+            else (
+                "测试已通过"
+                if st.test_passed({"test": detail.test})
+                else "需要契约审查 passed，且已 freeze 或提测"
+            ),
         ),
         Action(
             "fix-test",
-            "按测试报告修",
+            "修 bug",
             can_fix_test,
-            "" if can_fix_test else "需要提测阶段且最新报告为 failed",
+            "" if can_fix_test else "没有就绪的测试 bug 票",
         ),
         Action(
             "push",
@@ -410,9 +431,15 @@ def _next_label(
     by_slug = {d.slug: d for d in docs}
     if st.pipeline_complete({"phase": phase, "test": test}):
         return "done"
+    ready_bugs = any(
+        t.source == "test" and t.state in _IMPLEMENT_STATES for t in tickets
+    )
+    open_bugs = any(t.source == "test" and t.state != "done" for t in tickets)
+    if ready_bugs:
+        return "fix-test"
+    if open_bugs:
+        return "implement"
     if phase == "testing":
-        if (test or {}).get("latest_verdict") == "failed":
-            return "fix-test"
         return "fill-test-report"
     if tickets and all(t.state == "done" for t in tickets):
         return "submit-test" if contract == "passed" else "contract"

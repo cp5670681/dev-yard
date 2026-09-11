@@ -55,7 +55,7 @@ def test_list_and_detail_after_open(tmp_path: Path, monkeypatch):
     assert detail.title is None
     assert detail.phase == "open"
     assert [d.filename for d in detail.docs] == list(DOC_FILES.values())
-    assert all(d.exists for d in detail.docs if d.slug != "test-report")
+    assert all(d.exists for d in detail.docs)
     assert not any(d.filled for d in detail.docs)
     assert detail.tickets == []
     ids = {a.id: a for a in detail.actions}
@@ -135,7 +135,7 @@ def test_ready_for_submit_test_marks_testing_current(tmp_path: Path, git_src: Pa
     assert not by_id["done"].current
     ids = {a.id: a for a in detail.actions}
     assert ids["submit-test"].enabled
-    assert not ids["fill-test-report"].enabled
+    assert ids["fill-test-report"].enabled
 
 
 def test_legacy_done_without_test_report_is_not_complete(tmp_path: Path, git_src: Path, monkeypatch):
@@ -172,6 +172,7 @@ def test_fix_contract_enabled_with_summary(tmp_path: Path, git_src: Path, monkey
     req_freeze(yard, "AB-6")
     data = st.load(yard, "AB-6")
     data["contract_summary"] = "gap"
+    data["contract_review"] = "failed"
     st.save(yard, "AB-6", data)
     ids = {a.id: a for a in requirement_detail(yard, "AB-6").actions}
     assert ids["fix-contract"].enabled

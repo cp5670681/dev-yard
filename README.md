@@ -90,11 +90,11 @@ dev-yard implement PROJ-101
 # 7. 代码评审与跨仓契约检查
 dev-yard review PROJ-101            # 单票代码评审
 dev-yard review PROJ-101 --contract # 跨仓契约校验
-# 若契约不符，一键按报告回溯修复：dev-yard implement PROJ-101 --from-contract
+# 若契约不符，拆成独立 B 票再修（无依赖的可并行）：dev-yard implement PROJ-101 --from-contract
 
 # 8. 提测与修复闭环
 dev-yard req submit-test PROJ-101
-# 收到测试缺陷报告后修复：dev-yard implement PROJ-101 --from-test
+# 提 bug 后修就绪的 B 票：dev-yard implement PROJ-101 --from-test
 
 # 9. 一键推送远端分支（提 PR）
 dev-yard push PROJ-101              # 或 dev-yard req push PROJ-101

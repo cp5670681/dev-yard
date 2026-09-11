@@ -19,7 +19,7 @@ CLI 入口是 `dev-yard`（或 `devyard`），不要用 `yard`（会撞上 Ruby 
 | `dev-yard implement` | implement + tdd + codebase-design |
 | `dev-yard review` | code-review |
 | `dev-yard req submit-test` | 提测（须契约审查 passed）；不跑 agent |
-| `dev-yard implement --from-test` | 按 TEST-REPORT.md 修代码 |
+| `dev-yard implement --from-test` | 修就绪的测试 bug 票（B 票） |
 
 ## 产物
 

@@ -13,6 +13,12 @@ from dev_yard.atlassian import collect_requirement
 from dev_yard.env import load_env
 from dev_yard.runners import RunResult, Runner, agent_binary, get_runner, pi_argv
 from dev_yard.skillbind import session_prompt
+from dev_yard.bug_tickets import (
+    fix_ticket_ids,
+    parse_findings_from_summary,
+    spawn_fix_tickets,
+    spawn_fix_tickets_result,
+)
 from dev_yard.tickets import Ticket, load_tickets
 
 REQ_SKELETON = """# {key}
@@ -44,8 +50,8 @@ TICKETS_SKELETON = """# Tickets — {key}
 
 Each ticket binds to one `repo` alias from repos.yaml.
 
-Headings must be T + number (T1, T2, …) with a `- repo:` bullet.
-CLI ignores any other heading.
+Headings must be T + number (T1, T2, …) or bug tickets B + number (B1, B2, …) with a `- repo:` bullet.
+CLI ignores any other heading. Bug tickets may set `source`, `finding`, and `depends_on`.
 """
 
 
@@ -630,11 +636,11 @@ _CLAIM = {
     "review": ("reviewing", {"implemented", "reviewing", "blocked"}),
     "fix-contract": (
         "implementing",
-        {"ready", "blocked", "implementing", "implemented", "reviewing", "done"},
+        {"ready", "blocked", "implementing"},
     ),
     "fix-test": (
         "implementing",
-        {"ready", "blocked", "implementing", "implemented", "reviewing", "done"},
+        {"ready", "blocked", "implementing"},
     ),
 }
 
@@ -655,8 +661,15 @@ def _implement_prompt_extra(
     last_summary: str | None,
     contract_summary: str | None = None,
     test_report: str | None = None,
+    finding: str = "",
 ) -> str:
     extra = f"Ticket: {tid} — {title}\nRepo alias: {repo}\nStay in this worktree."
+    if contract_summary or test_report:
+        scope = f"finding {finding}" if finding else f"ticket {tid}"
+        extra += (
+            f" Fix only {scope}; do not implement sibling bug tickets. "
+            "The defect text is this ticket's section in TICKETS.md."
+        )
     if last_summary and ("REVIEW_FAILED" in last_summary or "[Human Review" in last_summary):
         extra += (
             "\n\nPrevious review failed / feedback provided. Fix hard violations, Spec gaps, and review feedback "
@@ -666,14 +679,16 @@ def _implement_prompt_extra(
     if contract_summary:
         extra += (
             "\n\nPrevious contract review. Fix only Spec contract gaps and hard "
-            "violations in this report that belong to this ticket's repo; do not "
-            "expand scope; optional smells may stay.\n"
+            "violations for this ticket"
+            + (f" (finding {finding})" if finding else "")
+            + "; do not expand scope; optional smells may stay.\n"
             f"{contract_summary}"
         )
     if test_report:
         extra += (
-            "\n\nPrevious test report. Fix only failed findings in this report "
-            "that belong to this ticket's repo; do not expand scope.\n"
+            "\n\nPrevious test report. Fix only failed findings for this ticket"
+            + (f" (finding {finding})" if finding else "")
+            + "; do not expand scope.\n"
             f"{test_report}"
         )
     return extra
@@ -682,16 +697,23 @@ def _implement_prompt_extra(
 def from_contract_ids(
     tickets: dict[str, object],
     ids: list[str] | None,
+    data: dict | None = None,
 ) -> list[str]:
-    """Default: last ticket per repo (document order). Explicit ids keep order."""
+    """Bug tickets spawned from contract findings (ready/blocked). Explicit ids keep order."""
+    typed = {str(tid): t for tid, t in tickets.items() if isinstance(t, Ticket)}
+    if typed:
+        return fix_ticket_ids(typed, ids, data or {"tickets": {}}, "contract")
     if ids:
         return [tid for tid in ids if tid in tickets]
-    by_repo: dict[str, str] = {}
-    for tid, t in tickets.items():
-        repo = getattr(t, "repo", None)
-        if repo:
-            by_repo[repo] = tid
-    return list(by_repo.values())
+    return []
+
+
+def prepare_fix_tickets(root: Path, jira: str, kind: str) -> list[str]:
+    spawn_fix_tickets(root, jira, kind)
+    req = paths.req_dir(root, jira)
+    tickets = {t.id: t for t in load_tickets(req)}
+    data = st.load(root, jira)
+    return fix_ticket_ids(tickets, None, data, kind)
 
 
 def claim_run(root: Path, jira: str, action: str, ids: list[str]) -> list[str]:
@@ -729,8 +751,6 @@ def implement(
 ) -> list[str]:
     if from_contract and from_test:
         raise ValueError("from_contract and from_test are mutually exclusive")
-    from dev_yard.test_report import from_test_ids, latest_report_path
-
     req = paths.req_dir(root, jira)
     tickets = {t.id: t for t in load_tickets(req)}
     test_body = ""
@@ -740,29 +760,38 @@ def implement(
         if not dry_run:
             st.save(root, jira, data)
         contract_summary = (data.get("contract_summary") or "").strip()
-        test_slot = data.get("test") if isinstance(data.get("test"), dict) else {}
         if from_contract:
             if not contract_summary:
                 raise ValueError("no contract_summary; run review --contract first")
-            targets = from_contract_ids(tickets, ids)
-        elif from_test:
-            if (test_slot or {}).get("latest_verdict") != "failed":
-                raise ValueError(
-                    "no failed test report; submit-test and accept a failed report first"
-                )
-            report_path = latest_report_path(root, jira)
-            if not report_path.is_file():
-                raise ValueError(f"missing {report_path}")
-            test_body = report_path.read_text(encoding="utf-8")
-            targets = from_test_ids(tickets, ids, test_slot.get("findings") or [])
-        else:
-            targets = ids or st.ready_ids(data)
+    if from_contract or from_test:
+        kind = "contract" if from_contract else "test"
+        spawned = spawn_fix_tickets_result(root, jira, kind, persist=not dry_run)
+        tickets = {t.id: t for t in load_tickets(req)}
+        for t in spawned.tickets:
+            tickets[t.id] = t
+        data = st.sync_tickets(st.load(root, jira), list(tickets.values()))
+        st.refresh_ready(data)
+        if not dry_run:
+            st.save(root, jira, data)
+        targets = (
+            from_contract_ids(tickets, ids, data)
+            if from_contract
+            else fix_ticket_ids(tickets, ids, data, "test")
+        )
+        if from_test and not ids and not targets:
+            raise ValueError("no ready test bug tickets; submit bugs first")
+        if from_contract and not ids and not targets:
+            raise ValueError(
+                "no ready contract bug tickets; run a failed contract review first"
+            )
+    else:
+        targets = ids or st.ready_ids(data)
     runner = runner or get_runner(root, "implement", dry_run=dry_run, print_mode=print_mode)
     ran: list[str] = []
     extra = [req / "SPEC.md", req / "TICKETS.md"]
     allowed = (
         _FROM_CONTRACT_STATES
-        if from_contract or from_test
+        if (from_contract or from_test) and ids
         else {"ready", "blocked", "implementing"}
     )
     skip_state_check = ids is not None and not from_contract and not from_test
@@ -814,6 +843,7 @@ def implement(
                 last_summary,
                 contract_summary if from_contract else None,
                 test_body if from_test else None,
+                finding=t.finding,
             ),
         )
         result = runner.start(prompt, cwd, extra, repo=t.repo)
@@ -882,6 +912,14 @@ def review(
             extra=(
                 "Mode: --contract. Review every requirement worktree against SPEC.md contracts.\n"
                 "Do not spawn sub-agents; pi has none. Do not git-diff the yard repo.\n"
+                "If there are contract gaps, end the report with a YAML block:\n"
+                "findings:\n"
+                "  - id: F1\n"
+                "    title: short title\n"
+                "    repo: <repos.yaml alias>\n"
+                "    detail: what is missing\n"
+                "    depends_on: []  # other finding ids, if this fix must wait\n"
+                "One finding per independent gap; same-repo gaps may be separate findings.\n"
                 f"Worktrees:\n{listed}\n\n"
                 + "\n\n".join(diffs)
             ),
@@ -892,7 +930,12 @@ def review(
         blocked = _review_blocked(result)
         data["contract_review"] = "failed" if blocked else "passed"
         data["contract_summary"] = result.summary
+        parsed_findings = parse_findings_from_summary(result.summary or "")
+        if parsed_findings:
+            data["contract_findings"] = parsed_findings
         st.save(root, jira, data)
+        if blocked:
+            spawn_fix_tickets(root, jira, "contract")
         return ["__contract__"]
 
     _REVIEWABLE = {"implemented", "reviewing", "blocked"}
@@ -1049,6 +1092,7 @@ def contract_review_override(
     jira: str,
     verdict: str,
     summary: str | None = None,
+    findings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     norm_verdict = (verdict or "").strip().lower()
     if norm_verdict in {"pass", "passed", "ok", "done"}:
@@ -1066,7 +1110,17 @@ def contract_review_override(
             if norm_verdict == "failed" and text and "REVIEW_FAILED" not in text:
                 text = f"{text}\n\nREVIEW_FAILED"
             data["contract_summary"] = text
+        if findings:
+            from dev_yard.bug_tickets import normalize_findings
+
+            data["contract_findings"] = normalize_findings(findings)
+        elif norm_verdict == "failed":
+            parsed = parse_findings_from_summary(data.get("contract_summary") or "")
+            if parsed:
+                data["contract_findings"] = parsed
         st.save(root, jira, data)
+        if norm_verdict == "failed":
+            spawn_fix_tickets(root, jira, "contract")
         return {
             "contract_review": data.get("contract_review"),
             "contract_summary": data.get("contract_summary"),

@@ -12,9 +12,11 @@ class Ticket:
     repo: str
     depends_on: list[str] = field(default_factory=list)
     parallel: bool = False
+    source: str = ""
+    finding: str = ""
 
 
-HEADING = re.compile(r"^##\s+(T\d+)(?:\s*:\s*(.*))?$")
+HEADING = re.compile(r"^##\s+((?:T|B)\d+)(?:\s*:\s*(.*))?$")
 
 
 def parse_tickets(text: str) -> list[Ticket]:
@@ -40,6 +42,10 @@ def parse_tickets(text: str) -> list[Ticket]:
             current.depends_on = [x.strip() for x in val.replace(",", " ").split() if x.strip()]
         elif key == "parallel":
             current.parallel = val.lower() in {"true", "yes", "1"}
+        elif key == "source":
+            current.source = val
+        elif key == "finding":
+            current.finding = val
     if current:
         tickets.append(current)
     return tickets

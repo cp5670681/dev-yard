@@ -101,9 +101,15 @@ export function submitTestReport(
   jira: string,
   payload: {
     verdict: string;
-    body: string;
+    body?: string;
     summary?: string;
-    findings?: { id?: string; title?: string; detail?: string; repo?: string }[];
+    findings?: {
+      id?: string;
+      title?: string;
+      detail?: string;
+      repo?: string;
+      depends_on?: string[];
+    }[];
   },
 ) {
   return api<{ jira: string; phase: string; test: ReqDetail["test"] }>(

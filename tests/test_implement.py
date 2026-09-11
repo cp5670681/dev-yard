@@ -274,16 +274,20 @@ def test_from_contract_picks_last_ticket_per_repo_and_injects_report(
     review(yard, "AB-23", ["T2"], runner=DryRunRunner())
     data = st.load(yard, "AB-23")
     data["phase"] = "done"
-    data["contract_review"] = "passed"
+    data["contract_review"] = "failed"
     data["contract_summary"] = "CONTRACT DEFECT: missing follow_members_names"
     st.save(yard, "AB-23", data)
     cap = _Capture()
     ran = implement(yard, "AB-23", None, from_contract=True, runner=cap)
-    assert ran == ["T2"]
+    assert ran == ["B1"]
     assert "Previous contract review" in cap.prompts[0]
     assert "follow_members_names" in cap.prompts[0]
+    assert "sibling bug tickets" in cap.prompts[0]
+    assert "finding repo:backend" in cap.prompts[0]
+    assert "this ticket's repo" not in cap.prompts[0]
     after = st.load(yard, "AB-23")
-    assert after["tickets"]["T2"]["state"] == "implemented"
+    assert after["tickets"]["B1"]["state"] == "implemented"
+    assert after["tickets"]["T2"]["state"] == "done"
     assert after["tickets"]["T1"]["state"] == "done"
     assert after["phase"] == "frozen"
 
@@ -311,23 +315,44 @@ def test_from_contract_dry_run_does_not_mutate(tmp_path: Path, git_src: Path, mo
     review(yard, "AB-25", None, runner=DryRunRunner())
     data = st.load(yard, "AB-25")
     data["phase"] = "done"
+    data["contract_review"] = "failed"
     data["contract_summary"] = "nits"
     st.save(yard, "AB-25", data)
+    tickets_before = (yard / "reqs" / "AB-25" / "TICKETS.md").read_text()
     ran = implement(yard, "AB-25", None, from_contract=True, dry_run=True)
-    assert ran == ["T1"]
+    assert ran == ["B1"]
     after = st.load(yard, "AB-25")
     assert after["tickets"]["T1"]["state"] == "done"
+    assert "B1" not in after["tickets"]
     assert after["phase"] == "done"
+    assert (yard / "reqs" / "AB-25" / "TICKETS.md").read_text() == tickets_before
 
 
-def test_from_contract_ids_last_per_repo():
-    class T:
-        def __init__(self, repo):
-            self.repo = repo
+def test_from_contract_passed_does_not_spawn(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-26b")
+    implement(yard, "AB-26b", None, runner=DryRunRunner())
+    review(yard, "AB-26b", None, runner=DryRunRunner())
+    data = st.load(yard, "AB-26b")
+    data["contract_review"] = "passed"
+    data["contract_summary"] = "all good"
+    st.save(yard, "AB-26b", data)
+    with pytest.raises(ValueError, match="no ready contract bug tickets"):
+        implement(yard, "AB-26b", None, from_contract=True, runner=DryRunRunner())
+    assert "B1" not in st.load(yard, "AB-26b")["tickets"]
 
-    tickets = {"T1": T("be"), "T2": T("fe"), "T3": T("be")}
-    assert from_contract_ids(tickets, None) == ["T3", "T2"]
-    assert from_contract_ids(tickets, ["T1"]) == ["T1"]
+
+def test_from_contract_ids_prefers_bug_tickets():
+    from dev_yard.tickets import Ticket
+
+    tickets = {
+        "T1": Ticket("T1", "a", "be"),
+        "B1": Ticket("B1", "gap", "be", source="contract", finding="F1"),
+    }
+    data = {"tickets": {"T1": {"state": "done"}, "B1": {"state": "ready"}}}
+    assert from_contract_ids(tickets, None, data) == ["B1"]
+    assert from_contract_ids(tickets, ["T1"], data) == ["T1"]
 
 
 def test_review_skips_ids_not_implemented(tmp_path: Path, git_src: Path, monkeypatch):

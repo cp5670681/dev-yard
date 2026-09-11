@@ -59,6 +59,8 @@ export interface Ticket {
   can_implement: boolean;
   can_review: boolean;
   last_summary: string | null;
+  source?: string;
+  finding?: string;
 }
 
 export interface Action {
@@ -98,6 +100,7 @@ export interface ReqDetail {
     summary?: string;
     findings?: { id?: string; title?: string; detail?: string; repo?: string }[];
   } | null;
+  repos?: string[];
   worktrees: string[];
   assets: string[];
   steps: Step[];

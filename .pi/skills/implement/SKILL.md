@@ -17,8 +17,8 @@ description: >
 - `.pi/skills/tdd/SKILL.md` — 在 spec 已约定的缝上 red-green
 - 该仓代码与测试习惯
 - 启动提示若含 `Previous review failed` 与审查报告：只修硬违规和 Spec 缺口，不要扩范围；气味可留
-- 启动提示若含 `Previous contract review`：只修本仓相关的契约缺口和硬违规，不要扩范围；气味可留
-- 启动提示若含 `Previous test report`：只修本仓相关的测试失败项，不要扩范围；不要改测试报告文件
+- 启动提示若含 `Previous contract review`：只修**本票**对应的契约缺口和硬违规，不要扩到其它 B 票；气味可留
+- 启动提示若含测试 bug / finding：只修 **TICKETS.md 本票** 的缺陷，不要扩到其它 B 票；不要写 TEST-REPORT.md
 
 ## 做法
 

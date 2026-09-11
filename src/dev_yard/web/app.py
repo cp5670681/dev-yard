@@ -73,8 +73,8 @@ ACTION_LABELS = {
     "contract": "契约审查",
     "fix-contract": "按契约修",
     "submit-test": "提测",
-    "fill-test-report": "填写测试报告",
-    "fix-test": "按测试报告修",
+    "fill-test-report": "提 bug",
+    "fix-test": "修 bug",
     "push": "推送到远端",
 }
 
@@ -132,6 +132,7 @@ class ContractReviewIn(BaseModel):
     verdict: str
     summary: str = ""
     auto_implement: bool = False
+    findings: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TestReportIn(BaseModel):
@@ -247,14 +248,9 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
             if not ids:
                 detail = detail_or_404(jira)
                 if action == "fix-contract":
-                    tickets = {t.id: t for t in detail.tickets}
-                    wanted = yard_service.from_contract_ids(tickets, None)
+                    wanted = yard_service.prepare_fix_tickets(root, jira, "contract")
                 elif action == "fix-test":
-                    from dev_yard.test_report import from_test_ids
-
-                    tickets = {t.id: t for t in detail.tickets}
-                    findings = (detail.test or {}).get("findings") or []
-                    wanted = from_test_ids(tickets, None, findings)
+                    wanted = yard_service.prepare_fix_tickets(root, jira, "test")
                 else:
                     wanted = [
                         t.id
@@ -307,6 +303,7 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
                 else ""
             ),
             "test": detail.test,
+            "repos": detail.repos,
             "worktrees": detail.worktrees,
             "assets": detail.assets,
             "steps": [
@@ -323,6 +320,8 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
                     "can_implement": t.can_implement,
                     "can_review": t.can_review,
                     "last_summary": t.last_summary,
+                    "source": t.source,
+                    "finding": t.finding,
                 }
                 for t in detail.tickets
             ],
@@ -590,6 +589,7 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
                 jira,
                 verdict=payload.verdict,
                 summary=payload.summary,
+                findings=payload.findings or None,
             )
         except (ValueError, GitError, KeyError, FileNotFoundError) as e:
             raise HTTPException(400, str(e)) from e
@@ -687,7 +687,20 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
             raise HTTPException(404, str(e)) from e
         except ReportRejected as e:
             msg = str(e)
-            code = 409 if "phase=" in msg or "only accepted" in msg else 422
+            code = (
+                409
+                if any(
+                    s in msg
+                    for s in (
+                        "phase=",
+                        "only accepted",
+                        "already",
+                        "contract_review",
+                        "still has open",
+                    )
+                )
+                else 422
+            )
             raise HTTPException(code, msg) from e
         return {
             "jira": jira,

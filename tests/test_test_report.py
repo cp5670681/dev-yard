@@ -66,16 +66,27 @@ def test_submit_and_accept_pass(tmp_path: Path, git_src: Path, monkeypatch):
     after = st.load(yard, "AB-41")
     assert after["phase"] == "done"
     assert after["test"]["latest_verdict"] == "passed"
-    assert (yard / "reqs" / "AB-41" / "TEST-REPORT.md").is_file()
+    assert not (yard / "reqs" / "AB-41" / "TEST-REPORT.md").exists()
 
 
-def test_reject_report_when_not_testing(tmp_path: Path, git_src: Path, monkeypatch):
+def test_reject_bugs_before_freeze(tmp_path: Path, git_src: Path, monkeypatch):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)
-    yard = _done_with_contract(tmp_path, git_src, "AB-42")
-    with pytest.raises(ReportRejected, match="testing"):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    req_open(yard, "AB-42", source="none")
+    with pytest.raises(ReportRejected, match="contract_review"):
         accept_test_report(
-            yard, "AB-42", InboundReport(verdict="failed", body="# no\n", source="api")
+            yard,
+            "AB-42",
+            parse_inbound(
+                {
+                    "verdict": "failed",
+                    "findings": [{"id": "F1", "title": "x", "repo": "backend"}],
+                    "body": "x",
+                },
+                "api",
+            ),
         )
 
 
@@ -117,13 +128,14 @@ def test_failed_report_enables_from_test(tmp_path: Path, git_src: Path, monkeypa
 
     cap = Cap()
     ran = implement(yard, "AB-43", None, from_test=True, runner=cap)
-    assert ran == ["T1"]
-    assert "Previous test report" in cap.prompts[0]
-    assert "Alert always" in cap.prompts[0]
+    assert ran == ["B1"]
+    assert "alert" in cap.prompts[0].lower()
+    assert "B1" in cap.prompts[0]
     after = st.load(yard, "AB-43")
     assert after["phase"] == "frozen"
     assert after["test"]["status"] == "fixing"
-    assert after["tickets"]["T1"]["state"] == "implemented"
+    assert after["tickets"]["B1"]["state"] == "implemented"
+    assert after["tickets"]["T1"]["state"] == "done"
 
 
 def test_inbound_api_token(tmp_path: Path, git_src: Path, monkeypatch):
@@ -132,7 +144,11 @@ def test_inbound_api_token(tmp_path: Path, git_src: Path, monkeypatch):
     yard = _done_with_contract(tmp_path, git_src, "AB-44")
     submit_test(yard, "AB-44")
     client = TestClient(create_app(yard, sync_jobs=True))
-    body = {"verdict": "failed", "body": "# fail\n"}
+    body = {
+        "verdict": "failed",
+        "body": "# fail\n",
+        "findings": [{"id": "F1", "title": "x", "detail": "y", "repo": "backend"}],
+    }
     r = client.post("/api/inbound/reqs/AB-44/test-report", json=body)
     assert r.status_code == 503
     monkeypatch.setenv("YARD_TEST_REPORT_TOKEN", "secret")
@@ -148,7 +164,7 @@ def test_inbound_api_token(tmp_path: Path, git_src: Path, monkeypatch):
     r = client.post("/api/inbound/reqs/AB-44/test-report", json=body, headers={"Authorization": "Bearer secret"})
     # still testing, second report ok
     assert r.status_code == 200
-    yard2 = _done_with_contract(tmp_path, git_src, "AB-45")
+    req_open(yard, "AB-45", source="none")
     r = client.post(
         "/api/inbound/reqs/AB-45/test-report",
         json=body,
@@ -213,7 +229,11 @@ def test_inbound_bearer_is_case_insensitive(tmp_path: Path, git_src: Path, monke
     client = TestClient(create_app(yard, sync_jobs=True))
     r = client.post(
         "/api/inbound/reqs/AB-48/test-report",
-        json={"verdict": "failed", "body": "# fail\n"},
+        json={
+            "verdict": "failed",
+            "body": "# fail\n",
+            "findings": [{"id": "F1", "title": "x", "repo": "backend"}],
+        },
         headers={"Authorization": "bearer secret"},
     )
     assert r.status_code == 200
