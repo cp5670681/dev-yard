@@ -243,35 +243,39 @@ def req_open(
             raise RuntimeError(result.summary)
         req_md = d / "REQUIREMENT.md"
         skeleton = REQ_SKELETON.format(key=req_key, title=req_key, body="")
-        if not req_md.exists() or req_md.read_text() == skeleton:
-            req_md.write_text(skeleton)
+        if not req_md.exists() or req_md.read_text(encoding="utf-8") == skeleton:
+            req_md.write_text(skeleton, encoding="utf-8")
             warning = "pi did not write REQUIREMENT.md; wrote skeleton"
     elif source == "text":
         content = (payload if payload is not None else actual_target) or ""
         if not content.strip():
             content = REQ_SKELETON.format(key=req_key, title=req_key, body="")
-        (d / "REQUIREMENT.md").write_text(content)
+        (d / "REQUIREMENT.md").write_text(content, encoding="utf-8")
     elif source == "file":
         src_file = Path(payload or actual_target).expanduser().resolve()
         if not src_file.exists():
             raise FileNotFoundError(f"Source file not found: {src_file}")
         content = src_file.read_text(encoding="utf-8")
-        (d / "REQUIREMENT.md").write_text(content)
+        (d / "REQUIREMENT.md").write_text(content, encoding="utf-8")
     elif source == "http":
         result = collect_requirement(d, req_key, root)
         warning = "; ".join(result.warnings)
         (d / "REQUIREMENT.md").write_text(
-            result.markdown or REQ_SKELETON.format(key=req_key, title=req_key, body="")
+            result.markdown or REQ_SKELETON.format(key=req_key, title=req_key, body=""),
+            encoding="utf-8",
         )
     else:
-        (d / "REQUIREMENT.md").write_text(REQ_SKELETON.format(key=req_key, title=req_key, body=""))
+        (d / "REQUIREMENT.md").write_text(
+            REQ_SKELETON.format(key=req_key, title=req_key, body=""),
+            encoding="utf-8",
+        )
         warning = "skipped remote fetch"
     if not (d / "GRILL.md").exists():
-        (d / "GRILL.md").write_text(GRILL_SKELETON.format(key=req_key))
+        (d / "GRILL.md").write_text(GRILL_SKELETON.format(key=req_key), encoding="utf-8")
     if not (d / "SPEC.md").exists():
-        (d / "SPEC.md").write_text(SPEC_SKELETON.format(key=req_key))
+        (d / "SPEC.md").write_text(SPEC_SKELETON.format(key=req_key), encoding="utf-8")
     if not (d / "TICKETS.md").exists():
-        (d / "TICKETS.md").write_text(TICKETS_SKELETON.format(key=req_key))
+        (d / "TICKETS.md").write_text(TICKETS_SKELETON.format(key=req_key), encoding="utf-8")
     data = st.load(root, req_key)
     data["phase"] = "open"
     st.save(root, req_key, data)
@@ -748,7 +752,7 @@ def implement(
             report_path = latest_report_path(root, jira)
             if not report_path.is_file():
                 raise ValueError(f"missing {report_path}")
-            test_body = report_path.read_text()
+            test_body = report_path.read_text(encoding="utf-8")
             targets = from_test_ids(tickets, ids, test_slot.get("findings") or [])
         else:
             targets = ids or st.ready_ids(data)

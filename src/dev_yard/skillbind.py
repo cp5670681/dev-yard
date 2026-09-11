@@ -36,7 +36,7 @@ def load_skill(root: Path, name: str) -> str:
     path = skills_root(root) / key / "SKILL.md"
     if not path.exists():
         return f"(bound skill {key} not found at {path})"
-    return path.read_text()
+    return path.read_text(encoding="utf-8")
 
 
 STAGE_WRITE = {

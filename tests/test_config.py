@@ -178,3 +178,14 @@ def test_cli_repo_set_model(tmp_path: Path, git_src: Path, monkeypatch):
     assert res_clear.exit_code == 0
     assert "be implement (inherit)" in res_clear.output
 
+
+def test_dump_workspace_preserves_unicode(tmp_path: Path):
+    from dev_yard.config import dump_workspace
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    dump_workspace(yard, {"repos": {"be": {"role": "后端", "summary": "中文测试"}}})
+    content = (yard / "repos.yaml").read_text(encoding="utf-8")
+    assert "后端" in content
+    assert "\\u" not in content
+
+

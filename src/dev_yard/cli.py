@@ -217,7 +217,7 @@ def req_accept_test(
 
     root = root_opt()
     try:
-        text = body_file.read_text()
+        text = body_file.read_text(encoding="utf-8")
         report = parse_inbound(
             {"verdict": verdict, "body": text, "summary": summary, "source": source},
             default_source="cli",

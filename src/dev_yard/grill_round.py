@@ -104,7 +104,7 @@ def load_round_file(req: Path) -> GrillRound | None:
     if not path.is_file():
         return None
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
     if data is None:
@@ -119,7 +119,7 @@ def load_round(req: Path) -> GrillRound | None:
             return rnd
     grill = req / "GRILL.md"
     if grill.is_file():
-        return parse_markdown(grill.read_text())
+        return parse_markdown(grill.read_text(encoding="utf-8"))
     return None
 
 
@@ -162,9 +162,9 @@ def format_answers(rnd: GrillRound, answers: list[dict[str, Any]]) -> str:
 
 def apply_answers(req: Path, rnd: GrillRound, answers: list[dict[str, Any]]) -> None:
     md = req / "GRILL.md"
-    existing = md.read_text() if md.is_file() else ""
+    existing = md.read_text(encoding="utf-8") if md.is_file() else ""
     block = format_answers(rnd, answers)
-    md.write_text((existing.rstrip() + "\n\n" + block).strip() + "\n")
+    md.write_text((existing.rstrip() + "\n\n" + block).strip() + "\n", encoding="utf-8")
     path = round_path(req)
     if path.exists():
         path.unlink()

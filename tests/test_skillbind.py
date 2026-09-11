@@ -10,6 +10,13 @@ def test_load_missing_skill(tmp_path: Path):
     assert "not found" in text
 
 
+def test_load_skill_utf8(tmp_path: Path):
+    skill = tmp_path / ".pi" / "skills" / "to-spec" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_bytes("阶段：规格\n".encode("utf-8"))
+    assert "规格" in load_skill(tmp_path, "spec")
+
+
 def test_session_prompt_includes_jira(tmp_path: Path):
     p = session_prompt(tmp_path, "spec", "AB-1")
     assert "AB-1" in p

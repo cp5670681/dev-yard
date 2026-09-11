@@ -152,12 +152,12 @@ def accept_test_report(
                 for f in report.findings
             ],
         }
-        front = yaml.safe_dump(header, sort_keys=False).rstrip()
+        front = yaml.safe_dump(header, sort_keys=False, allow_unicode=True).rstrip()
         text = f"---\n{front}\n---\n\n{report.body}"
         if not text.endswith("\n"):
             text += "\n"
-        (archive / f"{rid}.md").write_text(text)
-        latest_report_path(root, jira).write_text(text)
+        (archive / f"{rid}.md").write_text(text, encoding="utf-8")
+        latest_report_path(root, jira).write_text(text, encoding="utf-8")
         slot = _test_slot(data)
         slot["status"] = "received" if report.verdict != "passed" else "passed"
         slot["latest_id"] = rid

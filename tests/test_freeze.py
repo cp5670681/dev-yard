@@ -47,3 +47,23 @@ def test_freeze_coerces_list_tickets_in_status(tmp_path: Path, git_src: Path, mo
     assert data["tickets"]["T1"]["repo"] == "backend"
     assert data["tickets"]["T1"]["state"] == "ready"
     assert data["tickets"]["T1"]["worktree"] == str(wts[0])
+
+
+def test_status_save_preserves_unicode(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    data = {
+        "jira": "AB-11",
+        "phase": "frozen",
+        "tickets": {
+            "T1": {
+                "state": "done",
+                "last_summary": "代码评审完成，测试通过",
+            }
+        },
+    }
+    st.save(yard, "AB-11", data)
+    content = (yard / "reqs" / "AB-11" / "STATUS.yaml").read_text(encoding="utf-8")
+    assert "代码评审完成，测试通过" in content
+    assert "\\u" not in content
+

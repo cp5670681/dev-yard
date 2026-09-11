@@ -50,14 +50,16 @@ def load_workspace(root: Path) -> dict[str, Any]:
     path = paths.repos_yaml(root)
     if not path.exists():
         return {}
-    data = yaml.safe_load(path.read_text()) or {}
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(data, dict):
         raise ValueError("repos.yaml must be a mapping")
     return data
 
 
 def dump_workspace(root: Path, data: dict[str, Any]) -> None:
-    paths.repos_yaml(root).write_text(yaml.safe_dump(data, sort_keys=False))
+    paths.repos_yaml(root).write_text(
+        yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    )
 
 
 def _blank(value: Any) -> str | None:

@@ -67,7 +67,7 @@ def load(root: Path, jira: str) -> dict[str, Any]:
     p = status_path(root, jira)
     if not p.exists():
         return {"jira": jira, "phase": "open", "tickets": {}, "repos": []}
-    data = yaml.safe_load(p.read_text()) or {}
+    data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     data["tickets"] = tickets_map(data.get("tickets"))
     return data
 
@@ -77,7 +77,7 @@ def save(root: Path, jira: str, data: dict[str, Any]) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     data = dict(data)
     data["tickets"] = tickets_map(data.get("tickets"))
-    p.write_text(yaml.safe_dump(data, sort_keys=False))
+    p.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
 
 def sync_tickets(data: dict[str, Any], tickets: list[Ticket]) -> dict[str, Any]:

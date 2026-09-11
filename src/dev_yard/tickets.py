@@ -49,7 +49,7 @@ def load_tickets(req_path: Path) -> list[Ticket]:
     p = req_path / "TICKETS.md"
     if not p.exists():
         return []
-    return [t for t in parse_tickets(p.read_text()) if t.repo]
+    return [t for t in parse_tickets(p.read_text(encoding="utf-8")) if t.repo]
 
 
 def by_id(tickets: list[Ticket]) -> dict[str, Ticket]:

@@ -327,7 +327,7 @@ def save_doc(root: Path, jira: str, slug: str, text: str) -> Path:
     if not req.is_dir():
         raise FileNotFoundError(f"missing {req}")
     path = req / DOC_FILES[slug]
-    path.write_text(text if text.endswith("\n") else text + "\n")
+    path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
     return path
 
 
@@ -370,7 +370,7 @@ def list_repos(root: Path) -> list[dict[str, str]]:
 def _doc_view(req: Path, slug: str, filename: str, jira: str) -> DocView:
     path = req / filename
     exists = path.is_file()
-    text = path.read_text() if exists else ""
+    text = path.read_text(encoding="utf-8") if exists else ""
     make_skel = _SKELETONS.get(filename)
     skeleton = make_skel(jira).strip() if make_skel else ""
     filled = exists and text.strip() != skeleton and bool(text.strip())
