@@ -7,6 +7,7 @@ from dev_yard import status as st
 from dev_yard.cli import app
 from dev_yard.runners import DryRunRunner
 from dev_yard.service import (
+    contract_review_override,
     implement,
     init_yard,
     repo_add,
@@ -129,3 +130,37 @@ def test_cli_review_override(tmp_path: Path, git_src: Path, monkeypatch):
     slot2 = st.load(yard, "PROJ-101")["tickets"]["T1"]
     assert slot2["state"] == "done"
     assert slot2["last_summary"] == "All good now"
+
+
+def test_contract_review_override(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _setup_req(tmp_path, git_src)
+    monkeypatch.chdir(yard)
+
+    # Human contract review override -> failed
+    res = contract_review_override(
+        yard,
+        "PROJ-101",
+        verdict="failed",
+        summary="Missing auth header in RPC call.",
+    )
+    assert res["contract_review"] == "failed"
+    assert "Missing auth header" in res["contract_summary"]
+    assert "REVIEW_FAILED" in res["contract_summary"]
+
+    data = st.load(yard, "PROJ-101")
+    assert data["contract_review"] == "failed"
+    assert "Missing auth header" in data["contract_summary"]
+
+    # CLI review-override --contract --verdict passed
+    res2 = runner.invoke(
+        app,
+        ["review-override", "PROJ-101", "--contract", "-v", "passed", "-m", "All contracts aligned"],
+    )
+    assert res2.exit_code == 0
+    assert "Updated contract review: passed" in res2.stdout
+
+    data2 = st.load(yard, "PROJ-101")
+    assert data2["contract_review"] == "passed"
+    assert data2["contract_summary"] == "All contracts aligned"

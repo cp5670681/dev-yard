@@ -88,6 +88,7 @@ class ReqSummary:
     ticket_counts: dict[str, int] = field(default_factory=dict)
     ticket_total: int = 0
     ticket_done: int = 0
+    contract: str | None = None
 
 
 @dataclass
@@ -159,6 +160,7 @@ def list_requirements(root: Path) -> list[ReqSummary]:
                 ticket_counts=counts,
                 ticket_total=len(detail.tickets),
                 ticket_done=sum(1 for t in detail.tickets if t.state == "done"),
+                contract=detail.contract,
             )
         )
     return out

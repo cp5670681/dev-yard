@@ -8,6 +8,17 @@
           <h1 class="ghx-sprint-title">{{ detail?.title || jira }}</h1>
         </div>
         <div class="d-flex align-center ga-2">
+          <v-chip
+            v-if="detail?.contract"
+            size="small"
+            :color="detail.contract === 'passed' ? 'success' : 'error'"
+            variant="tonal"
+            class="jira-lozenge font-weight-bold cursor-pointer"
+            :prepend-icon="detail.contract === 'passed' ? mdiCheckCircleOutline : mdiAlertCircleOutline"
+            @click="contractDialog = true"
+          >
+            {{ detail.contract === 'passed' ? '契约审查通过' : '契约审查未通过' }}
+          </v-chip>
           <v-chip v-if="detail" :color="phaseColor(detail.phase)" variant="tonal" class="jira-lozenge">
             {{ detail.phase }}
           </v-chip>
@@ -111,6 +122,86 @@
           label="重置阶段（会删截图）"
         />
       </div>
+
+      <!-- 契约审查状态显式横幅 -->
+      <v-alert
+        v-if="detail.contract === 'failed'"
+        type="error"
+        variant="tonal"
+        border="start"
+        class="mb-4"
+        :icon="mdiFileDocumentAlertOutline"
+      >
+        <div class="d-flex flex-column flex-sm-row justify-space-between align-sm-center ga-3">
+          <div>
+            <div class="text-subtitle-1 font-weight-bold">
+              跨仓契约审查未通过 (Contract Review Failed)
+            </div>
+            <div class="text-body-2 text-medium-emphasis mt-0.5">
+              检测到跨仓接口或业务契约存在缺口（阻塞项）。需修复契约缺口并重新审查通过后，方可进入提测阶段。
+            </div>
+          </div>
+          <div class="d-flex flex-wrap align-center ga-2 flex-shrink-0">
+            <v-btn
+              v-if="detail.contract_summary"
+              size="small"
+              variant="outlined"
+              color="error"
+              :prepend-icon="mdiEyeOutline"
+              @click="contractDialog = true"
+            >
+              查看契约报告
+            </v-btn>
+            <v-btn
+              size="small"
+              color="error"
+              variant="flat"
+              :prepend-icon="mdiWrench"
+              :loading="acting === 'fix-contract'"
+              @click="confirmAction('fix-contract')"
+            >
+              立即按契约修
+            </v-btn>
+            <v-btn
+              size="small"
+              variant="text"
+              color="error"
+              :prepend-icon="mdiRefresh"
+              :loading="acting === 'contract'"
+              @click="confirmAction('contract')"
+            >
+              重跑契约审查
+            </v-btn>
+          </div>
+        </div>
+      </v-alert>
+
+      <v-alert
+        v-else-if="detail.contract === 'passed'"
+        type="success"
+        variant="tonal"
+        border="start"
+        density="comfortable"
+        class="mb-4"
+        :icon="mdiFileDocumentCheckOutline"
+      >
+        <div class="d-flex justify-space-between align-center flex-wrap ga-2">
+          <div>
+            <span class="font-weight-bold">跨仓契约审查已通过 (Contract Review Passed)</span>
+            <span class="text-caption text-medium-emphasis ms-2">各仓代码与 SPEC 接口及时序契约一致</span>
+          </div>
+          <v-btn
+            v-if="detail.contract_summary"
+            size="x-small"
+            variant="text"
+            color="success"
+            :prepend-icon="mdiEyeOutline"
+            @click="contractDialog = true"
+          >
+            查看报告
+          </v-btn>
+        </div>
+      </v-alert>
       <v-tabs :model-value="'board'" class="mb-4" show-arrows color="primary">
         <v-tab :to="`/r/${jira}`">看板</v-tab>
         <v-tab
@@ -171,9 +262,23 @@
             </v-list>
           </v-expansion-panel-text>
         </v-expansion-panel>
-        <v-expansion-panel v-if="detail.contract_summary" title="契约审查摘要">
+        <v-expansion-panel v-if="detail.contract_summary">
+          <v-expansion-panel-title>
+            <div class="d-flex align-center ga-2">
+              <span>契约审查摘要</span>
+              <v-chip
+                size="x-small"
+                :color="detail.contract === 'passed' ? 'success' : 'error'"
+                variant="tonal"
+                class="font-weight-bold"
+              >
+                {{ detail.contract === 'passed' ? '通过 passed' : '未通过 failed' }}
+              </v-chip>
+            </div>
+          </v-expansion-panel-title>
           <v-expansion-panel-text>
-            <pre class="job-log">{{ detail.contract_summary }}</pre>
+            <div v-if="detail.contract_summary_html" class="markdown" v-html="detail.contract_summary_html" />
+            <pre v-else class="job-log">{{ detail.contract_summary }}</pre>
           </v-expansion-panel-text>
         </v-expansion-panel>
         <v-expansion-panel v-if="detail.test" title="测试报告">
@@ -260,6 +365,15 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
+    <ContractReviewDialog
+      v-model="contractDialog"
+      :jira="jira"
+      :contract="detail?.contract || null"
+      :summary="detail?.contract_summary || null"
+      :summary-html="detail?.contract_summary_html"
+      @reviewed="onContractReviewed"
+    />
+
     <TicketDiffDialog
       v-model="diffDialog.open"
       :jira="jira"
@@ -278,9 +392,20 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useDisplay } from "vuetify";
-import { mdiContentCopy, mdiDeleteOutline } from "@mdi/js";
+import {
+  mdiAlertCircleOutline,
+  mdiCheckCircleOutline,
+  mdiContentCopy,
+  mdiDeleteOutline,
+  mdiEyeOutline,
+  mdiFileDocumentAlertOutline,
+  mdiFileDocumentCheckOutline,
+  mdiRefresh,
+  mdiWrench,
+} from "@mdi/js";
 import { deleteRequirement, getRequirement, runAction, submitTestReport } from "@/api/client";
 import type { Action, JobSnapshot, ReqDetail, Ticket } from "@/api/types";
+import ContractReviewDialog from "@/components/ContractReviewDialog.vue";
 import JobPanel from "@/components/JobPanel.vue";
 import TicketBoard from "@/components/TicketBoard.vue";
 import TicketDiffDialog from "@/components/TicketDiffDialog.vue";
@@ -310,6 +435,7 @@ const confirm = reactive({ open: false, action: "", ticketId: "", text: "" });
 const deleteOpen = ref(false);
 const diffDialog = reactive({ open: false, ticketId: "" });
 const reviewDialog = reactive({ open: false, ticket: null as Ticket | null });
+const contractDialog = ref(false);
 
 function openDiff(ticketId: string) {
   diffDialog.ticketId = ticketId;
@@ -328,6 +454,17 @@ async function onTicketReviewed(ticketId: string, jobs: JobSnapshot[]) {
     snack.notify(`已保存反馈并启动修复 (${ticketId})`, "success");
   } else {
     snack.notify(`已更新 ${ticketId} 审查结果`, "success");
+  }
+  await load();
+}
+
+async function onContractReviewed(jobs: JobSnapshot[]) {
+  contractDialog.value = false;
+  if (jobs.length > 0 && jobs[0]?.id) {
+    await router.replace({ query: { ...route.query, job: jobs[0].id } });
+    snack.notify("已保存契约审查反馈并启动修复", "success");
+  } else {
+    snack.notify("已更新跨仓契约审查结果", "success");
   }
   await load();
 }
@@ -392,10 +529,10 @@ function assetUrl(name: string) {
   return `/r/${encodeURIComponent(jira.value)}/assets/${encodeURIComponent(name)}`;
 }
 
-async function copy(text: string) {
+async function copy(text: string, msg = "已复制路径") {
   try {
     await navigator.clipboard.writeText(text);
-    snack.notify("已复制路径", "success");
+    snack.notify(msg, "success");
   } catch {
     snack.notify("复制失败", "error");
   }

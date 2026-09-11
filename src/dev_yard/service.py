@@ -1039,6 +1039,35 @@ def ticket_review_override(
         return dict(data["tickets"][ticket_id])
 
 
+def contract_review_override(
+    root: Path,
+    jira: str,
+    verdict: str,
+    summary: str | None = None,
+) -> dict[str, Any]:
+    norm_verdict = (verdict or "").strip().lower()
+    if norm_verdict in {"pass", "passed", "ok", "done"}:
+        norm_verdict = "passed"
+    elif norm_verdict in {"fail", "failed", "blocked"}:
+        norm_verdict = "failed"
+    else:
+        raise ValueError(f"invalid verdict {verdict!r}; must be 'passed' or 'failed'")
+
+    with st.jira_lock(jira):
+        data = st.load(root, jira)
+        data["contract_review"] = norm_verdict
+        if summary is not None:
+            text = summary.strip()
+            if norm_verdict == "failed" and text and "REVIEW_FAILED" not in text:
+                text = f"{text}\n\nREVIEW_FAILED"
+            data["contract_summary"] = text
+        st.save(root, jira, data)
+        return {
+            "contract_review": data.get("contract_review"),
+            "contract_summary": data.get("contract_summary"),
+        }
+
+
 def status_text(root: Path, jira: str | None) -> str:
     if jira:
         keys = [jira]

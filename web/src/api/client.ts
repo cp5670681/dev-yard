@@ -1,4 +1,6 @@
 import type {
+  ContractReviewIn,
+  ContractReviewOut,
   DocPayload,
   JobsOut,
   JobSnapshot,
@@ -182,6 +184,19 @@ export function submitTicketReview(
 ) {
   return api<TicketReviewOut>(
     `/api/requirements/${encodeURIComponent(jira)}/tickets/${encodeURIComponent(ticketId)}/review`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function submitContractReview(
+  jira: string,
+  payload: ContractReviewIn,
+) {
+  return api<ContractReviewOut>(
+    `/api/requirements/${encodeURIComponent(jira)}/contract/review`,
     {
       method: "POST",
       body: JSON.stringify(payload),

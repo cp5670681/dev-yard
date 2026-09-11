@@ -51,6 +51,15 @@
                   </div>
                 </div>
                 <div class="d-flex align-center ga-1 flex-shrink-0">
+                  <v-chip
+                    v-if="item.contract"
+                    size="small"
+                    :color="item.contract === 'passed' ? 'success' : 'error'"
+                    variant="tonal"
+                    class="jira-lozenge font-weight-bold"
+                  >
+                    {{ item.contract === 'passed' ? '契约通过' : '契约未通过' }}
+                  </v-chip>
                   <v-chip size="small" :color="phaseColor(item.phase)" variant="tonal" class="jira-lozenge">
                     {{ item.phase }}
                   </v-chip>

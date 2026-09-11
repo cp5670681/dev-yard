@@ -345,12 +345,26 @@ def review(
 @app.command(name="review-override")
 def review_override(
     jira: str,
-    ticket_id: str,
+    ticket_id: Optional[str] = typer.Argument(None, help="Ticket ID (e.g. T1). Omit when overriding contract review."),
+    contract: bool = typer.Option(False, "--contract", help="Override contract review instead of a ticket"),
     verdict: str = typer.Option(..., "--verdict", "-v", help="Verdict: 'passed' or 'failed'"),
     summary: Optional[str] = typer.Option(None, "--summary", "-m", help="Review comments / feedback"),
 ) -> None:
-    """Manually override a ticket's review verdict and feedback."""
+    """Manually override a ticket's or contract review verdict and feedback."""
     root = root_opt()
+    if contract or not ticket_id:
+        if not contract and not ticket_id:
+            typer.echo("Error: Provide a ticket_id or specify --contract", err=True)
+            raise typer.Exit(1)
+        try:
+            updated = service.contract_review_override(
+                root, jira, verdict=verdict, summary=summary
+            )
+            typer.echo(f"Updated contract review: {updated.get('contract_review')}")
+        except (ValueError, GitError, KeyError, FileNotFoundError) as e:
+            _die(e)
+        return
+
     try:
         updated = service.ticket_review_override(
             root, jira, ticket_id, verdict=verdict, summary=summary

@@ -1128,3 +1128,66 @@ def test_ticket_review_api(tmp_path: Path, git_src: Path, monkeypatch):
     assert r_bad_verdict.status_code == 400
 
 
+def test_contract_review_api(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "CREV-01", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: add auth\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+
+    executed_jobs = []
+
+    def mock_execute(root: Path, job) -> None:
+        executed_jobs.append(job)
+
+    runner = JobRunner(yard, execute=mock_execute, sync=False)
+    client = TestClient(create_app(yard, job_runner=runner))
+
+    from dev_yard.service import req_freeze
+    req_freeze(yard, "CREV-01")
+
+    # Contract review override: fail with feedback without auto_implement
+    r1 = client.post(
+        "/api/requirements/CREV-01/contract/review",
+        json={"verdict": "failed", "summary": "Missing RPC contract", "auto_implement": False},
+    )
+    assert r1.status_code == 200
+    data1 = r1.json()
+    assert data1["contract"]["contract_review"] == "failed"
+    assert "Missing RPC contract" in data1["contract"]["contract_summary"]
+    assert len(data1["jobs"]) == 0
+
+    # Contract review override: fail with auto_implement (triggers fix-contract action)
+    r_auto = client.post(
+        "/api/requirements/CREV-01/contract/review",
+        json={"verdict": "failed", "summary": "Fix RPC payload", "auto_implement": True},
+    )
+    assert r_auto.status_code == 200
+    data_auto = r_auto.json()
+    assert len(data_auto["jobs"]) == 1
+    assert data_auto["jobs"][0]["action"] == "fix-contract"
+
+    # Contract review override: pass
+    r2 = client.post(
+        "/api/requirements/CREV-01/contract/review",
+        json={"verdict": "passed", "summary": "Contracts approved"},
+    )
+    assert r2.status_code == 200
+    data2 = r2.json()
+    assert data2["contract"]["contract_review"] == "passed"
+    assert data2["contract"]["contract_summary"] == "Contracts approved"
+
+    # Verify requirement detail endpoint returns updated contract fields
+    r_detail = client.get("/api/requirements/CREV-01")
+    assert r_detail.status_code == 200
+    detail_data = r_detail.json()
+    assert detail_data["contract"] == "passed"
+    assert detail_data["contract_summary"] == "Contracts approved"
+    assert "Contracts approved" in detail_data["contract_summary_html"]
+
+
+

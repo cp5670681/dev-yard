@@ -46,6 +46,7 @@ export interface ReqSummary {
   next: string;
   tickets: number;
   done: number;
+  contract?: string | null;
 }
 
 export interface Ticket {
@@ -87,6 +88,7 @@ export interface ReqDetail {
   next: string;
   contract: string | null;
   contract_summary: string | null;
+  contract_summary_html?: string;
   test: {
     status?: string;
     latest_id?: string;
@@ -207,6 +209,21 @@ export interface TicketReviewOut {
   jira: string;
   ticket_id: string;
   ticket: Record<string, unknown>;
+  jobs: JobSnapshot[];
+}
+
+export interface ContractReviewIn {
+  verdict: "passed" | "failed" | string;
+  summary?: string;
+  auto_implement?: boolean;
+}
+
+export interface ContractReviewOut {
+  jira: string;
+  contract: {
+    contract_review: string;
+    contract_summary: string;
+  };
   jobs: JobSnapshot[];
 }
 

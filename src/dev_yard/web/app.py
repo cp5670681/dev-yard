@@ -124,6 +124,12 @@ class TicketReviewIn(BaseModel):
     auto_implement: bool = False
 
 
+class ContractReviewIn(BaseModel):
+    verdict: str
+    summary: str = ""
+    auto_implement: bool = False
+
+
 class TestReportIn(BaseModel):
     verdict: str
     body: str
@@ -291,6 +297,11 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
             "next": detail.next_label,
             "contract": detail.contract,
             "contract_summary": detail.contract_summary,
+            "contract_summary_html": (
+                render_markdown(detail.contract_summary, detail.jira)
+                if detail.contract_summary
+                else ""
+            ),
             "test": detail.test,
             "worktrees": detail.worktrees,
             "assets": detail.assets,
@@ -490,6 +501,7 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
                 "next": i.next_label,
                 "tickets": i.ticket_total,
                 "done": i.ticket_done,
+                "contract": i.contract,
             }
             for i in items
         ]
@@ -560,6 +572,35 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
             "jira": jira,
             "ticket_id": ticket_id,
             "ticket": updated,
+            "jobs": job_snapshots,
+        }
+
+    @app.post("/api/requirements/{jira}/contract/review")
+    def api_contract_review_override(jira: str, payload: ContractReviewIn):
+        if paths.is_reserved_req_name(jira):
+            raise HTTPException(404, f"no requirement {jira}")
+        try:
+            updated = yard_service.contract_review_override(
+                root,
+                jira,
+                verdict=payload.verdict,
+                summary=payload.summary,
+            )
+        except (ValueError, GitError, KeyError, FileNotFoundError) as e:
+            raise HTTPException(400, str(e)) from e
+
+        job_snapshots = []
+        norm = payload.verdict.strip().lower()
+        if norm in {"failed", "fail", "blocked"} and payload.auto_implement:
+            try:
+                submitted = _submit_action("fix-contract", jira, None, extra={})
+                job_snapshots = [j.snapshot() for j in submitted]
+            except Exception:
+                pass
+
+        return {
+            "jira": jira,
+            "contract": updated,
             "jobs": job_snapshots,
         }
 
