@@ -11,17 +11,17 @@ runner = CliRunner()
 
 
 def test_version_string():
-    assert __version__ == "0.1.0"
+    assert __version__ == "0.1.1"
 
 
 def test_cli_version_flag():
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert "dev-yard 0.1.0" in result.stdout
+    assert "dev-yard 0.1.1" in result.stdout
 
     result_v = runner.invoke(app, ["-V"])
     assert result_v.exit_code == 0
-    assert "dev-yard 0.1.0" in result_v.stdout
+    assert "dev-yard 0.1.1" in result_v.stdout
 
 
 def test_api_meta_version(tmp_path: Path):
@@ -30,4 +30,4 @@ def test_api_meta_version(tmp_path: Path):
     res = client.get("/api/meta")
     assert res.status_code == 200
     data = res.json()
-    assert data.get("version") == "0.1.0"
+    assert data.get("version") == "0.1.1"

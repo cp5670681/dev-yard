@@ -28,7 +28,7 @@ req open ──► grill ──► spec ──► tickets ──► req freeze �
 
 ```bash
 # 方式 A：从 GitHub Release 安装预构建 Wheel 包（推荐，开箱即用，无需 Node.js/pnpm）
-uv tool install https://github.com/cp5670681/dev-yard/releases/latest/download/dev_yard-0.1.0-py3-none-any.whl
+uv tool install https://github.com/cp5670681/dev-yard/releases/latest/download/dev_yard-0.1.1-py3-none-any.whl
 
 # 方式 B：从 GitHub 源码安装（本机若有 Node.js/pnpm 会自动编译前端）
 uv tool install git+https://github.com/cp5670681/dev-yard.git
