@@ -337,6 +337,26 @@ def default_execute(root: Path, job: Job) -> None:
         for p in created:
             job.append(str(p))
         return
+    if job.action == "push":
+        extra = job.extra or {}
+        remote = str(extra.get("remote") or "origin")
+        force = bool(extra.get("force", False))
+        repos_filter = extra.get("repos")
+        if isinstance(repos_filter, str) and repos_filter.strip():
+            repos_filter = [r.strip() for r in repos_filter.split(",") if r.strip()]
+        elif not isinstance(repos_filter, list):
+            repos_filter = None
+        results = service.req_push(
+            root,
+            job.jira,
+            repos=repos_filter,
+            remote=remote,
+            force=force,
+            on_progress=job.append,
+        )
+        pushed_summary = ", ".join(f"{r['repo']} ({r['branch']})" for r in results)
+        job.append(f"pushed {job.jira} to remote: {pushed_summary}")
+        return
     if job.action == "submit-test":
         from dev_yard.test_report import submit_test
 

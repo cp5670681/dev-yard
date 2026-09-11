@@ -5,6 +5,7 @@ import shutil
 import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from dev_yard import gitops, paths, status as st
 from dev_yard.config import Repo, git_project_name, load_repos, require_pair, save_repos
@@ -1293,4 +1294,82 @@ def requirement_diff(root: Path, jira: str) -> dict[str, Any]:
         "phase": data.get("phase", "open"),
         "repos": out_repos,
     }
+
+
+def req_push(
+    root: Path,
+    jira: str,
+    repos: list[str] | None = None,
+    remote: str = "origin",
+    force: bool = False,
+    on_progress: Callable[[str], None] | None = None,
+) -> list[dict[str, Any]]:
+    req = paths.req_dir(root, jira)
+    if not req.exists() or not paths.is_req_dir(req):
+        raise FileNotFoundError(f"no requirement {jira}")
+    data = st.load(root, jira)
+
+    wt_root = req / "worktrees"
+    available_aliases: list[str] = []
+    if wt_root.is_dir():
+        available_aliases = sorted(
+            p.name for p in wt_root.iterdir() if p.is_dir() and (p / ".git").exists()
+        )
+
+    if not available_aliases and data.get("repos"):
+        for a in data["repos"]:
+            wt = paths.req_worktree(root, jira, a)
+            if wt.exists() and (wt / ".git").exists():
+                available_aliases.append(a)
+
+    if not available_aliases:
+        raise ValueError(f"no worktrees found for {jira}; freeze first")
+
+    if repos:
+        target_aliases = [a for a in repos if a in available_aliases]
+        missing = [a for a in repos if a not in available_aliases]
+        if missing:
+            raise ValueError(f"worktree not found for repo(s): {', '.join(missing)}")
+    else:
+        target_aliases = available_aliases
+
+    if not target_aliases:
+        raise ValueError("no matching repositories to push")
+
+    branch = f"req/{jira}"
+    results: list[dict[str, Any]] = []
+    for alias in target_aliases:
+        wt = paths.req_worktree(root, jira, alias)
+        if not wt.exists() or not (wt / ".git").exists():
+            raise ValueError(f"missing worktree {wt}; freeze first")
+
+        if gitops.has_changes(wt):
+            if on_progress:
+                on_progress(f"committing uncommitted changes in {alias}...")
+            gitops.commit_all(wt, f"chore: commit pending changes before push ({jira})")
+
+        if on_progress:
+            on_progress(f"pushing {alias} ({branch}) to {remote}...")
+
+        gitops.push(
+            wt,
+            remote=remote,
+            branch=branch,
+            set_upstream=True,
+            force=force,
+            on_progress=on_progress,
+        )
+        results.append(
+            {
+                "repo": alias,
+                "alias": alias,
+                "branch": branch,
+                "remote": remote,
+                "worktree": str(wt),
+                "status": "pushed",
+            }
+        )
+
+    return results
+
 

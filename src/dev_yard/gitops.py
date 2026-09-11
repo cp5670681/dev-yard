@@ -183,6 +183,32 @@ def current_branch(worktree: Path) -> str:
     return run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=worktree)
 
 
+def push(
+    worktree: Path,
+    remote: str = "origin",
+    branch: str | None = None,
+    set_upstream: bool = True,
+    force: bool = False,
+    on_progress: Progress | None = None,
+) -> str:
+    target_branch = branch or current_branch(worktree)
+    argv = ["git", "push"]
+    if set_upstream:
+        argv.append("-u")
+    if force:
+        argv.append("--force")
+    if on_progress is not None:
+        argv.append("--progress")
+    argv.extend([remote, target_branch])
+
+    if on_progress is None:
+        return run(argv, cwd=worktree)
+    on_progress(f"git push {remote} {target_branch} (cwd={worktree})")
+    _run_progress(argv, on_progress, cwd=worktree)
+    return f"pushed {target_branch} to {remote}"
+
+
+
 def checkout_default_base(source: Path, default_base: str) -> None:
     """Put a managed clone on default_base; fast-forward to origin when that ref exists."""
     fetch(source)

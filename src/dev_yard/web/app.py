@@ -48,6 +48,7 @@ ACTIONS = {
     "fix-contract",
     "submit-test",
     "fix-test",
+    "push",
 }
 STEP_LABELS = {
     "open": "抽取",
@@ -74,6 +75,7 @@ ACTION_LABELS = {
     "submit-test": "提测",
     "fill-test-report": "填写测试报告",
     "fix-test": "按测试报告修",
+    "push": "推送到远端",
 }
 
 _ASSET_SRC = re.compile(r'src=(["\'])(?:\./)?assets/([^"\']+)\1')
@@ -112,6 +114,8 @@ class ActionIn(BaseModel):
     ticket_id: str = ""
     force: bool = False
     source: str = "pi"
+    remote: str = "origin"
+    repos: list[str] | None = None
 
 
 class DocSaveIn(BaseModel):
@@ -469,11 +473,12 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
         ticket_id: str = Form(""),
         force: str = Form(""),
         source: str = Form("pi"),
+        remote: str = Form("origin"),
     ):
         if action not in ACTIONS:
             raise HTTPException(400, f"unknown action {action}")
         ids = [ticket_id] if ticket_id.strip() else None
-        extra = {"force": bool(force), "source": source}
+        extra = {"force": bool(force), "source": source, "remote": remote}
         try:
             submitted = _submit_action(action, jira, ids, extra)
         except ValueError as e:
@@ -656,7 +661,12 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
             raise HTTPException(400, f"unknown action {action}")
         body = payload or ActionIn()
         ids = [body.ticket_id] if body.ticket_id.strip() else None
-        extra = {"force": body.force, "source": body.source}
+        extra = {
+            "force": body.force,
+            "source": body.source,
+            "remote": body.remote,
+            "repos": body.repos,
+        }
         try:
             submitted = _submit_action(action, jira, ids, extra)
         except ValueError as e:

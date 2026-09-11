@@ -96,8 +96,10 @@ dev-yard review PROJ-101 --contract # 跨仓契约校验
 dev-yard req submit-test PROJ-101
 # 收到测试缺陷报告后修复：dev-yard implement PROJ-101 --from-test
 
-# 9. 提 PR（各仓 Worktree 内推送）
-cd reqs/PROJ-101/worktrees/core-api && git push origin req/PROJ-101
+# 9. 一键推送远端分支（提 PR）
+dev-yard push PROJ-101              # 或 dev-yard req push PROJ-101
+# 也支持只推送指定仓库：dev-yard push PROJ-101 core-api
+# 或在 Web 看板直接点击「推送到远端」
 ```
 
 > **说明**：Agent 阶段默认打开交互 TUI；加上 `--print` 可转为单次非交互运行（直接打印日志）。
@@ -184,6 +186,7 @@ dev-yard web --host 0.0.0.0 --allow-remote
 | `dev-yard req open <target>` | 创建/拉取需求 | `--key`, `--text`, `--file`, `--none`, `--force` |
 | `dev-yard req freeze <key>` | 冻结方案并建 Worktree | |
 | `dev-yard req delete <key>` | 删除需求产物与 Worktree | |
+| `dev-yard req push <key> [repos..]` | 推送各仓 Worktree 分支到远端 | `--remote`, `--force` |
 | `dev-yard req submit-test <key>` | 标记提测 | |
 | `dev-yard req accept-test <key>` | 录入测试报告 | `--verdict`, `--body-file` |
 | `dev-yard grill <key>` | 需求答辩与对齐 | `--print`, `--dry-run` |
@@ -191,6 +194,7 @@ dev-yard web --host 0.0.0.0 --allow-remote
 | `dev-yard tickets <key>` | 跨仓拆票与 DAG | `--print`, `--dry-run` |
 | `dev-yard implement <key> [T..]` | 编码实现 | `--print`, `--from-contract`, `--from-test` |
 | `dev-yard review <key> [T..]` | 代码评审 / 契约检查 | `--contract`, `--print` |
+| `dev-yard push <key> [repos..]` | 推送各仓 Worktree 分支到远端 | `--remote`, `--force` |
 | `dev-yard status [key]` | 查看需求与任务状态 | |
 | `dev-yard web` | 启动 Web 看板 | `--port 8765`, `--host 0.0.0.0 --allow-remote` |
 

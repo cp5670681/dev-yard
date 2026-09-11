@@ -52,6 +52,7 @@ export const ACTION_LABELS: Record<string, string> = {
   "submit-test": "提测",
   "fill-test-report": "填写测试报告",
   "fix-test": "按测试报告修",
+  push: "推送到远端",
   repo_add: "仓库 · clone",
 };
 

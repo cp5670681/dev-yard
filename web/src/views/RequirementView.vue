@@ -248,6 +248,18 @@
       >
         <v-expansion-panel v-if="detail.worktrees.length" title="Worktrees">
           <v-expansion-panel-text>
+            <div class="d-flex justify-end mb-2">
+              <v-btn
+                size="small"
+                variant="tonal"
+                color="primary"
+                :prepend-icon="mdiCloudUploadOutline"
+                :loading="acting === 'push'"
+                @click="confirmAction('push')"
+              >
+                一键推送到远端
+              </v-btn>
+            </div>
             <v-list density="compact">
               <v-list-item v-for="p in detail.worktrees" :key="p">
                 <v-list-item-title class="text-break font-weight-regular">
@@ -395,6 +407,7 @@ import { useDisplay } from "vuetify";
 import {
   mdiAlertCircleOutline,
   mdiCheckCircleOutline,
+  mdiCloudUploadOutline,
   mdiContentCopy,
   mdiDeleteOutline,
   mdiEyeOutline,
@@ -553,10 +566,13 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
   }
   const risky = action === "open" && forceOpen.value;
   const freeze = action === "freeze";
-  if (risky || freeze) {
+  const push = action === "push";
+  if (risky || freeze || push) {
     confirm.action = action;
     confirm.ticketId = ticketId || "";
-    confirm.text = freeze
+    confirm.text = push
+      ? `将把各个仓库的 worktree 分支 (req/${jira.value}) 推送到远端。确认继续？`
+      : freeze
       ? "冻结后会切 worktree。确认继续？"
       : "强制重抽会重置阶段并删除截图。确认继续？";
     confirm.open = true;

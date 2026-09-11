@@ -174,3 +174,33 @@ def test_commit_all_and_has_changes(git_src: Path, tmp_path: Path):
     log = run(["git", "log", "-n", "1", "--oneline"], cwd=wt)
     assert "feat: add new_file" in log
 
+
+def test_push_worktree_to_remote(git_src: Path, tmp_path: Path):
+    from dev_yard.gitops import push, worktree_add
+
+    # Create a bare remote repository
+    bare = tmp_path / "bare.git"
+    bare.mkdir()
+    subprocess.check_call(["git", "init", "--bare"], cwd=bare)
+
+    # Add origin remote to git_src
+    subprocess.check_call(["git", "remote", "add", "origin", str(bare)], cwd=git_src)
+
+    # Create worktree
+    wt = tmp_path / "wt_push"
+    worktree_add(git_src, wt, "req/PUSH-1", "main")
+    (wt / "feature.txt").write_text("pushed content")
+    subprocess.check_call(["git", "add", "."], cwd=wt)
+    subprocess.check_call(["git", "commit", "-m", "feat: push test"], cwd=wt)
+
+    # Push to origin
+    lines: list[str] = []
+    push(wt, remote="origin", branch="req/PUSH-1", on_progress=lines.append)
+
+    # Verify branch exists on remote
+    remote_sha = run(["git", "rev-parse", "refs/heads/req/PUSH-1"], cwd=bare)
+    local_sha = run(["git", "rev-parse", "HEAD"], cwd=wt)
+    assert remote_sha == local_sha
+    assert any("push" in line.lower() for line in lines)
+
+

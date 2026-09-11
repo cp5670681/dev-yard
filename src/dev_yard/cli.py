@@ -191,6 +191,31 @@ def req_freeze(jira: str) -> None:
         typer.echo(str(p))
 
 
+@req_app.command("push")
+def req_push(
+    jira: str = typer.Argument(..., help="Requirement key (e.g. PROJ-101)"),
+    repos: Optional[list[str]] = typer.Argument(None, help="Optional repo aliases to push (default: all)"),
+    remote: str = typer.Option("origin", "--remote", "-r", help="Git remote name (default: origin)"),
+    force: bool = typer.Option(False, "--force", "-f", help="Force push (git push --force)"),
+) -> None:
+    """Push frozen requirement worktree branches (req/<key>) to remote."""
+    root = root_opt()
+    try:
+        results = service.req_push(
+            root,
+            jira,
+            repos=repos,
+            remote=remote,
+            force=force,
+            on_progress=lambda line: typer.echo(line, err=True),
+        )
+    except (ValueError, FileNotFoundError, GitError) as e:
+        _die(e)
+    for r in results:
+        typer.echo(f"pushed {r['repo']} ({r['branch']}) -> {r['remote']}")
+
+
+
 @req_app.command("submit-test")
 def req_submit_test(jira: str) -> None:
     """Mark the requirement as submitted for third-party testing."""
@@ -372,6 +397,30 @@ def review_override(
         typer.echo(f"Updated {ticket_id}: state={updated.get('state')}")
     except (ValueError, GitError, KeyError, FileNotFoundError) as e:
         _die(e)
+
+
+@app.command()
+def push(
+    jira: str = typer.Argument(..., help="Requirement key (e.g. PROJ-101)"),
+    repos: Optional[list[str]] = typer.Argument(None, help="Optional repo aliases to push (default: all)"),
+    remote: str = typer.Option("origin", "--remote", "-r", help="Git remote name (default: origin)"),
+    force: bool = typer.Option(False, "--force", "-f", help="Force push (git push --force)"),
+) -> None:
+    """Push frozen requirement worktree branches (req/<key>) to remote."""
+    root = root_opt()
+    try:
+        results = service.req_push(
+            root,
+            jira,
+            repos=repos,
+            remote=remote,
+            force=force,
+            on_progress=lambda line: typer.echo(line, err=True),
+        )
+    except (ValueError, FileNotFoundError, GitError) as e:
+        _die(e)
+    for r in results:
+        typer.echo(f"pushed {r['repo']} ({r['branch']}) -> {r['remote']}")
 
 
 @app.command()

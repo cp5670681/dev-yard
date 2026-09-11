@@ -249,6 +249,8 @@ def available_actions(detail: ReqDetail) -> list[Action]:
     )
     can_fill = detail.phase == "testing"
     can_fix_test = detail.phase == "testing" and test.get("latest_verdict") == "failed"
+    has_worktrees = bool(detail.worktrees)
+    can_push = (detail.phase in {"frozen", "done", "testing"}) and has_worktrees
     return [
         Action(
             "open",
@@ -316,6 +318,12 @@ def available_actions(detail: ReqDetail) -> list[Action]:
             "按测试报告修",
             can_fix_test,
             "" if can_fix_test else "需要提测阶段且最新报告为 failed",
+        ),
+        Action(
+            "push",
+            "推送到远端",
+            can_push,
+            "" if can_push else "需要先 freeze 创建 worktree",
         ),
     ]
 
