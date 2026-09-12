@@ -10,8 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dev_yard.config import resolve_pi_choice
-from dev_yard.skillbind import skill_dirs
-
+from dev_yard.stages import load_registry, spec_skill_dirs
 
 _SUMMARY_MAX = 4000
 _REVIEW_SUMMARY_MAX = 32000
@@ -52,26 +51,6 @@ def agent_binary() -> str:
     return os.environ.get("YARD_PI") or "pi"
 
 
-# pi leaves grep/find/ls off unless listed.
-# grill/spec/tickets write docs only; git on source clones is the CLI's job.
-# review is read-only — CLI injects the diff, no bash.
-# open needs mcp (Atlassian) and bash to save screenshot files from attachment URLs.
-_REVIEW_TOOLS = "read,grep,find,ls"
-_DOC_TOOLS = "read,grep,find,ls,edit,write"
-_OPEN_TOOLS = "read,bash,grep,find,ls,edit,write,mcp"
-_IMPLEMENT_TOOLS = "read,bash,grep,find,ls,edit,write"
-
-
-def _tools_for(bundle: str) -> str:
-    if bundle in {"review", "contract"}:
-        return _REVIEW_TOOLS
-    if bundle == "open":
-        return _OPEN_TOOLS
-    if bundle in {"grill", "spec", "tickets"}:
-        return _DOC_TOOLS
-    return _IMPLEMENT_TOOLS
-
-
 def pi_argv(
     *,
     root: Path,
@@ -86,14 +65,17 @@ def pi_argv(
     # Explicit --skill still loads this command's bundle (project copies).
     # Do not --append-system-prompt AGENTS.md: pi already loads it from cwd.
     # Do not @-attach REQUIREMENT.md: large dumps break tool-call arguments.
+    spec = load_registry(root).get(bundle)
+    if spec is None:
+        raise ValueError(f"unknown stage {bundle!r}; run: dev-yard stages")
     argv = [cmd, "--approve", "--no-skills"]
     provider, model = resolve_pi_choice(root, bundle, repo=repo)
     if provider:
         argv.extend(["--provider", provider])
     if model:
         argv.extend(["--model", model])
-    argv.extend(["--tools", _tools_for(bundle)])
-    for d in skill_dirs(root, bundle):
+    argv.extend(["--tools", ",".join(spec.tools)])
+    for d in spec_skill_dirs(root, spec):
         argv.extend(["--skill", str(d)])
     if print_mode:
         argv.append("-p")
