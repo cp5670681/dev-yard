@@ -188,3 +188,36 @@ def test_plugin_defaults(tmp_path):
     assert spec.lists_sources is False
     assert spec.order == 50
     assert spec.bundles == ()
+
+
+# ---- skill resolution (plugin dir -> workspace .pi/skills -> packaged) ----
+
+
+def test_resolve_prefers_workspace_over_packaged(tmp_path):
+    root = _workspace(tmp_path)
+    _make_skills(root, ["to-spec"])
+    got = stages.resolve_skill_dir(root, "to-spec")
+    assert got == root / ".pi" / "skills" / "to-spec"
+
+
+def test_resolve_falls_back_to_packaged(tmp_path):
+    root = _workspace(tmp_path)  # workspace has no such skill
+    got = stages.resolve_skill_dir(root, "to-spec")
+    # source-checkout fallback (test env has no installed wheel)
+    assert got is not None and (got / "SKILL.md").is_file()
+
+
+def test_resolve_unknown_returns_none(tmp_path):
+    root = _workspace(tmp_path)
+    assert stages.resolve_skill_dir(root, "no-such-skill") is None
+
+
+def test_spec_skill_dirs_plugin_first(tmp_path):
+    root = _workspace(tmp_path)
+    p = _plugin(root, "deploy", bundles=["to-spec"])
+    _enable(root, p)
+    spec = stages.load_registry(root)["deploy"]
+    _make_skills(root, ["to-spec"])
+    dirs = stages.spec_skill_dirs(root, spec)
+    assert dirs[0] == p
+    assert dirs[1].name == "to-spec"

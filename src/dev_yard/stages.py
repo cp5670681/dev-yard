@@ -220,6 +220,38 @@ def _load_plugin_spec(plugin_dir: Path) -> StageSpec:
     )
 
 
+def _packaged_skills_root() -> Path:
+    # Installed wheel: force-include maps .pi/skills into dev_yard/skills/.
+    pkg = Path(__file__).resolve().parent / "skills"
+    if pkg.is_dir():
+        return pkg
+    # Source checkout: src/dev_yard/stages.py -> repo root/.pi/skills.
+    return Path(__file__).resolve().parents[2] / ".pi" / "skills"
+
+
+def resolve_skill_dir(root: Path, name: str) -> Path | None:
+    """workspace .pi/skills/<name> -> packaged dev_yard/skills/<name> -> None."""
+    ws = root / ".pi" / "skills" / name
+    if (ws / "SKILL.md").is_file():
+        return ws
+    pkg = _packaged_skills_root() / name
+    if (pkg / "SKILL.md").is_file():
+        return pkg
+    return None
+
+
+def spec_skill_dirs(root: Path, spec: StageSpec) -> list[Path]:
+    """Skill dirs to pass to pi --skill: the plugin's own dir first, then bundles."""
+    out: list[Path] = []
+    if spec.skill_dir is not None:
+        out.append(spec.skill_dir)
+    for name in spec.bundles:
+        d = resolve_skill_dir(root, name)
+        if d is not None and d not in out:
+            out.append(d)
+    return out
+
+
 def load_registry(root: Path) -> dict[str, StageSpec]:
     """Built-in stages merged with yard.yaml plugins; later plugins override by name.
 
