@@ -75,3 +75,116 @@ def test_argv_equivalence_builtin(tmp_path, name):
     assert tools == EXPECTED_TOOLS[name]
     skill_args = [argv[i + 1] for i, a in enumerate(argv) if a == "--skill"]
     assert [Path(p).name for p in skill_args] == EXPECTED_SKILLS[name]
+
+
+# ---- plugin loading ----
+
+import yaml as _yaml
+
+
+def _plugin(root: Path, name: str = "deploy", **over) -> Path:
+    d = root / "plugins" / name
+    d.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "name": name,
+        "tools": ["read", "bash"],
+        "requires_phase": "frozen",
+    }
+    meta.update(over)
+    (d / "plugin.yaml").write_text(
+        _yaml.safe_dump(meta, allow_unicode=True), encoding="utf-8"
+    )
+    (d / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
+    return d
+
+
+def _enable(root: Path, *plugins: Path) -> None:
+    root.joinpath("yard.yaml").write_text(
+        _yaml.safe_dump({"plugins": [str(p.relative_to(root)) for p in plugins]}),
+        encoding="utf-8",
+    )
+
+
+def test_registry_loads_plugin(tmp_path):
+    root = _workspace(tmp_path)
+    p = _plugin(root)
+    _enable(root, p)
+    reg = stages.load_registry(root)
+    spec = reg["deploy"]
+    assert spec is not None and spec.builtin is False
+    assert spec.tools == ("read", "bash")
+    assert spec.requires_phase == "frozen"
+    assert spec.skill_dir == p
+    assert spec.guidance == ""
+    assert spec.title == ""
+
+
+def test_plugin_overrides_builtin(tmp_path):
+    root = _workspace(tmp_path)
+    _enable(root, _plugin(root, name="review", tools=["read"]))
+    spec = stages.load_registry(root)["review"]
+    assert spec.builtin is False
+    assert spec.tools == ("read",)
+
+
+def test_duplicate_plugin_names_rejected(tmp_path):
+    root = _workspace(tmp_path)
+    a = _plugin(root, "deploy")
+    b = root / "more" / "deploy"
+    b.mkdir(parents=True)
+    (b / "plugin.yaml").write_text("name: deploy\ntools: [read]\n", encoding="utf-8")
+    (b / "SKILL.md").write_text("# d\n", encoding="utf-8")
+    _enable(root, a, b)
+    with pytest.raises(ValueError, match="deploy"):
+        stages.load_registry(root)
+
+
+@pytest.mark.parametrize(
+    "over,match",
+    [
+        ({"name": "Init"}, "name"),
+        ({"name": "web"}, "reserved"),
+        ({"tools": ["teleport"]}, "tools"),
+        ({"requires_phase": "alpha"}, "phase"),
+    ],
+)
+def test_plugin_validation_errors(tmp_path, over, match):
+    root = _workspace(tmp_path)
+    _enable(root, _plugin(root, **over))
+    with pytest.raises(ValueError, match=match):
+        stages.load_registry(root)
+
+
+def test_plugin_requires_plugin_yaml_and_skill_md(tmp_path):
+    root = _workspace(tmp_path)
+    d = root / "plugins" / "empty"
+    d.mkdir(parents=True)
+    _enable(root, d)
+    with pytest.raises(ValueError, match="plugin.yaml"):
+        stages.load_registry(root)
+
+
+def test_plugin_requires_phase_from_other_plugin_sets_phase(tmp_path):
+    root = _workspace(tmp_path)
+    _plugin(root, "deploy", requires_phase=None, sets_phase="deployed", tools=["read"])
+    _plugin(root, "verify", requires_phase="deployed", tools=["read"])
+    _enable(root, root / "plugins" / "deploy", root / "plugins" / "verify")
+    reg = stages.load_registry(root)
+    assert reg["verify"].requires_phase == "deployed"
+
+
+def test_missing_yard_yaml_means_builtin_only(tmp_path):
+    root = _workspace(tmp_path)
+    assert set(stages.load_registry(root)) == set(stages.BUILTIN_STAGES)
+
+
+def test_plugin_defaults(tmp_path):
+    root = _workspace(tmp_path)
+    _plugin(root, "scan", requires_phase=None)
+    _enable(root, root / "plugins" / "scan")
+    spec = stages.load_registry(root)["scan"]
+    assert spec.protects == ()
+    assert spec.sets_phase is None
+    assert spec.lists_sources is False
+    assert spec.order == 50
+    assert spec.bundles == ()

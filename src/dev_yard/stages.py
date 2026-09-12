@@ -153,9 +153,97 @@ BUILTIN_STAGES: dict[str, StageSpec] = {
 }
 
 
-def load_registry(root: Path) -> dict[str, StageSpec]:
-    """Built-in stages merged with yard.yaml plugins (plugins override by name).
+def _yard_yaml_plugins(root: Path) -> list[Path]:
+    yml = root / "yard.yaml"
+    if not yml.exists():
+        return []
+    data = yaml.safe_load(yml.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise ValueError("yard.yaml must be a mapping")
+    raw = data.get("plugins") or []
+    if not isinstance(raw, list):
+        raise ValueError("yard.yaml plugins must be a list")
+    out: list[Path] = []
+    for item in raw:
+        text = str(item).strip()
+        if not text:
+            raise ValueError("yard.yaml plugins entries must be non-empty strings")
+        out.append((root / text).resolve())
+    return out
 
-    Plugin loading joins in a later task; for now this returns builtin copies.
+
+def _load_plugin_spec(plugin_dir: Path) -> StageSpec:
+    if not plugin_dir.is_dir():
+        raise ValueError(f"plugin {plugin_dir}: directory not found")
+    yml = plugin_dir / "plugin.yaml"
+    if not yml.is_file():
+        raise ValueError(f"plugin {plugin_dir}: plugin.yaml not found")
+    raw = yaml.safe_load(yml.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"plugin {plugin_dir}: plugin.yaml must be a mapping")
+    name = str(raw.get("name") or "").strip()
+    if not _NAME_RE.match(name):
+        raise ValueError(
+            f"plugin {plugin_dir}: invalid name {name!r} (^[a-z][a-z0-9-]*$, <=32)"
+        )
+    if name in RESERVED_STAGE_NAMES:
+        raise ValueError(f"plugin {plugin_dir}: name {name!r} is a reserved CLI word")
+    tools_raw = raw.get("tools")
+    if not isinstance(tools_raw, list) or not tools_raw:
+        raise ValueError(f"plugin {plugin_dir}: tools must be a non-empty list")
+    tools = tuple(str(t) for t in tools_raw)
+    bad = [t for t in tools if t not in ALLOWED_TOOLS]
+    if bad:
+        raise ValueError(
+            f"plugin {plugin_dir}: unknown tools {bad}; allowed: {list(ALLOWED_TOOLS)}"
+        )
+    skill = str(raw.get("skill") or "").strip()
+    skill_dir = plugin_dir / skill if skill else plugin_dir
+    if not (skill_dir / "SKILL.md").is_file():
+        raise ValueError(f"plugin {plugin_dir}: SKILL.md not found in {skill_dir}")
+    requires_phase = raw.get("requires_phase")
+    sets_phase = raw.get("sets_phase")
+    return StageSpec(
+        name=name,
+        skill=skill or name,
+        bundles=tuple(str(b) for b in (raw.get("bundles") or ())),
+        tools=tools,
+        protects=tuple(str(p) for p in (raw.get("protects") or ())),
+        requires_phase=(str(requires_phase) if requires_phase else None),
+        sets_phase=(str(sets_phase) if sets_phase else None),
+        lists_sources=bool(raw.get("lists_sources", False)),
+        order=int(raw.get("order", 50)),
+        builtin=False,
+        guidance=str(raw.get("guidance") or ""),
+        skill_dir=skill_dir,
+        title=str(raw.get("title") or ""),
+    )
+
+
+def load_registry(root: Path) -> dict[str, StageSpec]:
+    """Built-in stages merged with yard.yaml plugins; later plugins override by name.
+
+    A plugin sharing a builtin name replaces it (intentional override feature);
+    two plugins declaring the same name is a load error.
     """
-    return dict(BUILTIN_STAGES)
+    plugin_dirs = _yard_yaml_plugins(root)
+    specs = [_load_plugin_spec(d) for d in plugin_dirs]
+    seen: set[str] = set()
+    for spec in specs:
+        if spec.name in seen:
+            raise ValueError(
+                f"plugin name {spec.name!r} declared by two enabled plugins"
+            )
+        seen.add(spec.name)
+    declared = {s.sets_phase for s in specs if s.sets_phase}
+    for spec in specs:
+        req = spec.requires_phase
+        if req and req not in BUILTIN_PHASES and req not in declared:
+            raise ValueError(
+                f"plugin {plugin_dirs[specs.index(spec)]}: unknown requires_phase {req!r}; "
+                f"known: {list(BUILTIN_PHASES)} or a sets_phase value from enabled plugins"
+            )
+    registry = dict(BUILTIN_STAGES)
+    for spec in specs:
+        registry[spec.name] = spec
+    return registry
