@@ -307,7 +307,7 @@ def test_default_execute_grill_uses_print_mode(tmp_path: Path, monkeypatch):
         return runner.start("p", root, [])
 
     monkeypatch.setattr("dev_yard.web.jobs.JobLogRunner", FakeLog)
-    monkeypatch.setattr("dev_yard.web.jobs.service.launch_skill", fake_launch)
+    monkeypatch.setattr("dev_yard.web.jobs.service.run_stage", fake_launch)
     job = JobRunner(yard, execute=default_execute, sync=True).submit("grill", "AB-21")
     assert job.state == "ok"
     assert seen["name"] == "grill"
@@ -405,7 +405,7 @@ def test_web_grill_waits_then_records_answers(tmp_path: Path, monkeypatch):
         return runner.start("p", root, [])
 
     monkeypatch.setattr("dev_yard.web.jobs.JobLogRunner", FakeLog)
-    monkeypatch.setattr("dev_yard.web.jobs.service.launch_skill", fake_launch)
+    monkeypatch.setattr("dev_yard.web.jobs.service.run_stage", fake_launch)
     runner = JobRunner(yard, execute=default_execute, sync=False)
     job = runner.submit("grill", "AB-50")
     deadline = time.time() + 5
@@ -479,7 +479,7 @@ def test_web_grill_resumes_pending_round_before_pi(tmp_path: Path, monkeypatch):
         return runner.start("p", root, [])
 
     monkeypatch.setattr("dev_yard.web.jobs.JobLogRunner", FakeLog)
-    monkeypatch.setattr("dev_yard.web.jobs.service.launch_skill", fake_launch)
+    monkeypatch.setattr("dev_yard.web.jobs.service.run_stage", fake_launch)
     runner = JobRunner(yard, execute=default_execute, sync=False)
     job = runner.submit("grill", "AB-51")
     deadline = time.time() + 5
@@ -508,7 +508,7 @@ def test_resume_pending_grills_restores_waiting_jobs(tmp_path: Path, monkeypatch
     def fake_launch(*args, **kwargs):
         raise AssertionError("pi should not start until answers are submitted")
 
-    monkeypatch.setattr("dev_yard.web.jobs.service.launch_skill", fake_launch)
+    monkeypatch.setattr("dev_yard.web.jobs.service.run_stage", fake_launch)
     runner = JobRunner(yard, execute=default_execute, sync=False)
     restored = runner.resume_pending_grills()
     assert len(restored) == 1
@@ -711,7 +711,37 @@ def test_resume_pending_grills_skips_markdown_frontier(tmp_path: Path, monkeypat
     def fake_launch(*args, **kwargs):
         raise AssertionError("CLI markdown frontier must not auto-start a web job")
 
-    monkeypatch.setattr("dev_yard.web.jobs.service.launch_skill", fake_launch)
+    monkeypatch.setattr("dev_yard.web.jobs.service.run_stage", fake_launch)
     runner = JobRunner(yard, execute=default_execute, sync=False)
     assert runner.resume_pending_grills() == []
     assert runner.running_brief() == []
+
+
+def test_default_execute_plugin_stage(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    pdir = yard / "plugins" / "deploy"
+    pdir.mkdir(parents=True)
+    (pdir / "plugin.yaml").write_text("name: deploy\ntools: [read]\n", encoding="utf-8")
+    (pdir / "SKILL.md").write_text("# deploy\n", encoding="utf-8")
+    (yard / "yard.yaml").write_text("plugins: [plugins/deploy]\n", encoding="utf-8")
+    d, _ = req_open(yard, "AB-30", source="none")
+
+    class FakeLog:
+        def __init__(self, job, root, bundle):
+            self.job = job
+
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            self.job.append("deploy-stream")
+            return RunResult(ok=True, summary="deploy-stream")
+
+    monkeypatch.setattr("dev_yard.web.jobs.JobLogRunner", FakeLog)
+    job = JobRunner(yard, execute=default_execute, sync=True).submit("deploy", "AB-30")
+    assert job.state == "ok"
+    assert "deploy finished" in job.log
+    import yaml
+
+    data = yaml.safe_load((d / "STATUS.yaml").read_text(encoding="utf-8"))
+    assert data["stage_runs"]["deploy"]["ok"] is True

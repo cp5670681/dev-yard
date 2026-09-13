@@ -663,7 +663,7 @@ def test_create_app_resumes_pending_grill(tmp_path: Path, monkeypatch):
     def fake_launch(*args, **kwargs):
         raise AssertionError("pi should not start on resume")
 
-    monkeypatch.setattr("dev_yard.web.jobs.service.launch_skill", fake_launch)
+    monkeypatch.setattr("dev_yard.web.jobs.service.run_stage", fake_launch)
     client = TestClient(create_app(yard))
     deadline = time.time() + 5
     items = []

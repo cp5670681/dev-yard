@@ -363,6 +363,16 @@ def default_execute(root: Path, job: Job) -> None:
         data = submit_test(root, job.jira)
         job.append(f"{job.jira} phase={data.get('phase')}")
         return
+    from dev_yard.stages import load_registry
+
+    spec = load_registry(root).get(job.action)
+    if spec is not None and not spec.builtin:
+        runner = JobLogRunner(job, root, spec.name)
+        result = service.run_stage(root, spec, job.jira, print_mode=True, runner=runner)
+        if not result.ok:
+            raise RuntimeError(f"{spec.name} failed")
+        job.append(f"{spec.name} finished")
+        return
     bundle = {
         "grill": "grill",
         "spec": "spec",
@@ -380,7 +390,7 @@ def default_execute(root: Path, job: Job) -> None:
         return
     runner = JobLogRunner(job, root, bundle)
     if job.action in {"spec", "tickets"}:
-        result = service.launch_skill(
+        result = service.run_stage(
             root, job.action, job.jira, print_mode=True, runner=runner
         )
         if not result.ok:
@@ -418,7 +428,7 @@ def _run_web_grill(root: Path, job: Job) -> None:
         rnd = grill_round.load_round(req)
         if rnd is None or not rnd.awaiting():
             runner = JobLogRunner(job, root, "grill")
-            result = service.launch_skill(
+            result = service.run_stage(
                 root,
                 "grill",
                 job.jira,
