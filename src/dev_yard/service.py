@@ -236,7 +236,7 @@ def req_open(
         saved_assets = _stash_tree(assets)
         if assets.exists():
             shutil.rmtree(assets)
-        snap = _snapshot(d, STAGE_PROTECT["open"])
+        snap = _snapshot(d, load_registry(root)["open"].protects)
         r = runner or get_runner(root, "open", print_mode=True)
         prompt = session_prompt(root, "open", req_key, target=actual_target)
         result = r.start(prompt, root, [d])
@@ -503,14 +503,6 @@ def ensure_on_default_base(root: Path) -> dict[str, Path]:
         gitops.checkout_default_base(source, repo.default_base)
         out[alias] = source
     return out
-
-
-STAGE_PROTECT = {
-    "open": ("GRILL.md", "SPEC.md", "TICKETS.md", "STATUS.yaml"),
-    "grill": ("SPEC.md", "TICKETS.md"),
-    "spec": ("TICKETS.md",),
-    "tickets": ("REQUIREMENT.md", "GRILL.md", "SPEC.md", "STATUS.yaml"),
-}
 
 
 def _snapshot(req: Path, names: tuple[str, ...]) -> dict[str, bytes | None]:

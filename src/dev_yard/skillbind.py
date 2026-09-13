@@ -5,62 +5,6 @@ from pathlib import Path
 from dev_yard import paths
 from dev_yard.stages import StageSpec
 
-SKILL_NAMES = {
-    "open": "fetch-requirement",
-    "grill": "grill-with-docs",
-    "spec": "to-spec",
-    "tickets": "to-tickets",
-    "implement": "implement",
-    "review": "code-review",
-    "contract": "code-review",
-    "tdd": "tdd",
-}
-
-# Extra primitives pi must load with the entry skill.
-SKILL_BUNDLES: dict[str, list[str]] = {
-    "open": ["fetch-requirement"],
-    "grill": ["grill-with-docs", "grilling", "domain-modeling"],
-    "spec": ["to-spec"],
-    "tickets": ["to-tickets"],
-    "implement": ["implement", "tdd", "codebase-design"],
-    "review": ["code-review"],
-    "contract": ["code-review"],
-}
-
-
-def skills_root(root: Path) -> Path:
-    return root / ".pi" / "skills"
-
-
-def load_skill(root: Path, name: str) -> str:
-    key = SKILL_NAMES.get(name, name)
-    path = skills_root(root) / key / "SKILL.md"
-    if not path.exists():
-        return f"(bound skill {key} not found at {path})"
-    return path.read_text(encoding="utf-8")
-
-
-STAGE_WRITE = {
-    "open": "Write REQUIREMENT.md and optional assets/ for this requirement only.",
-    "grill": (
-        "Write only reqs/<REQ>/GRILL.md. If a term or ADR is settled, write "
-        "reqs/CONTEXT.md and reqs/docs/adr/ (shared across requirements). "
-        "Do not write workspace-root CONTEXT.md or docs/adr. "
-        "Do not copy them into source clones or freeze worktrees. "
-        "Do not write SPEC.md or TICKETS.md. "
-        "Focus on P0/P1 decisions, apply sensible defaults for minor details, "
-        "group questions by theme for large tasks, and cap grilling strictly within 1-3 rounds."
-    ),
-    "spec": "Write only SPEC.md from GRILL.md. Do not interview. Do not write TICKETS.md.",
-    "tickets": "Write only TICKETS.md from SPEC.md.",
-    "implement": (
-        "Write code in the current worktree only. "
-        "Do not add CONTEXT.md or docs/adr to the business repo."
-    ),
-    "review": "Do not implement; report Standards and Spec axes.",
-    "contract": "Do not implement; report Spec contract gaps across worktrees.",
-}
-
 
 def session_prompt_for(
     spec: StageSpec, root: Path, jira: str, extra: str = "", target: str = ""
@@ -102,13 +46,3 @@ def session_prompt(
     if spec is None:
         raise ValueError(f"unknown stage {name!r}; run: dev-yard stages")
     return session_prompt_for(spec, root, jira, extra=extra, target=target)
-
-
-def skill_dirs(root: Path, name: str) -> list[Path]:
-    names = SKILL_BUNDLES.get(name, [SKILL_NAMES.get(name, name)])
-    out: list[Path] = []
-    for n in names:
-        p = skills_root(root) / n
-        if p.exists():
-            out.append(p)
-    return out

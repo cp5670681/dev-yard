@@ -2,19 +2,7 @@ import subprocess
 from pathlib import Path
 
 from dev_yard.runners import pi_argv, run_pi_print
-from dev_yard.skillbind import load_skill, session_prompt
-
-
-def test_load_missing_skill(tmp_path: Path):
-    text = load_skill(tmp_path, "grill")
-    assert "not found" in text
-
-
-def test_load_skill_utf8(tmp_path: Path):
-    skill = tmp_path / ".pi" / "skills" / "to-spec" / "SKILL.md"
-    skill.parent.mkdir(parents=True)
-    skill.write_bytes("阶段：规格\n".encode("utf-8"))
-    assert "规格" in load_skill(tmp_path, "spec")
+from dev_yard.skillbind import session_prompt
 
 
 def test_session_prompt_includes_jira(tmp_path: Path):
