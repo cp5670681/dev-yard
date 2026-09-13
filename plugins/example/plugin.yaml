@@ -1,0 +1,12 @@
+name: example
+title: 产物自检
+description: 需求文档就绪度检查示例插件
+tools: [read, grep, find, ls]
+protects: [REQUIREMENT.md, GRILL.md, SPEC.md, TICKETS.md]
+requires_phase: null
+sets_phase: null
+order: 45
+guidance: >
+  只读检查并输出结论：REQUIREMENT.md 是否有正文、GRILL.md 是否有决策记录、
+  SPEC.md 是否有 Goals/Non-goals/Per-repo/Contracts 四节、TICKETS.md 票是否都带 repo。
+  不要修改任何文件。
