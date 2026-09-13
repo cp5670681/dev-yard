@@ -20,6 +20,43 @@ req open ──► grill ──► spec ──► tickets ──► req freeze �
 
 ---
 
+## 插件：自定义阶段
+
+内置阶段之外，可以用**声明式插件**新增流程阶段（如部署、e2e、安全扫描），零 Python 代码——一个目录 = `plugin.yaml` + `SKILL.md`：
+
+```
+my-yard/
+├── yard.yaml            # 启用插件（显式列表，按序覆盖）
+│                        #   plugins: [plugins/deploy]
+└── plugins/deploy/
+    ├── plugin.yaml
+    └── SKILL.md
+```
+
+`plugin.yaml` 字段：
+
+```yaml
+name: deploy              # ^[a-z][a-z0-9-]*$，不得用 CLI 保留字
+title: 部署到预发          # 看板按钮文案
+tools: [read, bash]       # pi 工具白名单（必填）
+requires_phase: frozen    # 前置 phase 相等检查（可选）
+sets_phase: null          # 成功后写入的 phase（可选）
+protects: [SPEC.md]       # 跑前快照、跑后回滚的文件（可选）
+order: 55                 # 流水线展示顺序（可选）
+guidance: 只做部署；不改 reqs/ 文档。   # 注入 prompt 的写约束（可选）
+```
+
+使用：
+
+```bash
+dev-yard stages           # 列出全部阶段（内置 + 插件）
+dev-yard run deploy PROJ-101
+```
+
+规则：插件名与内置同名即**覆盖**内置阶段（可用来换掉 `review` 的 skill）；两个插件同名会报错。插件阶段跑在 `pi --approve --no-skills` 下，能力上限 = `tools` 白名单——**装插件即信任其作者**。执行结果记录在 `STATUS.yaml` 的 `stage_runs`，web 看板可见。仓库内 [`plugins/example/`](plugins/example/) 是一个可直接复制改造的示例。
+
+---
+
 ## 快速上手
 
 ### 1. 安装、升级与初始化
