@@ -12,7 +12,8 @@ from dev_yard.config import Repo, git_project_name, load_repos, require_pair, sa
 from dev_yard.atlassian import collect_requirement
 from dev_yard.env import load_env
 from dev_yard.runners import RunResult, Runner, agent_binary, get_runner, pi_argv
-from dev_yard.skillbind import session_prompt
+from dev_yard.skillbind import session_prompt, session_prompt_for
+from dev_yard.stages import StageSpec, load_registry
 from dev_yard.bug_tickets import (
     fix_ticket_ids,
     parse_findings_from_summary,
@@ -558,19 +559,29 @@ def launch_skill(
     runner: Runner | None = None,
     prompt_extra: str = "",
 ) -> RunResult:
+    """Backward-compatible entry: any registry stage via run_stage."""
+    return run_stage(
+        root, name, jira, dry_run=dry_run, print_mode=print_mode,
+        runner=runner, prompt_extra=prompt_extra,
+    )
+
+
+def run_stage(
+    root: Path,
+    stage: "str | StageSpec",
+    jira: str,
+    dry_run: bool = False,
+    print_mode: bool = False,
+    runner: Runner | None = None,
+    prompt_extra: str = "",
+) -> RunResult:
+    """Unified stage execution: phase gate, snapshot/restore, stage_runs."""
+    spec = stage if isinstance(stage, StageSpec) else load_registry(root)[stage]
     req = paths.req_dir(root, jira)
     if not req.exists():
         raise FileNotFoundError(f"missing {req}; run: dev-yard req open {jira}")
-    extra = [
-        req / "REQUIREMENT.md",
-        req / "GRILL.md",
-        req / "SPEC.md",
-        req / "TICKETS.md",
-        paths.context_md(root),
-        paths.adr_dir(root),
-    ]
     bases = ""
-    if name in {"grill", "spec", "tickets"} and not dry_run:
+    if spec.lists_sources and not dry_run:
         mapping = ensure_on_default_base(root)
         repos = load_repos(root)
         lines = "\n".join(
@@ -586,14 +597,45 @@ def launch_skill(
         )
     if prompt_extra:
         bases = (bases + "\n" + prompt_extra).strip() if bases else prompt_extra
-    prompt = session_prompt(root, name, jira, extra=bases)
-    r = runner or get_runner(root, name, dry_run=dry_run, print_mode=print_mode)
-    snap = _snapshot(req, STAGE_PROTECT[name]) if name in STAGE_PROTECT and not dry_run else {}
+    with st.jira_lock(jira):
+        data = st.load(root, jira)
+        phase = data.get("phase") or "open"
+        if spec.requires_phase and phase != spec.requires_phase:
+            raise ValueError(
+                f"{spec.name} requires phase={spec.requires_phase}, current phase={phase}"
+            )
+    extra = [
+        req / "REQUIREMENT.md",
+        req / "GRILL.md",
+        req / "SPEC.md",
+        req / "TICKETS.md",
+        paths.context_md(root),
+        paths.adr_dir(root),
+    ]
+    prompt = session_prompt_for(spec, root, jira, extra=bases)
+    r = runner or get_runner(
+        root, spec.name, dry_run=dry_run, print_mode=print_mode, spec=spec
+    )
+    snap = _snapshot(req, spec.protects) if spec.protects and not dry_run else {}
     result = r.start(prompt, root, extra)
     restored = _restore(req, snap) if snap else []
     if restored:
         note = "restored (not this stage's job): " + ", ".join(restored)
         result = RunResult(ok=result.ok, summary=(result.summary + "\n" + note).strip(), exit_code=result.exit_code)
+    if not dry_run:
+        from datetime import datetime, timezone
+
+        with st.jira_lock(jira):
+            data = st.load(root, jira)
+            runs = data.setdefault("stage_runs", {})
+            runs[spec.name] = {
+                "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "ok": bool(result.ok),
+                "summary": (result.summary or "")[:4000],
+            }
+            if result.ok and spec.sets_phase:
+                data["phase"] = spec.sets_phase
+            st.save(root, jira, data)
     return result
 
 

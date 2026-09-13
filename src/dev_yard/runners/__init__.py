@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dev_yard.config import resolve_pi_choice
-from dev_yard.stages import load_registry, spec_skill_dirs
+from dev_yard.stages import StageSpec, load_registry, spec_skill_dirs
 
 _SUMMARY_MAX = 4000
 _REVIEW_SUMMARY_MAX = 32000
@@ -59,13 +59,15 @@ def pi_argv(
     print_mode: bool = False,
     binary: str | None = None,
     repo: str | None = None,
+    spec: "StageSpec | None" = None,
 ) -> list[str]:
     cmd = binary or agent_binary()
     # --no-skills: skip ~/.pi/agent/skills and extra project skills.
     # Explicit --skill still loads this command's bundle (project copies).
     # Do not --append-system-prompt AGENTS.md: pi already loads it from cwd.
     # Do not @-attach REQUIREMENT.md: large dumps break tool-call arguments.
-    spec = load_registry(root).get(bundle)
+    if spec is None:
+        spec = load_registry(root).get(bundle)
     if spec is None:
         raise ValueError(f"unknown stage {bundle!r}; run: dev-yard stages")
     argv = [cmd, "--approve", "--no-skills"]
@@ -206,9 +208,16 @@ def get_runner(
     bundle: str,
     dry_run: bool = False,
     print_mode: bool = False,
+    spec: "StageSpec | None" = None,
 ) -> Runner:
     if dry_run:
         return DryRunRunner(
-            argv=pi_argv(root=root, bundle=bundle, prompt="(dry-run)", print_mode=print_mode)
+            argv=pi_argv(
+                root=root,
+                bundle=bundle,
+                prompt="(dry-run)",
+                print_mode=print_mode,
+                spec=spec,
+            )
         )
     return PiRunner(root, bundle, print_mode=print_mode)
