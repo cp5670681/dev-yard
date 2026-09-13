@@ -288,10 +288,16 @@ def ticket_done(jira: str, ticket_id: str) -> None:
     typer.echo(f"{ticket_id} merged and child worktree removed")
 
 
-def _launch(name: str, jira: str, dry_run: bool, print_mode: bool) -> None:
+def _run_registered(name: str, jira: str, dry_run: bool, print_mode: bool) -> None:
+    from dev_yard.stages import load_registry
+
     root = root_opt()
+    spec = load_registry(root).get(name)
+    if spec is None:
+        typer.echo(f"unknown stage {name}; run: dev-yard stages", err=True)
+        raise typer.Exit(1)
     try:
-        result = service.launch_skill(root, name, jira, dry_run=dry_run, print_mode=print_mode)
+        result = service.run_stage(root, spec, jira, dry_run=dry_run, print_mode=print_mode)
     except (FileNotFoundError, GitError, ValueError) as e:
         _die(e)
     if dry_run or print_mode or "restored" in (result.summary or ""):
@@ -307,7 +313,7 @@ def grill(
     print_mode: bool = typer.Option(False, "--print", help="pi -p one-shot instead of TUI"),
 ) -> None:
     """Start pi with grill-with-docs for this requirement."""
-    _launch("grill", jira, dry_run, print_mode)
+    _run_registered("grill", jira, dry_run, print_mode)
 
 
 @app.command()
@@ -317,7 +323,7 @@ def spec(
     print_mode: bool = typer.Option(False, "--print", help="pi -p one-shot instead of TUI"),
 ) -> None:
     """Start pi with to-spec for this requirement."""
-    _launch("spec", jira, dry_run, print_mode)
+    _run_registered("spec", jira, dry_run, print_mode)
 
 
 @app.command()
@@ -327,7 +333,36 @@ def tickets(
     print_mode: bool = typer.Option(False, "--print", help="pi -p one-shot instead of TUI"),
 ) -> None:
     """Start pi with to-tickets for this requirement."""
-    _launch("tickets", jira, dry_run, print_mode)
+    _run_registered("tickets", jira, dry_run, print_mode)
+
+
+@app.command()
+def run(
+    stage: str = typer.Argument(..., help="Stage name (builtin or plugin); see `dev-yard stages`"),
+    jira: str = typer.Argument(..., help="Requirement key (e.g. PROJ-101)"),
+    dry_run: bool = False,
+    print_mode: bool = typer.Option(False, "--print", help="pi -p one-shot instead of TUI"),
+) -> None:
+    """Run any registered stage (builtin or plugin) for this requirement."""
+    _run_registered(stage, jira, dry_run, print_mode)
+
+
+@app.command(name="stages")
+def stages_cmd() -> None:
+    """List all registered stages (builtin + plugins)."""
+    from dev_yard.stages import load_registry, plugin_root
+
+    root = root_opt()
+    for spec in sorted(load_registry(root).values(), key=lambda s: s.order):
+        if spec.builtin or spec.skill_dir is None:
+            tag = "builtin"
+        else:
+            pdir = plugin_root(spec) or spec.skill_dir
+            try:
+                tag = f"plugin {pdir.relative_to(root)}"
+            except ValueError:
+                tag = f"plugin {pdir}"
+        typer.echo(f"{spec.name}\t[{tag}]\torder={spec.order}")
 
 
 @app.command()

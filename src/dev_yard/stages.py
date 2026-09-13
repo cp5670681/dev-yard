@@ -229,6 +229,15 @@ def _packaged_skills_root() -> Path:
     return Path(__file__).resolve().parents[2] / ".pi" / "skills"
 
 
+def plugin_root(spec: StageSpec) -> Path | None:
+    """The plugin directory (holds plugin.yaml); None for builtin stages."""
+    if spec.skill_dir is None:
+        return None
+    if (spec.skill_dir / "plugin.yaml").is_file():
+        return spec.skill_dir
+    return spec.skill_dir.parent
+
+
 def resolve_skill_dir(root: Path, name: str) -> Path | None:
     """workspace .pi/skills/<name> -> packaged dev_yard/skills/<name> -> None."""
     ws = root / ".pi" / "skills" / name
