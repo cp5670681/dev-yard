@@ -1188,6 +1188,8 @@ def status_text(root: Path, jira: str | None) -> str:
             lines.append(
                 f"  test={test.get('status')} verdict={test.get('latest_verdict') or '-'}"
             )
+        for sname, run in sorted((data.get("stage_runs") or {}).items()):
+            lines.append(f"  {sname} ok={run.get('ok')} at={run.get('at')}")
     return "\n".join(lines) if lines else "(no requirements)"
 
 

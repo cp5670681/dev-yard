@@ -108,6 +108,7 @@ class ReqDetail:
     contract_summary: str | None
     test: dict | None = None
     repos: list[str] = field(default_factory=list)
+    stage_runs: dict = field(default_factory=dict)
 
 
 def parse_requirement_title(text: str, jira: str) -> str | None:
@@ -233,12 +234,13 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
         contract_summary=data.get("contract_summary"),
         test=test,
         repos=list(data.get("repos") or []),
+        stage_runs=dict(data.get("stage_runs") or {}),
     )
-    detail.actions = available_actions(detail)
+    detail.actions = available_actions(detail, root)
     return detail
 
 
-def available_actions(detail: ReqDetail) -> list[Action]:
+def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
     has_tickets = bool(detail.tickets)
     frozen = detail.phase in {"frozen", "done", "testing"}
     any_implement = any(t.can_implement for t in detail.tickets)
@@ -266,7 +268,7 @@ def available_actions(detail: ReqDetail) -> list[Action]:
     )
     has_worktrees = bool(detail.worktrees)
     can_push = (detail.phase in {"frozen", "done", "testing"}) and has_worktrees
-    return [
+    builtin = [
         Action(
             "open",
             "重新抽取",
@@ -347,6 +349,19 @@ def available_actions(detail: ReqDetail) -> list[Action]:
             "" if can_push else "需要先 freeze 创建 worktree",
         ),
     ]
+    from dev_yard.stages import load_registry
+
+    for spec in sorted(load_registry(root).values(), key=lambda s: s.order):
+        if spec.builtin:
+            continue
+        enabled = (detail.phase == spec.requires_phase) if spec.requires_phase else True
+        reason = (
+            ""
+            if enabled
+            else f"需要 phase={spec.requires_phase}（当前 {detail.phase}）"
+        )
+        builtin.append(Action(spec.name, spec.title or spec.name, enabled, reason))
+    return builtin
 
 
 def save_doc(root: Path, jira: str, slug: str, text: str) -> Path:

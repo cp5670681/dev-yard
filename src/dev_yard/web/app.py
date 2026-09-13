@@ -191,6 +191,26 @@ def render_markdown(text: str, jira: str) -> str:
     return _ASSET_SRC.sub(repl, html)
 
 
+def _action_labels(root: Path) -> dict[str, str]:
+    """Builtin labels merged with plugin stage titles."""
+    labels = dict(ACTION_LABELS)
+    from dev_yard.stages import load_registry
+
+    for spec in load_registry(root).values():
+        if not spec.builtin and spec.title:
+            labels[spec.name] = spec.title
+    return labels
+
+
+def _known_action(root: Path, action: str) -> bool:
+    if action in ACTIONS:
+        return True
+    from dev_yard.stages import load_registry
+
+    spec = load_registry(root).get(action)
+    return spec is not None and not spec.builtin
+
+
 def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool = False) -> FastAPI:
     root = root.resolve()
     jobs = job_runner or JobRunner(root, sync=sync_jobs)
@@ -198,7 +218,7 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
         jobs.resume_pending_grills()
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     templates.env.globals["step_labels"] = STEP_LABELS
-    templates.env.globals["action_labels"] = ACTION_LABELS
+    templates.env.globals["action_labels"] = _action_labels(root)
     templates.env.globals["doc_files"] = DOC_FILES
     templates.env.globals["pipeline"] = PIPELINE
 
@@ -474,7 +494,7 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
         source: str = Form("pi"),
         remote: str = Form("origin"),
     ):
-        if action not in ACTIONS:
+        if not _known_action(root, action):
             raise HTTPException(400, f"unknown action {action}")
         ids = [ticket_id] if ticket_id.strip() else None
         extra = {"force": bool(force), "source": source, "remote": remote}
@@ -657,7 +677,7 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
 
     @app.post("/api/requirements/{jira}/actions/{action}")
     def api_run_action(jira: str, action: str, payload: ActionIn | None = None):
-        if action not in ACTIONS:
+        if not _known_action(root, action):
             raise HTTPException(400, f"unknown action {action}")
         body = payload or ActionIn()
         ids = [body.ticket_id] if body.ticket_id.strip() else None

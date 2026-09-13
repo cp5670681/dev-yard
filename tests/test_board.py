@@ -82,7 +82,7 @@ def test_tickets_enable_freeze(tmp_path: Path, monkeypatch):
     assert detail.tickets[0].title == "backend api"
     assert detail.tickets[1].depends_on == ["T1"]
     assert detail.next_label == "freeze"
-    ids = {a.id: a for a in available_actions(detail)}
+    ids = {a.id: a for a in available_actions(detail, yard)}
     assert ids["freeze"].enabled
     assert not ids["implement"].enabled
 
@@ -263,3 +263,84 @@ def test_list_and_detail_expose_requirement_title(tmp_path: Path, monkeypatch):
     detail = requirement_detail(yard, "AB-9")
     assert detail is not None
     assert detail.title == "给所属人指派促单任务"
+
+
+# ---- plugin stages on the board ----
+
+
+def _plugin(yard: Path, name: str = "deploy", requires_phase=None) -> None:
+    pdir = yard / "plugins" / name
+    pdir.mkdir(parents=True, exist_ok=True)
+    meta = {"name": name, "title": "部署", "tools": ["read"]}
+    if requires_phase:
+        meta["requires_phase"] = requires_phase
+    import yaml
+
+    (pdir / "plugin.yaml").write_text(
+        yaml.safe_dump(meta, allow_unicode=True), encoding="utf-8"
+    )
+    (pdir / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
+    (yard / "yard.yaml").write_text(
+        f"plugins: [plugins/{name}]\n", encoding="utf-8"
+    )
+
+
+def test_plugin_action_appended(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _yard(tmp_path)
+    _plugin(yard, "deploy", requires_phase="frozen")
+    req_open(yard, "AB-40", source="none")
+    detail = requirement_detail(yard, "AB-40")
+    assert detail.phase == "open"
+    actions = available_actions(detail, yard)
+    deploy = next(a for a in actions if a.id == "deploy")
+    assert deploy.label == "部署"
+    assert not deploy.enabled
+    assert "frozen" in deploy.reason
+
+
+def test_plugin_action_enabled_when_phase_matches(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _yard(tmp_path)
+    _plugin(yard, "deploy", requires_phase="frozen")
+    d, _ = req_open(yard, "AB-41", source="none")
+    import yaml
+
+    (d / "STATUS.yaml").write_text(
+        "phase: frozen\ntickets: {}\n", encoding="utf-8"
+    )
+    detail = requirement_detail(yard, "AB-41")
+    actions = available_actions(detail, yard)
+    deploy = next(a for a in actions if a.id == "deploy")
+    assert deploy.enabled
+    assert deploy.reason == ""
+
+
+def test_plugin_without_phase_gate_always_enabled(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _yard(tmp_path)
+    _plugin(yard, "scan")
+    req_open(yard, "AB-42", source="none")
+    detail = requirement_detail(yard, "AB-42")
+    actions = available_actions(detail, yard)
+    scan = next(a for a in actions if a.id == "scan")
+    assert scan.enabled
+
+
+def test_stage_runs_surfaced(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _yard(tmp_path)
+    d, _ = req_open(yard, "AB-43", source="none")
+    import yaml
+
+    data = yaml.safe_load((d / "STATUS.yaml").read_text(encoding="utf-8"))
+    data["stage_runs"] = {"deploy": {"at": "2026-09-13T00:00:00Z", "ok": True, "summary": "s"}}
+    (d / "STATUS.yaml").write_text(
+        yaml.safe_dump(data, allow_unicode=True), encoding="utf-8"
+    )
+    detail = requirement_detail(yard, "AB-43")
+    assert detail.stage_runs["deploy"]["ok"] is True
