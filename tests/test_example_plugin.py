@@ -18,4 +18,6 @@ def test_example_plugin_loads(tmp_path):
     assert not spec.builtin
     assert spec.skill_dir == dst
     assert spec.requires_phase is None
+    assert spec.sets_phase is None
+    assert spec.description
     assert "REQUIREMENT.md" in spec.protects

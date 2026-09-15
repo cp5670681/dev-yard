@@ -336,14 +336,32 @@ def tickets(
     _run_registered("tickets", jira, dry_run, print_mode)
 
 
+_RUN_VIA_DEDICATED = {
+    "open": "dev-yard req open",
+    "implement": "dev-yard implement",
+    "review": "dev-yard review",
+    "contract": "dev-yard review --contract",
+}
+
+
 @app.command()
 def run(
-    stage: str = typer.Argument(..., help="Stage name (builtin or plugin); see `dev-yard stages`"),
+    stage: str = typer.Argument(
+        ...,
+        help="Plugin stage, or grill/spec/tickets; open/implement/review/contract use dedicated commands",
+    ),
     jira: str = typer.Argument(..., help="Requirement key (e.g. PROJ-101)"),
     dry_run: bool = False,
     print_mode: bool = typer.Option(False, "--print", help="pi -p one-shot instead of TUI"),
 ) -> None:
-    """Run any registered stage (builtin or plugin) for this requirement."""
+    """Run a registry stage (plugin or grill/spec/tickets). Ticket loops use dedicated commands."""
+    hint = _RUN_VIA_DEDICATED.get(stage)
+    if hint is not None:
+        typer.echo(
+            f"`dev-yard run {stage}` is not the ticket/open loop; use {hint}",
+            err=True,
+        )
+        raise typer.Exit(2)
     _run_registered(stage, jira, dry_run, print_mode)
 
 
@@ -362,7 +380,12 @@ def stages_cmd() -> None:
                 tag = f"plugin {pdir.relative_to(root)}"
             except ValueError:
                 tag = f"plugin {pdir}"
-        typer.echo(f"{spec.name}\t[{tag}]\torder={spec.order}")
+        parts = [spec.name, f"[{tag}]", f"order={spec.order}"]
+        if spec.title:
+            parts.append(spec.title)
+        if spec.description:
+            parts.append(" ".join(spec.description.split()))
+        typer.echo("\t".join(parts))
 
 
 @app.command()

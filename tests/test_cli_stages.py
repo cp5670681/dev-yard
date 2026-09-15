@@ -36,11 +36,20 @@ def test_stages_lists_builtin(tmp_path, monkeypatch):
 
 def test_stages_lists_plugin(tmp_path, monkeypatch):
     root = _workspace(tmp_path, monkeypatch)
-    _plugin(root)
+    d = root / "plugins" / "example"
+    d.mkdir(parents=True)
+    (d / "plugin.yaml").write_text(
+        "name: example\ntitle: 产物自检\ndescription: 需求文档就绪度检查\ntools: [read]\n",
+        encoding="utf-8",
+    )
+    (d / "SKILL.md").write_text("# example\n", encoding="utf-8")
+    (root / "yard.yaml").write_text("plugins: [plugins/example]\n", encoding="utf-8")
     out = runner.invoke(app, ["stages"])
     assert out.exit_code == 0
-    assert "deploy" in out.stdout
-    assert "plugins/deploy" in out.stdout
+    assert "example" in out.stdout
+    assert "plugins/example" in out.stdout
+    assert "产物自检" in out.stdout
+    assert "需求文档就绪度检查" in out.stdout
 
 
 def test_run_unknown_stage_fails(tmp_path, monkeypatch):
@@ -79,3 +88,29 @@ def test_grill_spec_tickets_are_thin_wrappers(tmp_path, monkeypatch):
     for cmd in ("grill", "spec", "tickets"):
         out = runner.invoke(app, [cmd, "J-1", "--dry-run"])
         assert out.exit_code == 0, f"{cmd}: {out.output}"
+
+
+def test_run_dedicated_stages_rejected(tmp_path, monkeypatch):
+    _workspace(tmp_path, monkeypatch)
+    for name, hint in (
+        ("open", "dev-yard req open"),
+        ("implement", "dev-yard implement"),
+        ("review", "dev-yard review"),
+        ("contract", "dev-yard review --contract"),
+    ):
+        out = runner.invoke(app, ["run", name, "J-1"])
+        assert out.exit_code == 2, f"{name}: {out.output}"
+        assert hint in out.output
+        assert f"dev-yard run {name}" in out.output
+
+
+def test_run_review_rejected_even_when_overridden(tmp_path, monkeypatch):
+    root = _workspace(tmp_path, monkeypatch)
+    d = root / "plugins" / "review"
+    d.mkdir(parents=True)
+    (d / "plugin.yaml").write_text("name: review\ntools: [read]\n", encoding="utf-8")
+    (d / "SKILL.md").write_text("# review\n", encoding="utf-8")
+    (root / "yard.yaml").write_text("plugins: [plugins/review]\n", encoding="utf-8")
+    out = runner.invoke(app, ["run", "review", "J-1"])
+    assert out.exit_code == 2
+    assert "dev-yard review" in out.output

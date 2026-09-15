@@ -26,6 +26,23 @@ PIPELINE = (
     "testing",
     "done",
 )
+BUILTIN_ACTION_IDS = frozenset(
+    {
+        "open",
+        "grill",
+        "spec",
+        "tickets",
+        "freeze",
+        "implement",
+        "review",
+        "contract",
+        "fix-contract",
+        "submit-test",
+        "fill-test-report",
+        "fix-test",
+        "push",
+    }
+)
 
 _SKELETONS = {
     "REQUIREMENT.md": lambda jira: REQ_SKELETON.format(key=jira, title=jira, body=""),
@@ -352,7 +369,7 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
     from dev_yard.stages import load_registry
 
     for spec in sorted(load_registry(root).values(), key=lambda s: s.order):
-        if spec.builtin:
+        if spec.builtin or spec.name in BUILTIN_ACTION_IDS:
             continue
         enabled = (detail.phase == spec.requires_phase) if spec.requires_phase else True
         reason = (

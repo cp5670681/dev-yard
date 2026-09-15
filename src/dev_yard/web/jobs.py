@@ -16,6 +16,26 @@ from dev_yard.runners import RunResult, Runner, clip_summary, pi_argv, run_pi_pr
 Execute = Callable[[Path, "Job"], None]
 _TERMINAL = {"ok", "error"}
 _TICKET_ACTIONS = {"implement", "review", "fix-contract", "fix-test"}
+# Names with dedicated execute branches. Keep aligned with board.BUILTIN_ACTION_IDS
+# (plus repo_add). Overridden grill/spec/tickets still take those branches.
+_HOST_JOB_ACTIONS = frozenset(
+    {
+        "repo_add",
+        "open",
+        "grill",
+        "spec",
+        "tickets",
+        "freeze",
+        "implement",
+        "review",
+        "contract",
+        "fix-contract",
+        "submit-test",
+        "fill-test-report",
+        "fix-test",
+        "push",
+    }
+)
 
 
 def format_sse(event: str, data: Any) -> str:
@@ -366,7 +386,7 @@ def default_execute(root: Path, job: Job) -> None:
     from dev_yard.stages import load_registry
 
     spec = load_registry(root).get(job.action)
-    if spec is not None and not spec.builtin:
+    if spec is not None and job.action not in _HOST_JOB_ACTIONS:
         runner = JobLogRunner(job, root, spec.name)
         result = service.run_stage(root, spec, job.jira, print_mode=True, runner=runner)
         if not result.ok:

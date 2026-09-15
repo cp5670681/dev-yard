@@ -54,14 +54,14 @@ def test_phase_gate_allows_and_records_run(tmp_path):
     _req(root, "J-1", phase="frozen")
     spec = stages.StageSpec(
         name="deploy", skill="deploy", bundles=(), tools=("read",),
-        requires_phase="frozen", sets_phase="deployed",
+        requires_phase="frozen",
     )
     r = FakeRunner()
     result = service.run_stage(root, spec, "J-1", runner=r)
     assert result.ok
     assert r.calls[0][1] == root  # cwd = yard root
     data = _status(root, "J-1")
-    assert data["phase"] == "deployed"
+    assert data["phase"] == "frozen"
     assert data["stage_runs"]["deploy"]["ok"] is True
     assert data["stage_runs"]["deploy"]["summary"] == "did the thing"
     assert data["stage_runs"]["deploy"]["at"]
@@ -72,7 +72,7 @@ def test_failure_records_run_keeps_phase(tmp_path):
     _req(root, "J-1", phase="frozen")
     spec = stages.StageSpec(
         name="deploy", skill="deploy", bundles=(), tools=("read",),
-        requires_phase="frozen", sets_phase="deployed",
+        requires_phase="frozen",
     )
     service.run_stage(root, spec, "J-1", runner=FakeRunner(ok=False, summary="boom"))
     data = _status(root, "J-1")
@@ -112,14 +112,46 @@ def test_protects_snapshot_restore(tmp_path):
 def test_dry_run_no_status_write(tmp_path):
     root = _workspace(tmp_path)
     _req(root, "J-1", phase="frozen")
-    spec = stages.StageSpec(
-        name="deploy", skill="deploy", bundles=(), tools=("read",),
-        sets_phase="deployed",
-    )
+    spec = stages.StageSpec(name="deploy", skill="deploy", bundles=(), tools=("read",))
     service.run_stage(root, spec, "J-1", dry_run=True)
     data = _status(root, "J-1")
     assert "stage_runs" not in data
     assert data["phase"] == "frozen"
+
+
+def test_plugin_stage_restores_status_yaml_and_does_not_set_phase(tmp_path):
+    root = _workspace(tmp_path)
+    d = _req(root, "J-1", phase="frozen")
+    (d / "STATUS.yaml").write_text(
+        "phase: frozen\ntickets: {}\ncontract_review: passed\n", encoding="utf-8"
+    )
+
+    class MutatingRunner(FakeRunner):
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            (d / "STATUS.yaml").write_text(
+                "phase: done\ntickets: {}\ncontract_review: failed\n", encoding="utf-8"
+            )
+            return super().start(prompt, cwd, extra_read_paths, repo)
+
+    spec = stages.StageSpec(
+        name="scan", skill="scan", bundles=(), tools=("read",),
+        sets_phase="done",
+    )
+    result = service.run_stage(root, spec, "J-1", runner=MutatingRunner())
+    assert result.ok
+    data = _status(root, "J-1")
+    assert data["phase"] == "frozen"
+    assert data["contract_review"] == "passed"
+    assert data["stage_runs"]["scan"]["ok"] is True
+    assert "STATUS.yaml" in result.summary
+
+
+def test_builtin_open_still_sets_phase(tmp_path):
+    root = _workspace(tmp_path)
+    _req(root, "J-1", phase="testing")
+    spec = stages.BUILTIN_STAGES["open"]
+    service.run_stage(root, spec, "J-1", runner=FakeRunner())
+    assert _status(root, "J-1")["phase"] == "open"
 
 
 def test_prompt_contains_guidance_and_req_dir(tmp_path):

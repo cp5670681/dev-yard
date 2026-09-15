@@ -745,3 +745,27 @@ def test_default_execute_plugin_stage(tmp_path: Path, monkeypatch):
 
     data = yaml.safe_load((d / "STATUS.yaml").read_text(encoding="utf-8"))
     assert data["stage_runs"]["deploy"]["ok"] is True
+
+
+def test_overridden_grill_still_uses_web_grill_job(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    pdir = yard / "plugins" / "review-skill"
+    pdir.mkdir(parents=True)
+    (pdir / "plugin.yaml").write_text("name: grill\ntools: [read]\n", encoding="utf-8")
+    (pdir / "SKILL.md").write_text("# grill\n", encoding="utf-8")
+    (yard / "yard.yaml").write_text("plugins: [plugins/review-skill]\n", encoding="utf-8")
+    req_open(yard, "AB-31", source="none")
+    called: list[str] = []
+
+    def fake_grill(root, job):
+        called.append(job.action)
+        job.append("web-grill")
+
+    monkeypatch.setattr("dev_yard.web.jobs._run_web_grill", fake_grill)
+    job = JobRunner(yard, execute=default_execute, sync=True).submit("grill", "AB-31")
+    assert job.state == "ok"
+    assert called == ["grill"]
+    assert "web-grill" in job.log

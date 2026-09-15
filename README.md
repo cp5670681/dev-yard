@@ -20,40 +20,48 @@ req open ──► grill ──► spec ──► tickets ──► req freeze �
 
 ---
 
-## 插件：自定义阶段
+## 插件：加一条 agent 阶段
 
-内置阶段之外，可以用**声明式插件**新增流程阶段（如部署、e2e、安全扫描），零 Python 代码——一个目录 = `plugin.yaml` + `SKILL.md`：
+一个目录 = `plugin.yaml` + `SKILL.md`。给某条需求多跑一段 pi（只读自检、额外审查、或换掉内置阶段的 skill）。不是通用插件平台，不能发明 phase、不能改主干步骤条、不能接管票循环。
 
 ```
 my-yard/
-├── yard.yaml            # 启用插件（显式列表，按序覆盖）
-│                        #   plugins: [plugins/deploy]
-└── plugins/deploy/
+├── yard.yaml                 # plugins: [plugins/example]
+└── plugins/example/
     ├── plugin.yaml
     └── SKILL.md
 ```
 
-`plugin.yaml` 字段：
+启用 = 写进 `yard.yaml` 的 `plugins:` 列表（相对 yard root 的目录）。不扫盘。
+
+`plugin.yaml` 只允许这些键（多一个键或写 `sets_phase` 都会加载失败）：
 
 ```yaml
-name: deploy              # ^[a-z][a-z0-9-]*$，不得用 CLI 保留字
-title: 部署到预发          # 看板按钮文案
-tools: [read, bash]       # pi 工具白名单（必填）
-requires_phase: frozen    # 前置 phase 相等检查（可选）
-sets_phase: null          # 成功后写入的 phase（可选）
-protects: [SPEC.md]       # 跑前快照、跑后回滚的文件（可选）
-order: 55                 # 流水线展示顺序（可选）
-guidance: 只做部署；不改 reqs/ 文档。   # 注入 prompt 的写约束（可选）
+name: example                 # 必填；^[a-z][a-z0-9-]{0,31}$
+title: 产物自检               # 可选；看板按钮、`dev-yard stages`
+description: 需求文档就绪度检查   # 可选；仅展示
+skill: example                # 可选；默认 = name；目录相对插件根，内必须有 SKILL.md
+bundles: []                   # 可选；按名走 workspace .pi/skills → 包内 skills
+tools: [read, grep, find, ls] # 必填；非空；∈ {read,bash,grep,find,ls,edit,write,mcp}
+protects: [REQUIREMENT.md, GRILL.md, SPEC.md, TICKETS.md]  # 可选；默认 []
+requires_phase: frozen        # 可选；缺省 = 不检查；若写则必须 ∈ {open,frozen,testing,done}
+lists_sources: false          # 可选；默认 false
+order: 45                     # 可选；默认 50；只影响 stages 列表和额外按钮排序
+guidance: 只读检查，不改文件。 # 可选；注入 prompt
 ```
 
 使用：
 
 ```bash
-dev-yard stages           # 列出全部阶段（内置 + 插件）
-dev-yard run deploy PROJ-101
+dev-yard stages              # 内置标 [builtin]，插件标路径，有 title/description 则打印
+dev-yard run example PROJ-101
 ```
 
-规则：插件名与内置同名即**覆盖**内置阶段（可用来换掉 `review` 的 skill）；两个插件同名会报错。插件阶段跑在 `pi --approve --no-skills` 下，能力上限 = `tools` 白名单——**装插件即信任其作者**。执行结果记录在 `STATUS.yaml` 的 `stage_runs`，web 看板可见。仓库内 [`plugins/example/`](plugins/example/) 是一个可直接复制改造的示例。
+覆盖内置：插件 `name` 等于 `grill`/`spec`/`tickets`/`review` 等即替换那条阶段的 skill/tools/guidance（换提示词）。票循环仍走 `dev-yard implement` / `dev-yard review`；`dev-yard run open|implement|review|contract` 会拒绝。两个已启用插件不得同名。
+
+信任模型：启用插件 = 信任作者。`tools` 含 `bash` 就能改工作区。宿主强制回滚 `STATUS.yaml`，再只写入 `stage_runs`，所以插件跑完 phase / 票状态 / 提测槽都不变。文档产物靠 `protects` 回滚；业务仓 / worktree 不在保护范围。
+
+活文档：仓库内 [`plugins/example/`](plugins/example/) 是只读自检示例。
 
 ---
 

@@ -1,7 +1,8 @@
 # dev-yard 插件化阶段（Plugin Stages）设计
 
 - 日期：2026-09-13
-- 状态：设计已确认（方案 A），待写实施计划
+- 状态：已落地；**收紧见** [2026-09-15-plugin-stages-small-complete.md](2026-09-15-plugin-stages-small-complete.md)
+- 已撤回的扩容方向：[2026-09-15-plugin-capabilities-design.md](2026-09-15-plugin-capabilities-design.md)
 - 决策记录：扩展点=新增流程阶段；形态=声明式（零 Python）；发现=workspace 本地
 
 ## 1. 背景与动机

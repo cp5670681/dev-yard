@@ -146,6 +146,11 @@ def test_duplicate_plugin_names_rejected(tmp_path):
         ({"name": "web"}, "reserved"),
         ({"tools": ["teleport"]}, "tools"),
         ({"requires_phase": "alpha"}, "phase"),
+        ({"requires_phase": "deployed"}, "phase"),
+        ({"sets_phase": "deployed"}, "sets_phase"),
+        ({"foo": 1}, "foo"),
+        ({"require_phase": "frozen"}, "require_phase"),
+        ({"tool": ["read"]}, "tool"),
     ],
 )
 def test_plugin_validation_errors(tmp_path, over, match):
@@ -164,13 +169,25 @@ def test_plugin_requires_plugin_yaml_and_skill_md(tmp_path):
         stages.load_registry(root)
 
 
-def test_plugin_requires_phase_from_other_plugin_sets_phase(tmp_path):
+def test_plugin_cannot_invent_phase_via_sets_phase(tmp_path):
     root = _workspace(tmp_path)
-    _plugin(root, "deploy", requires_phase=None, sets_phase="deployed", tools=["read"])
-    _plugin(root, "verify", requires_phase="deployed", tools=["read"])
-    _enable(root, root / "plugins" / "deploy", root / "plugins" / "verify")
-    reg = stages.load_registry(root)
-    assert reg["verify"].requires_phase == "deployed"
+    _enable(root, _plugin(root, "deploy", requires_phase=None, sets_phase="deployed"))
+    with pytest.raises(ValueError, match="sets_phase"):
+        stages.load_registry(root)
+
+
+def test_plugin_cannot_require_invented_phase(tmp_path):
+    root = _workspace(tmp_path)
+    _enable(root, _plugin(root, "verify", requires_phase="deployed", tools=["read"]))
+    with pytest.raises(ValueError, match="phase"):
+        stages.load_registry(root)
+
+
+def test_plugin_reads_description(tmp_path):
+    root = _workspace(tmp_path)
+    _enable(root, _plugin(root, "scan", description="只读自检", requires_phase=None))
+    spec = stages.load_registry(root)["scan"]
+    assert spec.description == "只读自检"
 
 
 def test_missing_yard_yaml_means_builtin_only(tmp_path):

@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from dev_yard import status as st
 from dev_yard.service import init_yard, repo_add, req_freeze, req_open
 from dev_yard.web.board import (
@@ -328,6 +330,20 @@ def test_plugin_without_phase_gate_always_enabled(tmp_path: Path, monkeypatch):
     actions = available_actions(detail, yard)
     scan = next(a for a in actions if a.id == "scan")
     assert scan.enabled
+
+
+@pytest.mark.parametrize("name,label", [("grill", "对齐"), ("spec", "写规约"), ("tickets", "拆票"), ("review", "审查")])
+def test_overriding_builtin_does_not_duplicate_action(tmp_path: Path, monkeypatch, name, label):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _yard(tmp_path)
+    _plugin(yard, name)
+    req_open(yard, "AB-44", source="none")
+    detail = requirement_detail(yard, "AB-44")
+    actions = available_actions(detail, yard)
+    matched = [a for a in actions if a.id == name]
+    assert len(matched) == 1
+    assert matched[0].label == label
 
 
 def test_stage_runs_surfaced(tmp_path: Path, monkeypatch):

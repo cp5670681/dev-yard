@@ -23,6 +23,21 @@ RESERVED_STAGE_NAMES = frozenset(
 )
 ALLOWED_TOOLS = ("read", "bash", "grep", "find", "ls", "edit", "write", "mcp")
 BUILTIN_PHASES = ("open", "frozen", "testing", "done")
+PLUGIN_YAML_KEYS = frozenset(
+    {
+        "name",
+        "title",
+        "description",
+        "skill",
+        "bundles",
+        "tools",
+        "protects",
+        "requires_phase",
+        "lists_sources",
+        "order",
+        "guidance",
+    }
+)
 _NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 
 
@@ -41,6 +56,7 @@ class StageSpec:
     guidance: str = ""
     skill_dir: Path | None = None
     title: str = ""
+    description: str = ""
 
 
 _GUIDANCE = {
@@ -181,6 +197,17 @@ def _load_plugin_spec(plugin_dir: Path) -> StageSpec:
     raw = yaml.safe_load(yml.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict):
         raise ValueError(f"plugin {plugin_dir}: plugin.yaml must be a mapping")
+    if "sets_phase" in raw:
+        raise ValueError(
+            f"plugin {plugin_dir}: sets_phase is not allowed; "
+            "plugin progress is recorded in STATUS.yaml stage_runs"
+        )
+    unknown = sorted(str(k) for k in raw if k not in PLUGIN_YAML_KEYS)
+    if unknown:
+        raise ValueError(
+            f"plugin {plugin_dir}: unknown keys {unknown}; "
+            f"allowed: {sorted(PLUGIN_YAML_KEYS)}"
+        )
     name = str(raw.get("name") or "").strip()
     if not _NAME_RE.match(name):
         raise ValueError(
@@ -201,22 +228,30 @@ def _load_plugin_spec(plugin_dir: Path) -> StageSpec:
     skill_dir = plugin_dir / skill if skill else plugin_dir
     if not (skill_dir / "SKILL.md").is_file():
         raise ValueError(f"plugin {plugin_dir}: SKILL.md not found in {skill_dir}")
-    requires_phase = raw.get("requires_phase")
-    sets_phase = raw.get("sets_phase")
+    requires_raw = raw.get("requires_phase")
+    if requires_raw is None or str(requires_raw).strip() == "":
+        requires_phase = None
+    else:
+        requires_phase = str(requires_raw).strip()
+        if requires_phase not in BUILTIN_PHASES:
+            raise ValueError(
+                f"plugin {plugin_dir}: unknown requires_phase {requires_phase!r}; "
+                f"must be one of {list(BUILTIN_PHASES)}"
+            )
     return StageSpec(
         name=name,
         skill=skill or name,
         bundles=tuple(str(b) for b in (raw.get("bundles") or ())),
         tools=tools,
         protects=tuple(str(p) for p in (raw.get("protects") or ())),
-        requires_phase=(str(requires_phase) if requires_phase else None),
-        sets_phase=(str(sets_phase) if sets_phase else None),
+        requires_phase=requires_phase,
         lists_sources=bool(raw.get("lists_sources", False)),
         order=int(raw.get("order", 50)),
         builtin=False,
         guidance=str(raw.get("guidance") or ""),
         skill_dir=skill_dir,
         title=str(raw.get("title") or ""),
+        description=str(raw.get("description") or ""),
     )
 
 
@@ -276,14 +311,6 @@ def load_registry(root: Path) -> dict[str, StageSpec]:
                 f"plugin name {spec.name!r} declared by two enabled plugins"
             )
         seen.add(spec.name)
-    declared = {s.sets_phase for s in specs if s.sets_phase}
-    for spec in specs:
-        req = spec.requires_phase
-        if req and req not in BUILTIN_PHASES and req not in declared:
-            raise ValueError(
-                f"plugin {plugin_dirs[specs.index(spec)]}: unknown requires_phase {req!r}; "
-                f"known: {list(BUILTIN_PHASES)} or a sets_phase value from enabled plugins"
-            )
     registry = dict(BUILTIN_STAGES)
     for spec in specs:
         registry[spec.name] = spec

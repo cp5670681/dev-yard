@@ -608,7 +608,10 @@ def run_stage(
     r = runner or get_runner(
         root, spec.name, dry_run=dry_run, print_mode=print_mode, spec=spec
     )
-    snap = _snapshot(req, spec.protects) if spec.protects and not dry_run else {}
+    protects = spec.protects
+    if not spec.builtin and "STATUS.yaml" not in protects:
+        protects = protects + ("STATUS.yaml",)
+    snap = _snapshot(req, protects) if protects and not dry_run else {}
     result = r.start(prompt, root, extra)
     restored = _restore(req, snap) if snap else []
     if restored:
@@ -625,7 +628,7 @@ def run_stage(
                 "ok": bool(result.ok),
                 "summary": (result.summary or "")[:4000],
             }
-            if result.ok and spec.sets_phase:
+            if spec.builtin and result.ok and spec.sets_phase:
                 data["phase"] = spec.sets_phase
             st.save(root, jira, data)
     return result
