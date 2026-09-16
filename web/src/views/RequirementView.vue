@@ -702,11 +702,14 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
   const risky = action === "open" && forceOpen.value;
   const freeze = action === "freeze";
   const push = action === "push";
-  if (risky || freeze || push) {
+  const sync = action === "sync";
+  if (risky || freeze || push || sync) {
     confirm.action = action;
     confirm.ticketId = ticketId || "";
     confirm.text = push
       ? `将把各个仓库的 worktree 分支 (req/${jira.value}) 推送到远端。确认继续？`
+      : sync
+      ? "将 fetch 远端，并把已冻结 worktree 更新到 origin/<default_base>（默认快进）。确认继续？"
       : freeze
       ? "冻结后会切 worktree。确认继续？"
       : "强制重抽会重置阶段并删除截图。确认继续？";

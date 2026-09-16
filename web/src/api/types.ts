@@ -252,7 +252,43 @@ export interface PiEntry {
   thinking?: string;
   tool_name?: string;
   is_error?: boolean;
+  streaming?: boolean;
+  suggested_actions?: SuggestedAction[];
   tools?: { name?: string; args?: string }[];
+}
+
+export interface SuggestedAction {
+  action: string;
+  jira?: string;
+  ticket_id?: string;
+  repos?: string[];
+  strategy?: string;
+  force?: boolean;
+  reason?: string;
+}
+
+export interface AssistantSession {
+  id: string;
+  route: string;
+  jira: string | null;
+  created_at: string;
+  state: "idle" | "streaming" | string;
+  entries: PiEntry[];
+  error: string | null;
+}
+
+export interface AssistantContext {
+  route: string;
+  jira: string | null;
+  repos: { alias: string; role: string; default_base: string; path: boolean }[];
+  requirements: { jira: string; phase: string; next: string; title: string | null }[];
+  requirement?: {
+    jira: string;
+    phase: string;
+    next: string;
+    title: string | null;
+    actions: { id: string; label: string; enabled: boolean; reason: string }[];
+  };
 }
 
 export interface TicketDiffFile {

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dev_yard.config import resolve_pi_choice
-from dev_yard.stages import StageSpec, load_registry, spec_skill_dirs
+from dev_yard.stages import StageSpec, load_registry, resolve_skill_dir, spec_skill_dirs
 
 _SUMMARY_MAX = 4000
 _REVIEW_SUMMARY_MAX = 32000
@@ -86,6 +86,43 @@ def pi_argv(
         argv.append("-p")
     if prompt is not None:
         argv.append(prompt)
+    return argv
+
+
+ASSISTANT_TOOLS = ("read", "grep", "find", "ls")
+
+
+def assistant_pi_argv(
+    *,
+    root: Path,
+    session_id: str,
+    session_dir: Path,
+    binary: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+) -> list[str]:
+    cmd = binary or agent_binary()
+    if provider is None and model is None:
+        provider, model = resolve_pi_choice(root, "assistant")
+    argv = [cmd, "--approve", "--no-skills", "--mode", "rpc"]
+    if provider:
+        argv.extend(["--provider", provider])
+    if model:
+        argv.extend(["--model", model])
+    argv.extend(["--tools", ",".join(ASSISTANT_TOOLS)])
+    skill = resolve_skill_dir(root, "assistant")
+    if skill is not None:
+        argv.extend(["--skill", str(skill)])
+    argv.extend(
+        [
+            "--session-dir",
+            str(session_dir),
+            "--session-id",
+            session_id,
+            "--name",
+            "yard-assistant",
+        ]
+    )
     return argv
 
 

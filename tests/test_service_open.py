@@ -38,6 +38,7 @@ def test_init_and_open(tmp_path: Path, monkeypatch):
     assert (tmp_path / "repos.yaml").exists()
     gi = (tmp_path / ".gitignore").read_text().splitlines()
     assert "repos.yaml" in gi
+    assert ".yard-assistant/" in gi
     d, warning = req_open(tmp_path, "ABC-1", source="none")
     assert warning
     assert (d / "REQUIREMENT.md").exists()

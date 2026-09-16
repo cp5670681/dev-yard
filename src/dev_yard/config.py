@@ -19,6 +19,7 @@ PI_STAGES = (
     "contract",
     "qa-design",
     "qa-run",
+    "assistant",
 )
 
 

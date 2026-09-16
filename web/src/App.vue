@@ -144,6 +144,17 @@
       </v-container>
     </v-main>
     <PiDrawer />
+    <AssistantDrawer />
+    <v-btn
+      class="assistant-fab"
+      color="primary"
+      icon
+      size="large"
+      :title="'助手'"
+      @click="openAssistant"
+    >
+      <v-icon :icon="mdiCreationOutline" />
+    </v-btn>
     <v-snackbar v-model="snack.show" :color="snack.color" timeout="2800" location="bottom right">
       {{ snack.text }}
     </v-snackbar>
@@ -160,6 +171,7 @@ import {
   mdiProgressClock,
   mdiSourceRepository,
   mdiTune,
+  mdiCreationOutline,
   mdiViewDashboardOutline,
   mdiWeatherNight,
   mdiWeatherSunny,
@@ -170,7 +182,9 @@ import { ACTION_LABELS } from "@/composables/labels";
 import { jobHref, runningJobs, watchJobs } from "@/state/jobs";
 import { provideSnack } from "@/composables/snack";
 import { pruneRecents, recentJiras, touchRecent } from "@/composables/recents";
+import AssistantDrawer from "@/components/AssistantDrawer.vue";
 import PiDrawer from "@/components/PiDrawer.vue";
+import { openAssistant } from "@/state/assistant";
 
 const snack = provideSnack();
 const { mdAndUp } = useDisplay();
@@ -297,5 +311,11 @@ function jobLabel(job: JobBrief) {
   border-radius: 3px !important;
   height: 20px !important;
   padding: 0 6px !important;
+}
+.assistant-fab {
+  position: fixed !important;
+  right: 24px;
+  bottom: 24px;
+  z-index: 20;
 }
 </style>

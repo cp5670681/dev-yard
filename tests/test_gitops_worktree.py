@@ -9,6 +9,8 @@ from dev_yard.gitops import (
     drain_git_output,
     ensure_clone,
     git_failure_message,
+    head_sha,
+    integrate_onto,
     run,
     worktree_add,
     worktree_remove,
@@ -236,5 +238,38 @@ def test_push_worktree_to_remote(git_src: Path, tmp_path: Path):
     local_sha = run(["git", "rev-parse", "HEAD"], cwd=wt)
     assert remote_sha == local_sha
     assert any("push" in line.lower() for line in lines)
+
+
+def test_integrate_onto_ff_only_and_dirty(git_src: Path, tmp_path: Path):
+    wt = tmp_path / "wt"
+    worktree_add(git_src, wt, "req/SYNC-1", "main")
+    before = head_sha(wt)
+    (git_src / "later.txt").write_text("from main")
+    subprocess.check_call(["git", "add", "."], cwd=git_src)
+    subprocess.check_call(["git", "commit", "-m", "later"], cwd=git_src)
+    after = integrate_onto(wt, "main", "ff-only")
+    assert after != before
+    assert (wt / "later.txt").read_text() == "from main"
+
+    (wt / "dirty.txt").write_text("nope")
+    with pytest.raises(GitError, match="uncommitted"):
+        integrate_onto(wt, "main", "ff-only")
+
+
+def test_integrate_onto_merge_when_diverged(git_src: Path, tmp_path: Path):
+    wt = tmp_path / "wt"
+    worktree_add(git_src, wt, "req/SYNC-2", "main")
+    (wt / "feat.txt").write_text("feat")
+    subprocess.check_call(["git", "add", "."], cwd=wt)
+    subprocess.check_call(["git", "commit", "-m", "feat"], cwd=wt)
+    (git_src / "main.txt").write_text("main")
+    subprocess.check_call(["git", "add", "."], cwd=git_src)
+    subprocess.check_call(["git", "commit", "-m", "main"], cwd=git_src)
+    with pytest.raises(GitError):
+        integrate_onto(wt, "main", "ff-only")
+    sha = integrate_onto(wt, "main", "merge")
+    assert sha
+    assert (wt / "feat.txt").exists()
+    assert (wt / "main.txt").exists()
 
 

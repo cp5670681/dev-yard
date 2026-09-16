@@ -32,6 +32,7 @@ from dev_yard.web.board import (
     save_doc,
 )
 from dev_yard.pi_session import cwd_is_under_root, load_conversation
+from dev_yard.assistant import AssistantHub, AssistantSse
 from dev_yard.web.jobs import BoardSse, JobRunner, JobSse, PiChatSse, _pi_run_until
 from dev_yard.web.sanitize import sanitize_html
 
@@ -51,6 +52,7 @@ ACTIONS = {
     "fix-test",
     "run-test",
     "push",
+    "sync",
 }
 STEP_LABELS = {
     "open": "抽取",
@@ -63,6 +65,7 @@ STEP_LABELS = {
     "contract": "契约审查",
     "testing": "提测",
     "done": "完成",
+    "assistant": "助手",
 }
 ACTION_LABELS = {
     "open": "抽取需求",
@@ -79,6 +82,7 @@ ACTION_LABELS = {
     "fill-test-report": "提 bug",
     "fix-test": "修 bug",
     "push": "推送到远端",
+    "sync": "同步远端",
 }
 
 _ASSET_SRC = re.compile(r'src=(["\'])(?:\./)?assets/([^"\']+)\1')
@@ -119,6 +123,18 @@ class ActionIn(BaseModel):
     source: str = "pi"
     remote: str = "origin"
     repos: list[str] | None = None
+    strategy: str = "ff-only"
+
+
+class AssistantSessionIn(BaseModel):
+    route: str = "/"
+    jira: str = ""
+
+
+class AssistantMessageIn(BaseModel):
+    text: str
+    route: str = ""
+    jira: str | None = None
 
 
 class DocSaveIn(BaseModel):
@@ -214,9 +230,15 @@ def _known_action(root: Path, action: str) -> bool:
     return spec is not None and not spec.builtin
 
 
-def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool = False) -> FastAPI:
+def create_app(
+    root: Path,
+    job_runner: JobRunner | None = None,
+    sync_jobs: bool = False,
+    assistant_hub: AssistantHub | None = None,
+) -> FastAPI:
     root = root.resolve()
     jobs = job_runner or JobRunner(root, sync=sync_jobs)
+    assistants = assistant_hub or AssistantHub(root, sync=sync_jobs)
     if not jobs.sync:
         jobs.resume_pending_grills()
     templates = Jinja2Templates(directory=str(HERE / "templates"))
@@ -531,7 +553,7 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
         if not _known_action(root, action):
             raise HTTPException(400, f"unknown action {action}")
         ids = [ticket_id] if ticket_id.strip() else None
-        extra = {"force": bool(force), "source": source, "remote": remote}
+        extra = {"force": bool(force), "source": source, "remote": remote, "strategy": "ff-only"}
         try:
             submitted = _submit_action(action, jira, ids, extra)
         except ValueError as e:
@@ -735,6 +757,7 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
             "source": body.source,
             "remote": body.remote,
             "repos": body.repos,
+            "strategy": body.strategy,
         }
         try:
             submitted = _submit_action(action, jira, ids, extra)
@@ -1007,6 +1030,70 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         return list_repos(root)
+
+    @app.get("/api/assistant/context")
+    def api_assistant_context(route: str = "/", jira: str = ""):
+        return assistants.context(route=route, jira=jira)
+
+    @app.post("/api/assistant/sessions")
+    def api_assistant_create(payload: AssistantSessionIn):
+        session = assistants.create(route=payload.route, jira=payload.jira)
+        return session.snapshot()
+
+    def _assistant_or_404(session_id: str):
+        session = assistants.get(session_id)
+        if session is None:
+            raise HTTPException(404, "unknown assistant session")
+        return session
+
+    @app.get("/api/assistant/sessions/{session_id}")
+    def api_assistant_get(session_id: str):
+        return _assistant_or_404(session_id).snapshot()
+
+    @app.post("/api/assistant/sessions/{session_id}/messages")
+    def api_assistant_message(session_id: str, payload: AssistantMessageIn):
+        _assistant_or_404(session_id)
+        try:
+            session = assistants.send(
+                session_id,
+                payload.text,
+                route=payload.route or None,
+                jira=payload.jira,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return session.snapshot()
+
+    @app.post("/api/assistant/sessions/{session_id}/abort")
+    def api_assistant_abort(session_id: str):
+        _assistant_or_404(session_id)
+        return assistants.abort(session_id).snapshot()
+
+    @app.get("/api/assistant/sessions/{session_id}/events")
+    async def api_assistant_events(session_id: str):
+        session = _assistant_or_404(session_id)
+
+        async def gen():
+            sse = AssistantSse(session)
+            while True:
+                frames, done, seq = sse.poll()
+                for frame in frames:
+                    yield frame
+                if done:
+                    return
+                new_seq = await asyncio.to_thread(session.wait_seq, seq, 0.4)
+                if new_seq <= seq:
+                    yield ": ping\n\n"
+
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.exception_handler(StarletteHTTPException)
     async def http_exc(request: Request, exc: StarletteHTTPException):

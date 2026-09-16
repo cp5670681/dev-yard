@@ -171,6 +171,9 @@ def branch_delete(source: Path, branch: str) -> None:
         pass
 
 
+SYNC_STRATEGIES = ("ff-only", "merge", "rebase")
+
+
 def merge_into(worktree: Path, branch: str) -> None:
     run(["git", "merge", "--no-edit", branch], cwd=worktree)
 
@@ -181,6 +184,40 @@ def merge_abort(worktree: Path) -> None:
         run(["git", "merge", "--abort"], cwd=worktree)
     except GitError:
         pass
+
+
+def rebase_abort(worktree: Path) -> None:
+    """Best-effort cleanup after a failed rebase; never raises."""
+    try:
+        run(["git", "rebase", "--abort"], cwd=worktree)
+    except GitError:
+        pass
+
+
+def head_sha(worktree: Path) -> str:
+    return run(["git", "rev-parse", "HEAD"], cwd=worktree)
+
+
+def integrate_onto(worktree: Path, ref: str, strategy: str = "ff-only") -> str:
+    """Fast-forward, merge, or rebase `worktree` onto `ref`. Returns new HEAD."""
+    if strategy not in SYNC_STRATEGIES:
+        raise ValueError(f"unknown sync strategy {strategy!r}")
+    if has_changes(worktree):
+        raise GitError(f"{worktree} has uncommitted changes")
+    try:
+        if strategy == "ff-only":
+            run(["git", "merge", "--ff-only", ref], cwd=worktree)
+        elif strategy == "merge":
+            run(["git", "merge", "--no-edit", ref], cwd=worktree)
+        else:
+            run(["git", "rebase", ref], cwd=worktree)
+    except GitError:
+        if strategy == "merge":
+            merge_abort(worktree)
+        elif strategy == "rebase":
+            rebase_abort(worktree)
+        raise
+    return head_sha(worktree)
 
 
 def current_branch(worktree: Path) -> str:

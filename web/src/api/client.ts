@@ -1,4 +1,6 @@
 import type {
+  AssistantContext,
+  AssistantSession,
   ContractReviewIn,
   ContractReviewOut,
   DocPayload,
@@ -94,7 +96,13 @@ export function openRequirement(
 export function runAction(
   jira: string,
   action: string,
-  payload: { ticket_id?: string; force?: boolean; source?: string } = {},
+  payload: {
+    ticket_id?: string;
+    force?: boolean;
+    source?: string;
+    repos?: string[];
+    strategy?: string;
+  } = {},
 ) {
   return api<JobsOut>(
     `/api/requirements/${encodeURIComponent(jira)}/actions/${encodeURIComponent(action)}`,
@@ -199,6 +207,48 @@ export function submitTicketReview(
       method: "POST",
       body: JSON.stringify(payload),
     },
+  );
+}
+
+export function getAssistantContext(route: string, jira?: string) {
+  const q = new URLSearchParams({ route });
+  if (jira) q.set("jira", jira);
+  return api<AssistantContext>(`/api/assistant/context?${q.toString()}`);
+}
+
+export function createAssistantSession(route: string, jira?: string) {
+  return api<AssistantSession>("/api/assistant/sessions", {
+    method: "POST",
+    body: JSON.stringify({ route, jira: jira || "" }),
+  });
+}
+
+export function getAssistantSession(id: string) {
+  return api<AssistantSession>(`/api/assistant/sessions/${encodeURIComponent(id)}`);
+}
+
+export function sendAssistantMessage(
+  id: string,
+  text: string,
+  extra?: { route?: string; jira?: string | null },
+) {
+  return api<AssistantSession>(
+    `/api/assistant/sessions/${encodeURIComponent(id)}/messages`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        text,
+        route: extra?.route || "",
+        jira: extra?.jira ?? null,
+      }),
+    },
+  );
+}
+
+export function abortAssistant(id: string) {
+  return api<AssistantSession>(
+    `/api/assistant/sessions/${encodeURIComponent(id)}/abort`,
+    { method: "POST" },
   );
 }
 

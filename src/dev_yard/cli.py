@@ -196,6 +196,36 @@ def req_freeze(
         typer.echo(str(p))
 
 
+@req_app.command("sync")
+def req_sync(
+    jira: str = typer.Argument(..., help="Requirement key (e.g. PROJ-101)"),
+    repos: Optional[list[str]] = typer.Argument(
+        None, help="Optional repo aliases (default: all registered)"
+    ),
+    strategy: str = typer.Option(
+        "ff-only",
+        "--strategy",
+        "-s",
+        help="How to update freeze worktrees: ff-only | merge | rebase",
+    ),
+) -> None:
+    """Fetch remotes and update clones / freeze worktrees onto default_base."""
+    root = root_opt()
+    try:
+        results = service.req_sync(
+            root,
+            jira,
+            repos=repos,
+            strategy=strategy,
+            on_progress=lambda line: typer.echo(line, err=True),
+        )
+    except (ValueError, FileNotFoundError, GitError) as e:
+        _die(e)
+    for r in results:
+        extra = f" ({r['branch']})" if r.get("branch") else ""
+        typer.echo(f"{r['status']} {r['repo']}{extra}")
+
+
 @req_app.command("push")
 def req_push(
     jira: str = typer.Argument(..., help="Requirement key (e.g. PROJ-101)"),
@@ -528,6 +558,23 @@ def review_override(
         typer.echo(f"Updated {ticket_id}: state={updated.get('state')}")
     except (ValueError, GitError, KeyError, FileNotFoundError) as e:
         _die(e)
+
+
+@app.command()
+def sync(
+    jira: str = typer.Argument(..., help="Requirement key (e.g. PROJ-101)"),
+    repos: Optional[list[str]] = typer.Argument(
+        None, help="Optional repo aliases (default: all registered)"
+    ),
+    strategy: str = typer.Option(
+        "ff-only",
+        "--strategy",
+        "-s",
+        help="How to update freeze worktrees: ff-only | merge | rebase",
+    ),
+) -> None:
+    """Fetch remotes and update clones / freeze worktrees onto default_base."""
+    req_sync(jira, repos=repos, strategy=strategy)
 
 
 @app.command()

@@ -42,6 +42,7 @@ BUILTIN_ACTION_IDS = frozenset(
         "fix-test",
         "run-test",
         "push",
+        "sync",
     }
 )
 
@@ -320,6 +321,13 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
         or any(t.source == "contract" and t.can_implement for t in detail.tickets)
     )
     can_push = (detail.phase in {"frozen", "done", "testing"}) and has_worktrees
+    registered = load_repos(root)
+    can_sync = bool(registered)
+    sync_reason = (
+        ""
+        if can_sync
+        else "先登记仓库"
+    )
     builtin = [
         Action(
             "open",
@@ -411,6 +419,16 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
             "推送到远端",
             can_push,
             "" if can_push else "需要先 freeze 创建 worktree",
+        ),
+        Action(
+            "sync",
+            "同步远端",
+            can_sync,
+            sync_reason
+            if not can_sync
+            else (
+                "fetch 登记仓；已冻结则把 worktree 快进/合并到 origin/<default_base>"
+            ),
         ),
     ]
     from dev_yard.stages import load_registry

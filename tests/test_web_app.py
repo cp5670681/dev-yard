@@ -413,6 +413,19 @@ def test_job_events_unknown_404(tmp_path: Path):
     assert r.status_code == 404
 
 
+def test_assistant_drawer_is_wired():
+    root = Path(__file__).resolve().parents[1]
+    app_vue = (root / "web" / "src" / "App.vue").read_text()
+    drawer = (root / "web" / "src" / "components" / "AssistantDrawer.vue").read_text()
+    assert "AssistantDrawer" in app_vue
+    assert "openAssistant" in app_vue
+    assert "/api/assistant/sessions" in drawer
+    assert "suggested_actions" in drawer
+    assert "确认执行" in drawer
+    assert "session.value = null" not in drawer
+    assert "if (session.value)" in drawer
+
+
 def test_app_js_uses_event_source():
     from dev_yard.web.app import HERE
 
@@ -757,6 +770,7 @@ def test_pi_settings_api(tmp_path: Path, monkeypatch):
         "contract",
         "qa-design",
         "qa-run",
+        "assistant",
     ]
     assert empty["catalog"]["providers"][0]["id"] == "rcc"
     saved = client.put(

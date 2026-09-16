@@ -41,6 +41,7 @@ export const STEP_LABELS: Record<string, string> = {
   contract: "契约审查",
   testing: "提测",
   done: "完成",
+  assistant: "助手",
 };
 
 export const ACTION_LABELS: Record<string, string> = {
@@ -54,6 +55,7 @@ export const ACTION_LABELS: Record<string, string> = {
   "fill-test-report": "提 bug",
   "fix-test": "修 bug",
   push: "推送到远端",
+  sync: "同步远端",
   repo_add: "仓库 · clone",
 };
 

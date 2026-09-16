@@ -35,6 +35,7 @@ _HOST_JOB_ACTIONS = frozenset(
         "fix-test",
         "run-test",
         "push",
+        "sync",
     }
 )
 
@@ -393,6 +394,24 @@ def default_execute(root: Path, job: Job) -> None:
         )
         pushed_summary = ", ".join(f"{r['repo']} ({r['branch']})" for r in results)
         job.append(f"pushed {job.jira} to remote: {pushed_summary}")
+        return
+    if job.action == "sync":
+        extra = job.extra or {}
+        strategy = str(extra.get("strategy") or "ff-only")
+        repos_filter = extra.get("repos")
+        if isinstance(repos_filter, str) and repos_filter.strip():
+            repos_filter = [r.strip() for r in repos_filter.split(",") if r.strip()]
+        elif not isinstance(repos_filter, list):
+            repos_filter = None
+        results = service.req_sync(
+            root,
+            job.jira,
+            repos=repos_filter,
+            strategy=strategy,
+            on_progress=job.append,
+        )
+        summary = ", ".join(f"{r['repo']}:{r['status']}" for r in results)
+        job.append(f"synced {job.jira}: {summary}")
         return
     if job.action == "submit-test":
         from dev_yard.test_report import submit_test

@@ -62,7 +62,15 @@ def init_yard(root: Path) -> None:
     if not yml.exists():
         yml.write_text("repos: {}\n")
     gi = root / ".gitignore"
-    extra = [".repos/", ".yard-worktrees/", "reqs/", ".env", "repos.yaml", ".yard-qa/"]
+    extra = [
+        ".repos/",
+        ".yard-worktrees/",
+        "reqs/",
+        ".env",
+        "repos.yaml",
+        ".yard-qa/",
+        ".yard-assistant/",
+    ]
     existing = gi.read_text() if gi.exists() else ""
     lines = existing.splitlines()
     for line in extra:
@@ -1544,6 +1552,86 @@ def req_push(
             }
         )
 
+    return results
+
+
+def req_sync(
+    root: Path,
+    jira: str,
+    repos: list[str] | None = None,
+    strategy: str = "ff-only",
+    on_progress: Callable[[str], None] | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch remotes; fast-forward clones; update freeze worktrees onto default_base."""
+    if strategy not in gitops.SYNC_STRATEGIES:
+        raise ValueError(
+            f"unknown sync strategy {strategy!r}; use {', '.join(gitops.SYNC_STRATEGIES)}"
+        )
+    req = paths.req_dir(root, jira)
+    if not req.exists() or not paths.is_req_dir(req):
+        raise FileNotFoundError(f"no requirement {jira}")
+    registered = load_repos(root)
+    if not registered:
+        raise ValueError("no repos registered; add one with `dev-yard repo add`")
+
+    if repos:
+        missing = [a for a in repos if a not in registered]
+        if missing:
+            raise ValueError(f"unknown repo alias: {', '.join(missing)}")
+        target_aliases = list(repos)
+    else:
+        target_aliases = sorted(registered)
+
+    results: list[dict[str, Any]] = []
+    for alias in target_aliases:
+        repo = registered[alias]
+        source = repo.source_path(root)
+        if on_progress:
+            on_progress(f"fetching {alias}...")
+        wt = paths.req_worktree(root, jira, alias)
+        has_wt = wt.exists() and (wt / ".git").exists()
+        if repo.path:
+            if not (source / ".git").exists():
+                raise gitops.GitError(f"{alias}: {source} is not a git repo")
+            gitops.fetch(source, on_progress=on_progress)
+        else:
+            gitops.ensure_clone(repo.url, source, on_progress=on_progress)
+            if has_wt:
+                gitops.fetch(source, on_progress=on_progress)
+            else:
+                gitops.checkout_default_base(source, repo.default_base)
+        row: dict[str, Any] = {
+            "repo": alias,
+            "alias": alias,
+            "strategy": strategy,
+            "source": str(source),
+            "worktree": str(wt) if has_wt else None,
+            "status": "fetched",
+        }
+        if has_wt:
+            if gitops.has_changes(wt):
+                raise gitops.GitError(
+                    f"{alias} worktree has uncommitted changes; commit or stash first"
+                )
+            ref = gitops.start_point(source, repo.default_base)
+            before = gitops.head_sha(wt)
+            if on_progress:
+                on_progress(f"updating {alias} worktree onto {ref} ({strategy})")
+            after = gitops.integrate_onto(wt, ref, strategy)
+            row["ref"] = ref
+            row["from"] = before
+            row["to"] = after
+            row["status"] = "up-to-date" if before == after else "synced"
+            row["branch"] = gitops.current_branch(wt)
+        else:
+            try:
+                row["ref"] = gitops.start_point(source, repo.default_base)
+            except gitops.GitError:
+                row["ref"] = repo.default_base
+            row["status"] = "fetched"
+        results.append(row)
+        if on_progress:
+            on_progress(f"{alias}: {row['status']}")
     return results
 
 
