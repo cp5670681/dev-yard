@@ -6,6 +6,7 @@ __pycache__/
 .pytest_cache/
 .repos/
 .yard-worktrees/
+.yard-assistant/
 reqs/*/worktrees/
 dist/
 *.egg-info/
