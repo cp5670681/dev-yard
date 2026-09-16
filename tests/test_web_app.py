@@ -901,6 +901,27 @@ def test_qa_config_api(tmp_path: Path, monkeypatch):
     assert client.put("/api/qa-config", json=bad).status_code == 400
     assert load_qa_config(yard).env.base_url == "http://127.0.0.1:8080"
 
+    multi = {
+        **payload,
+        "active_env": "test",
+        "envs": {
+            **payload["envs"],
+            "test": {
+                "base_url": "https://test.example.com",
+                "auth": {"default": "default", "accounts": {}},
+                "db": {"url_env": ""},
+                "script": {"runner": ""},
+                "notes": [],
+            },
+        },
+    }
+    saved_multi = client.put("/api/qa-config", json=multi)
+    assert saved_multi.status_code == 200
+    assert saved_multi.json()["payload"]["env_names"] == ["local", "test"]
+    assert load_qa_config(yard).active_env == "test"
+    assert load_qa_config(yard, "local").env.base_url == "http://127.0.0.1:8080"
+    assert load_qa_config(yard, "test").env.base_url == "https://test.example.com"
+
     (yard / "qa.yaml").write_text("envs: [unclosed\n", encoding="utf-8")
     broken = client.get("/api/qa-config")
     assert broken.status_code == 200

@@ -384,6 +384,64 @@ def test_board_run_test_enabled(tmp_path: Path, git_src: Path, monkeypatch):
     assert detail.next_label == "run-test"
     assert "run-test" not in PIPELINE
     assert {s.id for s in detail.steps} == set(PIPELINE)
+    assert detail.qa is not None
+    assert detail.qa["envs"] == ["local"]
+    assert detail.qa["active_env"] == "local"
+
+
+def test_context_md_names_the_selected_env(tmp_path: Path):
+    from dev_yard.qa import write_context_md
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    (yard / "qa.yaml").write_text(
+        "active_env: local\n"
+        "workers:\n  - id: a\n    provider: rcc\n    model: grok-4\n"
+        "envs:\n"
+        "  local:\n    base_url: http://127.0.0.1:8080\n"
+        "  test:\n    base_url: https://test.example.com\n    notes: [test 环境]\n",
+        encoding="utf-8",
+    )
+    cfg = load_qa_config(yard, "test")
+    text = write_context_md(yard, "QA-E1", cfg).read_text(encoding="utf-8")
+    assert "- env: test" in text
+    assert "- available envs: local, test" in text
+    assert "- base_url: https://test.example.com" in text
+    assert "- test 环境" in text
+
+
+def test_req_test_uses_the_selected_env(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-E2")
+    _write_qa_yaml(
+        yard,
+        "  test:\n    base_url: https://test.example.com\n",
+    )
+
+    class _Design(_DesignRunner):
+        pass
+
+    def ok(job, slot):
+        return {"status": "passed", "repo": job.repo}
+
+    result = req_test(
+        yard,
+        "QA-E2",
+        env="test",
+        print_mode=True,
+        runner=_Design(yard, "QA-E2"),
+        case_runner=ok,
+    )
+    assert result["ingested"] is True
+    ctx = (yard / "reqs" / "QA-E2" / "qa" / "context.md").read_text(encoding="utf-8")
+    assert "- env: test" in ctx
+    assert "- base_url: https://test.example.com" in ctx
+    run = yaml.safe_load(
+        (yard / "reqs" / "QA-E2" / "qa" / "evidence" / result["run_id"] / "result.yaml")
+        .read_text(encoding="utf-8")
+    )
+    assert run["env"] == "test"
 
 
 def test_plugin_cannot_use_qa_stage_name(tmp_path: Path):
@@ -523,3 +581,21 @@ def test_bad_frontmatter_rejects_run(tmp_path: Path, git_src: Path, monkeypatch)
             ingest=False,
             case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
         )
+
+
+def test_cli_req_test_passes_env(tmp_path: Path, monkeypatch):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    monkeypatch.chdir(yard)
+    seen: dict = {}
+
+    def fake(root, jira, **kwargs):
+        seen["jira"] = jira
+        seen.update(kwargs)
+        return {"run_id": "r", "summary": {}, "cases": 0}
+
+    monkeypatch.setattr("dev_yard.qa.req_test", fake)
+    out = cli.invoke(app, ["req", "test", "QA-1", "--env", "test"])
+    assert out.exit_code == 0, out.output
+    assert seen["jira"] == "QA-1"
+    assert seen["env"] == "test"

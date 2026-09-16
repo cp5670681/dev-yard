@@ -306,6 +306,9 @@ def req_accept_test(
 @req_app.command("test")
 def req_test_cmd(
     jira: str,
+    env: str = typer.Option(
+        "", "--env", help="qa.yaml envs.<name> to run; default active_env"
+    ),
     print_mode: bool = typer.Option(False, "--print", help="pi -p one-shot for design"),
     design_only: bool = typer.Option(False, "--design-only"),
     run_only: bool = typer.Option(False, "--run-only"),
@@ -322,6 +325,7 @@ def req_test_cmd(
         result = req_test(
             root,
             jira,
+            env=env.strip() or None,
             print_mode=print_mode,
             design_only=design_only,
             run_only=run_only,

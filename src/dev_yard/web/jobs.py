@@ -428,6 +428,7 @@ def default_execute(root: Path, job: Job) -> None:
             result = req_test(
                 root,
                 job.jira,
+                env=(extra.get("env") or "").strip() or None,
                 print_mode=True,
                 design_only=bool(extra.get("design_only")),
                 run_only=bool(extra.get("run_only")),

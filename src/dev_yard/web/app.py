@@ -137,6 +137,7 @@ class ActionIn(BaseModel):
     remote: str = "origin"
     repos: list[str] | None = None
     strategy: str = "ff-only"
+    env: str = ""
 
 
 class AssistantSessionIn(BaseModel):
@@ -775,6 +776,7 @@ def create_app(
             "remote": body.remote,
             "repos": body.repos,
             "strategy": body.strategy,
+            "env": body.env,
         }
         try:
             submitted = _submit_action(action, jira, ids, extra)

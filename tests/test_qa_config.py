@@ -132,7 +132,30 @@ def test_payload_opens_on_a_config_that_fails_validation(tmp_path: Path):
     assert qa_payload(root)["envs"]["local"]["base_url"] == ""
 
 
-def test_save_preserves_other_envs(tmp_path: Path):
+def test_save_roundtrips_multiple_envs(tmp_path: Path):
+    root = _yard(tmp_path)
+    _configure_pi(root)
+    payload = _payload(root)
+    payload["active_env"] = "test"
+    payload["envs"]["test"] = {
+        "base_url": "https://test.example.com",
+        "auth": {"default": "default", "accounts": {}},
+        "db": {"url_env": ""},
+        "script": {"runner": ""},
+        "notes": ["test 环境"],
+    }
+    save_qa_config(root, payload)
+    data = yaml.safe_load((root / "qa.yaml").read_text(encoding="utf-8"))
+    assert data["active_env"] == "test"
+    assert data["envs"]["local"]["base_url"] == "http://127.0.0.1:8080"
+    assert data["envs"]["test"]["base_url"] == "https://test.example.com"
+    cfg = load_qa_config(root)
+    assert cfg.active_env == "test"
+    assert cfg.env.base_url == "https://test.example.com"
+    assert cfg.env_names == ("local", "test")
+
+
+def test_load_selects_a_named_env(tmp_path: Path):
     root = _yard(tmp_path)
     _configure_pi(root)
     (root / "qa.yaml").write_text(
@@ -142,11 +165,46 @@ def test_save_preserves_other_envs(tmp_path: Path):
         "  test:\n    base_url: https://test.example.com\n",
         encoding="utf-8",
     )
-    payload = qa_payload(root)
-    assert payload["other_envs"] == ["test"]
+    assert load_qa_config(root).env.base_url == "http://127.0.0.1:8080"
+    assert load_qa_config(root, "test").env.base_url == "https://test.example.com"
+
+
+def test_load_rejects_an_unknown_env(tmp_path: Path):
+    root = _yard(tmp_path)
+    _configure_pi(root)
+    (root / "qa.yaml").write_text(
+        "envs:\n  local:\n    base_url: http://127.0.0.1:8080\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TestRejected, match="no envs.staging"):
+        load_qa_config(root, "staging")
+
+
+def test_save_removes_an_env_dropped_from_the_payload(tmp_path: Path):
+    root = _yard(tmp_path)
+    _configure_pi(root)
+    payload = _payload(root)
+    payload["envs"]["test"] = {
+        "base_url": "https://test.example.com",
+        "auth": {"default": "default", "accounts": {}},
+        "db": {"url_env": ""},
+        "script": {"runner": ""},
+        "notes": [],
+    }
+    save_qa_config(root, payload)
+    payload["envs"].pop("test")
     save_qa_config(root, payload)
     data = yaml.safe_load((root / "qa.yaml").read_text(encoding="utf-8"))
-    assert data["envs"]["test"]["base_url"] == "https://test.example.com"
+    assert list(data["envs"]) == ["local"]
+
+
+def test_save_rejects_active_env_that_is_not_configured(tmp_path: Path):
+    root = _yard(tmp_path)
+    payload = _payload(root)
+    payload["active_env"] = "staging"
+    with pytest.raises(TestRejected, match="active_env"):
+        save_qa_config(root, payload)
+    assert not (root / "qa.yaml").exists()
 
 
 def test_payload_keeps_browser_and_workers_when_envs_is_missing(tmp_path: Path):
@@ -169,7 +227,7 @@ def test_payload_keeps_browser_and_workers_when_envs_is_missing(tmp_path: Path):
     assert data["workers"][0]["id"] == "slow"
 
 
-def test_payload_opens_with_local_when_only_other_envs_exist(tmp_path: Path):
+def test_payload_projects_every_env_as_editable(tmp_path: Path):
     root = _yard(tmp_path)
     _configure_pi(root)
     (root / "qa.yaml").write_text(
@@ -179,15 +237,16 @@ def test_payload_opens_with_local_when_only_other_envs_exist(tmp_path: Path):
         encoding="utf-8",
     )
     payload = qa_payload(root)
-    assert payload["active_env"] == "local"
-    assert payload["envs"]["local"]["base_url"] == ""
-    assert payload["other_envs"] == ["k8s", "test"]
-    payload["envs"]["local"]["base_url"] = "http://127.0.0.1:8080"
+    assert payload["active_env"] == "test"
+    assert payload["env_names"] == ["test", "k8s"]
+    assert set(payload["envs"]) == {"test", "k8s"}
+    assert payload["envs"]["test"]["base_url"] == "https://test.example.com"
+    assert payload["envs"]["k8s"]["base_url"] == "https://k8s.example.com"
+    payload["envs"]["k8s"]["base_url"] = "https://k8s2.example.com"
     save_qa_config(root, payload)
     data = yaml.safe_load((root / "qa.yaml").read_text(encoding="utf-8"))
-    assert data["envs"]["local"]["base_url"] == "http://127.0.0.1:8080"
     assert data["envs"]["test"]["base_url"] == "https://test.example.com"
-    assert data["envs"]["k8s"]["base_url"] == "https://k8s.example.com"
+    assert data["envs"]["k8s"]["base_url"] == "https://k8s2.example.com"
 
 
 def test_save_keeps_unknown_keys_in_the_edited_env(tmp_path: Path):
@@ -205,6 +264,52 @@ def test_save_keeps_unknown_keys_in_the_edited_env(tmp_path: Path):
     data = yaml.safe_load((root / "qa.yaml").read_text(encoding="utf-8"))
     assert data["envs"]["local"]["future_key"] == "keepme"
     assert data["envs"]["local"]["notes"] == ["改过了"]
+
+
+def test_save_keeps_nested_unknown_keys(tmp_path: Path):
+    """The form owns base_url/auth/db/script, but keys under them must survive."""
+    root = _yard(tmp_path)
+    _configure_pi(root)
+    (root / "qa.yaml").write_text(
+        "workers:\n  - id: a\n    provider: rcc\n    model: grok-4\n"
+        "envs:\n"
+        "  local:\n    base_url: http://127.0.0.1:8080\n"
+        "    auth:\n      default: default\n      sso: true\n"
+        "      accounts:\n        default:\n          username_env: U\n"
+        "          future: keep\n"
+        "    db:\n      url_env: DB_URL\n      driver: pg\n"
+        "    script:\n      runner: bin/rails runner\n      shell: bash\n",
+        encoding="utf-8",
+    )
+    payload = qa_payload(root)
+    payload["envs"]["local"]["notes"] = ["改过"]
+    save_qa_config(root, payload)
+    env = yaml.safe_load((root / "qa.yaml").read_text(encoding="utf-8"))["envs"]["local"]
+    assert env["auth"]["sso"] is True
+    assert env["auth"]["accounts"]["default"]["future"] == "keep"
+    assert env["db"]["driver"] == "pg"
+    assert env["script"]["shell"] == "bash"
+    assert env["notes"] == ["改过"]
+
+
+def test_save_allows_a_placeholder_non_active_env(tmp_path: Path):
+    """A second env with no base_url yet must not block saving the active one."""
+    root = _yard(tmp_path)
+    _configure_pi(root)
+    payload = _payload(root)
+    payload["envs"]["test"] = {
+        "base_url": "",
+        "auth": {"default": "default", "accounts": {}},
+        "db": {"url_env": ""},
+        "script": {"runner": ""},
+        "notes": [],
+    }
+    save_qa_config(root, payload)
+    data = yaml.safe_load((root / "qa.yaml").read_text(encoding="utf-8"))
+    assert data["envs"]["test"]["base_url"] == ""
+    assert load_qa_config(root).env.base_url == "http://127.0.0.1:8080"
+    with pytest.raises(TestRejected, match="base_url"):
+        load_qa_config(root, "test")
 
 
 def test_save_keeps_a_cleared_managed_key_cleared(tmp_path: Path):

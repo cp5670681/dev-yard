@@ -8,7 +8,7 @@ import type {
   JobSnapshot,
   Meta,
   PiSettings,
-  QaConfigPayload,
+  QaConfigSave,
   QaConfigState,
   QaPage,
   Repo,
@@ -113,6 +113,7 @@ export function runAction(
     source?: string;
     repos?: string[];
     strategy?: string;
+    env?: string;
   } = {},
 ) {
   return api<JobsOut>(
@@ -187,7 +188,7 @@ export function getQaConfig() {
   return api<QaConfigState>("/api/qa-config");
 }
 
-export function saveQaConfig(payload: QaConfigPayload) {
+export function saveQaConfig(payload: QaConfigSave) {
   return api<QaConfigState>("/api/qa-config", {
     method: "PUT",
     body: JSON.stringify(payload),

@@ -7,7 +7,7 @@ import yaml
 
 from dev_yard import paths
 from dev_yard.qa import discover_cases, split_frontmatter
-from dev_yard.qa_config import TestRejected, load_qa_config
+from dev_yard.qa_config import TestRejected, load_qa_config, qa_env_choices
 
 _IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _UNREADABLE = "unreadable"
@@ -66,9 +66,12 @@ def qa_detail_summary(root: Path, jira: str) -> dict[str, Any]:
     has_cases = bool(discover_cases(qa)) if qa.is_dir() else False
     has_meta = (qa / "meta.yaml").is_file()
     progress = latest_progress(qa) if qa.is_dir() else None
+    env_names, active_env = qa_env_choices(root)
     return {
         "has_cases": has_cases,
         "has_meta": has_meta,
+        "envs": env_names,
+        "active_env": active_env,
         "latest_run": latest_run_summary(qa) if qa.is_dir() else None,
         "progress": progress,
     }

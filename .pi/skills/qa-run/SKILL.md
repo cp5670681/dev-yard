@@ -12,11 +12,13 @@ description: >
 ## 必读
 
 - prompt 里的那条 case 全文
-- `reqs/<JIRA>/qa/context.md`（base_url、worktree、state_file、db 是否已配）
+- `reqs/<JIRA>/qa/context.md`（本次 run 固定的 `env`、base_url、worktree、state_file、db 是否已配）
 - `reqs/<JIRA>/qa/meta.yaml` 的 `routes`
 - 前端路由代码（需要时）
 
 页面 URL = `context.md` 的 `base_url` + 已知路由。不要猜 host。
+
+`context.md` 的 `env` 是本次 run 唯一允许的环境；即使文件里列了其它 `available envs`，也不要切换或用它们的地址。
 
 ## 禁止
 

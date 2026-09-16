@@ -448,7 +448,18 @@
     <v-dialog v-model="confirm.open" max-width="420">
       <v-card>
         <v-card-title>确认操作</v-card-title>
-        <v-card-text>{{ confirm.text }}</v-card-text>
+        <v-card-text>
+          <p class="mb-2">{{ confirm.text }}</p>
+          <v-select
+            v-if="confirm.action === 'run-test' && qaEnvs.length"
+            v-model="confirm.env"
+            :items="qaEnvs"
+            label="环境（qa.yaml envs）"
+            variant="outlined"
+            density="comfortable"
+            hide-details
+          />
+        </v-card-text>
         <v-card-actions>
           <v-spacer />
           <v-btn variant="text" @click="confirm.open = false">取消</v-btn>
@@ -536,7 +547,8 @@ const previewOpen = computed({
     if (!v) preview.value = "";
   },
 });
-const confirm = reactive({ open: false, action: "", ticketId: "", text: "" });
+const confirm = reactive({ open: false, action: "", ticketId: "", text: "", env: "" });
+const qaEnvs = computed(() => detail.value?.qa?.envs ?? []);
 const deleteOpen = ref(false);
 const diffDialog = reactive({ open: false, ticketId: "" });
 const reviewDialog = reactive({ open: false, ticket: null as Ticket | null });
@@ -703,7 +715,8 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
   const freeze = action === "freeze";
   const push = action === "push";
   const sync = action === "sync";
-  if (risky || freeze || push || sync) {
+  const runTest = action === "run-test";
+  if (risky || freeze || push || sync || runTest) {
     confirm.action = action;
     confirm.ticketId = ticketId || "";
     confirm.text = push
@@ -712,7 +725,14 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
       ? "将 fetch 远端，并把已冻结 worktree 更新到 origin/<default_base>（默认快进）。确认继续？"
       : freeze
       ? "冻结后会切 worktree。确认继续？"
+      : runTest
+      ? "将按 qa.yaml 设计并执行 UI 用例；失败会拆 B 票。确认继续？"
       : "强制重抽会重置阶段并删除截图。确认继续？";
+    if (runTest) {
+      const envs = qaEnvs.value;
+      const preferred = detail.value?.qa?.active_env || "";
+      confirm.env = envs.includes(preferred) ? preferred : envs[0] || "";
+    }
     confirm.open = true;
     return;
   }
@@ -721,7 +741,8 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
 
 function runConfirmed() {
   confirm.open = false;
-  void onAction(confirm.action, confirm.ticketId || undefined);
+  const env = confirm.action === "run-test" ? confirm.env : undefined;
+  void onAction(confirm.action, confirm.ticketId || undefined, env);
 }
 
 async function doDelete() {
@@ -786,13 +807,14 @@ async function submitReport() {
   }
 }
 
-async function onAction(action: string, ticketId?: string) {
+async function onAction(action: string, ticketId?: string, env?: string) {
   error.value = "";
   acting.value = action;
   try {
     const out = await runAction(jira.value, action, {
       ticket_id: ticketId,
       force: action === "open" ? forceOpen.value : false,
+      env: env || undefined,
     });
     const job = out.jobs[0]?.id;
     if (job) {

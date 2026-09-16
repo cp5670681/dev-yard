@@ -140,6 +140,8 @@ export interface ReqDetail {
   qa?: {
     has_cases: boolean;
     has_meta: boolean;
+    envs?: string[];
+    active_env?: string;
     latest_run: null | {
       run_id: string;
       env?: string;
@@ -274,8 +276,11 @@ export interface QaConfigPayload {
   browser: { channel: string; headed: boolean };
   workers: QaWorkerCfg[];
   envs: Record<string, QaEnvCfg>;
-  other_envs: string[];
+  env_names: string[];
 }
+
+/** PUT body: the env names are derived from `envs`, so they are not sent. */
+export type QaConfigSave = Omit<QaConfigPayload, "env_names">;
 
 export interface QaConfigState {
   exists: boolean;

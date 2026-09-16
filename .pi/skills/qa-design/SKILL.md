@@ -12,7 +12,7 @@ description: >
 ## 必读
 
 - `reqs/<JIRA>/{REQUIREMENT,SPEC,TICKETS}.md`（只读）
-- `reqs/<JIRA>/qa/context.md`（宿主写的 worktree 地图与 base_url）
+- `reqs/<JIRA>/qa/context.md`（宿主写的 worktree 地图、本次 `env` 与 base_url）
 - `reqs/CONTEXT.md`（若有：只读术语）
 - 每个 worktree：`git -C <path> diff <default_base>...HEAD`（HEAD 即 `req/<JIRA>`）
 

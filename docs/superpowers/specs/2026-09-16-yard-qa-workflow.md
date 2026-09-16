@@ -143,6 +143,8 @@ envs:
 
 第一刀只认 `envs.local`（或唯一的那个 `envs` 键）。出现 `test` / `k8s` 键不报错、不执行。
 
+> 后续已扩展为多环境：`envs` 下所有环境都可编辑，`active_env` 为默认环境，`req test --env <name>`（Web「自动测」弹窗同样可选）指定本次环境；`context.md` 记录本次实际环境。
+
 缺失 `qa.yaml` 或 `base_url`：`req test` 失败，提示补配置（不在 skill 里面试一整份 init）。
 
 `workers` 校验：

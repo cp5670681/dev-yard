@@ -139,8 +139,9 @@ dev-yard review PROJ-101 --contract # 跨仓契约校验
 
 # 8. 提测与修复闭环
 dev-yard req submit-test PROJ-101
-# 工作区根放 qa.yaml（envs.local.base_url + 可选 workers 模型池）后：
+# 工作区根放 qa.yaml（envs.<环境>.base_url，可配多个环境 + 可选 workers 模型池）后：
 dev-yard req test PROJ-101          # 设计用例并执行；失败拆 B 票，通过则 phase=done
+dev-yard req test PROJ-101 --env test   # 指定环境；缺省用 qa.yaml 的 active_env
 # 需求页「测试」Tab（/r/:key/qa）只读看用例、改动点、run 与截图
 # 提 bug 后修就绪的 B 票：dev-yard implement PROJ-101 --from-test
 
@@ -236,7 +237,7 @@ dev-yard web --host 0.0.0.0 --allow-remote
 | `dev-yard req delete <key>` | 删除需求产物与 Worktree | |
 | `dev-yard req push <key> [repos..]` | 推送各仓 Worktree 分支到远端 | `--remote`, `--force` |
 | `dev-yard req submit-test <key>` | 标记提测 | |
-| `dev-yard req test <key>` | 提测后自动测（qa-design + qa-run） | `--print`, `--design-only`, `--run-only`, `--redesign`, `--no-ingest` |
+| `dev-yard req test <key>` | 提测后自动测（qa-design + qa-run） | `--env`, `--print`, `--design-only`, `--run-only`, `--redesign`, `--no-ingest` |
 | `dev-yard req accept-test <key>` | 录入测试报告 | `--verdict`, `--body-file` |
 | `dev-yard grill <key>` | 需求答辩与对齐 | `--print`, `--dry-run` |
 | `dev-yard spec <key>` | 制定方案与契约 | `--print`, `--dry-run` |

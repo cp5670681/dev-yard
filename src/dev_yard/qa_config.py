@@ -23,6 +23,11 @@ class QaConfigUnreadable(TestRejected):
 
 # env keys the form owns; anything else in that env is carried through a save
 _MANAGED_ENV_KEYS = frozenset({"base_url", "auth", "db", "script", "notes"})
+# managed keys nested one level below the env; the rest are carried through
+_MANAGED_ACCOUNT_KEYS = frozenset({"username_env", "password_env", "state_file"})
+_MANAGED_AUTH_KEYS = frozenset({"default", "accounts"})
+_MANAGED_DB_KEYS = frozenset({"url_env"})
+_MANAGED_SCRIPT_KEYS = frozenset({"runner"})
 
 
 @dataclass(frozen=True)
@@ -65,6 +70,7 @@ class QaConfig:
     env: QaEnv
     browser: QaBrowser
     workers: tuple[QaWorker, ...]
+    env_names: tuple[str, ...] = ()
 
     @property
     def total_concurrency(self) -> int:
@@ -116,7 +122,7 @@ def _parse_env(name: str, raw: Any) -> QaEnv:
         raise TestRejected(f"qa.yaml envs.{name} must be a mapping")
     base_url = _blank(raw.get("base_url"))
     if not base_url:
-        raise TestRejected("qa.yaml is missing base_url; add envs.local.base_url")
+        raise TestRejected(f"qa.yaml envs.{name} is missing base_url")
     auth = raw.get("auth") if isinstance(raw.get("auth"), dict) else {}
     db = raw.get("db") if isinstance(raw.get("db"), dict) else {}
     script = raw.get("script") if isinstance(raw.get("script"), dict) else {}
@@ -187,30 +193,47 @@ def _parse_workers(root: Path, raw: Any) -> tuple[QaWorker, ...]:
     return tuple(workers)
 
 
-def _pick_env(data: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+def _env_names(envs: dict[str, Any]) -> list[str]:
+    return [str(k) for k in envs]
+
+
+def _default_env_name(data: dict[str, Any], envs: dict[str, Any]) -> str:
+    """Pick the env a run uses when no explicit name is given."""
+    active = _blank(data.get("active_env"))
+    if active and active in envs:
+        return active
+    if "local" in envs:
+        return "local"
+    return next(iter(envs))
+
+
+def _select_env(
+    data: dict[str, Any], env: str | None = None
+) -> tuple[str, dict[str, Any]]:
     envs = data.get("envs") or {}
     if not isinstance(envs, dict) or not envs:
-        raise TestRejected("qa.yaml needs envs.local (or a single envs key)")
-    active = _blank(data.get("active_env")) or "local"
-    if "local" in envs and isinstance(envs["local"], dict):
-        return "local", envs["local"]
-    if len(envs) == 1:
-        name = next(iter(envs))
-        raw = envs[name]
-        if not isinstance(raw, dict):
-            raise TestRejected(f"qa.yaml envs.{name} must be a mapping")
-        return name, raw
-    if active in envs and active not in {"test", "k8s"}:
-        raw = envs[active]
-        if not isinstance(raw, dict):
-            raise TestRejected(f"qa.yaml envs.{active} must be a mapping")
-        return active, raw
-    raise TestRejected("qa.yaml needs envs.local (first knife is local only)")
+        raise TestRejected("qa.yaml needs envs.<name> with base_url")
+    wanted = _blank(env)
+    if wanted:
+        if wanted not in envs:
+            names = ", ".join(_env_names(envs))
+            raise TestRejected(
+                f"qa.yaml has no envs.{wanted}; available: {names}"
+            )
+        name = wanted
+    else:
+        name = _default_env_name(data, envs)
+    raw = envs[name]
+    if not isinstance(raw, dict):
+        raise TestRejected(f"qa.yaml envs.{name} must be a mapping")
+    return name, raw
 
 
-def _parse_config(root: Path, data: dict[str, Any]) -> QaConfig:
-    env_name, env_raw = _pick_env(data)
+def _parse_config(root: Path, data: dict[str, Any], env: str | None = None) -> QaConfig:
+    env_name, env_raw = _select_env(data, env)
     env = _parse_env(env_name, env_raw)
+    envs = data.get("envs")
+    envs = envs if isinstance(envs, dict) else {}
     browser_raw = data.get("browser") if isinstance(data.get("browser"), dict) else {}
     headed = browser_raw.get("headed", False)
     if isinstance(headed, str):
@@ -220,14 +243,22 @@ def _parse_config(root: Path, data: dict[str, Any]) -> QaConfig:
         headed=bool(headed),
     )
     workers = _parse_workers(root, data.get("workers"))
-    return QaConfig(active_env=env_name, env=env, browser=browser, workers=workers)
+    return QaConfig(
+        active_env=env_name,
+        env=env,
+        browser=browser,
+        workers=workers,
+        env_names=tuple(_env_names(envs)) or (env_name,),
+    )
 
 
-def load_qa_config(root: Path) -> QaConfig:
+def load_qa_config(root: Path, env: str | None = None) -> QaConfig:
     path = paths.qa_yaml(root)
     if not path.is_file():
-        raise TestRejected("missing qa.yaml; add workspace qa.yaml with envs.local.base_url")
-    return _parse_config(root, _read_data(root))
+        raise TestRejected(
+            "missing qa.yaml; add workspace qa.yaml with envs.<name>.base_url"
+        )
+    return _parse_config(root, _read_data(root), env)
 
 
 def _read_data(root: Path) -> dict[str, Any]:
@@ -262,15 +293,28 @@ def _raw_mapping(value: Any, field: str) -> dict[str, Any]:
     return value
 
 
-def _env_to_raw(raw: Any, field: str) -> dict[str, Any]:
-    """Form payload for one env → the YAML mapping that env is written as."""
+def _env_to_raw(raw: Any, field: str, previous: Any = None) -> dict[str, Any]:
+    """Form payload for one env → the YAML mapping that env is written as.
+
+    Keys the form does not own — at the env level and inside auth/db/script —
+    are carried over from `previous`, so a save never drops hand-written config.
+    """
     env = _raw_mapping(raw, field)
+    prev = previous if isinstance(previous, dict) else {}
+
+    prev_auth = prev.get("auth") if isinstance(prev.get("auth"), dict) else {}
+    prev_accounts = (
+        prev_auth.get("accounts") if isinstance(prev_auth.get("accounts"), dict) else {}
+    )
     auth = _raw_mapping(env.get("auth"), f"{field}.auth")
     accounts_raw = _raw_mapping(auth.get("accounts"), f"{field}.auth.accounts")
     accounts: dict[str, Any] = {}
     for name, item in accounts_raw.items():
         entry_in = _raw_mapping(item, f"{field}.auth.accounts.{name}")
-        entry: dict[str, Any] = {}
+        prev_entry = (
+            prev_accounts.get(name) if isinstance(prev_accounts.get(name), dict) else {}
+        )
+        entry = {k: v for k, v in prev_entry.items() if k not in _MANAGED_ACCOUNT_KEYS}
         for key in ("username_env", "password_env", "state_file"):
             value = _blank(entry_in.get(key))
             if value:
@@ -278,16 +322,28 @@ def _env_to_raw(raw: Any, field: str) -> dict[str, Any]:
         if entry:
             accounts[str(name)] = entry
     out: dict[str, Any] = {"base_url": _blank(env.get("base_url"))}
-    auth_out: dict[str, Any] = {"default": _blank(auth.get("default")) or "default"}
+    auth_out = {k: v for k, v in prev_auth.items() if k not in _MANAGED_AUTH_KEYS}
+    auth_out["default"] = _blank(auth.get("default")) or "default"
     if accounts:
         auth_out["accounts"] = accounts
     out["auth"] = auth_out
+
     db = _raw_mapping(env.get("db"), f"{field}.db")
+    prev_db = prev.get("db") if isinstance(prev.get("db"), dict) else {}
+    db_out = {k: v for k, v in prev_db.items() if k not in _MANAGED_DB_KEYS}
     if _blank(db.get("url_env")):
-        out["db"] = {"url_env": _blank(db.get("url_env"))}
+        db_out["url_env"] = _blank(db.get("url_env"))
+    if db_out:
+        out["db"] = db_out
+
     script = _raw_mapping(env.get("script"), f"{field}.script")
+    prev_script = prev.get("script") if isinstance(prev.get("script"), dict) else {}
+    script_out = {k: v for k, v in prev_script.items() if k not in _MANAGED_SCRIPT_KEYS}
     if _blank(script.get("runner")):
-        out["script"] = {"runner": _blank(script.get("runner"))}
+        script_out["runner"] = _blank(script.get("runner"))
+    if script_out:
+        out["script"] = script_out
+
     notes = env.get("notes") or []
     if not isinstance(notes, list):
         raise TestRejected("qa.yaml notes must be a list")
@@ -403,7 +459,7 @@ def default_qa_payload(root: Path) -> dict[str, Any]:
         "browser": _browser_payload(None),
         "workers": _workers_payload(root, None),
         "envs": {"local": _env_payload(None)},
-        "other_envs": [],
+        "env_names": ["local"],
     }
 
 
@@ -412,9 +468,8 @@ def qa_payload(root: Path) -> dict[str, Any]:
 
     Deliberately lenient: an unreadable file raises, but a parsable file that
     fails validation still projects — repairing it is the point of the form.
-    Every readable key is projected even when there is no env to edit, or a
-    save would silently replace the keys the form never showed.
-    Only the active env is editable; the rest are named for read-only display.
+    Every readable key is projected; every env is editable, and `active_env`
+    names the one a run uses unless overridden at run time.
     """
     data = _read_data(root)
     envs = data.get("envs") if isinstance(data.get("envs"), dict) else {}
@@ -426,40 +481,67 @@ def qa_payload(root: Path) -> dict[str, Any]:
             "browser": browser,
             "workers": workers,
             "envs": {"local": _env_payload(None)},
-            "other_envs": [],
+            "env_names": ["local"],
         }
-    try:
-        env_name, env_raw = _pick_env(data)
-    except TestRejected:
-        # Only non-local envs exist; v1 cannot edit those, but the page must
-        # still open so a local env can be added.
-        env_name, env_raw = "local", None
+    names = _env_names(envs)
+    active = _default_env_name(data, envs)
     return {
-        "active_env": env_name,
+        "active_env": active,
         "browser": browser,
         "workers": workers,
-        "envs": {env_name: _env_payload(env_raw)},
-        "other_envs": sorted(k for k in envs if k != env_name),
+        "envs": {name: _env_payload(envs.get(name)) for name in names},
+        "env_names": names,
     }
+
+
+def qa_env_choices(root: Path) -> tuple[list[str], str]:
+    """Env names in qa.yaml plus the default one, without validating base_url.
+
+    Returns ([], "") when the file is missing or has no envs; raises nothing.
+    """
+    try:
+        data = _read_data(root)
+    except QaConfigUnreadable:
+        return [], ""
+    envs = data.get("envs") if isinstance(data.get("envs"), dict) else {}
+    if not envs:
+        return [], ""
+    return _env_names(envs), _default_env_name(data, envs)
 
 
 def save_qa_config(root: Path, payload: Any) -> None:
     """Validate the form payload with the same parsers as load, then write.
 
-    Keys for envs other than the active one (test/k8s) are carried through
-    untouched; v1 only edits one env. A qa.yaml that cannot be parsed is
-    never overwritten — fix or delete it first.
+    Every env in the payload is written; envs dropped from the payload are
+    removed from qa.yaml. Keys the form does not own stay as written, so
+    unknown config survives. Only the active env must be fully valid — other
+    envs may be placeholders with no base_url yet. A qa.yaml that cannot be
+    parsed is never overwritten — fix or delete it first.
     """
     if not isinstance(payload, dict):
         raise TestRejected("qa payload must be a mapping")
     data = _read_data(root)
-    env_name = _blank(payload.get("active_env")) or "local"
     envs_in = payload.get("envs")
-    if not isinstance(envs_in, dict) or env_name not in envs_in:
-        raise TestRejected(f"qa payload must carry envs.{env_name}")
-    out: dict[str, Any] = {}
-    if env_name != "local":
-        out["active_env"] = env_name
+    if not isinstance(envs_in, dict) or not envs_in:
+        raise TestRejected("qa payload must carry at least one env under envs")
+    existing = _raw_mapping(data.get("envs"), "envs")
+    merged: dict[str, Any] = {}
+    for raw_name, env_raw in envs_in.items():
+        name = _blank(raw_name)
+        if not name:
+            raise TestRejected("qa.yaml env name must not be empty")
+        previous = existing.get(name)
+        prev_env = previous if isinstance(previous, dict) else {}
+        # Keys the form does not own stay as written; the ones it does own
+        # follow the form, so clearing a field clears it.
+        kept = {k: v for k, v in prev_env.items() if k not in _MANAGED_ENV_KEYS}
+        merged[name] = {**kept, **_env_to_raw(env_raw, f"envs.{name}", prev_env)}
+    env_name = _blank(payload.get("active_env")) or next(iter(merged))
+    if env_name not in merged:
+        raise TestRejected(f"active_env {env_name!r} is not one of the envs")
+    # The env a run would use must be runnable; the rest may be unfinished.
+    _parse_env(env_name, merged[env_name])
+    out: dict[str, Any] = {"active_env": env_name}
     browser_raw = _raw_mapping(payload.get("browser"), "browser")
     headed = browser_raw.get("headed", False)
     if isinstance(headed, str):
@@ -471,19 +553,7 @@ def save_qa_config(root: Path, payload: Any) -> None:
     workers = _workers_to_raw(payload.get("workers"))
     if workers:
         out["workers"] = workers
-    merged = dict(_raw_mapping(data.get("envs"), "envs"))
-    previous = merged.get(env_name)
-    rebuilt = _env_to_raw(envs_in[env_name], f"envs.{env_name}")
-    if isinstance(previous, dict):
-        # Keys the form does not own stay as written; the ones it does own
-        # follow the form, so clearing a field clears it.
-        kept = {k: v for k, v in previous.items() if k not in _MANAGED_ENV_KEYS}
-        merged[env_name] = {**kept, **rebuilt}
-    else:
-        merged[env_name] = rebuilt
     out["envs"] = merged
-    # Validate the env actually written, not whichever _pick_env would read.
-    _parse_env(env_name, merged[env_name])
     _parse_workers(root, out.get("workers"))
     path = paths.qa_yaml(root)
     tmp = path.with_suffix(".yaml.tmp")

@@ -62,16 +62,26 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
     state_file = acct.state_file if acct else ""
     db = "configured" if env.db_url_env else "not configured"
     headed = "true" if cfg.headed else "false"
+    others = [n for n in cfg.env_names if n != cfg.active_env]
     lines += [
         "",
         "## Environment",
         "",
         f"- env: {cfg.active_env}",
+        f"- available envs: {', '.join(cfg.env_names) or cfg.active_env}",
         f"- base_url: {env.base_url}",
         f"- browser: {cfg.browser.channel} headed={headed}",
         f"- state_file: {state_file or '(none)'}",
         f"- db: {db}",
         f"- script.runner: {env.script_runner or '(sql only)'}",
+        "",
+        "This run uses only the env above; do not switch env or guess another host.",
+    ]
+    if others:
+        lines.append(
+            f"Other envs exist ({', '.join(others)}) but are out of scope for this run."
+        )
+    lines += [
         "",
         "Credentials come from environment variable names in qa.yaml; do not write passwords.",
         "Do not `state-save` while more than one case is in flight.",
@@ -409,6 +419,7 @@ def req_test(
     root: Path,
     jira: str,
     *,
+    env: str | None = None,
     print_mode: bool = False,
     design_only: bool = False,
     run_only: bool = False,
@@ -422,7 +433,7 @@ def req_test(
     if design_only and run_only:
         raise TestRejected("--design-only and --run-only are mutually exclusive")
     _gate(root, jira)
-    cfg = load_qa_config(root)
+    cfg = load_qa_config(root, env)
     qa = paths.qa_dir(root, jira)
     qa.mkdir(parents=True, exist_ok=True)
     write_context_md(root, jira, cfg)
