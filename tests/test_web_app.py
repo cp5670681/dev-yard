@@ -1,9 +1,11 @@
+import re
 import threading
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from dev_yard.qa_config import load_qa_config
 from dev_yard.service import init_yard, repo_add, req_open
 from dev_yard.web.app import check_bind_host, create_app, render_markdown
 from dev_yard.web.board import asset_file
@@ -413,6 +415,24 @@ def test_job_events_unknown_404(tmp_path: Path):
     assert r.status_code == 404
 
 
+def test_spa_icons_use_mdi_path_constants():
+    """Icon props must be @mdi/js path data, not "mdi-x" names.
+
+    Vuetify renders a bare string as an SVG path, so a name like
+    "mdi-plus" fails at runtime with an <path> d error — invisible to
+    vue-tsc and to the build, hence this guard.
+    """
+    root = Path(__file__).resolve().parents[1]
+    offenders: list[str] = []
+    pattern = re.compile(r'(?:^|\s):?(?:prepend-|append-)?icon="(mdi-[^"]+)"')
+    for path in sorted((root / "web" / "src").rglob("*.vue")):
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            found = pattern.search(line)
+            if found:
+                offenders.append(f"{path.relative_to(root)}:{lineno}: {found.group(1)}")
+    assert offenders == []
+
+
 def test_assistant_drawer_is_wired():
     root = Path(__file__).resolve().parents[1]
     app_vue = (root / "web" / "src" / "App.vue").read_text()
@@ -813,6 +833,97 @@ def test_pi_settings_api(tmp_path: Path, monkeypatch):
         json={"provider": "", "model": "", "stages": {"example": {"provider": "", "model": "x"}}},
     )
     assert plugin_put.status_code == 400
+
+
+def test_qa_config_page_serves_spa(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    _assert_spa_shell(_client(yard).get("/qa-config"))
+
+
+def test_qa_config_api(tmp_path: Path, monkeypatch):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    monkeypatch.setattr(
+        "dev_yard.web.app.list_pi_catalog",
+        lambda: {
+            "providers": [{"id": "rcc", "models": ["glm-5.3", "MiniMax-M3"]}],
+            "error": None,
+        },
+    )
+    client = _client(yard)
+    empty = client.get("/api/qa-config")
+    assert empty.status_code == 200
+    body = empty.json()
+    assert body["exists"] is False
+    assert body["parse_error"] == ""
+    assert body["payload"]["envs"]["local"]["base_url"] == ""
+    assert len(body["payload"]["workers"]) == 1
+    assert body["catalog"]["providers"][0]["id"] == "rcc"
+
+    payload = {
+        "active_env": "local",
+        "browser": {"channel": "chrome", "headed": True},
+        "workers": [
+            {
+                "id": "a",
+                "provider": "rcc",
+                "model": "MiniMax-M3",
+                "concurrency": 2,
+                "priority": 1,
+            }
+        ],
+        "envs": {
+            "local": {
+                "base_url": "http://127.0.0.1:8080",
+                "auth": {"default": "default", "accounts": {}},
+                "db": {"url_env": "YARD_QA_DB_URL"},
+                "script": {"runner": ""},
+                "notes": ["先起前端"],
+            }
+        },
+    }
+    saved = client.put("/api/qa-config", json=payload)
+    assert saved.status_code == 200
+    assert saved.json()["exists"] is True
+    cfg = load_qa_config(yard)
+    assert cfg.env.base_url == "http://127.0.0.1:8080"
+    assert cfg.browser.headed is True
+    assert cfg.headed is False  # 总并发 > 1 时宿主强制无头
+    assert cfg.workers[0].id == "a"
+
+    again = client.get("/api/qa-config").json()
+    assert again["payload"]["envs"]["local"]["notes"] == ["先起前端"]
+    assert "base_url: http://127.0.0.1:8080" in again["raw"]
+
+    bad = dict(payload)
+    bad["envs"] = {"local": {**payload["envs"]["local"], "base_url": ""}}
+    assert client.put("/api/qa-config", json=bad).status_code == 400
+    assert load_qa_config(yard).env.base_url == "http://127.0.0.1:8080"
+
+    (yard / "qa.yaml").write_text("envs: [unclosed\n", encoding="utf-8")
+    broken = client.get("/api/qa-config")
+    assert broken.status_code == 200
+    assert "qa.yaml" in broken.json()["parse_error"]
+    assert broken.json()["raw"] == "envs: [unclosed\n"
+    assert broken.json()["payload"] is None
+    assert client.put("/api/qa-config", json=payload).status_code == 409
+    assert (yard / "qa.yaml").read_text(encoding="utf-8") == "envs: [unclosed\n"
+
+
+def test_qa_config_api_survives_a_non_utf8_file(tmp_path: Path):
+    """A GBK-saved qa.yaml must answer like any other unreadable file, not 500."""
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    (yard / "qa.yaml").write_bytes(
+        "envs:\n  local:\n    base_url: http://x\n# 中文注释\n".encode("gbk")
+    )
+    client = _client(yard)
+    r = client.get("/api/qa-config")
+    assert r.status_code == 200
+    assert "qa.yaml" in r.json()["parse_error"]
+    assert r.json()["payload"] is None
+    assert client.put("/api/qa-config", json={}).status_code == 409
 
 
 def test_cli_web_help():

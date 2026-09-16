@@ -404,6 +404,7 @@ def test_init_ignores_yard_qa(tmp_path: Path):
     init_yard(tmp_path)
     gi = (tmp_path / ".gitignore").read_text().splitlines()
     assert ".yard-qa/" in gi
+    assert "qa.yaml" in gi
 
 
 def test_worktree_png_is_mutation(tmp_path: Path, git_src: Path, monkeypatch):

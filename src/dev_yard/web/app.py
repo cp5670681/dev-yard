@@ -22,6 +22,12 @@ from dev_yard.gitops import GitError
 from dev_yard.service import extract_req_key
 from dev_yard.config import PI_STAGES, PiSettings, StageModel, load_pi_settings, save_pi_settings
 from dev_yard.pi_catalog import list_pi_catalog
+from dev_yard.qa_config import (
+    QaConfigUnreadable,
+    qa_payload,
+    save_qa_config,
+)
+from dev_yard.qa_config import TestRejected as QaConfigRejected
 from dev_yard.web.board import (
     DOC_FILES,
     PIPELINE,
@@ -115,6 +121,13 @@ class RepoAddIn(BaseModel):
 class RepoPiIn(BaseModel):
     provider: str = ""
     model: str = ""
+
+
+class QaConfigIn(BaseModel):
+    active_env: str = "local"
+    browser: dict[str, Any] = Field(default_factory=dict)
+    workers: list[dict[str, Any]] = Field(default_factory=list)
+    envs: dict[str, Any] = Field(default_factory=dict)
 
 
 class ActionIn(BaseModel):
@@ -454,6 +467,10 @@ def create_app(
 
     @app.get("/settings")
     def settings_page():
+        return spa_index()
+
+    @app.get("/qa-config")
+    def qa_config_page():
         return spa_index()
 
     @app.get("/open")
@@ -993,6 +1010,54 @@ def create_app(
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         return _pi_settings_out()
+
+    def _qa_config_out():
+        """Form state for qa.yaml.
+
+        A file that cannot be parsed still answers 200 with `payload: null` and
+        the raw text, so the page can show you what to fix instead of 500ing.
+        """
+        path = paths.qa_yaml(root)
+        exists = path.is_file()
+        try:
+            payload: dict[str, Any] | None = qa_payload(root)
+            parse_error = ""
+        except QaConfigRejected as e:
+            payload = None
+            parse_error = str(e)
+        raw = ""
+        if exists:
+            try:
+                raw = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                raw = path.read_bytes().decode("utf-8", errors="replace")
+            except OSError as e:
+                raw = f"(cannot read qa.yaml: {e})"
+        return {
+            "exists": exists,
+            "parse_error": parse_error,
+            "raw": raw,
+            # No form to fill in when the file is unreadable, so skip the
+            # `pi --list-models` subprocess.
+            "payload": payload,
+            "catalog": list_pi_catalog()
+            if payload is not None
+            else {"providers": [], "error": None},
+        }
+
+    @app.get("/api/qa-config")
+    def api_qa_config_get():
+        return _qa_config_out()
+
+    @app.put("/api/qa-config")
+    def api_qa_config_put(payload: QaConfigIn):
+        try:
+            save_qa_config(root, payload.model_dump())
+        except QaConfigUnreadable as e:
+            raise HTTPException(409, str(e)) from e
+        except QaConfigRejected as e:
+            raise HTTPException(400, str(e)) from e
+        return _qa_config_out()
 
     @app.get("/api/repos")
     def api_repos():

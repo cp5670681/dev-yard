@@ -246,6 +246,46 @@ export interface PiSettings {
   catalog: PiCatalog;
 }
 
+export interface QaAccountCfg {
+  username_env: string;
+  password_env: string;
+  state_file: string;
+}
+
+export interface QaEnvCfg {
+  base_url: string;
+  auth: { default: string; accounts: Record<string, QaAccountCfg> };
+  db: { url_env: string };
+  script: { runner: string };
+  notes: string[];
+}
+
+export interface QaWorkerCfg {
+  id: string;
+  /** null once the select is cleared — the server reads it as "". */
+  provider: string | null;
+  model: string | null;
+  concurrency: number;
+  priority: number;
+}
+
+export interface QaConfigPayload {
+  active_env: string;
+  browser: { channel: string; headed: boolean };
+  workers: QaWorkerCfg[];
+  envs: Record<string, QaEnvCfg>;
+  other_envs: string[];
+}
+
+export interface QaConfigState {
+  exists: boolean;
+  parse_error: string;
+  raw: string;
+  /** null when qa.yaml cannot be parsed; repair or delete the file first. */
+  payload: QaConfigPayload | null;
+  catalog: PiCatalog;
+}
+
 export interface PiEntry {
   role?: string;
   text?: string;

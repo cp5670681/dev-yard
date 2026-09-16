@@ -6,6 +6,7 @@ import OpenView from "@/views/OpenView.vue";
 import RequirementView from "@/views/RequirementView.vue";
 import DocView from "@/views/DocView.vue";
 import QaView from "@/views/QaView.vue";
+import QaConfigView from "@/views/QaConfigView.vue";
 
 export default createRouter({
   history: createWebHistory(),
@@ -13,6 +14,7 @@ export default createRouter({
     { path: "/", name: "home", component: DashboardView },
     { path: "/repos", name: "repos", component: ReposView },
     { path: "/settings", name: "settings", component: SettingsView },
+    { path: "/qa-config", name: "qa-config", component: QaConfigView },
     { path: "/open", name: "open", component: OpenView },
     { path: "/r/:jira", name: "requirement", component: RequirementView },
     { path: "/r/:jira/qa", name: "qa", component: QaView },

@@ -68,6 +68,7 @@ def init_yard(root: Path) -> None:
         "reqs/",
         ".env",
         "repos.yaml",
+        "qa.yaml",
         ".yard-qa/",
         ".yard-assistant/",
     ]

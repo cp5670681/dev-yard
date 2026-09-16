@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,14 @@ class TestRejected(ValueError):
     """req test refused (gate, config, mutation, DAG)."""
 
     __test__ = False
+
+
+class QaConfigUnreadable(TestRejected):
+    """qa.yaml exists but cannot be parsed; the form must not clobber it."""
+
+
+# env keys the form owns; anything else in that env is carried through a save
+_MANAGED_ENV_KEYS = frozenset({"base_url", "auth", "db", "script", "notes"})
 
 
 @dataclass(frozen=True)
@@ -199,13 +208,7 @@ def _pick_env(data: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     raise TestRejected("qa.yaml needs envs.local (first knife is local only)")
 
 
-def load_qa_config(root: Path) -> QaConfig:
-    path = paths.qa_yaml(root)
-    if not path.is_file():
-        raise TestRejected("missing qa.yaml; add workspace qa.yaml with envs.local.base_url")
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if not isinstance(data, dict):
-        raise TestRejected("qa.yaml must be a mapping")
+def _parse_config(root: Path, data: dict[str, Any]) -> QaConfig:
     env_name, env_raw = _pick_env(data)
     env = _parse_env(env_name, env_raw)
     browser_raw = data.get("browser") if isinstance(data.get("browser"), dict) else {}
@@ -218,3 +221,273 @@ def load_qa_config(root: Path) -> QaConfig:
     )
     workers = _parse_workers(root, data.get("workers"))
     return QaConfig(active_env=env_name, env=env, browser=browser, workers=workers)
+
+
+def load_qa_config(root: Path) -> QaConfig:
+    path = paths.qa_yaml(root)
+    if not path.is_file():
+        raise TestRejected("missing qa.yaml; add workspace qa.yaml with envs.local.base_url")
+    return _parse_config(root, _read_data(root))
+
+
+def _read_data(root: Path) -> dict[str, Any]:
+    """qa.yaml as a mapping. Missing or empty reads as {}; unreadable raises."""
+    path = paths.qa_yaml(root)
+    if not path.is_file():
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as e:
+        raise QaConfigUnreadable(f"qa.yaml is not UTF-8: {e}") from e
+    except OSError as e:
+        raise QaConfigUnreadable(f"qa.yaml cannot be read: {e}") from e
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        raise QaConfigUnreadable(f"qa.yaml is not readable YAML: {e}") from e
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise QaConfigUnreadable("qa.yaml must be a mapping")
+    if data.get("envs") is not None and not isinstance(data["envs"], dict):
+        raise QaConfigUnreadable("qa.yaml envs must be a mapping")
+    return data
+
+
+def _raw_mapping(value: Any, field: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise TestRejected(f"qa.yaml {field} must be a mapping")
+    return value
+
+
+def _env_to_raw(raw: Any, field: str) -> dict[str, Any]:
+    """Form payload for one env → the YAML mapping that env is written as."""
+    env = _raw_mapping(raw, field)
+    auth = _raw_mapping(env.get("auth"), f"{field}.auth")
+    accounts_raw = _raw_mapping(auth.get("accounts"), f"{field}.auth.accounts")
+    accounts: dict[str, Any] = {}
+    for name, item in accounts_raw.items():
+        entry_in = _raw_mapping(item, f"{field}.auth.accounts.{name}")
+        entry: dict[str, Any] = {}
+        for key in ("username_env", "password_env", "state_file"):
+            value = _blank(entry_in.get(key))
+            if value:
+                entry[key] = value
+        if entry:
+            accounts[str(name)] = entry
+    out: dict[str, Any] = {"base_url": _blank(env.get("base_url"))}
+    auth_out: dict[str, Any] = {"default": _blank(auth.get("default")) or "default"}
+    if accounts:
+        auth_out["accounts"] = accounts
+    out["auth"] = auth_out
+    db = _raw_mapping(env.get("db"), f"{field}.db")
+    if _blank(db.get("url_env")):
+        out["db"] = {"url_env": _blank(db.get("url_env"))}
+    script = _raw_mapping(env.get("script"), f"{field}.script")
+    if _blank(script.get("runner")):
+        out["script"] = {"runner": _blank(script.get("runner"))}
+    notes = env.get("notes") or []
+    if not isinstance(notes, list):
+        raise TestRejected("qa.yaml notes must be a list")
+    out["notes"] = [str(n).strip() for n in notes if str(n).strip()]
+    return out
+
+
+def _workers_to_raw(raw: Any) -> list[dict[str, Any]]:
+    """Form payload rows → worker mappings; defaults are left implicit."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise TestRejected("qa.yaml workers must be a list")
+    out: list[dict[str, Any]] = []
+    for i, item in enumerate(raw):
+        row = _raw_mapping(item, f"workers[{i}]")
+        entry: dict[str, Any] = {}
+        wid = _blank(row.get("id"))
+        if wid:
+            entry["id"] = wid
+        for key in ("provider", "model"):
+            value = _blank(row.get(key))
+            if value:
+                entry[key] = value
+        conc = _int(row.get("concurrency"), f"workers[{i}].concurrency", 1)
+        if conc != 1:
+            entry["concurrency"] = conc
+        priority = _int(row.get("priority"), f"workers[{i}].priority", 100)
+        if priority != 100:
+            entry["priority"] = priority
+        out.append(entry)
+    return out
+
+
+def _int_or(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _workers_payload(root: Path, raw: Any) -> list[dict[str, Any]]:
+    """Project the workers key onto form rows without validating it.
+
+    Missing provider/model is shown as the qa-run fallback it will resolve to,
+    so the form previews what would actually run.
+    """
+    rows = raw if isinstance(raw, list) and raw else [None]
+    fallback = resolve_pi_choice(root, "qa-run")
+    out: list[dict[str, Any]] = []
+    for item in rows:
+        row = item if isinstance(item, dict) else {}
+        provider = _blank(row.get("provider"))
+        model = _blank(row.get("model"))
+        if not provider and not model:
+            provider, model = fallback[0] or "", fallback[1] or ""
+        out.append(
+            {
+                "id": _blank(row.get("id")),
+                "provider": provider,
+                "model": model,
+                "concurrency": _int_or(row.get("concurrency"), 1),
+                "priority": _int_or(row.get("priority"), 100),
+            }
+        )
+    return out
+
+
+def _env_payload(raw: Any) -> dict[str, Any]:
+    """Project one env onto form fields without validating it."""
+    env = raw if isinstance(raw, dict) else {}
+    auth = env.get("auth") if isinstance(env.get("auth"), dict) else {}
+    accounts_raw = auth.get("accounts") if isinstance(auth.get("accounts"), dict) else {}
+    accounts: dict[str, Any] = {}
+    for name, item in accounts_raw.items():
+        row = item if isinstance(item, dict) else {}
+        accounts[str(name)] = {
+            "username_env": _blank(row.get("username_env")),
+            "password_env": _blank(row.get("password_env")),
+            "state_file": _blank(row.get("state_file")),
+        }
+    db = env.get("db") if isinstance(env.get("db"), dict) else {}
+    script = env.get("script") if isinstance(env.get("script"), dict) else {}
+    notes = env.get("notes") if isinstance(env.get("notes"), list) else []
+    return {
+        "base_url": _blank(env.get("base_url")),
+        "auth": {
+            "default": _blank(auth.get("default")) or "default",
+            "accounts": accounts,
+        },
+        "db": {"url_env": _blank(db.get("url_env"))},
+        "script": {"runner": _blank(script.get("runner"))},
+        "notes": [str(n) for n in notes],
+    }
+
+
+def _browser_payload(raw: Any) -> dict[str, Any]:
+    browser = raw if isinstance(raw, dict) else {}
+    headed = browser.get("headed", False)
+    if isinstance(headed, str):
+        headed = headed.lower() in {"true", "yes", "1"}
+    return {"channel": _blank(browser.get("channel")) or "chrome", "headed": bool(headed)}
+
+
+def default_qa_payload(root: Path) -> dict[str, Any]:
+    """What the form opens with when qa.yaml is absent or has no envs yet.
+
+    The worker row is pre-filled from the qa-run fallback so that a bare
+    workspace can be saved straight from the form.
+    """
+    return {
+        "active_env": "local",
+        "browser": _browser_payload(None),
+        "workers": _workers_payload(root, None),
+        "envs": {"local": _env_payload(None)},
+        "other_envs": [],
+    }
+
+
+def qa_payload(root: Path) -> dict[str, Any]:
+    """Read qa.yaml as form fields.
+
+    Deliberately lenient: an unreadable file raises, but a parsable file that
+    fails validation still projects — repairing it is the point of the form.
+    Every readable key is projected even when there is no env to edit, or a
+    save would silently replace the keys the form never showed.
+    Only the active env is editable; the rest are named for read-only display.
+    """
+    data = _read_data(root)
+    envs = data.get("envs") if isinstance(data.get("envs"), dict) else {}
+    browser = _browser_payload(data.get("browser"))
+    workers = _workers_payload(root, data.get("workers"))
+    if not envs:
+        return {
+            "active_env": "local",
+            "browser": browser,
+            "workers": workers,
+            "envs": {"local": _env_payload(None)},
+            "other_envs": [],
+        }
+    try:
+        env_name, env_raw = _pick_env(data)
+    except TestRejected:
+        # Only non-local envs exist; v1 cannot edit those, but the page must
+        # still open so a local env can be added.
+        env_name, env_raw = "local", None
+    return {
+        "active_env": env_name,
+        "browser": browser,
+        "workers": workers,
+        "envs": {env_name: _env_payload(env_raw)},
+        "other_envs": sorted(k for k in envs if k != env_name),
+    }
+
+
+def save_qa_config(root: Path, payload: Any) -> None:
+    """Validate the form payload with the same parsers as load, then write.
+
+    Keys for envs other than the active one (test/k8s) are carried through
+    untouched; v1 only edits one env. A qa.yaml that cannot be parsed is
+    never overwritten — fix or delete it first.
+    """
+    if not isinstance(payload, dict):
+        raise TestRejected("qa payload must be a mapping")
+    data = _read_data(root)
+    env_name = _blank(payload.get("active_env")) or "local"
+    envs_in = payload.get("envs")
+    if not isinstance(envs_in, dict) or env_name not in envs_in:
+        raise TestRejected(f"qa payload must carry envs.{env_name}")
+    out: dict[str, Any] = {}
+    if env_name != "local":
+        out["active_env"] = env_name
+    browser_raw = _raw_mapping(payload.get("browser"), "browser")
+    headed = browser_raw.get("headed", False)
+    if isinstance(headed, str):
+        headed = headed.lower() in {"true", "yes", "1"}
+    out["browser"] = {
+        "channel": _blank(browser_raw.get("channel")) or "chrome",
+        "headed": bool(headed),
+    }
+    workers = _workers_to_raw(payload.get("workers"))
+    if workers:
+        out["workers"] = workers
+    merged = dict(_raw_mapping(data.get("envs"), "envs"))
+    previous = merged.get(env_name)
+    rebuilt = _env_to_raw(envs_in[env_name], f"envs.{env_name}")
+    if isinstance(previous, dict):
+        # Keys the form does not own stay as written; the ones it does own
+        # follow the form, so clearing a field clears it.
+        kept = {k: v for k, v in previous.items() if k not in _MANAGED_ENV_KEYS}
+        merged[env_name] = {**kept, **rebuilt}
+    else:
+        merged[env_name] = rebuilt
+    out["envs"] = merged
+    # Validate the env actually written, not whichever _pick_env would read.
+    _parse_env(env_name, merged[env_name])
+    _parse_workers(root, out.get("workers"))
+    path = paths.qa_yaml(root)
+    tmp = path.with_suffix(".yaml.tmp")
+    tmp.write_text(
+        yaml.safe_dump(out, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    )
+    os.replace(tmp, path)

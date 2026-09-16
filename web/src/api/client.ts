@@ -8,6 +8,8 @@ import type {
   JobSnapshot,
   Meta,
   PiSettings,
+  QaConfigPayload,
+  QaConfigState,
   QaPage,
   Repo,
   ReqDetail,
@@ -176,6 +178,17 @@ export function savePiSettings(payload: {
   stages: Record<string, { provider: string; model: string }>;
 }) {
   return api<PiSettings>("/api/pi", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getQaConfig() {
+  return api<QaConfigState>("/api/qa-config");
+}
+
+export function saveQaConfig(payload: QaConfigPayload) {
+  return api<QaConfigState>("/api/qa-config", {
     method: "PUT",
     body: JSON.stringify(payload),
   });

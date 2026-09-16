@@ -89,6 +89,13 @@
           :prepend-icon="mdiTune"
           active-class="jira-nav-active"
         />
+        <v-list-item
+          to="/qa-config"
+          title="测试配置"
+          subtitle="qa.yaml 环境与并发"
+          :prepend-icon="mdiClipboardCheckOutline"
+          active-class="jira-nav-active"
+        />
       </v-list>
       <v-divider class="my-2" />
       <v-list-subheader v-if="runningJobs.length">进行中</v-list-subheader>
@@ -166,6 +173,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { useDisplay, useTheme } from "vuetify";
 import {
+  mdiClipboardCheckOutline,
   mdiClipboardTextOutline,
   mdiPlusBoxOutline,
   mdiProgressClock,

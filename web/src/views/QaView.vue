@@ -15,8 +15,14 @@
     <v-empty-state
       v-if="empty"
       title="还没有用例"
-      text="提测后点自动测，或 `dev-yard req test --design-only`。"
-    />
+      text="提测后点自动测，或 `dev-yard req test --design-only`。撞到缺 qa.yaml 就先配测试环境。"
+    >
+      <template #actions>
+        <v-btn to="/qa-config" variant="tonal" :prepend-icon="mdiClipboardCheckOutline">
+          去配置测试环境
+        </v-btn>
+      </template>
+    </v-empty-state>
 
     <v-card v-if="payload?.meta && payload.meta.status !== 'unreadable'" class="mb-4" variant="outlined">
       <v-card-title>改动点</v-card-title>
@@ -134,6 +140,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
+import { mdiClipboardCheckOutline } from "@mdi/js";
 import { useRoute } from "vue-router";
 import { getQa, getRequirement } from "@/api/client";
 import type { DocMeta, QaPage } from "@/api/types";
