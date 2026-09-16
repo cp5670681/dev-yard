@@ -1060,6 +1060,8 @@ def create_app(
                 route=payload.route or None,
                 jira=payload.jira,
             )
+        except KeyError:
+            raise HTTPException(404, "unknown assistant session") from None
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         return session.snapshot()
@@ -1067,7 +1069,19 @@ def create_app(
     @app.post("/api/assistant/sessions/{session_id}/abort")
     def api_assistant_abort(session_id: str):
         _assistant_or_404(session_id)
-        return assistants.abort(session_id).snapshot()
+        try:
+            return assistants.abort(session_id).snapshot()
+        except KeyError:
+            raise HTTPException(404, "unknown assistant session") from None
+
+    @app.delete("/api/assistant/sessions/{session_id}")
+    def api_assistant_drop(session_id: str):
+        _assistant_or_404(session_id)
+        try:
+            snap = assistants.drop(session_id).snapshot()
+        except KeyError:
+            raise HTTPException(404, "unknown assistant session") from None
+        return {"ok": True, "id": snap["id"]}
 
     @app.get("/api/assistant/sessions/{session_id}/events")
     async def api_assistant_events(session_id: str):

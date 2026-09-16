@@ -32,6 +32,7 @@ HOST_ACTIONS = frozenset(
     }
 )
 _FENCE = re.compile(r"```suggested-actions\s*(\[.*?\])\s*```", re.S | re.I)
+_MD_ROLES = frozenset({"assistant", "user"})
 
 
 def assistant_dir(root: Path) -> Path:
@@ -209,21 +210,14 @@ class AssistantSession:
     _gen: int = 0
     _thread: threading.Thread | None = field(default=None, repr=False)
     _start_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    dropped: bool = False
 
     def __post_init__(self) -> None:
         self._cv = threading.Condition(self._lock)
 
     def snapshot(self) -> dict[str, Any]:
         with self._cv:
-            return {
-                "id": self.id,
-                "route": self.route,
-                "jira": self.jira or None,
-                "created_at": self.created_at,
-                "state": self.state,
-                "entries": list(self.entries),
-                "error": self.error,
-            }
+            return self.snapshot_unlocked()
 
     def capture(self) -> tuple[dict[str, Any], int]:
         with self._cv:
@@ -236,7 +230,7 @@ class AssistantSession:
             "jira": self.jira or None,
             "created_at": self.created_at,
             "state": self.state,
-            "entries": list(self.entries),
+            "entries": [_public_entry(e, self.jira) for e in self.entries],
             "error": self.error,
         }
 
@@ -338,14 +332,18 @@ class AssistantHub:
 
     def send(self, session_id: str, text: str, route: str | None = None, jira: str | None = None) -> AssistantSession:
         session = self.get(session_id)
-        if session is None:
+        if session is None or session.dropped:
             raise KeyError(session_id)
         body = (text or "").strip()
         if not body:
             raise ValueError("empty message")
         with session._start_lock:
+            if session.dropped or self.get(session_id) is not session:
+                raise KeyError(session_id)
             prev = session._thread
             with session._cv:
+                if session.dropped:
+                    raise KeyError(session_id)
                 if session.state == "streaming":
                     raise ValueError("assistant is already answering")
             if prev is not None and prev.is_alive():
@@ -353,6 +351,8 @@ class AssistantHub:
                 if prev.is_alive():
                     raise ValueError("assistant is still stopping")
             with session._cv:
+                if session.dropped or self.get(session_id) is not session:
+                    raise KeyError(session_id)
                 if session.state == "streaming":
                     raise ValueError("assistant is already answering")
                 if route:
@@ -387,6 +387,20 @@ class AssistantHub:
             session._rpc = None
             session.bump()
         self._shutdown_rpc(rpc)
+        return session
+
+    def drop(self, session_id: str) -> AssistantSession:
+        session = self.get(session_id)
+        if session is None or session.dropped:
+            raise KeyError(session_id)
+        with session._cv:
+            if session.dropped:
+                raise KeyError(session_id)
+            session.dropped = True
+        self.abort(session_id)
+        with session._start_lock:
+            with self._lock:
+                self._sessions.pop(session_id, None)
         return session
 
     def _shutdown_rpc(self, rpc: Any) -> None:
@@ -496,6 +510,21 @@ class AssistantHub:
                 {"role": "assistant", "text": str(e), "is_error": True}
             )
             session.set_state("idle", error=str(e))
+
+
+def _public_entry(entry: dict[str, Any], jira: str) -> dict[str, Any]:
+    out = dict(entry)
+    text = out.get("text")
+    if (
+        isinstance(text, str)
+        and text
+        and out.get("role") in _MD_ROLES
+        and not out.get("is_error")
+    ):
+        from dev_yard.web.app import render_markdown
+
+        out["html"] = render_markdown(text, jira or "")
+    return out
 
 
 def _delta_text(event: dict[str, Any]) -> str:

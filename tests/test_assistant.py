@@ -52,6 +52,37 @@ def test_page_context_includes_requirement(tmp_path: Path, monkeypatch):
     assert "sync" in prompt
 
 
+def test_assistant_snapshot_renders_markdown(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    rpc = FakeRpc(
+        [
+            "## 下一步\n\n- 写 **SPEC**\n- 再 `tickets`\n\n"
+            "```python\nprint(1)\n```\n"
+            '<script>alert(1)</script>',
+        ]
+    )
+    hub = AssistantHub(yard, rpc_factory=lambda root, session: rpc, sync=True)
+    client = TestClient(create_app(yard, sync_jobs=True, assistant_hub=hub))
+    created = client.post("/api/assistant/sessions", json={"route": "/", "jira": ""})
+    sid = created.json()["id"]
+    out = client.post(
+        f"/api/assistant/sessions/{sid}/messages",
+        json={"text": "怎么走"},
+    )
+    assert out.status_code == 200
+    html = out.json()["entries"][1]["html"]
+    assert "<h2>" in html
+    assert "<li>" in html
+    assert "<strong>" in html
+    assert "<code>" in html
+    assert "<pre>" in html
+    assert "<script" not in html.lower()
+    assert "alert(1)" not in html
+
+
 def test_assistant_pi_argv_is_rpc_readonly(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("YARD_PI_PROVIDER", raising=False)
     monkeypatch.delenv("YARD_PI_MODEL", raising=False)
@@ -159,6 +190,7 @@ def test_assistant_hub_multiturn_and_api(tmp_path: Path, monkeypatch):
     assert first.json()["state"] == "idle"
     assert first.json()["entries"][0]["role"] == "user"
     assert "SPEC" in first.json()["entries"][1]["text"]
+    assert "<p>" in first.json()["entries"][1]["html"]
     assert "[yard context]" in rpc.prompts[0]
 
     second = client.post(
@@ -179,6 +211,23 @@ def test_assistant_hub_multiturn_and_api(tmp_path: Path, monkeypatch):
 
     missing = client.get("/api/assistant/sessions/nope")
     assert missing.status_code == 404
+
+    dropped = client.delete(f"/api/assistant/sessions/{sid}")
+    assert dropped.status_code == 200
+    assert dropped.json() == {"ok": True, "id": sid}
+    assert client.get(f"/api/assistant/sessions/{sid}").status_code == 404
+    stale = client.post(
+        f"/api/assistant/sessions/{sid}/messages",
+        json={"text": "还在吗"},
+    )
+    assert stale.status_code == 404
+    assert client.delete(f"/api/assistant/sessions/{sid}").status_code == 404
+    again = client.post(
+        "/api/assistant/sessions", json={"route": "/r/AB-7", "jira": "AB-7"}
+    )
+    assert again.status_code == 200
+    assert again.json()["id"] != sid
+    assert again.json()["entries"] == []
 
 
 def test_abort_closes_rpc_and_allows_next_send(tmp_path: Path, monkeypatch):
@@ -221,6 +270,44 @@ def test_abort_closes_rpc_and_allows_next_send(tmp_path: Path, monkeypatch):
     assert session.state == "idle"
     assert session.entries[-1]["text"] == "after abort"
     assert not any(e.get("is_error") for e in session.entries)
+
+
+def test_drop_stops_rpc_and_removes_session(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    rpcs: list[object] = []
+
+    def factory(root: Path, session):
+        rpc = BlockingRpc()
+        rpcs.append(rpc)
+        return rpc
+
+    hub = AssistantHub(yard, rpc_factory=factory, sync=False)
+    session = hub.create(route="/", jira="")
+    hub.send(session.id, "first")
+    deadline = time.time() + 2
+    while not rpcs and time.time() < deadline:
+        time.sleep(0.01)
+    assert rpcs
+    blocker = rpcs[0]
+    assert isinstance(blocker, BlockingRpc)
+    assert blocker.started.wait(timeout=2)
+    snap = hub.drop(session.id)
+    assert snap.id == session.id
+    assert hub.get(session.id) is None
+    assert blocker.closed
+    if session._thread is not None:
+        session._thread.join(timeout=2)
+        assert not session._thread.is_alive()
+    next_session = hub.create(route="/", jira="")
+    assert next_session.id != session.id
+    assert next_session.entries == []
+    assert session.dropped is True
+    with pytest.raises(KeyError):
+        hub.send(session.id, "again")
+    assert len(rpcs) == 1
 
 
 def test_pi_rpc_jsonl_roundtrip(tmp_path: Path):

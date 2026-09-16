@@ -18,6 +18,15 @@ import type {
   TicketReviewOut,
 } from "./types";
 
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body && !headers.has("Content-Type")) {
@@ -33,7 +42,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       /* ignore */
     }
-    throw new Error(detail);
+    throw new ApiError(res.status, detail);
   }
   return res.json() as Promise<T>;
 }
@@ -249,6 +258,13 @@ export function abortAssistant(id: string) {
   return api<AssistantSession>(
     `/api/assistant/sessions/${encodeURIComponent(id)}/abort`,
     { method: "POST" },
+  );
+}
+
+export function dropAssistant(id: string) {
+  return api<{ ok: boolean; id: string }>(
+    `/api/assistant/sessions/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
   );
 }
 

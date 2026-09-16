@@ -422,8 +422,14 @@ def test_assistant_drawer_is_wired():
     assert "/api/assistant/sessions" in drawer
     assert "suggested_actions" in drawer
     assert "确认执行" in drawer
-    assert "session.value = null" not in drawer
-    assert "if (session.value)" in drawer
+    assert "新会话" in drawer
+    assert "dropAssistant" in drawer
+    assert "session.value = null" in drawer
+    assert "composeLocked" in drawer
+    assert "ApiError" in drawer
+    assert "e.status === 404" in drawer
+    assert "entry.html" in drawer
+    assert "v-html" in drawer
 
 
 def test_app_js_uses_event_source():

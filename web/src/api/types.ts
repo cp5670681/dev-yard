@@ -249,6 +249,7 @@ export interface PiSettings {
 export interface PiEntry {
   role?: string;
   text?: string;
+  html?: string;
   thinking?: string;
   tool_name?: string;
   is_error?: boolean;
