@@ -58,6 +58,40 @@ def test_reset_existing_resets_already_checked_out_worktree(git_src: Path, tmp_p
     branch_delete(git_src, "req/AB-1/T1")
 
 
+def test_worktree_add_repoints_leftover_branch_without_reset_flag(git_src: Path, tmp_path: Path):
+    import shutil
+
+    wt = tmp_path / "wt"
+    worktree_add(git_src, wt, "req/AB-leftover", "main")
+    (wt / "OLD").write_text("old")
+    subprocess.check_call(["git", "add", "."], cwd=wt)
+    subprocess.check_call(["git", "commit", "-m", "old"], cwd=wt)
+    shutil.rmtree(wt)
+    subprocess.check_call(["git", "worktree", "prune"], cwd=git_src)
+    worktree_add(git_src, wt, "req/AB-leftover", "main")
+    assert not (wt / "OLD").exists()
+    worktree_remove(git_src, wt)
+    branch_delete(git_src, "req/AB-leftover")
+
+
+def test_commit_all_returns_none_on_commit_failure(git_src: Path, tmp_path: Path, monkeypatch):
+    from dev_yard import gitops as gitops_mod
+    from dev_yard.gitops import commit_all, worktree_add
+
+    wt = tmp_path / "wt"
+    worktree_add(git_src, wt, "req/COMMIT-FAIL", "main")
+    (wt / "new_file.txt").write_text("hello")
+    real = gitops_mod.subprocess.run
+
+    def selective(args, **kwargs):
+        if list(args)[:2] == ["git", "commit"]:
+            raise subprocess.CalledProcessError(1, args)
+        return real(args, **kwargs)
+
+    monkeypatch.setattr(gitops_mod.subprocess, "run", selective)
+    assert commit_all(wt, "feat: fail") is None
+
+
 def test_worktree_remove_prunes_missing_dir(git_src: Path, tmp_path: Path):
     child = tmp_path / "child"
     worktree_add(git_src, child, "req/AB-1/T1", "main")

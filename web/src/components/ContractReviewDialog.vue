@@ -107,7 +107,7 @@
 
         <!-- 预览模式 -->
         <div v-if="mode === 'preview'" class="preview-container">
-          <div v-if="summaryHtml" class="markdown" v-html="summaryHtml" />
+          <div v-if="previewHtml" class="markdown" v-html="previewHtml" />
           <pre v-else-if="summaryText" class="job-log">{{ summaryText }}</pre>
           <v-empty-state
             v-else
@@ -177,7 +177,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import {
   mdiAlertCircleOutline,
   mdiAutoFix,
@@ -213,6 +213,12 @@ const autoImplement = ref(true);
 const loading = ref(false);
 const error = ref("");
 const mode = ref<"preview" | "edit">("preview");
+const previewHtml = computed(() => {
+  if (summaryText.value === (props.summary || "") && props.summaryHtml) {
+    return props.summaryHtml;
+  }
+  return "";
+});
 
 watch(
   () => [props.modelValue, props.contract, props.summary],
@@ -246,6 +252,7 @@ async function submit() {
       summary: summaryText.value,
       auto_implement: verdict.value === "failed" && autoImplement.value,
     });
+    if (res.error) snack.notify(res.error, "error");
     emit("update:modelValue", false);
     emit("reviewed", res.jobs || []);
   } catch (e) {

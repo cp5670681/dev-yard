@@ -525,6 +525,58 @@ def test_ticket_done_conflict_aborts_merge_and_raises(
     assert b"UU" not in status
 
 
+def test_implement_skips_pending_explicit_id(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-70", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n\n"
+        "## T2: y\n- repo: backend\n- depends_on: T1\n- parallel: false\n"
+    )
+    req_freeze(yard, "AB-70")
+    ran = implement(yard, "AB-70", ["T2"], runner=DryRunRunner())
+    assert ran == []
+    assert st.load(yard, "AB-70")["tickets"]["T2"]["state"] == "pending"
+    ran_force = implement(yard, "AB-70", ["T2"], runner=DryRunRunner(), force=True)
+    assert ran_force == ["T2"]
+
+
+def test_same_repo_ready_after_sibling_implemented_gets_child(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-71", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n\n"
+        "## T2: y\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    req_freeze(yard, "AB-71")
+    implement(yard, "AB-71", ["T1"], runner=DryRunRunner())
+    ran = implement(yard, "AB-71", ["T2"], runner=DryRunRunner())
+    assert ran == ["T2"]
+    data = st.load(yard, "AB-71")
+    assert data["tickets"]["T2"]["child_worktree"]
+
+
+def test_commit_failure_blocks_ticket(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-72")
+    monkeypatch.setattr("dev_yard.service.gitops.commit_all", lambda *a, **k: None)
+    ran = implement(yard, "AB-72", None, runner=DryRunRunner())
+    assert ran == ["T1"]
+    slot = st.load(yard, "AB-72")["tickets"]["T1"]
+    assert slot["state"] == "blocked"
+    assert "commit failed" in (slot["last_summary"] or "")
+
+
 def test_sequential_tickets_auto_commit_and_diff_isolation(
     tmp_path: Path, git_src: Path, monkeypatch
 ):

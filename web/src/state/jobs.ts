@@ -9,9 +9,25 @@ let listeners = 0;
 function connect() {
   if (es) return;
   es = new EventSource("/api/jobs/events");
+  let fails = 0;
+  es.onopen = () => {
+    fails = 0;
+  };
   es.addEventListener("jobs", (e) => {
+    fails = 0;
     runningJobs.value = JSON.parse((e as MessageEvent).data) as JobBrief[];
   });
+  es.onerror = () => {
+    fails += 1;
+    if (fails < 3) return;
+    fetch("/api/jobs")
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((items: JobBrief[]) => {
+        if (Array.isArray(items)) runningJobs.value = items;
+        fails = 0;
+      })
+      .catch(() => undefined);
+  };
 }
 
 function disconnect() {

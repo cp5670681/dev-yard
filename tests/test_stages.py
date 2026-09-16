@@ -125,6 +125,13 @@ def test_plugin_overrides_builtin(tmp_path):
     spec = stages.load_registry(root)["review"]
     assert spec.builtin is False
     assert spec.tools == ("read",)
+    assert spec.bundles == ()
+    assert spec.skill == "review"
+    assert spec.skill_dir == root / "plugins" / "review"
+    assert spec.guidance == ""
+    assert spec.protects == ()
+    assert spec.lists_sources is False
+    assert spec.title == ""
 
 
 def test_duplicate_plugin_names_rejected(tmp_path):
@@ -151,6 +158,9 @@ def test_duplicate_plugin_names_rejected(tmp_path):
         ({"foo": 1}, "foo"),
         ({"require_phase": "frozen"}, "require_phase"),
         ({"tool": ["read"]}, "tool"),
+        ({"tools": []}, "tools"),
+        ({"protects": ["../CONTEXT.md"]}, "protects"),
+        ({"bundles": ["Not-a-name"]}, "bundles"),
     ],
 )
 def test_plugin_validation_errors(tmp_path, over, match):
@@ -167,6 +177,32 @@ def test_plugin_requires_plugin_yaml_and_skill_md(tmp_path):
     _enable(root, d)
     with pytest.raises(ValueError, match="plugin.yaml"):
         stages.load_registry(root)
+
+
+def test_plugin_yaml_without_skill_md(tmp_path):
+    root = _workspace(tmp_path)
+    d = root / "plugins" / "noskill"
+    d.mkdir(parents=True)
+    (d / "plugin.yaml").write_text("name: noskill\ntools: [read]\n", encoding="utf-8")
+    _enable(root, d)
+    with pytest.raises(ValueError, match="SKILL.md"):
+        stages.load_registry(root)
+
+
+def test_absolute_plugin_path_rejected(tmp_path):
+    root = _workspace(tmp_path)
+    p = _plugin(root)
+    (root / "yard.yaml").write_text(
+        _yaml.safe_dump({"plugins": [str(p.resolve())]}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="relative"):
+        stages.load_registry(root)
+
+
+def test_unlisted_plugin_dir_ignored(tmp_path):
+    root = _workspace(tmp_path)
+    _plugin(root, "orphan")
+    assert "orphan" not in stages.load_registry(root)
 
 
 def test_plugin_cannot_invent_phase_via_sets_phase(tmp_path):
@@ -217,11 +253,28 @@ def test_resolve_prefers_workspace_over_packaged(tmp_path):
     assert got == root / ".pi" / "skills" / "to-spec"
 
 
-def test_resolve_falls_back_to_packaged(tmp_path):
-    root = _workspace(tmp_path)  # workspace has no such skill
+def test_resolve_falls_back_to_packaged(tmp_path, monkeypatch):
+    packaged = tmp_path / "pkg" / "skills" / "to-spec"
+    packaged.mkdir(parents=True)
+    (packaged / "SKILL.md").write_text("# to-spec\n", encoding="utf-8")
+    monkeypatch.setattr(stages, "_packaged_skills_root", lambda: tmp_path / "pkg" / "skills")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    root = _workspace(ws)
     got = stages.resolve_skill_dir(root, "to-spec")
-    # source-checkout fallback (test env has no installed wheel)
-    assert got is not None and (got / "SKILL.md").is_file()
+    assert got == packaged
+
+
+def test_pi_argv_plugin_uses_plugin_dir_and_tools(tmp_path):
+    root = _workspace(tmp_path)
+    p = _plugin(root, "scan", tools=["read", "grep"], requires_phase=None)
+    _enable(root, p)
+    spec = stages.load_registry(root)["scan"]
+    argv = pi_argv(root=root, bundle="scan", prompt="(p)", spec=spec)
+    tools = argv[argv.index("--tools") + 1]
+    assert tools == "read,grep"
+    skill_args = [argv[i + 1] for i, a in enumerate(argv) if a == "--skill"]
+    assert skill_args[0] == str(p)
 
 
 def test_resolve_unknown_returns_none(tmp_path):

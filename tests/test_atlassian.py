@@ -25,6 +25,14 @@ def test_display_url_space_title():
     assert urls and "/display/SPACE/" in urls[0]
 
 
+def test_safe_attachment_name_rejects_dotdot():
+    from dev_yard.atlassian import _safe_attachment_name
+
+    assert _safe_attachment_name("..", "9") == "att-9"
+    assert "/" not in _safe_attachment_name("../../../tmp/x.png")
+    assert _safe_attachment_name("../../../tmp/x.png") == "x.png"
+
+
 def test_html_to_markdown_images():
     html = "<h1>Hi</h1><p>x</p><img src='/download/attachments/1/a.png' alt='shot' />"
     md = html_to_markdown(html)

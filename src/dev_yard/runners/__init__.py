@@ -128,11 +128,13 @@ class PiRunner(Runner):
         bundle: str,
         print_mode: bool = False,
         binary: str | None = None,
+        spec: "StageSpec | None" = None,
     ) -> None:
         self.root = root
         self.bundle = bundle
         self.print_mode = print_mode
         self.binary = binary or agent_binary()
+        self.spec = spec
 
     def start(
         self,
@@ -155,6 +157,7 @@ class PiRunner(Runner):
                 print_mode=True,
                 binary=self.binary,
                 repo=repo,
+                spec=self.spec,
             )
 
             def _echo(line: str) -> None:
@@ -176,6 +179,7 @@ class PiRunner(Runner):
             print_mode=False,
             binary=self.binary,
             repo=repo,
+            spec=self.spec,
         )
         r = subprocess.run(argv, cwd=cwd)
         return RunResult(
@@ -220,4 +224,4 @@ def get_runner(
                 spec=spec,
             )
         )
-    return PiRunner(root, bundle, print_mode=print_mode)
+    return PiRunner(root, bundle, print_mode=print_mode, spec=spec)

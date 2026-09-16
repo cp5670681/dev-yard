@@ -169,6 +169,14 @@ BUILTIN_STAGES: dict[str, StageSpec] = {
 }
 
 
+def _is_under(root: Path, path: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def _yard_yaml_plugins(root: Path) -> list[Path]:
     yml = root / "yard.yaml"
     if not yml.exists():
@@ -180,11 +188,21 @@ def _yard_yaml_plugins(root: Path) -> list[Path]:
     if not isinstance(raw, list):
         raise ValueError("yard.yaml plugins must be a list")
     out: list[Path] = []
+    root_resolved = root.resolve()
     for item in raw:
         text = str(item).strip()
         if not text:
             raise ValueError("yard.yaml plugins entries must be non-empty strings")
-        out.append((root / text).resolve())
+        if Path(text).is_absolute():
+            raise ValueError(
+                f"yard.yaml plugins entry {text!r} must be relative to the yard root"
+            )
+        resolved = (root / text).resolve()
+        if not _is_under(root_resolved, resolved):
+            raise ValueError(
+                f"yard.yaml plugins entry {text!r} must stay under the yard root"
+            )
+        out.append(resolved)
     return out
 
 
@@ -225,9 +243,35 @@ def _load_plugin_spec(plugin_dir: Path) -> StageSpec:
             f"plugin {plugin_dir}: unknown tools {bad}; allowed: {list(ALLOWED_TOOLS)}"
         )
     skill = str(raw.get("skill") or "").strip()
-    skill_dir = plugin_dir / skill if skill else plugin_dir
+    if skill:
+        skill_path = Path(skill)
+        if skill_path.is_absolute() or ".." in skill_path.parts:
+            raise ValueError(
+                f"plugin {plugin_dir}: skill {skill!r} must be a relative directory "
+                "inside the plugin"
+            )
+        skill_dir = (plugin_dir / skill).resolve()
+        if not _is_under(plugin_dir, skill_dir):
+            raise ValueError(
+                f"plugin {plugin_dir}: skill {skill!r} must stay under the plugin directory"
+            )
+    else:
+        skill_dir = plugin_dir
     if not (skill_dir / "SKILL.md").is_file():
         raise ValueError(f"plugin {plugin_dir}: SKILL.md not found in {skill_dir}")
+    bundles = tuple(str(b) for b in (raw.get("bundles") or ()))
+    bad_bundles = [b for b in bundles if not _NAME_RE.match(b)]
+    if bad_bundles:
+        raise ValueError(
+            f"plugin {plugin_dir}: invalid bundles {bad_bundles} "
+            "(^[a-z][a-z0-9-]*$, <=32)"
+        )
+    protects_raw = tuple(str(p) for p in (raw.get("protects") or ()))
+    bad_protects = [p for p in protects_raw if Path(p).name != p or p in {".", "..", ""}]
+    if bad_protects:
+        raise ValueError(
+            f"plugin {plugin_dir}: protects entries must be basenames, not {bad_protects}"
+        )
     requires_raw = raw.get("requires_phase")
     if requires_raw is None or str(requires_raw).strip() == "":
         requires_phase = None
@@ -241,9 +285,9 @@ def _load_plugin_spec(plugin_dir: Path) -> StageSpec:
     return StageSpec(
         name=name,
         skill=skill or name,
-        bundles=tuple(str(b) for b in (raw.get("bundles") or ())),
+        bundles=bundles,
         tools=tools,
-        protects=tuple(str(p) for p in (raw.get("protects") or ())),
+        protects=protects_raw,
         requires_phase=requires_phase,
         lists_sources=bool(raw.get("lists_sources", False)),
         order=int(raw.get("order", 50)),

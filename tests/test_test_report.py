@@ -131,6 +131,8 @@ def test_failed_report_enables_from_test(tmp_path: Path, git_src: Path, monkeypa
     assert ran == ["B1"]
     assert "alert" in cap.prompts[0].lower()
     assert "B1" in cap.prompts[0]
+    assert "Previous test report" in cap.prompts[0]
+    assert "1 fail" in cap.prompts[0]
     after = st.load(yard, "AB-43")
     assert after["phase"] == "frozen"
     assert after["test"]["status"] == "fixing"

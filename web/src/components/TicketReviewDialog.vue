@@ -137,6 +137,7 @@ import {
 import { submitTicketReview } from "../api/client";
 import type { JobSnapshot, Ticket } from "../api/types";
 import { phaseColor } from "../composables/labels";
+import { useSnack } from "../composables/snack";
 
 const props = defineProps<{
   modelValue: boolean;
@@ -148,6 +149,7 @@ const emit = defineEmits<{
   (e: "update:modelValue", value: boolean): void;
   (e: "reviewed", ticketId: string, jobs: JobSnapshot[]): void;
 }>();
+const snack = useSnack();
 
 const verdict = ref<"failed" | "passed">("failed");
 const summary = ref("");
@@ -170,7 +172,7 @@ watch(
       } else if (props.ticket.state === "done") {
         verdict.value = "passed";
       } else {
-        verdict.value = props.ticket.last_summary?.includes("REVIEW_FAILED") ? "failed" : "failed";
+        verdict.value = "failed";
       }
       autoImplement.value = true;
       error.value = "";
@@ -189,6 +191,7 @@ async function submit() {
       summary: summary.value,
       auto_implement: verdict.value === "failed" ? autoImplement.value : false,
     });
+    if (res.error) snack.notify(res.error, "error");
     emit("update:modelValue", false);
     emit("reviewed", props.ticket.id, res.jobs || []);
   } catch (e) {

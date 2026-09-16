@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import re
 from html import escape
 from html.parser import HTMLParser
+
+_URL_JUNK = re.compile(r"[\x00-\x20\x7f]+")
 
 _ALLOWED = frozenset(
     {
@@ -45,10 +48,18 @@ _ATTRS: dict[str, frozenset[str]] = {
 
 
 def _safe_url(value: str) -> str | None:
-    v = value.strip()
-    low = v.lower()
-    if low.startswith(("javascript:", "data:", "vbscript:", "file:")):
+    v = _URL_JUNK.sub("", value).strip()
+    if not v:
         return None
+    low = v.lower()
+    if low.startswith("//"):
+        return None
+    scheme, sep, rest = low.partition(":")
+    if sep:
+        if "/" in scheme or "\\" in scheme:
+            return None
+        if scheme not in {"http", "https"} or not rest.startswith("//"):
+            return None
     return v
 
 

@@ -18,10 +18,10 @@ def _plugin(root: Path, name: str = "deploy") -> Path:
     d = root / "plugins" / name
     d.mkdir(parents=True, exist_ok=True)
     (d / "plugin.yaml").write_text(
-        "name: deploy\ntools: [read]\n", encoding="utf-8"
+        f"name: {name}\ntools: [read]\n", encoding="utf-8"
     )
-    (d / "SKILL.md").write_text("# deploy\n", encoding="utf-8")
-    (root / "yard.yaml").write_text("plugins: [plugins/deploy]\n", encoding="utf-8")
+    (d / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
+    (root / "yard.yaml").write_text(f"plugins: [plugins/{name}]\n", encoding="utf-8")
     return d
 
 

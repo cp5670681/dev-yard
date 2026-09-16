@@ -16,11 +16,16 @@ class CustomBuildHook(BuildHookInterface):
 
         pnpm = shutil.which("pnpm") or shutil.which("npm")
         if not pnpm:
-            if not spa_index.is_file():
-                sys.stderr.write(
-                    "Warning: pnpm/npm not found and frontend SPA is not built.\n"
-                )
-            return
+            if spa_index.is_file():
+                return
+            msg = (
+                "pnpm/npm not found and frontend SPA is not built; "
+                "install Node or run `pnpm --dir web build` first."
+            )
+            if getattr(self, "target_name", "") == "sdist":
+                sys.stderr.write(f"Warning: {msg}\n")
+                return
+            raise RuntimeError(msg)
 
         if not (web_dir / "node_modules").is_dir():
             install_cmd = [pnpm, "install"]

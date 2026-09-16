@@ -46,10 +46,17 @@ import { getJob } from "@/api/client";
 import type { JobSnapshot } from "@/api/types";
 import { openPi } from "@/state/pi";
 import { ACTION_LABELS } from "@/composables/labels";
+import { useSnack } from "@/composables/snack";
 import GrillForm from "./GrillForm.vue";
 
 const props = defineProps<{ jobId: string; initial?: JobSnapshot | null }>();
 const emit = defineEmits<{ done: [job: JobSnapshot] }>();
+const snack = useSnack();
+
+function isMissingJob(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return /\b404\b|not found/i.test(msg);
+}
 
 const job = ref<JobSnapshot>(
   props.initial || {
@@ -65,7 +72,7 @@ const job = ref<JobSnapshot>(
 );
 
 const actionLabel = computed(
-  () => ACTION_LABELS[job.value.action] || job.value.action,
+  () => job.value.label || ACTION_LABELS[job.value.action] || job.value.action,
 );
 const waiting = computed(() => job.value.state === "waiting");
 const tickets = computed(() => {
@@ -101,7 +108,20 @@ function apply(next: JobSnapshot) {
 }
 
 function refresh() {
-  getJob(props.jobId).then(apply).catch(() => undefined);
+  getJob(props.jobId)
+    .then(apply)
+    .catch((e) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (isMissingJob(e)) {
+        apply({
+          ...job.value,
+          state: "error",
+          log: (job.value.log || "") + `\n${msg}\n`,
+        });
+        return;
+      }
+      snack.notify(msg, "error");
+    });
 }
 
 function bind() {
@@ -121,6 +141,30 @@ function bind() {
   es.addEventListener("done", (e) => {
     apply(JSON.parse((e as MessageEvent).data) as JobSnapshot);
   });
+  es.onerror = () => {
+    if (!es || es.readyState === EventSource.CONNECTING) return;
+    const closed = es.readyState === EventSource.CLOSED;
+    getJob(props.jobId)
+      .then((next) => {
+        apply(next);
+        if (closed && next.state !== "ok" && next.state !== "error") bind();
+      })
+      .catch((e) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (isMissingJob(e)) {
+          es?.close();
+          es = null;
+          apply({
+            ...job.value,
+            state: "error",
+            log: (job.value.log || "") + `\n${msg}\n`,
+          });
+          return;
+        }
+        snack.notify(msg, "error");
+        if (closed) bind();
+      });
+  };
 }
 
 onMounted(bind);

@@ -116,6 +116,7 @@ def test_requirement_page_and_api(tmp_path: Path, monkeypatch):
     assert data["jira"] == "AB-31"
     assert data["tickets"][0]["id"] == "T1"
     assert data["next"] == "freeze"
+    assert data["stage_runs"] == {}
     vue = (
         Path(__file__).resolve().parents[1] / "web" / "src" / "views" / "RequirementView.vue"
     ).read_text()
@@ -696,6 +697,16 @@ def test_render_markdown_strips_raw_html():
     assert "alert(1)" not in html
 
 
+def test_sanitize_html_strips_entity_and_tab_javascript():
+    from dev_yard.web.sanitize import sanitize_html
+
+    cleaned = sanitize_html('<a href="java&#x09;script:alert(1)">x</a>')
+    assert "javascript:" not in cleaned.lower()
+    assert "href" not in cleaned.lower()
+    cleaned_tab = sanitize_html('<a href="java\tscript:alert(1)">x</a>')
+    assert "href" not in cleaned_tab.lower()
+
+
 def test_check_bind_host_refuses_non_loopback():
     import pytest
 
@@ -756,6 +767,22 @@ def test_pi_settings_api(tmp_path: Path, monkeypatch):
         json={"provider": "", "model": "", "stages": {"nope": {"provider": "", "model": "x"}}},
     )
     assert bad.status_code == 400
+
+    pdir = yard / "plugins" / "example"
+    pdir.mkdir(parents=True)
+    (pdir / "plugin.yaml").write_text(
+        "name: example\ntools: [read]\n", encoding="utf-8"
+    )
+    (pdir / "SKILL.md").write_text("# example\n", encoding="utf-8")
+    (yard / "yard.yaml").write_text("plugins: [plugins/example]\n", encoding="utf-8")
+    again = client.get("/api/pi").json()
+    assert again["stage_ids"] == empty["stage_ids"]
+    assert "example" not in again["stage_ids"]
+    plugin_put = client.put(
+        "/api/pi",
+        json={"provider": "", "model": "", "stages": {"example": {"provider": "", "model": "x"}}},
+    )
+    assert plugin_put.status_code == 400
 
 
 def test_cli_web_help():

@@ -229,7 +229,7 @@ dev-yard web --host 0.0.0.0 --allow-remote
 | `dev-yard repo list` | 列出已登记仓库 | |
 | `dev-yard repo set-model <alias>` | 设置仓库的实现模型 | `--provider`, `--model` |
 | `dev-yard req open <target>` | 创建/拉取需求 | `--key`, `--text`, `--file`, `--none`, `--force` |
-| `dev-yard req freeze <key>` | 冻结方案并建 Worktree | |
+| `dev-yard req freeze <key>` | 冻结方案并建 Worktree | `--force`（testing/done 回退） |
 | `dev-yard req delete <key>` | 删除需求产物与 Worktree | |
 | `dev-yard req push <key> [repos..]` | 推送各仓 Worktree 分支到远端 | `--remote`, `--force` |
 | `dev-yard req submit-test <key>` | 标记提测 | |
@@ -237,8 +237,10 @@ dev-yard web --host 0.0.0.0 --allow-remote
 | `dev-yard grill <key>` | 需求答辩与对齐 | `--print`, `--dry-run` |
 | `dev-yard spec <key>` | 制定方案与契约 | `--print`, `--dry-run` |
 | `dev-yard tickets <key>` | 跨仓拆票与 DAG | `--print`, `--dry-run` |
-| `dev-yard implement <key> [T..]` | 编码实现 | `--print`, `--from-contract`, `--from-test` |
+| `dev-yard implement <key> [T..]` | 编码实现 | `--print`, `--from-contract`, `--from-test`, `--force` |
 | `dev-yard review <key> [T..]` | 代码评审 / 契约检查 | `--contract`, `--print` |
+| `dev-yard stages` | 列出内置 + 已启用插件阶段 | |
+| `dev-yard run <stage> <key>` | 跑插件阶段，或 grill/spec/tickets | `--print`；`open`/`implement`/`review`/`contract` 请用专用命令 |
 | `dev-yard push <key> [repos..]` | 推送各仓 Worktree 分支到远端 | `--remote`, `--force` |
 | `dev-yard status [key]` | 查看需求与任务状态 | |
 | `dev-yard web` | 启动 Web 看板 | `--port 8765`, `--host 0.0.0.0 --allow-remote` |
@@ -258,6 +260,6 @@ uv run pytest
 # 3. 前端独立开发（支持秒级热重载，自动反代后端 8765 端口）
 cd web && pnpm install && pnpm dev
 
-# 4. 构建与全包测试（Hatch 构建钩子会自动触发前端打包并打包为 wheel）
+# 4. 构建与全包测试（wheel 需要 Node/pnpm，或已有 src/dev_yard/web/spa/index.html）
 uv build
 ```

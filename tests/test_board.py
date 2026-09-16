@@ -107,6 +107,7 @@ def test_frozen_ready_implement(tmp_path: Path, git_src: Path, monkeypatch):
     assert not detail.tickets[0].can_review
     ids = {a.id: a for a in detail.actions}
     assert ids["implement"].enabled
+    assert ids["freeze"].enabled
     assert not ids["review"].enabled
     assert ids["contract"].enabled
     assert not ids["fix-contract"].enabled
@@ -138,6 +139,27 @@ def test_ready_for_submit_test_marks_testing_current(tmp_path: Path, git_src: Pa
     ids = {a.id: a for a in detail.actions}
     assert ids["submit-test"].enabled
     assert ids["fill-test-report"].enabled
+    assert ids["freeze"].enabled
+
+
+def test_freeze_disabled_after_submit_test(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _yard(tmp_path)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-77", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    req_freeze(yard, "AB-77")
+    data = st.load(yard, "AB-77")
+    data["tickets"]["T1"]["state"] = "done"
+    data["contract_review"] = "passed"
+    data["phase"] = "testing"
+    st.save(yard, "AB-77", data)
+    ids = {a.id: a for a in requirement_detail(yard, "AB-77").actions}
+    assert not ids["freeze"].enabled
+    assert "CLI --force" in ids["freeze"].reason
 
 
 def test_legacy_done_without_test_report_is_not_complete(tmp_path: Path, git_src: Path, monkeypatch):
@@ -300,6 +322,10 @@ def test_plugin_action_appended(tmp_path: Path, monkeypatch):
     assert deploy.label == "部署"
     assert not deploy.enabled
     assert "frozen" in deploy.reason
+    from dev_yard.web.board import PIPELINE
+
+    assert {s.id for s in detail.steps} == set(PIPELINE)
+    assert "deploy" not in {s.id for s in detail.steps}
 
 
 def test_plugin_action_enabled_when_phase_matches(tmp_path: Path, monkeypatch):

@@ -105,6 +105,16 @@ def repo_add(
     source = repo.source_path(root)
     if repo.path and not (source / ".git").exists():
         raise ValueError(f"{source} is not a git repo")
+    if not repo.path and (source / ".git").exists():
+        try:
+            current = gitops.run(["git", "remote", "get-url", "origin"], cwd=source)
+        except gitops.GitError:
+            current = ""
+        if current and _norm_git_url(current) != _norm_git_url(url):
+            raise ValueError(
+                f"{alias}: clone at {source} has origin {current}, not {url}; "
+                "remove the clone or keep the existing URL"
+            )
     repos[alias] = repo
     save_repos(root, repos)
     gitops.ensure_clone(repo.url, source, on_progress=on_progress)
@@ -292,32 +302,52 @@ def req_open(
     return d, warning
 
 
-def req_freeze(root: Path, jira: str) -> list[Path]:
+def _norm_git_url(url: str) -> str:
+    s = (url or "").strip().rstrip("/")
+    if s.endswith(".git"):
+        s = s[:-4]
+    return s
+
+
+def req_freeze(root: Path, jira: str, force: bool = False) -> list[Path]:
     req = paths.req_dir(root, jira)
     tickets = load_tickets(req)
     if not tickets or not any(t.repo for t in tickets):
         raise ValueError("TICKETS.md has no tickets with a repo; finish to-tickets first")
-    repos = load_repos(root)
-    data = st.sync_tickets(st.load(root, jira), tickets)
-    created: list[Path] = []
-    aliases = sorted({t.repo for t in tickets if t.repo})
-    for alias in aliases:
-        repo = repos.get(alias)
-        if not repo:
-            raise ValueError(f"unknown repo alias {alias}")
-        source = repo.source_path(root)
-        gitops.ensure_clone(repo.url, source)
-        gitops.fetch(source)
-        wt = paths.req_worktree(root, jira, alias)
-        start = gitops.start_point(source, repo.default_base)
-        gitops.worktree_add(source, wt, f"req/{jira}", start, reset_existing=False)
-        created.append(wt)
-        for tid, slot in data["tickets"].items():
-            if slot.get("repo") == alias:
-                slot["worktree"] = str(wt)
-    data["phase"] = "frozen"
-    st.refresh_ready(data)
-    st.save(root, jira, data)
+    with st.jira_lock(jira):
+        data = st.load(root, jira)
+        phase = data.get("phase") or "open"
+        if phase in {"testing", "done"} and not force:
+            raise ValueError(
+                f"phase is {phase}; re-freeze would unwind it. pass --force to continue"
+            )
+        repos = load_repos(root)
+        data = st.sync_tickets(data, tickets)
+        created: list[Path] = []
+        aliases = sorted({t.repo for t in tickets if t.repo})
+        for alias in aliases:
+            repo = repos.get(alias)
+            if not repo:
+                raise ValueError(f"unknown repo alias {alias}")
+            source = repo.source_path(root)
+            gitops.ensure_clone(repo.url, source)
+            gitops.fetch(source)
+            wt = paths.req_worktree(root, jira, alias)
+            start = gitops.start_point(source, repo.default_base)
+            gitops.worktree_add(
+                source,
+                wt,
+                f"req/{jira}",
+                start,
+                reset_existing=bool(force and phase in {"testing", "done"}),
+            )
+            created.append(wt)
+            for tid, slot in data["tickets"].items():
+                if slot.get("repo") == alias:
+                    slot["worktree"] = str(wt)
+        data["phase"] = "frozen"
+        st.refresh_ready(data)
+        st.save(root, jira, data)
     return created
 
 
@@ -466,21 +496,20 @@ def _cwd_for_ticket(root: Path, jira: str, ticket: Ticket, slot: dict) -> Path:
     return Path(parent)
 
 
+_IDLE_SIBLING = frozenset({"pending", "ready", "done"})
+
+
 def _needs_child(data: dict, ticket: Ticket) -> bool:
-    sibling_inflight = False
-    sibling_mid = False
     for tid, slot in (data.get("tickets") or {}).items():
         if tid == ticket.id:
             continue
         if slot.get("repo") != ticket.repo:
             continue
-        if slot.get("state") == "implementing" or slot.get("child_worktree"):
-            sibling_inflight = True
-        if slot.get("state") in {"implementing", "implemented", "reviewing"}:
-            sibling_mid = True
-    if sibling_inflight:
-        return True
-    return bool(ticket.parallel and sibling_mid)
+        if slot.get("child_worktree"):
+            return True
+        if slot.get("state") not in _IDLE_SIBLING:
+            return True
+    return False
 
 
 def ensure_on_default_base(root: Path) -> dict[str, Path]:
@@ -506,7 +535,13 @@ def ensure_on_default_base(root: Path) -> dict[str, Path]:
 
 
 def _snapshot(req: Path, names: tuple[str, ...]) -> dict[str, bytes | None]:
-    return {n: (req / n).read_bytes() if (req / n).exists() else None for n in names}
+    out: dict[str, bytes | None] = {}
+    for n in names:
+        if Path(n).name != n or n in {".", "..", ""}:
+            continue
+        p = req / n
+        out[n] = p.read_bytes() if p.exists() else None
+    return out
 
 
 def _stash_tree(path: Path) -> dict[str, bytes] | None:
@@ -530,13 +565,15 @@ def _unstash_tree(path: Path, files: dict[str, bytes]) -> None:
 def _restore(req: Path, snap: dict[str, bytes | None]) -> list[str]:
     restored: list[str] = []
     for name, before in snap.items():
+        if Path(name).name != name or name in {".", "..", ""}:
+            continue
         p = req / name
         after = p.read_bytes() if p.exists() else None
         if after == before:
             continue
-        if before is None:
+        if p.exists() or p.is_symlink():
             p.unlink()
-        else:
+        if before is not None:
             p.write_bytes(before)
         restored.append(name)
     return restored
@@ -609,7 +646,7 @@ def run_stage(
         root, spec.name, dry_run=dry_run, print_mode=print_mode, spec=spec
     )
     protects = spec.protects
-    if not spec.builtin and "STATUS.yaml" not in protects:
+    if "STATUS.yaml" not in protects:
         protects = protects + ("STATUS.yaml",)
     snap = _snapshot(req, protects) if protects and not dry_run else {}
     result = r.start(prompt, root, extra)
@@ -653,13 +690,6 @@ def _previous_head_sha(data: dict, parsed: list, tid: str, repo: str) -> str | N
         if sha:
             prev = str(sha)
     return prev
-
-
-def _record_head_sha(slot: dict, cwd: Path) -> None:
-    try:
-        slot["head_sha"] = gitops.run(["git", "rev-parse", "HEAD"], cwd=cwd)
-    except gitops.GitError:
-        return
 
 
 def _review_blocked(result: RunResult) -> bool:
@@ -753,13 +783,14 @@ def prepare_fix_tickets(root: Path, jira: str, kind: str) -> list[str]:
     return fix_ticket_ids(tickets, None, data, kind)
 
 
-def claim_run(root: Path, jira: str, action: str, ids: list[str]) -> list[str]:
+def claim_run(root: Path, jira: str, action: str, ids: list[str]) -> tuple[list[str], dict[str, str]]:
     spec = _CLAIM.get(action)
     if spec is None or not ids:
-        return []
+        return [], {}
     state, allowed = spec
     parsed = load_tickets(paths.req_dir(root, jira))
     claimed: list[str] = []
+    previous: dict[str, str] = {}
     with st.jira_lock(jira):
         data = st.sync_tickets(st.load(root, jira), parsed)
         st.refresh_ready(data)
@@ -770,10 +801,24 @@ def claim_run(root: Path, jira: str, action: str, ids: list[str]) -> list[str]:
                 continue
             if slot.get("state") not in allowed:
                 continue
+            previous[tid] = str(slot.get("state") or "")
             slot["state"] = state
             claimed.append(tid)
         st.save(root, jira, data)
-    return claimed
+    return claimed, previous
+
+
+def restore_claim(root: Path, jira: str, previous: dict[str, str]) -> None:
+    if not previous:
+        return
+    with st.jira_lock(jira):
+        data = st.load(root, jira)
+        tickets = data.get("tickets") or {}
+        for tid, prev in previous.items():
+            slot = tickets.get(tid)
+            if slot is not None:
+                slot["state"] = prev
+        st.save(root, jira, data)
 
 
 def implement(
@@ -785,6 +830,7 @@ def implement(
     runner: Runner | None = None,
     from_contract: bool = False,
     from_test: bool = False,
+    force: bool = False,
 ) -> list[str]:
     if from_contract and from_test:
         raise ValueError("from_contract and from_test are mutually exclusive")
@@ -797,6 +843,21 @@ def implement(
         if not dry_run:
             st.save(root, jira, data)
         contract_summary = (data.get("contract_summary") or "").strip()
+        ts = data.get("test") if isinstance(data.get("test"), dict) else {}
+        parts = [str(ts.get("summary") or "").strip(), str(ts.get("body") or "").strip()]
+        findings = ts.get("findings")
+        if isinstance(findings, list) and findings:
+            lines: list[str] = []
+            for item in findings:
+                if not isinstance(item, dict):
+                    continue
+                fid = str(item.get("id") or "").strip()
+                title = str(item.get("title") or "").strip()
+                detail = str(item.get("detail") or "").strip()
+                lines.append("- " + " ".join(x for x in (fid, title, detail) if x))
+            if lines:
+                parts.append("\n".join(lines))
+        test_body = "\n\n".join(p for p in parts if p)
         if from_contract:
             if not contract_summary:
                 raise ValueError("no contract_summary; run review --contract first")
@@ -831,7 +892,7 @@ def implement(
         if (from_contract or from_test) and ids
         else {"ready", "blocked", "implementing"}
     )
-    skip_state_check = ids is not None and not from_contract and not from_test
+    skip_state_check = bool(force) and ids is not None and not from_contract and not from_test
     for tid in targets:
         t = tickets.get(tid)
         if not t:
@@ -853,6 +914,8 @@ def implement(
             if not skip_state_check and slot.get("state") not in allowed:
                 continue
             last_summary = slot.get("last_summary")
+            was_blocked = slot.get("state") == "blocked"
+            was_fix_ticket = slot.get("source") in {"contract", "test"}
             slot["state"] = "implementing"
             if from_contract and data.get("phase") == "done":
                 data["phase"] = "frozen"
@@ -888,15 +951,30 @@ def implement(
             data = st.load(root, jira)
             slot = data["tickets"][tid]
             if result.ok:
-                slot["state"] = "implemented"
                 slot["last_summary"] = result.summary
-                is_fix = from_contract or from_test or (slot.get("state") == "blocked")
+                is_fix = (
+                    from_contract
+                    or from_test
+                    or was_blocked
+                    or was_fix_ticket
+                    or (
+                        bool(last_summary)
+                        and (
+                            "REVIEW_FAILED" in last_summary
+                            or "[Human Review" in last_summary
+                        )
+                    )
+                )
                 prefix = "fix" if is_fix else "feat"
                 sha = gitops.commit_all(cwd, f"{prefix}({tid}): {t.title or tid}")
                 if sha:
                     slot["head_sha"] = sha
+                    slot["state"] = "implemented"
                 else:
-                    _record_head_sha(slot, cwd)
+                    slot["state"] = "blocked"
+                    slot["last_summary"] = (
+                        (result.summary or "").rstrip() + "\ncommit failed"
+                    ).strip()
             else:
                 slot["state"] = "blocked"
                 slot["last_summary"] = result.summary
@@ -916,9 +994,10 @@ def review(
 ) -> list[str]:
     req = paths.req_dir(root, jira)
     tickets = {t.id: t for t in load_tickets(req)}
-    data = st.sync_tickets(st.load(root, jira), list(tickets.values()))
-    if not dry_run:
-        st.save(root, jira, data)
+    with st.jira_lock(jira):
+        data = st.sync_tickets(st.load(root, jira), list(tickets.values()))
+        if not dry_run:
+            st.save(root, jira, data)
     runner = runner or get_runner(
         root, "contract" if contract else "review", dry_run=dry_run, print_mode=print_mode
     )
@@ -965,12 +1044,14 @@ def review(
         if dry_run:
             return ["__contract__"]
         blocked = _review_blocked(result)
-        data["contract_review"] = "failed" if blocked else "passed"
-        data["contract_summary"] = result.summary
-        parsed_findings = parse_findings_from_summary(result.summary or "")
-        if parsed_findings:
-            data["contract_findings"] = parsed_findings
-        st.save(root, jira, data)
+        with st.jira_lock(jira):
+            data = st.load(root, jira)
+            data["contract_review"] = "failed" if blocked else "passed"
+            data["contract_summary"] = result.summary
+            parsed_findings = parse_findings_from_summary(result.summary or "")
+            if parsed_findings:
+                data["contract_findings"] = parsed_findings
+            st.save(root, jira, data)
         if blocked:
             spawn_fix_tickets(root, jira, "contract")
         return ["__contract__"]

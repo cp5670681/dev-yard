@@ -143,8 +143,12 @@ def worktree_add(
             raise GitError(f"{path} exists and is not a git worktree")
     existing = run(["git", "branch", "--list", branch], cwd=source)
     if existing:
-        if reset_existing:
-            run(["git", "branch", "-f", branch, start_point], cwd=source)
+        # Path is new; leftover refs must not silently reuse stale commits.
+        try:
+            run(["git", "worktree", "prune"], cwd=source)
+        except GitError:
+            pass
+        run(["git", "branch", "-f", branch, start_point], cwd=source)
         run(["git", "worktree", "add", str(path), branch], cwd=source)
     else:
         run(["git", "worktree", "add", "-b", branch, str(path), start_point], cwd=source)
@@ -302,8 +306,5 @@ def commit_all(worktree: Path, message: str) -> str | None:
         )
         return run(["git", "rev-parse", "HEAD"], cwd=worktree)
     except (GitError, subprocess.CalledProcessError):
-        try:
-            return run(["git", "rev-parse", "HEAD"], cwd=worktree)
-        except GitError:
-            return None
+        return None
 

@@ -293,17 +293,27 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
                 ids = [tid for tid in ids if tid not in busy]
                 if not ids:
                     raise ValueError(f"{jira} already has a running job ({action})")
-            claimed = yard_service.claim_run(root, jira, action, ids)
+            claimed, previous = yard_service.claim_run(root, jira, action, ids)
             if not claimed:
                 raise ValueError(
                     "没有处于待审查或阻断状态的票"
                     if action == "review"
                     else "没有可运行的票"
                 )
-            return [
-                jobs.submit(action, jira, ticket_ids=[tid], extra=extra)
-                for tid in claimed
-            ]
+            submitted = []
+            queued: set[str] = set()
+            try:
+                extra = {**extra, "label": _action_labels(root).get(action, action)}
+                for tid in claimed:
+                    job = jobs.submit(action, jira, ticket_ids=[tid], extra=extra)
+                    submitted.append(job)
+                    queued.add(tid)
+            except Exception:
+                leftover = {tid: previous[tid] for tid in claimed if tid not in queued and tid in previous}
+                yard_service.restore_claim(root, jira, leftover)
+                raise
+            return submitted
+        extra = {**extra, "label": _action_labels(root).get(action, action)}
         return [jobs.submit(action, jira, ticket_ids=ids, extra=extra)]
 
     def _jobs_out(submitted):
@@ -363,6 +373,7 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
                 }
                 for d in detail.docs
             ],
+            "stage_runs": detail.stage_runs,
         }
 
     def _doc_payload(detail, slug: str):
@@ -584,19 +595,21 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
             raise HTTPException(400, str(e)) from e
 
         job_snapshots = []
+        auto_error = None
         norm = payload.verdict.strip().lower()
         if norm in {"failed", "fail", "blocked"} and payload.auto_implement:
             try:
                 submitted = _submit_action("implement", jira, [ticket_id], extra={})
                 job_snapshots = [j.snapshot() for j in submitted]
-            except Exception:
-                pass
+            except ValueError as e:
+                auto_error = str(e)
 
         return {
             "jira": jira,
             "ticket_id": ticket_id,
             "ticket": updated,
             "jobs": job_snapshots,
+            "error": auto_error,
         }
 
     @app.post("/api/requirements/{jira}/contract/review")
@@ -615,18 +628,20 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
             raise HTTPException(400, str(e)) from e
 
         job_snapshots = []
+        auto_error = None
         norm = payload.verdict.strip().lower()
         if norm in {"failed", "fail", "blocked"} and payload.auto_implement:
             try:
                 submitted = _submit_action("fix-contract", jira, None, extra={})
                 job_snapshots = [j.snapshot() for j in submitted]
-            except Exception:
-                pass
+            except ValueError as e:
+                auto_error = str(e)
 
         return {
             "jira": jira,
             "contract": updated,
             "jobs": job_snapshots,
+            "error": auto_error,
         }
 
     @app.get("/api/requirements/{jira}/diff")

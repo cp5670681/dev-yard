@@ -298,8 +298,14 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
         Action(
             "freeze",
             "冻结 worktree",
-            has_tickets,
-            "" if has_tickets else "TICKETS.md 里还没有带 repo 的票",
+            has_tickets and detail.phase not in {"testing", "done"},
+            ""
+            if has_tickets and detail.phase not in {"testing", "done"}
+            else (
+                "TICKETS.md 里还没有带 repo 的票"
+                if not has_tickets
+                else "提测/完成后回退 freeze 请用 CLI --force"
+            ),
         ),
         Action(
             "implement",

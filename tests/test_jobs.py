@@ -335,7 +335,7 @@ def test_default_execute_implement_injects_runner(tmp_path: Path, git_src: Path,
     captured: dict = {}
 
     def fake_implement(
-        root, jira, ids, dry_run=False, print_mode=False, runner=None, from_contract=False, from_test=False
+        root, jira, ids, dry_run=False, print_mode=False, runner=None, from_contract=False, from_test=False, **_kw
     ):
         captured.update(
             print_mode=print_mode,

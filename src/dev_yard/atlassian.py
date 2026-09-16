@@ -28,6 +28,16 @@ MAX_PAGES = 8
 MAX_DEPTH = 2
 
 
+def _safe_attachment_name(fname: str, aid: str = "") -> str:
+    base = Path(fname).name
+    if base in {"", ".", ".."}:
+        base = f"att-{aid}" if aid else "att"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", base)
+    if safe in {"", ".", ".."}:
+        safe = f"att-{aid}" if aid else "att"
+    return safe
+
+
 @dataclass
 class FetchResult:
     title: str
@@ -313,7 +323,7 @@ def collect_requirement(dest: Path, key: str, root: Path | None = None) -> Fetch
                 else:
                     warnings.append(f"image download failed {fname}")
                     continue
-            safe = re.sub(r"[^A-Za-z0-9._-]+", "_", fname)
+            safe = _safe_attachment_name(fname, aid)
             dest_file = page_dir / safe
             dest_file.write_bytes(data)
             rel = dest_file.relative_to(dest).as_posix()

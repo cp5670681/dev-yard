@@ -123,13 +123,21 @@ def test_plugin_stage_restores_status_yaml_and_does_not_set_phase(tmp_path):
     root = _workspace(tmp_path)
     d = _req(root, "J-1", phase="frozen")
     (d / "STATUS.yaml").write_text(
-        "phase: frozen\ntickets: {}\ncontract_review: passed\n", encoding="utf-8"
+        "phase: frozen\n"
+        "tickets:\n  T1:\n    state: done\n"
+        "contract_review: passed\n"
+        "test:\n  status: submitted\n",
+        encoding="utf-8",
     )
 
     class MutatingRunner(FakeRunner):
         def start(self, prompt, cwd, extra_read_paths, repo=None):
             (d / "STATUS.yaml").write_text(
-                "phase: done\ntickets: {}\ncontract_review: failed\n", encoding="utf-8"
+                "phase: done\n"
+                "tickets:\n  T1:\n    state: ready\n"
+                "contract_review: failed\n"
+                "test:\n  status: passed\n",
+                encoding="utf-8",
             )
             return super().start(prompt, cwd, extra_read_paths, repo)
 
@@ -142,8 +150,23 @@ def test_plugin_stage_restores_status_yaml_and_does_not_set_phase(tmp_path):
     data = _status(root, "J-1")
     assert data["phase"] == "frozen"
     assert data["contract_review"] == "passed"
+    assert data["tickets"]["T1"]["state"] == "done"
+    assert data["test"]["status"] == "submitted"
     assert data["stage_runs"]["scan"]["ok"] is True
     assert "STATUS.yaml" in result.summary
+
+
+def test_builtin_grill_restores_status_yaml(tmp_path):
+    root = _workspace(tmp_path)
+    d = _req(root, "J-1", phase="open")
+
+    class MutatingRunner(FakeRunner):
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            (d / "STATUS.yaml").write_text("phase: done\ntickets: {}\n", encoding="utf-8")
+            return super().start(prompt, cwd, extra_read_paths, repo)
+
+    service.run_stage(root, stages.BUILTIN_STAGES["grill"], "J-1", runner=MutatingRunner())
+    assert _status(root, "J-1")["phase"] == "open"
 
 
 def test_builtin_open_still_sets_phase(tmp_path):

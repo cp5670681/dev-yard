@@ -93,6 +93,15 @@
                   @click="confirmAction(a.id, undefined, a)"
                 >
                   {{ ACTION_LABELS[a.id] || a.label }}
+                  <v-chip
+                    v-if="detail.stage_runs?.[a.id]"
+                    class="ml-2"
+                    size="x-small"
+                    :color="detail.stage_runs[a.id].ok ? 'success' : 'error'"
+                    variant="flat"
+                  >
+                    {{ detail.stage_runs[a.id].ok ? "ok" : "err" }}
+                  </v-chip>
                 </v-btn>
               </span>
             </template>
@@ -110,7 +119,17 @@
               :disabled="!a.enabled"
               :subtitle="a.reason || undefined"
               @click="confirmAction(a.id, undefined, a)"
-            />
+            >
+              <template v-if="detail.stage_runs?.[a.id]" #append>
+                <v-chip
+                  size="x-small"
+                  :color="detail.stage_runs[a.id].ok ? 'success' : 'error'"
+                  variant="flat"
+                >
+                  {{ detail.stage_runs[a.id].ok ? "ok" : "err" }}
+                </v-chip>
+              </template>
+            </v-list-item>
           </v-list>
         </v-menu>
         <v-switch

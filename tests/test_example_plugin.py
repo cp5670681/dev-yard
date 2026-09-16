@@ -20,4 +20,15 @@ def test_example_plugin_loads(tmp_path):
     assert spec.requires_phase is None
     assert spec.sets_phase is None
     assert spec.description
-    assert "REQUIREMENT.md" in spec.protects
+    assert spec.tools == ("read", "grep", "find", "ls")
+    assert spec.protects == (
+        "REQUIREMENT.md",
+        "GRILL.md",
+        "SPEC.md",
+        "TICKETS.md",
+    )
+    assert spec.order == 45
+    assert "bash" not in spec.tools
+    assert "edit" not in spec.tools
+    assert "write" not in spec.tools
+    assert "只读" in spec.guidance

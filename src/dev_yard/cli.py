@@ -181,10 +181,15 @@ def req_delete(jira: str) -> None:
 
 
 @req_app.command("freeze")
-def req_freeze(jira: str) -> None:
+def req_freeze(
+    jira: str,
+    force: bool = typer.Option(
+        False, "--force", help="Allow re-freeze after submit-test / done"
+    ),
+) -> None:
     root = root_opt()
     try:
-        created = service.req_freeze(root, jira)
+        created = service.req_freeze(root, jira, force=force)
     except (ValueError, GitError, KeyError) as e:
         _die(e)
     for p in created:
@@ -404,6 +409,11 @@ def implement(
         "--from-test",
         help="Implement ready test bug tickets (B tickets from 提 bug)",
     ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Implement explicit ticket ids even if pending/done",
+    ),
 ) -> None:
     root = root_opt()
     try:
@@ -415,6 +425,7 @@ def implement(
             print_mode=print_mode,
             from_contract=from_contract,
             from_test=from_test,
+            force=force,
         )
     except (ValueError, GitError, KeyError, FileNotFoundError) as e:
         _die(e)

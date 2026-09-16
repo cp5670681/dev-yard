@@ -39,6 +39,7 @@ import { reactive, ref } from "vue";
 import { submitAnswers } from "@/api/client";
 import type { GrillRound } from "@/api/types";
 import GrillOptionList, { CUSTOM } from "@/components/GrillOptionList.vue";
+import { useSnack } from "@/composables/snack";
 
 const props = defineProps<{ jobId: string; grill: GrillRound }>();
 const emit = defineEmits<{ submitted: [] }>();
@@ -46,6 +47,7 @@ const emit = defineEmits<{ submitted: [] }>();
 const picked = reactive<Record<string, string>>({});
 const texts = reactive<Record<string, string>>({});
 const busy = ref(false);
+const snack = useSnack();
 
 for (const q of props.grill.questions) {
   picked[q.id] = q.suggested || (q.options?.length ? q.options[0].id : CUSTOM);
@@ -77,6 +79,8 @@ async function submit() {
   try {
     await submitAnswers(props.jobId, collect());
     emit("submitted");
+  } catch (e) {
+    snack.notify(e instanceof Error ? e.message : String(e), "error");
   } finally {
     busy.value = false;
   }

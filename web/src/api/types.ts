@@ -6,6 +6,7 @@ export interface JobBrief {
   action: string;
   state: JobState;
   ticket_ids: string[] | null;
+  label?: string;
 }
 
 export interface PiRun {
@@ -107,6 +108,7 @@ export interface ReqDetail {
   tickets: Ticket[];
   actions: Action[];
   docs: DocMeta[];
+  stage_runs?: Record<string, { at?: string; ok?: boolean; summary?: string }>;
 }
 
 export interface DocPayload {
@@ -213,6 +215,7 @@ export interface TicketReviewOut {
   ticket_id: string;
   ticket: Record<string, unknown>;
   jobs: JobSnapshot[];
+  error?: string | null;
 }
 
 export interface ContractReviewIn {
@@ -228,6 +231,7 @@ export interface ContractReviewOut {
     contract_summary: string;
   };
   jobs: JobSnapshot[];
+  error?: string | null;
 }
 
 

@@ -255,7 +255,7 @@ function onNav() {
 }
 
 function jobLabel(job: JobBrief) {
-  const action = ACTION_LABELS[job.action] || job.action;
+  const action = job.label || ACTION_LABELS[job.action] || job.action;
   if (job.action === "repo_add") return action;
   const tickets = (job.ticket_ids || []).join(",");
   return `${job.jira} · ${action}${tickets ? " " + tickets : ""}`;

@@ -44,6 +44,16 @@ def test_git_project_name_rejects_empty():
         git_project_name("git@host:")
 
 
+def test_repo_add_accepts_equivalent_origin_url(tmp_path: Path, git_src: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "be", str(git_src), "main", "be", None)
+    again = repo_add(yard, "be", str(git_src).rstrip("/") + ".git", "main", "be", None)
+    assert again.alias == "be"
+    with pytest.raises(ValueError, match="origin"):
+        repo_add(yard, "be", str(tmp_path / "other-repo.git"), "main", "be", None)
+
+
 def test_repo_add_blank_alias_uses_project_name(tmp_path: Path, git_src: Path):
     yard = tmp_path / "yard"
     init_yard(yard)

@@ -49,6 +49,53 @@ def test_freeze_coerces_list_tickets_in_status(tmp_path: Path, git_src: Path, mo
     assert data["tickets"]["T1"]["worktree"] == str(wts[0])
 
 
+def test_freeze_refuses_testing_without_force(tmp_path: Path, git_src: Path, monkeypatch):
+    import pytest
+
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-60", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    req_freeze(yard, "AB-60")
+    data = st.load(yard, "AB-60")
+    data["phase"] = "testing"
+    st.save(yard, "AB-60", data)
+    with pytest.raises(ValueError, match="testing"):
+        req_freeze(yard, "AB-60")
+    req_freeze(yard, "AB-60", force=True)
+    assert st.load(yard, "AB-60")["phase"] == "frozen"
+
+
+def test_force_freeze_resets_existing_worktree(tmp_path: Path, git_src: Path, monkeypatch):
+    import subprocess
+
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-61", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    wts = req_freeze(yard, "AB-61")
+    wt = wts[0]
+    (wt / "OLD").write_text("old")
+    subprocess.check_call(["git", "add", "."], cwd=wt)
+    subprocess.check_call(["git", "commit", "-m", "old"], cwd=wt)
+    data = st.load(yard, "AB-61")
+    data["phase"] = "testing"
+    st.save(yard, "AB-61", data)
+    req_freeze(yard, "AB-61", force=True)
+    assert st.load(yard, "AB-61")["phase"] == "frozen"
+    assert not (wt / "OLD").exists()
+
+
 def test_status_save_preserves_unicode(tmp_path: Path):
     yard = tmp_path / "yard"
     init_yard(yard)

@@ -51,6 +51,7 @@ class Job:
     log: str = ""
     ticket_ids: list[str] | None = None
     extra: dict = field(default_factory=dict)
+    label: str = ""
     grill: dict | None = None
     pi_runs: list[dict[str, Any]] = field(default_factory=list)
     done: threading.Event = field(default_factory=threading.Event)
@@ -79,6 +80,7 @@ class Job:
             "state": self.state,
             "log": self.log,
             "ticket_ids": self.ticket_ids,
+            "label": self.label,
             "grill": self.grill,
             "pi_runs": list(self.pi_runs),
         }
@@ -97,7 +99,7 @@ class Job:
     def brief(self) -> dict:
         with self._cv:
             data = self._public()
-            return {k: data[k] for k in ("id", "jira", "action", "state", "ticket_ids")}
+            return {k: data[k] for k in ("id", "jira", "action", "state", "ticket_ids", "label")}
 
     def capture(self) -> tuple[dict, int]:
         with self._cv:
@@ -353,7 +355,9 @@ def default_execute(root: Path, job: Job) -> None:
             job.append(warning)
         return
     if job.action == "freeze":
-        created = service.req_freeze(root, job.jira)
+        created = service.req_freeze(
+            root, job.jira, force=bool((job.extra or {}).get("force"))
+        )
         for p in created:
             job.append(str(p))
         return
@@ -592,12 +596,14 @@ class JobRunner:
                     continue
                 if _jobs_conflict(job, jira, action, ticket_ids):
                     raise ValueError(_conflict_message(job, action, ticket_ids))
+            extra = extra or {}
             job = Job(
                 id=uuid.uuid4().hex[:10],
                 jira=jira,
                 action=action,
                 ticket_ids=ticket_ids,
-                extra=extra or {},
+                extra=extra,
+                label=str(extra.get("label") or ""),
                 on_change=self._bump_board,
             )
             self._jobs[job.id] = job
