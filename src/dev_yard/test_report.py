@@ -11,7 +11,7 @@ from dev_yard import paths, status as st
 from dev_yard.tickets import load_tickets
 
 VERDICTS = ("passed", "failed", "blocked")
-SOURCES = ("api", "web", "cli")
+SOURCES = ("api", "web", "cli", "yard")
 
 
 class ReportRejected(ValueError):

@@ -14,8 +14,8 @@ CLI 入口为 **`dev-yard`**（或简写 **`devyard`**）。
 ## 核心流程
 
 ```text
-req open ──► grill ──► spec ──► tickets ──► req freeze ──► implement ──► review ──► submit-test
-(拉需求)     (对齐)    (契约)    (拆票)      (建Worktree)   (编码实现)   (契约审查)  (提测闭环)
+req open ──► grill ──► spec ──► tickets ──► req freeze ──► implement ──► review ──► submit-test ──► req test
+(拉需求)     (对齐)    (契约)    (拆票)      (建Worktree)   (编码实现)   (契约审查)  (提测)        (自动测)
 ```
 
 ---
@@ -57,7 +57,7 @@ dev-yard stages              # 内置标 [builtin]，插件标路径，有 title
 dev-yard run example PROJ-101
 ```
 
-覆盖内置：插件 `name` 等于 `grill`/`spec`/`tickets`/`review` 等即替换那条阶段的 skill/tools/guidance（换提示词）。票循环仍走 `dev-yard implement` / `dev-yard review`；`dev-yard run open|implement|review|contract` 会拒绝。两个已启用插件不得同名。
+覆盖内置：插件 `name` 等于 `grill`/`spec`/`tickets`/`review` 等即替换那条阶段的 skill/tools/guidance（换提示词）。票循环仍走 `dev-yard implement` / `dev-yard review`；`dev-yard run open|implement|review|contract|qa-design|qa-run|test` 会拒绝。插件不得占用 `qa-design` / `qa-run`。两个已启用插件不得同名。
 
 信任模型：启用插件 = 信任作者。`tools` 含 `bash` 就能改工作区。宿主强制回滚 `STATUS.yaml`，再只写入 `stage_runs`，所以插件跑完 phase / 票状态 / 提测槽都不变。文档产物靠 `protects` 回滚；业务仓 / worktree 不在保护范围。
 
@@ -139,6 +139,9 @@ dev-yard review PROJ-101 --contract # 跨仓契约校验
 
 # 8. 提测与修复闭环
 dev-yard req submit-test PROJ-101
+# 工作区根放 qa.yaml（envs.local.base_url + 可选 workers 模型池）后：
+dev-yard req test PROJ-101          # 设计用例并执行；失败拆 B 票，通过则 phase=done
+# 需求页「测试」Tab（/r/:key/qa）只读看用例、改动点、run 与截图
 # 提 bug 后修就绪的 B 票：dev-yard implement PROJ-101 --from-test
 
 # 9. 一键推送远端分支（提 PR）
@@ -233,6 +236,7 @@ dev-yard web --host 0.0.0.0 --allow-remote
 | `dev-yard req delete <key>` | 删除需求产物与 Worktree | |
 | `dev-yard req push <key> [repos..]` | 推送各仓 Worktree 分支到远端 | `--remote`, `--force` |
 | `dev-yard req submit-test <key>` | 标记提测 | |
+| `dev-yard req test <key>` | 提测后自动测（qa-design + qa-run） | `--print`, `--design-only`, `--run-only`, `--redesign`, `--no-ingest` |
 | `dev-yard req accept-test <key>` | 录入测试报告 | `--verdict`, `--body-file` |
 | `dev-yard grill <key>` | 需求答辩与对齐 | `--print`, `--dry-run` |
 | `dev-yard spec <key>` | 制定方案与契约 | `--print`, `--dry-run` |
@@ -240,7 +244,7 @@ dev-yard web --host 0.0.0.0 --allow-remote
 | `dev-yard implement <key> [T..]` | 编码实现 | `--print`, `--from-contract`, `--from-test`, `--force` |
 | `dev-yard review <key> [T..]` | 代码评审 / 契约检查 | `--contract`, `--print` |
 | `dev-yard stages` | 列出内置 + 已启用插件阶段 | |
-| `dev-yard run <stage> <key>` | 跑插件阶段，或 grill/spec/tickets | `--print`；`open`/`implement`/`review`/`contract` 请用专用命令 |
+| `dev-yard run <stage> <key>` | 跑插件阶段，或 grill/spec/tickets | `--print`；`open`/`implement`/`review`/`contract`/`qa-*`/`test` 请用专用命令 |
 | `dev-yard push <key> [repos..]` | 推送各仓 Worktree 分支到远端 | `--remote`, `--force` |
 | `dev-yard status [key]` | 查看需求与任务状态 | |
 | `dev-yard web` | 启动 Web 看板 | `--port 8765`, `--host 0.0.0.0 --allow-remote` |

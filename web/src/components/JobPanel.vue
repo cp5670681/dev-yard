@@ -50,7 +50,7 @@ import { useSnack } from "@/composables/snack";
 import GrillForm from "./GrillForm.vue";
 
 const props = defineProps<{ jobId: string; initial?: JobSnapshot | null }>();
-const emit = defineEmits<{ done: [job: JobSnapshot] }>();
+const emit = defineEmits<{ done: [job: JobSnapshot]; update: [job: JobSnapshot] }>();
 const snack = useSnack();
 
 function isMissingJob(e: unknown): boolean {
@@ -100,6 +100,7 @@ let es: EventSource | null = null;
 
 function apply(next: JobSnapshot) {
   job.value = next;
+  emit("update", next);
   if (next.state === "ok" || next.state === "error") {
     es?.close();
     es = null;
@@ -137,6 +138,7 @@ function bind() {
   es.addEventListener("state", (e) => {
     const next = JSON.parse((e as MessageEvent).data) as JobSnapshot;
     job.value = { ...job.value, ...next };
+    emit("update", job.value);
   });
   es.addEventListener("done", (e) => {
     apply(JSON.parse((e as MessageEvent).data) as JobSnapshot);

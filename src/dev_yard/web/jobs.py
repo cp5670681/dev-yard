@@ -33,6 +33,7 @@ _HOST_JOB_ACTIONS = frozenset(
         "submit-test",
         "fill-test-report",
         "fix-test",
+        "run-test",
         "push",
     }
 )
@@ -54,6 +55,7 @@ class Job:
     label: str = ""
     grill: dict | None = None
     pi_runs: list[dict[str, Any]] = field(default_factory=list)
+    qa_progress: dict[str, Any] | None = None
     done: threading.Event = field(default_factory=threading.Event)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _cv: threading.Condition = field(init=False, repr=False, compare=False)
@@ -83,6 +85,7 @@ class Job:
             "label": self.label,
             "grill": self.grill,
             "pi_runs": list(self.pi_runs),
+            "qa_progress": self.qa_progress,
         }
 
     def append(self, text: str) -> None:
@@ -163,6 +166,11 @@ class Job:
             self._bump()
             return dict(run)
 
+    def set_qa_progress(self, payload: dict[str, Any] | None) -> None:
+        with self._cv:
+            self.qa_progress = payload
+            self._bump()
+
 
 class JobSse:
     def __init__(self, job: Job) -> None:
@@ -172,6 +180,7 @@ class JobSse:
         self._last_state: str | None = None
         self._last_grill: Any = object()
         self._last_pi_runs: Any = object()
+        self._last_qa_progress: Any = object()
 
     def poll(self) -> tuple[list[str], bool, int]:
         snap, seq = self.job.capture()
@@ -183,6 +192,7 @@ class JobSse:
             self._last_state = snap["state"]
             self._last_grill = snap["grill"]
             self._last_pi_runs = snap.get("pi_runs")
+            self._last_qa_progress = snap.get("qa_progress")
         else:
             if len(snap["log"]) > self._log_off:
                 frames.append(format_sse("log", snap["log"][self._log_off :]))
@@ -191,6 +201,7 @@ class JobSse:
                 snap["state"] != self._last_state
                 or snap["grill"] != self._last_grill
                 or snap.get("pi_runs") != self._last_pi_runs
+                or snap.get("qa_progress") != self._last_qa_progress
             ):
                 frames.append(
                     format_sse(
@@ -203,12 +214,14 @@ class JobSse:
                             "grill": snap["grill"],
                             "ticket_ids": snap["ticket_ids"],
                             "pi_runs": snap.get("pi_runs") or [],
+                            "qa_progress": snap.get("qa_progress"),
                         },
                     )
                 )
                 self._last_state = snap["state"]
                 self._last_grill = snap["grill"]
                 self._last_pi_runs = snap.get("pi_runs")
+                self._last_qa_progress = snap.get("qa_progress")
         done = snap["state"] in _TERMINAL
         if done:
             frames.append(format_sse("done", snap))
@@ -386,6 +399,34 @@ def default_execute(root: Path, job: Job) -> None:
 
         data = submit_test(root, job.jira)
         job.append(f"{job.jira} phase={data.get('phase')}")
+        return
+    if job.action == "run-test":
+        from dev_yard.qa import req_test
+        from dev_yard.qa_config import TestRejected
+
+        extra = job.extra or {}
+        try:
+            result = req_test(
+                root,
+                job.jira,
+                print_mode=True,
+                design_only=bool(extra.get("design_only")),
+                run_only=bool(extra.get("run_only")),
+                redesign=bool(extra.get("redesign")),
+                ingest=not bool(extra.get("no_ingest")),
+                on_log=job.append,
+                on_progress=job.set_qa_progress,
+            )
+        except TestRejected as e:
+            raise RuntimeError(str(e)) from e
+        summary = result.get("summary") or {}
+        job.append(
+            f"{job.jira} run={result.get('run_id')} "
+            f"passed={summary.get('passed', 0)} failed={summary.get('failed', 0)} "
+            f"blocked={summary.get('blocked', 0)} skipped={summary.get('skipped', 0)}"
+        )
+        if result.get("ingest_skipped"):
+            job.append(f"ingest skipped ({result['ingest_skipped']})")
         return
     from dev_yard.stages import load_registry
 

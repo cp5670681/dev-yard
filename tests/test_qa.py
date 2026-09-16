@@ -1,0 +1,524 @@
+from __future__ import annotations
+
+import threading
+import time
+from pathlib import Path
+
+import pytest
+import yaml
+from typer.testing import CliRunner
+
+from dev_yard import status as st
+from dev_yard.cli import app
+from dev_yard.qa import req_test
+from dev_yard.qa_config import TestRejected, load_qa_config
+from dev_yard.qa_report import map_qa_result
+from dev_yard.qa_schedule import CaseJob, PoolSlot, normalize_status, run_schedule
+from dev_yard.runners import DryRunRunner, RunResult, Runner
+from dev_yard.service import implement, init_yard, repo_add, req_freeze, req_open, review
+from dev_yard.test_report import ReportRejected, submit_test
+from dev_yard.web.board import PIPELINE, requirement_detail
+
+cli = CliRunner()
+
+
+def _write_qa_yaml(root: Path, extra: str = "") -> None:
+    (root / "qa.yaml").write_text(
+        "active_env: local\n"
+        "browser:\n  channel: chrome\n  headed: false\n"
+        "workers:\n"
+        "  - id: a\n    provider: rcc\n    model: grok-4\n"
+        "    concurrency: 1\n    priority: 1\n"
+        "envs:\n  local:\n    base_url: http://127.0.0.1:8080\n"
+        + extra,
+        encoding="utf-8",
+    )
+
+
+def _testing_req(tmp_path: Path, git_src: Path, key: str) -> Path:
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, key, source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n",
+        encoding="utf-8",
+    )
+    (d / "SPEC.md").write_text("# Spec\n", encoding="utf-8")
+    req_freeze(yard, key)
+    implement(yard, key, None, runner=DryRunRunner())
+    review(yard, key, None, runner=DryRunRunner())
+    review(yard, key, None, contract=True, runner=DryRunRunner())
+    submit_test(yard, key)
+    _write_qa_yaml(yard)
+    return yard
+
+
+class _DesignRunner(Runner):
+    def __init__(self, yard: Path, key: str):
+        self.called = 0
+        self.yard = yard
+        self.key = key
+
+    def start(self, prompt, cwd, extra_read_paths, repo=None):
+        self.called += 1
+        qa = self.yard / "reqs" / self.key / "qa" / "cases" / "mod"
+        qa.mkdir(parents=True, exist_ok=True)
+        (qa / "case-01.md").write_text(
+            "---\nid: case-01\ntitle: happy\npriority: P0\n"
+            f"requirement: {self.key}\nrepo: backend\ncovers: [D1]\n---\n\n# body\n",
+            encoding="utf-8",
+        )
+        return RunResult(ok=True, summary="designed")
+
+
+def test_load_qa_config_rejects_missing(tmp_path: Path):
+    init_yard(tmp_path)
+    with pytest.raises(TestRejected, match="qa.yaml"):
+        load_qa_config(tmp_path)
+
+
+def test_load_qa_config_rejects_sum_over_8(tmp_path: Path):
+    init_yard(tmp_path)
+    (tmp_path / "qa.yaml").write_text(
+        "envs:\n  local:\n    base_url: http://127.0.0.1:1\n"
+        "workers:\n"
+        "  - id: a\n    provider: rcc\n    model: g\n    concurrency: 5\n"
+        "  - id: b\n    provider: rcc\n    model: m\n    concurrency: 4\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TestRejected, match="max is 8"):
+        load_qa_config(tmp_path)
+
+
+def test_req_test_rejects_wrong_phase(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    req_open(yard, "QA-1", source="none")
+    _write_qa_yaml(yard)
+    with pytest.raises(TestRejected, match="submit-test"):
+        req_test(yard, "QA-1", print_mode=True)
+
+
+def test_req_test_rejects_no_worktree(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "QA-2", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n",
+        encoding="utf-8",
+    )
+    data = st.load(yard, "QA-2")
+    data["phase"] = "testing"
+    data["contract_review"] = "passed"
+    data["tickets"] = {"T1": {"state": "done", "repo": "backend"}}
+    st.save(yard, "QA-2", data)
+    _write_qa_yaml(yard)
+    with pytest.raises(TestRejected, match="worktree"):
+        req_test(yard, "QA-2", print_mode=True)
+
+
+def test_run_dedicated_qa_stages_rejected(tmp_path, monkeypatch):
+    (tmp_path / "repos.yaml").write_text("repos: {}\n", encoding="utf-8")
+    (tmp_path / "reqs").mkdir()
+    monkeypatch.chdir(tmp_path)
+    for name in ("qa-design", "qa-run", "test"):
+        out = cli.invoke(app, ["run", name, "J-1"])
+        assert out.exit_code == 2, name
+        assert "dev-yard req test" in out.output
+
+
+def test_design_called_when_no_cases(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-3")
+    design = _DesignRunner(yard, "QA-3")
+    result = req_test(
+        yard,
+        "QA-3",
+        print_mode=True,
+        design_only=True,
+        runner=design,
+    )
+    assert design.called == 1
+    assert result["cases"] == 1
+
+
+def test_design_skipped_when_cases_exist(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-4")
+    design = _DesignRunner(yard, "QA-4")
+    design.start("", yard, [])
+    design.called = 0
+    ran = []
+
+    def case_runner(job, pool):
+        ran.append(job.id)
+        dest = yard / "reqs" / "QA-4" / "qa" / "evidence"
+        # host creates run dir after design; write after schedule starts via path in job
+        return {
+            "status": "passed",
+            "repo": "backend",
+            "model": pool.model,
+            "provider": pool.provider,
+        }
+
+    result = req_test(
+        yard,
+        "QA-4",
+        print_mode=True,
+        ingest=False,
+        runner=design,
+        case_runner=case_runner,
+    )
+    assert design.called == 0
+    assert ran == ["case-01"]
+    assert result["summary"]["passed"] == 1
+
+
+def test_redesign_forces_design(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-5")
+    design = _DesignRunner(yard, "QA-5")
+    design.start("", yard, [])
+    design.called = 0
+    req_test(
+        yard,
+        "QA-5",
+        print_mode=True,
+        redesign=True,
+        design_only=True,
+        runner=design,
+    )
+    assert design.called == 1
+
+
+def test_schedule_caps_and_priority_and_deps():
+    hold = threading.Event()
+    entered = threading.Semaphore(0)
+    current = 0
+    max_seen = 0
+    lock = threading.Lock()
+    used_pools: list[str] = []
+
+    def run(job: CaseJob, pool: PoolSlot):
+        nonlocal current, max_seen
+        with lock:
+            current += 1
+            max_seen = max(max_seen, current)
+            used_pools.append(pool.id)
+        entered.release()
+        hold.wait(2)
+        with lock:
+            current -= 1
+        if job.id == "case-01":
+            return {"status": "failed", "reason": "ui"}
+        return {"status": "passed"}
+
+    cases = [
+        CaseJob(id="case-01", title="a", repo="backend", priority="P0"),
+        CaseJob(id="case-02", title="b", repo="backend", priority="P1"),
+        CaseJob(id="case-03", title="c", repo="backend", depends_on=["case-01"]),
+        CaseJob(id="case-04", title="d", repo="backend", priority="P2"),
+        CaseJob(id="case-05", title="e", repo="backend"),
+        CaseJob(id="case-06", title="f", repo="backend"),
+    ]
+    pools = [
+        PoolSlot(id="a", provider="rcc", model="grok-4", concurrency=2, priority=1),
+        PoolSlot(id="b", provider="rcc", model="MiniMax-M3", concurrency=2, priority=2),
+    ]
+    t = threading.Thread(target=lambda: run_schedule(cases, pools, run), daemon=True)
+    t.start()
+    for _ in range(4):
+        assert entered.acquire(timeout=2)
+    time.sleep(0.05)
+    assert max_seen == 4
+    assert used_pools.count("a") >= 2
+    hold.set()
+    t.join(timeout=2)
+    by_id = {c.id: c for c in cases}
+    assert by_id["case-03"].state == "skipped"
+    assert "case-01" in by_id["case-03"].reason
+
+
+def test_schedule_prefers_high_priority_pool():
+    used: list[str] = []
+
+    def run(job, pool):
+        used.append(pool.id)
+        return {"status": "passed"}
+
+    cases = [CaseJob(id="case-01", title="a", repo="backend")]
+    pools = [
+        PoolSlot(id="b", provider="rcc", model="m", concurrency=1, priority=2),
+        PoolSlot(id="a", provider="rcc", model="g", concurrency=1, priority=1),
+    ]
+    run_schedule(cases, pools, run)
+    assert used == ["a"]
+
+
+def test_schedule_rejects_cycle():
+    cases = [
+        CaseJob(id="case-01", title="a", repo="be", depends_on=["case-02"]),
+        CaseJob(id="case-02", title="b", repo="be", depends_on=["case-01"]),
+    ]
+    pools = [PoolSlot(id="a", provider="rcc", model="g", concurrency=1, priority=1)]
+    with pytest.raises(TestRejected, match="cycle"):
+        run_schedule(cases, pools, lambda j, p: {"status": "passed"})
+
+
+def test_schedule_rejects_missing_dep():
+    cases = [CaseJob(id="case-01", title="a", repo="be", depends_on=["case-99"])]
+    pools = [PoolSlot(id="a", provider="rcc", model="g", concurrency=1, priority=1)]
+    with pytest.raises(TestRejected, match="does not exist"):
+        run_schedule(cases, pools, lambda j, p: {"status": "passed"})
+
+
+def test_map_qa_result_failed_findings():
+    run = {"summary": {"total": 1, "passed": 0, "failed": 1, "blocked": 0, "skipped": 0}}
+    cases = [
+        {
+            "case": "case-01",
+            "title": "boom",
+            "repo": "backend",
+            "status": "failed",
+            "reason": "mismatch",
+            "failure": {"step_desc": "click save", "evidence": "screenshots/x.png"},
+        }
+    ]
+    report = map_qa_result(run, cases)
+    assert report is not None
+    assert report.verdict == "failed"
+    assert report.source == "yard"
+    assert report.findings[0].id == "case-01"
+    assert report.findings[0].repo == "backend"
+    assert "click save" in report.findings[0].detail
+
+
+def test_map_qa_result_passed_and_blocked():
+    passed = map_qa_result(
+        {"summary": {"total": 2, "passed": 1, "failed": 0, "blocked": 0, "skipped": 1}},
+        [
+            {"case": "case-01", "status": "passed", "repo": "backend"},
+            {"case": "case-02", "status": "skipped", "repo": "backend"},
+        ],
+    )
+    assert passed is not None
+    assert passed.verdict == "passed"
+    assert passed.findings == []
+    blocked = map_qa_result(
+        {"summary": {"total": 1, "passed": 0, "failed": 0, "blocked": 1, "skipped": 0}},
+        [{"case": "case-01", "status": "blocked", "repo": "backend", "reason": "login"}],
+    )
+    assert blocked is None
+    empty = map_qa_result({"summary": {"total": 0, "passed": 0, "failed": 0, "blocked": 0, "skipped": 0}}, [])
+    assert empty is None
+    with pytest.raises(ReportRejected, match="repo"):
+        map_qa_result(
+            {"summary": {"total": 1, "passed": 0, "failed": 1, "blocked": 0, "skipped": 0}},
+            [{"case": "case-01", "status": "failed", "title": "x"}],
+        )
+
+
+def test_mutation_gate_skips_ingest(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-6")
+    design = _DesignRunner(yard, "QA-6")
+    called = {"accept": 0}
+
+    def boom(*args, **kwargs):
+        called["accept"] += 1
+
+    monkeypatch.setattr("dev_yard.qa.accept_test_report", boom)
+
+    def mutate(job, pool):
+        wt = yard / "reqs" / "QA-6" / "worktrees" / "backend"
+        (wt / "hacked.py").write_text("x\n", encoding="utf-8")
+        return {"status": "passed", "repo": "backend"}
+
+    with pytest.raises(TestRejected, match="mutated"):
+        req_test(
+            yard,
+            "QA-6",
+            print_mode=True,
+            runner=design,
+            case_runner=mutate,
+        )
+    assert called["accept"] == 0
+    assert st.load(yard, "QA-6")["phase"] == "testing"
+
+
+def test_passed_ingests_and_sets_done(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-7")
+    design = _DesignRunner(yard, "QA-7")
+
+    def ok(job, pool):
+        return {"status": "passed", "repo": "backend", "model": pool.model}
+
+    result = req_test(yard, "QA-7", print_mode=True, runner=design, case_runner=ok)
+    assert result["ingested"] is True
+    data = st.load(yard, "QA-7")
+    assert data["phase"] == "done"
+    assert data["test"]["latest_verdict"] == "passed"
+    assert data["test"]["source"] == "yard"
+
+
+def test_board_run_test_enabled(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-8")
+    detail = requirement_detail(yard, "QA-8")
+    ids = {a.id: a for a in detail.actions}
+    assert ids["run-test"].enabled
+    assert detail.next_label == "run-test"
+    assert "run-test" not in PIPELINE
+    assert {s.id for s in detail.steps} == set(PIPELINE)
+
+
+def test_plugin_cannot_use_qa_stage_name(tmp_path: Path):
+    from dev_yard import stages
+
+    root = tmp_path
+    (root / "repos.yaml").write_text("repos: {}\n", encoding="utf-8")
+    p = root / "plugins" / "qa-design"
+    p.mkdir(parents=True)
+    (p / "plugin.yaml").write_text("name: qa-design\ntools: [read]\n", encoding="utf-8")
+    (p / "SKILL.md").write_text("# x\n", encoding="utf-8")
+    (root / "yard.yaml").write_text("plugins: [plugins/qa-design]\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="dedicated"):
+        stages.load_registry(root)
+
+
+def test_init_ignores_yard_qa(tmp_path: Path):
+    init_yard(tmp_path)
+    gi = (tmp_path / ".gitignore").read_text().splitlines()
+    assert ".yard-qa/" in gi
+
+
+def test_worktree_png_is_mutation(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-9")
+    design = _DesignRunner(yard, "QA-9")
+    called = {"accept": 0}
+    monkeypatch.setattr("dev_yard.qa.accept_test_report", lambda *a, **k: called.__setitem__("accept", 1))
+
+    def mutate(job, pool):
+        wt = yard / "reqs" / "QA-9" / "worktrees" / "backend"
+        (wt / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        return {"status": "passed", "repo": "backend"}
+
+    with pytest.raises(TestRejected, match="mutated"):
+        req_test(yard, "QA-9", print_mode=True, runner=design, case_runner=mutate)
+    assert called["accept"] == 0
+
+
+def test_only_new_root_png_is_moved(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-10")
+    keep = yard / "keep.png"
+    keep.write_bytes(b"\x89PNG\r\n\x1a\nkeep")
+    design = _DesignRunner(yard, "QA-10")
+
+    def drop(job, pool):
+        (yard / "tmp.png").write_bytes(b"\x89PNG\r\n\x1a\nnew")
+        return {"status": "passed", "repo": "backend"}
+
+    result = req_test(yard, "QA-10", print_mode=True, runner=design, case_runner=drop)
+    assert keep.is_file()
+    assert keep.read_bytes().endswith(b"keep")
+    assert not (yard / "tmp.png").is_file()
+    moved = yard / "reqs" / "QA-10" / "qa" / "evidence" / result["run_id"] / "_root_png" / "tmp.png"
+    assert moved.is_file()
+
+
+def test_preload_auth_runs_when_account_configured(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-11")
+    data = yaml.safe_load((yard / "qa.yaml").read_text(encoding="utf-8"))
+    data["envs"]["local"]["auth"] = {
+        "default": "default",
+        "accounts": {"default": {"state_file": ".yard-qa/auth.json"}},
+    }
+    (yard / "qa.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    hits: list[str] = []
+
+    def fake(root, cfg, on_log=None):
+        hits.append(cfg.env.auth_default)
+
+    monkeypatch.setattr("dev_yard.qa._preload_auth", fake)
+    design = _DesignRunner(yard, "QA-11")
+    req_test(
+        yard,
+        "QA-11",
+        print_mode=True,
+        runner=design,
+        case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
+        ingest=False,
+    )
+    assert hits == ["default"]
+
+
+def test_preload_auth_fails_without_state_file(tmp_path: Path, monkeypatch):
+    from dev_yard.qa import _preload_auth
+    from dev_yard.qa_config import QaAccount, QaBrowser, QaConfig, QaEnv, QaWorker
+
+    cfg = QaConfig(
+        active_env="local",
+        env=QaEnv(
+            name="local",
+            base_url="http://127.0.0.1:1",
+            accounts={
+                "default": QaAccount(name="default", state_file=".yard-qa/missing.json")
+            },
+        ),
+        browser=QaBrowser(),
+        workers=(QaWorker(id="a", provider="rcc", model="g", concurrency=1, priority=1),),
+    )
+    monkeypatch.setattr("dev_yard.qa.shutil.which", lambda name: "/bin/true")
+    with pytest.raises(TestRejected, match="missing auth state_file"):
+        _preload_auth(tmp_path, cfg)
+
+
+def test_schedule_normalizes_status_case():
+    cases = [CaseJob(id="case-01", title="a", repo="backend")]
+    pools = [PoolSlot(id="a", provider="rcc", model="g", concurrency=1, priority=1)]
+
+    def run(job, pool):
+        return {"status": "FAILED", "reason": "ui"}
+
+    run_schedule(cases, pools, run)
+    assert cases[0].state == "failed"
+    assert normalize_status("PASSED") == "passed"
+    assert normalize_status("nope") == "blocked"
+
+
+def test_bad_frontmatter_rejects_run(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-12")
+    qa = yard / "reqs" / "QA-12" / "qa" / "cases" / "mod"
+    qa.mkdir(parents=True)
+    (qa / "case-01.md").write_text("---\nid: [oops\n---\nbody\n", encoding="utf-8")
+    with pytest.raises(TestRejected, match="unreadable case frontmatter"):
+        req_test(
+            yard,
+            "QA-12",
+            print_mode=True,
+            run_only=True,
+            ingest=False,
+            case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
+        )

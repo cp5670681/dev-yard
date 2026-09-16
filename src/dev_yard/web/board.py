@@ -40,6 +40,7 @@ BUILTIN_ACTION_IDS = frozenset(
         "submit-test",
         "fill-test-report",
         "fix-test",
+        "run-test",
         "push",
     }
 )
@@ -126,6 +127,7 @@ class ReqDetail:
     test: dict | None = None
     repos: list[str] = field(default_factory=list)
     stage_runs: dict = field(default_factory=dict)
+    qa: dict | None = None
 
 
 def parse_requirement_title(text: str, jira: str) -> str | None:
@@ -232,8 +234,17 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
     assets = _list_assets(req)
     awaiting = _grill_awaiting(req)
     test = data.get("test") if isinstance(data.get("test"), dict) else None
+    from dev_yard.qa_board import qa_detail_summary
+
+    qa = qa_detail_summary(root, jira)
     next_label = _next_label(
-        phase, docs, tickets, awaiting, data.get("contract_review"), test
+        phase,
+        docs,
+        tickets,
+        awaiting,
+        data.get("contract_review"),
+        test,
+        has_qa_run=bool(qa.get("latest_run")),
     )
     steps = _steps(phase, docs, tickets, awaiting, data.get("contract_review"), test)
     detail = ReqDetail(
@@ -252,6 +263,7 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
         test=test,
         repos=list(data.get("repos") or []),
         stage_runs=dict(data.get("stage_runs") or {}),
+        qa=qa,
     )
     detail.actions = available_actions(detail, root)
     return detail
@@ -279,11 +291,34 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
     can_fix_test = any(
         t.source == "test" and t.can_implement for t in detail.tickets
     )
+    has_worktrees = bool(detail.worktrees)
+    from dev_yard.qa_board import qa_config_reason
+
+    qa_reason = qa_config_reason(root)
+    can_run_test = (
+        can_fill
+        and has_worktrees
+        and not qa_reason
+        and detail.phase == "testing"
+    )
+    if not can_fill:
+        run_reason = (
+            "测试已通过"
+            if st.test_passed({"test": detail.test})
+            else "需要契约审查 passed，且已 freeze 或提测"
+        )
+    elif detail.phase != "testing":
+        run_reason = "先提测（dev-yard req submit-test）"
+    elif not has_worktrees:
+        run_reason = "需要 freeze worktree"
+    elif qa_reason:
+        run_reason = qa_reason
+    else:
+        run_reason = ""
     can_fix_contract = frozen and (
         detail.contract == "failed"
         or any(t.source == "contract" and t.can_implement for t in detail.tickets)
     )
-    has_worktrees = bool(detail.worktrees)
     can_push = (detail.phase in {"frozen", "done", "testing"}) and has_worktrees
     builtin = [
         Action(
@@ -346,6 +381,12 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
                 if st.test_passed({"test": detail.test})
                 else "需要全部票 done 且契约审查 passed"
             ),
+        ),
+        Action(
+            "run-test",
+            "自动测",
+            can_run_test,
+            run_reason,
         ),
         Action(
             "fill-test-report",
@@ -465,6 +506,7 @@ def _next_label(
     grill_awaiting: bool = False,
     contract: str | None = None,
     test: dict | None = None,
+    has_qa_run: bool = False,
 ) -> str:
     by_slug = {d.slug: d for d in docs}
     if st.pipeline_complete({"phase": phase, "test": test}):
@@ -478,6 +520,8 @@ def _next_label(
     if open_bugs:
         return "implement"
     if phase == "testing":
+        if not has_qa_run:
+            return "run-test"
         return "fill-test-report"
     if tickets and all(t.state == "done" for t in tickets):
         return "submit-test" if contract == "passed" else "contract"

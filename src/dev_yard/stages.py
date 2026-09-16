@@ -21,6 +21,7 @@ RESERVED_STAGE_NAMES = frozenset(
         "version",
     }
 )
+DEDICATED_STAGE_NAMES = frozenset({"qa-design", "qa-run"})
 ALLOWED_TOOLS = ("read", "bash", "grep", "find", "ls", "edit", "write", "mcp")
 BUILTIN_PHASES = ("open", "frozen", "testing", "done")
 PLUGIN_YAML_KEYS = frozenset(
@@ -78,6 +79,17 @@ _GUIDANCE = {
     ),
     "review": "Do not implement; report Standards and Spec axes.",
     "contract": "Do not implement; report Spec contract gaps across worktrees.",
+    "qa-design": (
+        "Write only reqs/<REQ>/qa/** (meta.yaml and cases/). "
+        "Read REQUIREMENT.md, SPEC.md, TICKETS.md. Do not fetch Jira. "
+        "Diff freeze worktrees vs default_base. Do not interview. "
+        "Do not write STATUS.yaml or the four requirement markdown files."
+    ),
+    "qa-run": (
+        "Run only the one case in the prompt. Write only reqs/<REQ>/qa/**. "
+        "Do not change worktree files. Do not git checkout/commit/push. "
+        "Do not change case expected values. Failed cases collect evidence only."
+    ),
 }
 
 
@@ -165,6 +177,20 @@ BUILTIN_STAGES: dict[str, StageSpec] = {
             ("read", "grep", "find", "ls"),
             order=56,
         ),
+        _spec(
+            "qa-design",
+            "qa-design",
+            ("qa-design",),
+            ("read", "bash", "grep", "find", "ls", "edit", "write"),
+            order=57,
+        ),
+        _spec(
+            "qa-run",
+            "qa-run",
+            ("qa-run",),
+            ("read", "bash", "grep", "find", "ls", "edit", "write"),
+            order=58,
+        ),
     )
 }
 
@@ -233,6 +259,11 @@ def _load_plugin_spec(plugin_dir: Path) -> StageSpec:
         )
     if name in RESERVED_STAGE_NAMES:
         raise ValueError(f"plugin {plugin_dir}: name {name!r} is a reserved CLI word")
+    if name in DEDICATED_STAGE_NAMES:
+        raise ValueError(
+            f"plugin {plugin_dir}: name {name!r} is a dedicated test stage; "
+            "use `dev-yard req test`"
+        )
     tools_raw = raw.get("tools")
     if not isinstance(tools_raw, list) or not tools_raw:
         raise ValueError(f"plugin {plugin_dir}: tools must be a non-empty list")

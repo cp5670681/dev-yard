@@ -16,17 +16,7 @@
     <v-alert v-if="error" type="error" class="mb-4" closable @click:close="error = ''">
       {{ error }}
     </v-alert>
-    <v-tabs class="mb-4" show-arrows color="primary">
-      <v-tab :to="`/r/${jira}`">看板</v-tab>
-      <v-tab
-        v-for="d in docs"
-        :key="d.slug"
-        :to="`/r/${jira}/docs/${d.slug}`"
-      >
-        {{ d.filename }}
-        <v-chip v-if="!d.filled" size="x-small" class="ml-2" variant="text">骨架</v-chip>
-      </v-tab>
-    </v-tabs>
+    <ReqDocTabs :jira="jira" :docs="docs" :current="slug" />
     <v-card v-if="editing" variant="outlined">
       <v-card-text>
         <v-textarea v-model="text" rows="28" auto-grow hide-details spellcheck="false" />
@@ -50,6 +40,7 @@ import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { getDoc, getRequirement, saveDoc } from "@/api/client";
 import type { DocMeta, DocPayload } from "@/api/types";
+import ReqDocTabs from "@/components/ReqDocTabs.vue";
 import { useSnack } from "@/composables/snack";
 
 const route = useRoute();

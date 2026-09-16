@@ -75,3 +75,11 @@ def child_worktree(root: Path, jira: str, alias: str, ticket_id: str) -> Path:
 
 def status_path(root: Path, jira: str) -> Path:
     return req_dir(root, jira) / "STATUS.yaml"
+
+
+def qa_dir(root: Path, jira: str) -> Path:
+    return req_dir(root, jira) / "qa"
+
+
+def qa_yaml(root: Path) -> Path:
+    return root / "qa.yaml"

@@ -6,6 +6,7 @@ import type {
   JobSnapshot,
   Meta,
   PiSettings,
+  QaPage,
   Repo,
   ReqDetail,
   ReqDiff,
@@ -52,6 +53,10 @@ export function deleteRequirement(jira: string) {
     `/api/requirements/${encodeURIComponent(jira)}`,
     { method: "DELETE" },
   );
+}
+
+export function getQa(jira: string) {
+  return api<QaPage>(`/api/requirements/${encodeURIComponent(jira)}/qa`);
 }
 
 export function getDoc(jira: string, slug: string) {

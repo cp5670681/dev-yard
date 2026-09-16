@@ -97,6 +97,9 @@ def test_run_dedicated_stages_rejected(tmp_path, monkeypatch):
         ("implement", "dev-yard implement"),
         ("review", "dev-yard review"),
         ("contract", "dev-yard review --contract"),
+        ("qa-design", "dev-yard req test"),
+        ("qa-run", "dev-yard req test"),
+        ("test", "dev-yard req test"),
     ):
         out = runner.invoke(app, ["run", name, "J-1"])
         assert out.exit_code == 2, f"{name}: {out.output}"

@@ -26,6 +26,8 @@ EXPECTED_TOOLS = {
     "implement": "read,bash,grep,find,ls,edit,write",
     "review": "read,grep,find,ls",
     "contract": "read,grep,find,ls",
+    "qa-design": "read,bash,grep,find,ls,edit,write",
+    "qa-run": "read,bash,grep,find,ls,edit,write",
 }
 EXPECTED_SKILLS = {
     "open": ["fetch-requirement"],
@@ -35,6 +37,8 @@ EXPECTED_SKILLS = {
     "implement": ["implement", "tdd", "codebase-design"],
     "review": ["code-review"],
     "contract": ["code-review"],
+    "qa-design": ["qa-design"],
+    "qa-run": ["qa-run"],
 }
 
 
@@ -60,6 +64,10 @@ def test_builtin_registry_fields(tmp_path):
     assert reg["spec"].lists_sources is True
     assert reg["tickets"].lists_sources is True
     assert reg["implement"].lists_sources is False
+    assert reg["qa-design"].lists_sources is False
+    assert reg["qa-run"].lists_sources is False
+    assert reg["qa-design"].sets_phase is None
+    assert reg["qa-run"].sets_phase is None
     assert reg["open"].order < reg["grill"].order < reg["spec"].order
     assert reg["spec"].order < reg["tickets"].order < reg["implement"].order
 

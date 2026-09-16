@@ -30,10 +30,38 @@ export interface GrillRound {
   questions: GrillQuestion[];
 }
 
+export interface QaProgressCase {
+  id: string;
+  title?: string;
+  state: string;
+  repo?: string;
+  depends_on?: string[];
+  pool?: string | null;
+  model?: string | null;
+  started_at?: string | null;
+  ended_at?: string | null;
+  reason?: string;
+}
+
+export interface QaProgress {
+  run_id: string;
+  env?: string;
+  pools?: {
+    id: string;
+    provider?: string | null;
+    model?: string | null;
+    concurrency: number;
+    priority: number;
+    inflight: number;
+  }[];
+  cases?: QaProgressCase[];
+}
+
 export interface JobSnapshot extends JobBrief {
   log: string;
   grill: GrillRound | null;
   pi_runs: PiRun[];
+  qa_progress?: QaProgress | null;
 }
 
 export interface JobsOut {
@@ -109,6 +137,65 @@ export interface ReqDetail {
   actions: Action[];
   docs: DocMeta[];
   stage_runs?: Record<string, { at?: string; ok?: boolean; summary?: string }>;
+  qa?: {
+    has_cases: boolean;
+    has_meta: boolean;
+    latest_run: null | {
+      run_id: string;
+      env?: string;
+      summary?: {
+        total?: number;
+        passed?: number;
+        failed?: number;
+        blocked?: number;
+        skipped?: number;
+      };
+    };
+    progress: QaProgress | null;
+  } | null;
+}
+
+export interface QaCase {
+  id: string;
+  module?: string;
+  title?: string;
+  priority?: string;
+  repo?: string;
+  covers?: string[];
+  depends_on?: string[];
+  body?: string;
+  html?: string;
+  path?: string;
+  status?: string;
+}
+
+export interface QaRunCase {
+  case: string;
+  title?: string;
+  status: string;
+  repo?: string;
+  model?: string;
+  reason?: string;
+  failure?: { step?: number; step_desc?: string; evidence?: string } | null;
+  screenshots?: string[];
+}
+
+export interface QaPage {
+  meta: {
+    status?: string;
+    changes?: { id: string; repo?: string; ref?: string; desc?: string }[];
+    [key: string]: unknown;
+  } | null;
+  cases: QaCase[];
+  runs: {
+    run_id: string;
+    env?: string;
+    status?: string;
+    summary?: Record<string, number>;
+    workers?: unknown[];
+    progress?: QaProgress | null;
+    cases: QaRunCase[];
+  }[];
 }
 
 export interface DocPayload {

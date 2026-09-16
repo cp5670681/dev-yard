@@ -62,7 +62,7 @@ def init_yard(root: Path) -> None:
     if not yml.exists():
         yml.write_text("repos: {}\n")
     gi = root / ".gitignore"
-    extra = [".repos/", ".yard-worktrees/", "reqs/", ".env", "repos.yaml"]
+    extra = [".repos/", ".yard-worktrees/", "reqs/", ".env", "repos.yaml", ".yard-qa/"]
     existing = gi.read_text() if gi.exists() else ""
     lines = existing.splitlines()
     for line in extra:
@@ -1546,4 +1546,9 @@ def req_push(
 
     return results
 
+
+def req_test(root: Path, jira: str, **kwargs: Any):
+    from dev_yard.qa import req_test as _req_test
+
+    return _req_test(root, jira, **kwargs)
 

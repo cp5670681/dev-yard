@@ -37,6 +37,13 @@
           >
             {{ ticket.source === "test" ? "bug" : "契约" }}
           </v-chip>
+          <router-link
+            v-if="ticket.source === 'test' && caseId"
+            class="text-caption text-primary"
+            :to="`/r/${jira}/qa?case=${encodeURIComponent(caseId)}`"
+          >
+            {{ caseId }}
+          </router-link>
           <v-chip v-if="ticket.parallel" size="x-small" color="info" variant="text" class="px-0.5 font-weight-bold text-caption">para</v-chip>
           <v-spacer />
           <span v-if="ticket.repo" class="jira-repo-tag text-truncate">{{ ticket.repo }}</span>
@@ -298,11 +305,20 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import type { Ticket } from "@/api/types";
 import { ticketColor, TICKET_STATE_LABELS } from "@/composables/labels";
 import { runningJobs } from "@/state/jobs";
 
+const route = useRoute();
+const jira = computed(() => String(route.params.jira || ""));
 const props = defineProps<{ ticket: Ticket; showState?: boolean }>();
+const caseId = computed(() => {
+  const f = (props.ticket.finding || "").trim();
+  if (!f) return "";
+  const i = f.indexOf(":");
+  return i >= 0 ? f.slice(i + 1) : f;
+});
 defineEmits<{
   implement: [id: string];
   review: [id: string];

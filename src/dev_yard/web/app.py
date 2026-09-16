@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import mimetypes
 import os
 import re
 from pathlib import Path
@@ -48,6 +49,7 @@ ACTIONS = {
     "fix-contract",
     "submit-test",
     "fix-test",
+    "run-test",
     "push",
 }
 STEP_LABELS = {
@@ -73,6 +75,7 @@ ACTION_LABELS = {
     "contract": "契约审查",
     "fix-contract": "按契约修",
     "submit-test": "提测",
+    "run-test": "自动测",
     "fill-test-report": "提 bug",
     "fix-test": "修 bug",
     "push": "推送到远端",
@@ -374,6 +377,7 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
                 for d in detail.docs
             ],
             "stage_runs": detail.stage_runs,
+            "qa": detail.qa,
         }
 
     def _doc_payload(detail, slug: str):
@@ -474,6 +478,12 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
             raise HTTPException(404, f"no requirement {jira}")
         return spa_index()
 
+    @app.get("/r/{jira}/qa")
+    def qa_page(jira: str):
+        if paths.is_reserved_req_name(jira):
+            raise HTTPException(404, f"no requirement {jira}")
+        return spa_index()
+
     @app.get("/r/{jira}/docs/{slug}")
     def doc_page(jira: str, slug: str):
         if slug not in DOC_FILES:
@@ -495,6 +505,19 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
         except (ValueError, FileNotFoundError) as e:
             raise HTTPException(404, str(e)) from e
         return FileResponse(path)
+
+    @app.get("/r/{jira}/qa/evidence/{run_id}/{case_id}/screenshots/{name}")
+    def qa_screenshot(jira: str, run_id: str, case_id: str, name: str):
+        from dev_yard.qa_board import screenshot_file
+
+        if paths.is_reserved_req_name(jira):
+            raise HTTPException(404, f"no requirement {jira}")
+        try:
+            path = screenshot_file(root, jira, run_id, case_id, name)
+        except FileNotFoundError:
+            raise HTTPException(404, "not found") from None
+        media = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        return FileResponse(path, media_type=media)
 
     @app.post("/r/{jira}/actions/{action}")
     def run_action(
@@ -567,6 +590,17 @@ def create_app(root: Path, job_runner: JobRunner | None = None, sync_jobs: bool 
         if slug not in DOC_FILES:
             raise HTTPException(404, f"unknown doc {slug}")
         return _doc_payload(detail_or_404(jira), slug)
+
+    @app.get("/api/requirements/{jira}/qa")
+    def api_qa(jira: str):
+        from dev_yard.qa_board import qa_page_payload
+
+        detail_or_404(jira)
+        payload = qa_page_payload(root, jira)
+        for case in payload.get("cases") or []:
+            body = case.get("body") or ""
+            case["html"] = render_markdown(body, jira) if body else ""
+        return payload
 
     @app.get("/api/requirements/{jira}/tickets/{ticket_id}/diff")
     def api_ticket_diff(jira: str, ticket_id: str):

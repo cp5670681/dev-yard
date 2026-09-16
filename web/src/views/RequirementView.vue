@@ -44,6 +44,7 @@
       :key="id"
       :job-id="id"
       @done="onJobDone"
+      @update="onJobUpdate"
     />
     <template v-if="detail">
       <div class="d-flex flex-wrap align-center ga-2 mb-4">
@@ -221,17 +222,39 @@
           </v-btn>
         </div>
       </v-alert>
-      <v-tabs :model-value="'board'" class="mb-4" show-arrows color="primary">
-        <v-tab :to="`/r/${jira}`">看板</v-tab>
-        <v-tab
-          v-for="d in detail.docs"
-          :key="d.slug"
-          :to="`/r/${jira}/docs/${d.slug}`"
-        >
-          {{ d.filename }}
-          <v-chip v-if="!d.filled" size="x-small" class="ml-2" variant="text">骨架</v-chip>
-        </v-tab>
-      </v-tabs>
+      <ReqDocTabs :jira="jira" :docs="detail.docs" current="board" />
+
+      <v-card
+        v-if="liveProgress && liveHasActive"
+        class="mb-4"
+        variant="tonal"
+        color="warning"
+      >
+        <v-card-title class="text-subtitle-1">自动测试</v-card-title>
+        <v-card-text>
+          <p class="text-caption mb-2">
+            <span v-for="(p, i) in livePools" :key="p.id">
+              <span v-if="i"> · </span>{{ p.model || p.id }} {{ p.inflight }}/{{ p.concurrency }}
+            </span>
+          </p>
+          <div class="d-flex flex-wrap ga-2 mb-2">
+            <v-chip
+              v-for="c in liveRunning"
+              :key="c.id"
+              size="small"
+              color="primary"
+              variant="tonal"
+              :to="`/r/${jira}/qa?case=${encodeURIComponent(c.id)}`"
+            >
+              {{ c.id }} {{ c.title }} · {{ c.model }}
+            </v-chip>
+          </div>
+          <p v-if="liveReady.length" class="text-caption text-medium-emphasis mb-0">
+            就绪未派发 {{ liveReady.map((c) => c.id).join(", ") }}
+          </p>
+        </v-card-text>
+      </v-card>
+
       <TicketBoard
         :tickets="detail.tickets"
         @implement="(id) => confirmAction('implement', id)"
@@ -312,14 +335,23 @@
             <pre v-else class="job-log">{{ detail.contract_summary }}</pre>
           </v-expansion-panel-text>
         </v-expansion-panel>
-        <v-expansion-panel v-if="detail.test" title="提测 / bug">
+        <v-expansion-panel v-if="detail.test || detail.qa?.latest_run" title="提测 / bug">
           <v-expansion-panel-text>
-            <p class="mb-2">
+            <p v-if="detail.test" class="mb-2">
               状态 {{ detail.test.status || "-" }}
               · 最近一轮 {{ detail.test.latest_verdict || "-" }}
               · 来源 {{ detail.test.source || "-" }}
             </p>
-            <p v-if="detail.test.summary" class="text-medium-emphasis">
+            <p v-if="detail.qa?.latest_run" class="mb-2">
+              自动测
+              passed {{ detail.qa.latest_run.summary?.passed || 0 }} /
+              failed {{ detail.qa.latest_run.summary?.failed || 0 }} /
+              blocked {{ detail.qa.latest_run.summary?.blocked || 0 }} /
+              skipped {{ detail.qa.latest_run.summary?.skipped || 0 }}
+              ·
+              <router-link :to="`/r/${jira}/qa`">打开测试页</router-link>
+            </p>
+            <p v-if="detail.test?.summary" class="text-medium-emphasis">
               {{ detail.test.summary }}
             </p>
             <p class="text-caption text-medium-emphasis mt-2">
@@ -476,9 +508,10 @@ import {
   mdiWrench,
 } from "@mdi/js";
 import { deleteRequirement, getRequirement, runAction, submitTestReport } from "@/api/client";
-import type { Action, JobSnapshot, ReqDetail, Ticket } from "@/api/types";
+import type { Action, JobSnapshot, QaProgress, ReqDetail, Ticket } from "@/api/types";
 import ContractReviewDialog from "@/components/ContractReviewDialog.vue";
 import JobPanel from "@/components/JobPanel.vue";
+import ReqDocTabs from "@/components/ReqDocTabs.vue";
 import TicketBoard from "@/components/TicketBoard.vue";
 import TicketDiffDialog from "@/components/TicketDiffDialog.vue";
 import TicketReviewDialog from "@/components/TicketReviewDialog.vue";
@@ -508,6 +541,7 @@ const deleteOpen = ref(false);
 const diffDialog = reactive({ open: false, ticketId: "" });
 const reviewDialog = reactive({ open: false, ticket: null as Ticket | null });
 const contractDialog = ref(false);
+const jobProgress = ref<QaProgress | null>(null);
 
 function openDiff(ticketId: string) {
   diffDialog.ticketId = ticketId;
@@ -601,6 +635,28 @@ const otherActions = computed(() => {
   if (!detail.value || !nextAction.value) return detail.value?.actions || [];
   return detail.value.actions.filter((a) => a.id !== nextAction.value?.id);
 });
+
+const liveProgress = computed(() => jobProgress.value || detail.value?.qa?.progress || null);
+const liveHasActive = computed(() =>
+  Boolean(
+    liveProgress.value?.cases?.some((c) =>
+      ["pending", "ready", "running"].includes(c.state),
+    ),
+  ),
+);
+const livePools = computed(() => liveProgress.value?.pools || []);
+const liveRunning = computed(
+  () => liveProgress.value?.cases?.filter((c) => c.state === "running") || [],
+);
+const liveReady = computed(
+  () => liveProgress.value?.cases?.filter((c) => c.state === "ready") || [],
+);
+
+function onJobUpdate(job: JobSnapshot) {
+  if (job.action === "run-test" && job.qa_progress) {
+    jobProgress.value = job.qa_progress;
+  }
+}
 
 let stop: (() => void) | undefined;
 

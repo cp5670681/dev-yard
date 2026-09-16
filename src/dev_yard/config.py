@@ -9,7 +9,17 @@ import yaml
 
 from dev_yard import paths
 
-PI_STAGES = ("open", "grill", "spec", "tickets", "implement", "review", "contract")
+PI_STAGES = (
+    "open",
+    "grill",
+    "spec",
+    "tickets",
+    "implement",
+    "review",
+    "contract",
+    "qa-design",
+    "qa-run",
+)
 
 
 def git_project_name(url: str) -> str:

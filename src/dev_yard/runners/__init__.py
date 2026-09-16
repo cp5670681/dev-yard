@@ -60,6 +60,8 @@ def pi_argv(
     binary: str | None = None,
     repo: str | None = None,
     spec: "StageSpec | None" = None,
+    provider: str | None = None,
+    model: str | None = None,
 ) -> list[str]:
     cmd = binary or agent_binary()
     # --no-skills: skip ~/.pi/agent/skills and extra project skills.
@@ -71,7 +73,8 @@ def pi_argv(
     if spec is None:
         raise ValueError(f"unknown stage {bundle!r}; run: dev-yard stages")
     argv = [cmd, "--approve", "--no-skills"]
-    provider, model = resolve_pi_choice(root, bundle, repo=repo)
+    if provider is None and model is None:
+        provider, model = resolve_pi_choice(root, bundle, repo=repo)
     if provider:
         argv.extend(["--provider", provider])
     if model:

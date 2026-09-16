@@ -273,6 +273,51 @@ def req_accept_test(
     typer.echo(f"{jira} phase={data.get('phase')} verdict={test.get('latest_verdict')}")
 
 
+@req_app.command("test")
+def req_test_cmd(
+    jira: str,
+    print_mode: bool = typer.Option(False, "--print", help="pi -p one-shot for design"),
+    design_only: bool = typer.Option(False, "--design-only"),
+    run_only: bool = typer.Option(False, "--run-only"),
+    redesign: bool = typer.Option(False, "--redesign"),
+    no_ingest: bool = typer.Option(False, "--no-ingest"),
+) -> None:
+    """Design and run UI cases after submit-test. Ingests into the test slot."""
+    from dev_yard.qa import req_test
+    from dev_yard.qa_config import TestRejected
+    from dev_yard.test_report import ReportRejected
+
+    root = root_opt()
+    try:
+        result = req_test(
+            root,
+            jira,
+            print_mode=print_mode,
+            design_only=design_only,
+            run_only=run_only,
+            redesign=redesign,
+            ingest=not no_ingest,
+            on_log=lambda line: typer.echo(line.rstrip() if isinstance(line, str) else line),
+        )
+    except (ValueError, FileNotFoundError, TestRejected, ReportRejected, GitError) as e:
+        _die(e)
+    if result.get("design_only"):
+        typer.echo(f"{jira} design-only cases={result.get('cases')}")
+        return
+    summary = result.get("summary") or {}
+    extra = ""
+    if result.get("ingest_skipped"):
+        extra = f" ingest=skipped({result['ingest_skipped']})"
+    elif result.get("ingested"):
+        extra = " ingest=ok"
+    typer.echo(
+        f"{jira} run={result.get('run_id')} "
+        f"passed={summary.get('passed', 0)} failed={summary.get('failed', 0)} "
+        f"blocked={summary.get('blocked', 0)} skipped={summary.get('skipped', 0)}"
+        f"{extra}"
+    )
+
+
 @ticket_app.command("start")
 def ticket_start(jira: str, ticket_id: str) -> None:
     root = root_opt()
@@ -346,6 +391,9 @@ _RUN_VIA_DEDICATED = {
     "implement": "dev-yard implement",
     "review": "dev-yard review",
     "contract": "dev-yard review --contract",
+    "qa-design": "dev-yard req test",
+    "qa-run": "dev-yard req test",
+    "test": "dev-yard req test",
 }
 
 
