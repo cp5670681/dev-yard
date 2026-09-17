@@ -33,7 +33,7 @@ description: >
 
 ## 做法
 
-1. 登录态：先 `playwright-cli state-load <context.md 的 state_file>`；文件不存在或加载后仍是登录页 → 从 `qa.yaml` 该账号读 `username`/`password`，在 base_url 登录页填表提交（SSO 跳转则填完回跳；非必填的多因子字段留空），成功后 `state-save` 到 state_file（仅顺序执行时；并发时报告 blocked 让宿主预沉淀）。仍失败 → 该 case `blocked`，reason 写清账号与原因。
+1. 登录态：用 prompt 的 `Account`（无则用 context.md 的 `account.default`）在 context.md 的 Accounts 列表里找它的 `state_file`，先 `playwright-cli state-load <state_file>`；文件不存在或加载后仍是登录页 → 读该账号 username/password（优先 `.yard-qa/requirements/<JIRA>/accounts.yaml` 的 `envs.<ENV>.auth.accounts.<name>`，没有则 `qa.yaml` 同路径），在 base_url 登录页填表提交（SSO 跳转则填完回跳；非必填的多因子字段留空），成功后 `state-save` 到该 state_file（仅顺序执行时；并发时报告 blocked 让宿主预沉淀）。仍失败 → 该 case `blocked`，reason 写清账号与原因。
 2. 按 case `data.setup` 造数：`.sql` 走 `usql "<qa.yaml envs.<ENV>.db.url>"`（仅当 context 标明 db 已配）；其它脚本走 `script.runner`。未配则不要跑 usql。
 3. playwright 会话 `-s=qap-<case-id>`。无头默认；prompt 的 `headed` 为准。
 4. 按步骤操作。selector 可按语义重定位一次；业务路径不可改。

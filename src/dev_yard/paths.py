@@ -83,3 +83,8 @@ def qa_dir(root: Path, jira: str) -> Path:
 
 def qa_yaml(root: Path) -> Path:
     return root / "qa.yaml"
+
+
+def req_accounts_yaml(root: Path, jira: str) -> Path:
+    """Requirement-level accounts (plaintext, gitignored under .yard-qa/)."""
+    return root / ".yard-qa" / "requirements" / _seg(jira) / "accounts.yaml"

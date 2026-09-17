@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -139,20 +139,24 @@ def _parse_accounts(raw: Any) -> dict[str, QaAccount]:
     return out
 
 
+def _parse_auth(raw: Any) -> tuple[str, dict[str, QaAccount]]:
+    auth = raw if isinstance(raw, dict) else {}
+    default = _blank(auth.get("default")) or "default"
+    return default, _parse_accounts(auth.get("accounts"))
+
+
 def _parse_env(name: str, raw: Any) -> QaEnv:
     if not isinstance(raw, dict):
         raise TestRejected(f"qa.yaml envs.{name} must be a mapping")
     base_url = _blank(raw.get("base_url"))
     if not base_url:
         raise TestRejected(f"qa.yaml envs.{name} is missing base_url")
-    auth = raw.get("auth") if isinstance(raw.get("auth"), dict) else {}
     db = raw.get("db") if isinstance(raw.get("db"), dict) else {}
     script = raw.get("script") if isinstance(raw.get("script"), dict) else {}
     notes_raw = raw.get("notes") or []
     if notes_raw and not isinstance(notes_raw, list):
         raise TestRejected("qa.yaml notes must be a list")
-    default = _blank(auth.get("default")) or "default"
-    accounts = _parse_accounts(auth.get("accounts"))
+    default, accounts = _parse_auth(raw.get("auth"))
     return QaEnv(
         name=name,
         base_url=base_url,
@@ -274,13 +278,144 @@ def _parse_config(root: Path, data: dict[str, Any], env: str | None = None) -> Q
     )
 
 
-def load_qa_config(root: Path, env: str | None = None) -> QaConfig:
+def load_qa_config(
+    root: Path, env: str | None = None, jira: str | None = None
+) -> QaConfig:
+    """Workspace qa.yaml, with a requirement's accounts overlaid when present.
+
+    A requirement that needs more than the global default keeps its accounts in
+    `.yard-qa/requirements/<JIRA>/accounts.yaml` (gitignored). That file only
+    carries `accounts`/`default`; base_url, db, script and notes stay global.
+    """
     path = paths.qa_yaml(root)
     if not path.is_file():
         raise TestRejected(
             "missing qa.yaml; add workspace qa.yaml with envs.<name>.base_url"
         )
-    return _parse_config(root, _read_data(root), env)
+    cfg = _parse_config(root, _read_data(root), env)
+    if not jira:
+        return cfg
+    overlay = load_req_accounts(root, jira, cfg.active_env)
+    if overlay is None:
+        return cfg
+    default, accounts = overlay
+    return replace(cfg, env=replace(cfg.env, auth_default=default, accounts=accounts))
+
+
+def load_req_accounts(
+    root: Path, jira: str, env: str
+) -> tuple[str, dict[str, QaAccount]] | None:
+    """The requirement's accounts for `env`, or None to use the global config."""
+    path = paths.req_accounts_yaml(root, jira)
+    if not path.is_file():
+        return None
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError) as e:
+        raise TestRejected(
+            f"{path} is not readable YAML: {redact_qa_yaml(str(e))}"
+        ) from e
+    envs = data.get("envs") if isinstance(data, dict) else None
+    raw = envs.get(env) if isinstance(envs, dict) else None
+    if not isinstance(raw, dict):
+        return None
+    default, accounts = _parse_auth(raw)
+    if not accounts:
+        return None
+    return default, accounts
+
+
+def _accounts_to_raw(accounts: dict[str, QaAccount]) -> dict[str, dict[str, str]]:
+    out: dict[str, dict[str, str]] = {}
+    for name, acct in accounts.items():
+        entry: dict[str, str] = {}
+        for key, value in (
+            ("username", acct.username),
+            ("password", acct.password),
+            ("state_file", acct.state_file),
+        ):
+            if value:
+                entry[key] = value
+        out[str(name)] = entry
+    return out
+
+
+def _assert_secret_ignored(root: Path, path: Path) -> None:
+    """Refuse to write plaintext secrets into a tracked / unignored git path."""
+    import subprocess
+
+    def _git(*args: str) -> subprocess.CompletedProcess[str] | None:
+        try:
+            return subprocess.run(
+                ["git", "-C", str(root), *args],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    inside = _git("rev-parse", "--is-inside-work-tree")
+    if inside is None or inside.returncode != 0 or inside.stdout.strip() != "true":
+        return
+    try:
+        rel = str(path.resolve().relative_to(root.resolve()))
+    except ValueError:
+        rel = str(path)
+    tracked = _git("ls-files", "--error-unmatch", rel)
+    if tracked is not None and tracked.returncode == 0:
+        raise TestRejected(
+            f"{rel} is tracked by git; plaintext secrets must not be committed. "
+            "Run `git rm --cached` and add it to .gitignore."
+        )
+    ignored = _git("check-ignore", "-q", rel)
+    if ignored is not None and ignored.returncode != 0:
+        raise TestRejected(
+            f"{rel} is not gitignored; refusing to write plaintext secrets there. "
+            "Add `.yard-qa/` to .gitignore."
+        )
+
+
+def save_req_accounts(
+    root: Path,
+    jira: str,
+    env: str,
+    default: str,
+    accounts: dict[str, QaAccount],
+) -> Path:
+    """Write a requirement's accounts for one env, preserving its other envs."""
+    if not accounts:
+        raise TestRejected("requirement accounts must not be empty")
+    if default not in accounts:
+        raise TestRejected(
+            f"default {default!r} is not one of the accounts: {', '.join(accounts)}"
+        )
+    path = paths.req_accounts_yaml(root, jira)
+    data: dict[str, Any] = {}
+    if path.is_file():
+        try:
+            loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (UnicodeDecodeError, yaml.YAMLError) as e:
+            raise TestRejected(
+                f"{path} is not readable YAML: {redact_qa_yaml(str(e))}"
+            ) from e
+        if isinstance(loaded, dict):
+            data = loaded
+    envs = data.get("envs") if isinstance(data.get("envs"), dict) else {}
+    prev = envs.get(env) if isinstance(envs.get(env), dict) else {}
+    entry = {k: v for k, v in prev.items() if k not in {"default", "accounts"}}
+    entry["default"] = default or "default"
+    entry["accounts"] = _accounts_to_raw(accounts)
+    envs[env] = entry
+    data["envs"] = envs
+    _assert_secret_ignored(root, path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".yaml.tmp")
+    tmp.write_text(
+        yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    )
+    os.replace(tmp, path)
+    return path
 
 
 def _read_data(root: Path) -> dict[str, Any]:

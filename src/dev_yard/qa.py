@@ -58,8 +58,6 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
             f"(branch req/{jira}, base {base}, role {role})"
         )
     env = cfg.env
-    acct = env.accounts.get(env.auth_default)
-    state_file = acct.state_file if acct else ""
     db = "configured" if env.db_url else "not configured"
     headed = "true" if cfg.headed else "false"
     others = [n for n in cfg.env_names if n != cfg.active_env]
@@ -71,8 +69,7 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
         f"- available envs: {', '.join(cfg.env_names) or cfg.active_env}",
         f"- base_url: {env.base_url}",
         f"- browser: {cfg.browser.channel} headed={headed}",
-        f"- account: {env.auth_default or '(none)'} (see qa.yaml)",
-        f"- state_file: {state_file or '(none)'}",
+        f"- account.default: {env.auth_default or '(none)'}",
         f"- db: {db} (qa.yaml envs.{cfg.active_env}.db.url)",
         f"- script.runner: {env.script_runner or '(sql only)'}",
         "",
@@ -84,9 +81,27 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
         )
     lines += [
         "",
-        "Login accounts and the DB DSN live in `qa.yaml` (gitignored) under "
-        f"`envs.{cfg.active_env}`; read them from that file.",
-        "If state_file is missing or not logged in, open `base_url`, log in with "
+        "## Accounts",
+        "",
+    ]
+    if env.accounts:
+        for name, a in env.accounts.items():
+            default = " (default)" if name == env.auth_default else ""
+            state = a.state_file or "(none)"
+            lines.append(
+                f"- {name}: username={a.username or '?'} state_file={state}{default}"
+            )
+    else:
+        lines.append("(none configured; cases must not use `account`)")
+    lines += [
+        "",
+        "A case frontmatter `account:` picks one of the above; no `account` uses "
+        "the default. Load that account's state_file before the case steps "
+        "(the host does not log in for you).",
+        "Passwords are not listed here. Read them from the requirement accounts "
+        f"file `.yard-qa/requirements/{jira}/accounts.yaml` (preferred when this "
+        f"requirement has one), else `qa.yaml envs.{cfg.active_env}.auth.accounts.<name>`.",
+        "If a state_file is missing or not logged in, open `base_url`, log in with "
         "that account's username/password, then `state-save` to state_file "
         "(only when this run is sequential).",
         "Never copy a password into result.yaml, evidence, or this context.md; "
@@ -142,6 +157,7 @@ def discover_cases(qa: Path) -> list[CaseJob]:
                 path=str(path),
                 covers=[str(c).strip() for c in covers if str(c).strip()],
                 module=module,
+                account=str(meta.get("account") or "").strip(),
             )
         )
     return out
@@ -232,45 +248,88 @@ def _root_png_names(root: Path) -> set[str]:
     return {p.name for p in root.iterdir() if p.is_file() and _PNG.search(p.name)}
 
 
-def _preload_auth(root: Path, cfg: QaConfig, on_log: LogFn | None = None) -> None:
-    env = cfg.env
-    acct = env.accounts.get(env.auth_default)
-    if acct is None:
-        return
-    has_creds = bool(acct.username and acct.password)
-    if not acct.state_file:
-        # Creds-only account: the run agent logs in from qa.yaml itself.
-        return
-    state = Path(acct.state_file)
-    if not state.is_absolute():
-        state = root / state
-    if not state.is_file():
-        if has_creds:
-            # No saved session yet, but qa.yaml has the password: let the run
-            # agent log in and state-save rather than aborting the whole run.
-            return
+def _case_account(cfg: QaConfig, job: CaseJob) -> str:
+    return job.account or cfg.env.auth_default
+
+
+def _check_case_accounts(cfg: QaConfig, cases: list[CaseJob], jira: str) -> None:
+    """A case that names an account must name one this run has configured."""
+    uses_default = any(not job.account for job in cases)
+    if (
+        uses_default
+        and cfg.env.accounts
+        and cfg.env.auth_default not in cfg.env.accounts
+    ):
         raise TestRejected(
-            f"missing auth state_file {acct.state_file!r}; "
-            "log in once and playwright-cli state-save, or put "
-            "username/password in qa.yaml"
+            f"auth.default {cfg.env.auth_default!r} is not one of the configured "
+            f"accounts ({', '.join(cfg.env.accounts)}); fix qa.yaml or "
+            f"`dev-yard req accounts {jira}`"
         )
+    for job in cases:
+        if job.account and job.account not in cfg.env.accounts:
+            raise TestRejected(
+                f"case {job.id} uses account {job.account!r}, which is not configured "
+                f"for env {cfg.active_env}; run `dev-yard req accounts {jira}`"
+            )
+
+
+def _used_accounts(cfg: QaConfig, cases: list[CaseJob]) -> list[str]:
+    names: list[str] = []
+    for job in cases:
+        name = _case_account(cfg, job)
+        if name and name in cfg.env.accounts and name not in names:
+            names.append(name)
+    return names
+
+
+def _preload_auth(
+    root: Path,
+    cfg: QaConfig,
+    names: list[str] | None = None,
+    on_log: LogFn | None = None,
+) -> None:
+    env = cfg.env
+    if names is None:
+        names = [env.auth_default] if env.auth_default else []
     binary = shutil.which("playwright-cli")
-    if not binary:
-        raise TestRejected("playwright-cli not found; cannot load auth state")
-    cmd = [
-        binary,
-        "--browser",
-        cfg.browser.channel,
-        "-s=qap-auth",
-        "state-load",
-        str(state),
-    ]
-    if on_log is not None:
-        on_log(f"$ {' '.join(cmd)}")
-    r = subprocess.run(cmd, cwd=root, capture_output=True, text=True)
-    if r.returncode != 0:
-        err = (r.stderr or r.stdout or "").strip() or str(r.returncode)
-        raise TestRejected(f"auth state-load failed: {err}")
+    for name in names:
+        acct = env.accounts.get(name)
+        if acct is None or not acct.state_file:
+            continue
+        has_creds = bool(acct.username and acct.password)
+        state = Path(acct.state_file)
+        if not state.is_absolute():
+            state = root / state
+        if not state.is_file():
+            if has_creds and cfg.total_concurrency <= 1:
+                # Sequential: the case agent logs in and state-saves.
+                continue
+            if has_creds:
+                raise TestRejected(
+                    f"account {name!r} has no saved session at {acct.state_file!r} "
+                    "and concurrency > 1; run once sequentially first to log in"
+                )
+            raise TestRejected(
+                f"missing auth state_file {acct.state_file!r} for account {name!r}; "
+                "log in once and playwright-cli state-save, or put "
+                "username/password in qa.yaml"
+            )
+        if not binary:
+            raise TestRejected("playwright-cli not found; cannot load auth state")
+        cmd = [
+            binary,
+            "--browser",
+            cfg.browser.channel,
+            "-s=qap-auth",
+            "state-load",
+            str(state),
+        ]
+        if on_log is not None:
+            on_log(f"$ {' '.join(cmd)}")
+        r = subprocess.run(cmd, cwd=root, capture_output=True, text=True)
+        if r.returncode != 0:
+            err = (r.stderr or r.stdout or "").strip() or str(r.returncode)
+            raise TestRejected(f"auth state-load failed for account {name!r}: {err}")
 
 
 def _mutation_paths(new_lines: set[str]) -> list[str]:
@@ -318,6 +377,15 @@ def _run_prompt(root: Path, jira: str, cfg: QaConfig, job: CaseJob, run_id: str)
     qa = paths.qa_dir(root, jira)
     evidence = qa / "evidence" / run_id / job.id
     headed = "true" if cfg.headed else "false"
+    account = _case_account(cfg, job)
+    acct = cfg.env.accounts.get(account)
+    account_line = f"Account: {account or '(none)'}"
+    if acct:
+        account_line += (
+            f"  state_file: {acct.state_file or '(none)'}"
+            "  (log in with its username/password from the requirement accounts "
+            "file or qa.yaml if needed)"
+        )
     extra = (
         _duties("run", jira)
         + "\n\n"
@@ -326,6 +394,8 @@ def _run_prompt(root: Path, jira: str, cfg: QaConfig, job: CaseJob, run_id: str)
         + f"Run id: {run_id}\n"
         + f"Playwright session: `-s=qap-{job.id}`\n"
         + f"headed: {headed}\n"
+        + account_line
+        + "\n"
         + f"Write case result to `{evidence / 'result.yaml'}` "
         + f"and screenshots to `{evidence / 'screenshots'}`.\n"
         + "This invocation runs only the case below.\n\n"
@@ -447,7 +517,7 @@ def req_test(
     if design_only and run_only:
         raise TestRejected("--design-only and --run-only are mutually exclusive")
     _gate(root, jira)
-    cfg = load_qa_config(root, env)
+    cfg = load_qa_config(root, env, jira)
     qa = paths.qa_dir(root, jira)
     qa.mkdir(parents=True, exist_ok=True)
     write_context_md(root, jira, cfg)
@@ -486,7 +556,8 @@ def req_test(
         (baseline_dir / f"{alias}.txt").write_text(text + ("\n" if text else ""), encoding="utf-8")
         baselines[alias] = _porcelain_lines(text)
     root_png_before = _root_png_names(root)
-    _preload_auth(root, cfg, on_log)
+    _check_case_accounts(cfg, cases, jira)
+    _preload_auth(root, cfg, _used_accounts(cfg, cases), on_log)
 
     pools = [PoolSlot.from_worker(w) for w in cfg.workers]
     progress_path = run_dir / "progress.yaml"

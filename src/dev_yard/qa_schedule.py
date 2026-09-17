@@ -49,6 +49,7 @@ class CaseJob:
     path: str = ""
     covers: list[str] = field(default_factory=list)
     module: str = ""
+    account: str = ""
     state: str = "pending"
     pool: str | None = None
     model: str | None = None

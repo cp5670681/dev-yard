@@ -30,6 +30,7 @@ description: >
 6. 预期写需求口径。实现与 SPEC 不符时仍写需求值，并备注「需求偏差」。
 7. 跨仓改动拆成多条 case，或 `covers` 只含一个主仓。每条 frontmatter 必有 `repo:`（yard alias）。
 8. `depends_on` 仅当共享可变数据或业务先后时写；无依赖省略，以便并发领取。
+9. 需要非默认账号的用例，在 frontmatter 写 `account: <名字>`；名字必须来自 `context.md` 的 Accounts 列表（宿主跑前校验，未配置会直接报错让你先跑 `dev-yard req accounts <JIRA>`）。不写就用 `account.default`。
 
 ## meta.yaml
 
@@ -57,6 +58,7 @@ requirement: <JIRA>
 repo: <alias>
 covers: [D1]
 depends_on: []
+account: <可选；context.md Accounts 里的账号名，缺省=default>
 data: { setup: setup.sql, cleanup: cleanup.sql }
 ---
 

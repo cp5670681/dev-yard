@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Optional
 
 import typer
-
 from dev_yard import __version__, paths, service
 from dev_yard.config import load_repos
 from dev_yard.env import load_env
@@ -54,6 +54,57 @@ def root_opt() -> Path:
 def _die(exc: BaseException) -> None:
     typer.echo(str(exc), err=True)
     raise typer.Exit(1)
+
+
+_READONLY_SQL = frozenset({"select", "show", "desc", "describe", "explain", "with", "table"})
+# Heuristic, not a real SQL parser: blocks obvious writes/exfiltration. The DB
+# account's own privileges remain the real guard.
+_WRITE_SQL = re.compile(
+    r"\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|merge"
+    r"|call|do|copy|vacuum|analyze|refresh|into|outfile|load_file|dblink"
+    r"|pg_read_file|lo_import|lo_export)\b",
+    re.I,
+)
+
+
+def _discover_usernames(dsn: str, sql: str) -> list[str]:
+    """Run a read-only query and return the first column as candidate usernames."""
+    import shutil
+    import subprocess
+
+    if not dsn:
+        raise ValueError("qa.yaml envs.<env>.db.url is not configured; cannot run --sql")
+    binary = shutil.which("usql")
+    if not binary:
+        raise ValueError("usql not found; install it to discover accounts")
+    text = sql.strip()
+    if not text:
+        raise ValueError("--sql must not be empty")
+    if ";" in text.rstrip(";"):
+        raise ValueError("--sql must be a single statement (no `;`)")
+    head = text.split(None, 1)[0].lower()
+    if head not in _READONLY_SQL:
+        raise ValueError("--sql must be read-only (select/show/desc/explain/table)")
+    if _WRITE_SQL.search(text):
+        raise ValueError("--sql must be read-only (no write keywords)")
+    try:
+        r = subprocess.run(
+            [binary, dsn, "-t", "-A", "-c", text],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise ValueError("discovery query timed out") from e
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "").strip() or str(r.returncode)
+        raise ValueError(f"discovery query failed: {err}")
+    seen: list[str] = []
+    for line in r.stdout.splitlines():
+        value = line.strip()
+        if value and value not in seen:
+            seen.append(value)
+    return seen
 
 
 @app.command()
@@ -301,6 +352,110 @@ def req_accept_test(
         _die(e)
     test = data.get("test") or {}
     typer.echo(f"{jira} phase={data.get('phase')} verdict={test.get('latest_verdict')}")
+
+
+@req_app.command("accounts")
+def req_accounts(
+    jira: str,
+    env: str = typer.Option("", "--env", help="qa.yaml envs.<name>; default active_env"),
+    sql: str = typer.Option(
+        "", "--sql", help="只读查询，返回用用户名的列（用于发现候选账号）"
+    ),
+    reset: bool = typer.Option(
+        False, "--reset", help="清空本环境已配的需求账号，从零开始收集"
+    ),
+) -> None:
+    """配置本需求要用的账号，写入 .yard-qa/requirements/<JIRA>/accounts.yaml。
+
+    全局 qa.yaml 只留默认账号；需求要用多账号时在这里补，账号随需求变。
+    默认在已配账号基础上追加，--reset 才清空重来。
+    """
+    from dev_yard.qa_config import (
+        QaAccount,
+        TestRejected,
+        load_qa_config,
+        load_req_accounts,
+        save_req_accounts,
+    )
+
+    root = root_opt()
+    try:
+        cfg = load_qa_config(root, env.strip() or None)
+    except (ValueError, FileNotFoundError, TestRejected) as e:
+        _die(e)
+        return
+    typer.echo(f"env: {cfg.active_env}  base_url: {cfg.env.base_url}")
+    gacct = cfg.env.accounts.get(cfg.env.auth_default)
+    if gacct and gacct.username:
+        typer.echo(f"全局默认账号: {cfg.env.auth_default} ({gacct.username})")
+
+    accounts: dict[str, QaAccount] = {}
+    default = cfg.env.auth_default or "default"
+    if not reset:
+        try:
+            existing = load_req_accounts(root, jira, cfg.active_env)
+        except TestRejected as e:
+            _die(e)
+            return
+        if existing:
+            default, accounts = existing
+            typer.echo(
+                "已有需求账号: " + ", ".join(f"{n}({a.username})" for n, a in accounts.items())
+            )
+            typer.echo("直接回车可结束；输入新账号名继续追加。")
+
+    candidates: list[str] = []
+    if sql:
+        try:
+            candidates = _discover_usernames(cfg.env.db_url, sql)
+        except (ValueError, OSError) as e:
+            _die(e)
+            return
+        typer.echo("候选用户名：")
+        for user in candidates:
+            typer.echo(f"  - {user}")
+
+    while True:
+        name = typer.prompt("账号名（如 admin/buyer）").strip()
+        if not name:
+            break
+        if name in accounts:
+            typer.echo(f"账号「{name}」已存在，跳过。", err=True)
+            continue
+        username = typer.prompt(
+            f"  {name} username", default=candidates[0] if candidates else ""
+        )
+        if gacct and gacct.password and typer.confirm(
+            "  与全局默认账号同密码?", default=False
+        ):
+            # Do not prompt with the secret as a default: click would echo it.
+            password = gacct.password
+        else:
+            password = typer.prompt(f"  {name} password", hide_input=True)
+        accounts[name] = QaAccount(
+            name=name,
+            username=username.strip(),
+            password=password,
+            state_file=(
+                f".yard-qa/requirements/{jira}/auth-{cfg.active_env}-{name}.json"
+            ),
+        )
+        if not typer.confirm("  再加一个账号?", default=False):
+            break
+
+    if not accounts:
+        typer.echo("未配置任何账号。")
+        return
+    if default not in accounts:
+        default = typer.prompt("本需求默认账号名", default=next(iter(accounts)))
+    try:
+        path = save_req_accounts(root, jira, cfg.active_env, default, accounts)
+    except (ValueError, TestRejected) as e:
+        _die(e)
+        return
+    typer.echo(
+        f"写入 {path}（账号: {', '.join(accounts)}，default: {default}）"
+    )
 
 
 @req_app.command("test")

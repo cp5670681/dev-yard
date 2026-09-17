@@ -444,6 +444,66 @@ def test_req_test_uses_the_selected_env(tmp_path: Path, git_src: Path, monkeypat
     assert run["env"] == "test"
 
 
+def test_req_test_uses_requirement_accounts(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.qa_config import QaAccount, save_req_accounts
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-A1")
+    save_req_accounts(
+        yard,
+        "QA-A1",
+        "local",
+        "buyer",
+        {
+            "buyer": QaAccount(
+                name="buyer",
+                username="buyer01",
+                password="pw",
+                state_file=".yard-qa/requirements/QA-A1/auth-local-buyer.json",
+            )
+        },
+    )
+    qa = yard / "reqs" / "QA-A1" / "qa"
+    (qa / "cases" / "mod").mkdir(parents=True)
+    (qa / "cases" / "mod" / "case-01.md").write_text(
+        "---\nid: case-01\ntitle: t\nrepo: backend\naccount: buyer\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    result = req_test(
+        yard,
+        "QA-A1",
+        print_mode=True,
+        run_only=True,
+        ingest=False,
+        case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
+    )
+    assert result["summary"]["passed"] == 1
+
+
+def test_req_test_rejects_unconfigured_case_account(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-A2")
+    qa = yard / "reqs" / "QA-A2" / "qa"
+    (qa / "cases" / "mod").mkdir(parents=True)
+    (qa / "cases" / "mod" / "case-01.md").write_text(
+        "---\nid: case-01\ntitle: t\nrepo: backend\naccount: buyer\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TestRejected, match="not configured"):
+        req_test(
+            yard,
+            "QA-A2",
+            print_mode=True,
+            run_only=True,
+            ingest=False,
+            case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
+        )
+
+
 def test_plugin_cannot_use_qa_stage_name(tmp_path: Path):
     from dev_yard import stages
 
@@ -514,9 +574,11 @@ def test_preload_auth_runs_when_account_configured(tmp_path: Path, git_src: Path
     }
     (yard / "qa.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     hits: list[str] = []
+    seen_names: list[list[str]] = []
 
-    def fake(root, cfg, on_log=None):
+    def fake(root, cfg, names=None, on_log=None):
         hits.append(cfg.env.auth_default)
+        seen_names.append(list(names or []))
 
     monkeypatch.setattr("dev_yard.qa._preload_auth", fake)
     design = _DesignRunner(yard, "QA-11")
@@ -529,6 +591,7 @@ def test_preload_auth_runs_when_account_configured(tmp_path: Path, git_src: Path
         ingest=False,
     )
     assert hits == ["default"]
+    assert seen_names == [["default"]]
 
 
 def test_preload_auth_fails_without_state_file(tmp_path: Path, monkeypatch):
