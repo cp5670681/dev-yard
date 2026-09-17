@@ -25,14 +25,20 @@ description: >
 - 改任何 worktree 文件（含测试、配置、源码）
 - git checkout / commit / push / switch；部署
 - 为变绿改 case 预期或 setup
-- 动别人的 playwright 会话；`state-save`（宿主已登录，会话只读加载）
+- 动别人的 playwright 会话
 - 写 `reqs/` 下 `qa/` 以外的路径
 
 可写路径：`reqs/<JIRA>/qa/**` 以及同目录 `.replay.sh`。
 
 ## 做法
 
-1. 登录态：`playwright-cli state-load <state_file>`，会话 `-s=qap-<case-id>`。加载后仍是登录页 → 该 case `blocked`（reason 写账号），不要自己填密码、不要 state-save。
+1. 登录态：
+   - 若配置了 `state_file` 且文件存在，先在会话 `-s=qap-<case-id>` 执行 `playwright-cli state-load <state_file>`。
+   - 打开页面后，若未登录或被重定向至登录页（或会话失效）：
+     - **不要硬编码或假设固定表单结构**。先执行 `snapshot` 查看当前页面的真实输入框与按钮（支持各种自定义表单、SSO、OAuth 等）。
+     - 按页面语义定位并填入用户名（`username`）与密码（`password`），点击登录/提交按钮。
+     - 确认登录成功进入目标系统后，可执行 `playwright-cli state-save <state_file>` 保存登录态供后续复用。
+     - 只有在无可用账号凭据、或登录明确报账号密码错误/封禁且无法进入系统时，才将 case 标记为 `blocked`。
 2. 无头默认；prompt 的 `headed` 为准。截图一律用**绝对路径**写到 prompt 给出的 `screenshots/`。
 3. **回放**：有 `.replay.sh` 则逐条执行（命令间不主动 snapshot）。某步元素找不到 → 对该步重新 snapshot 按语义定位，并用 `playwright-cli --raw generate-locator` 修好脚本里那一行。goto 的 host 换成本次 `base_url`。
 4. **探索**（无回放）：每步 snapshot → 按语义操作 → 失败重试 1 次 → 把稳定的 getByRole/getByLabel 命令追加进 `.replay.sh`。文案与用例不一致仍完成操作，但 ui 断言判 failed（文案漂移）。

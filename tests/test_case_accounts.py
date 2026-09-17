@@ -121,12 +121,16 @@ def test_run_lock_release_keeps_another_holders_lock(tmp_path: Path):
     assert lock.exists()
 
 
-def test_preload_logs_in_when_state_missing_even_if_concurrent(
+def test_preload_replays_saved_script_when_state_missing(
     tmp_path: Path, monkeypatch
 ):
     import subprocess
 
     from dev_yard import qa_exec
+
+    replay_file = tmp_path / ".yard-qa" / "missing.replay.sh"
+    replay_file.parent.mkdir(parents=True, exist_ok=True)
+    replay_file.write_text("playwright-cli fill ...\n", encoding="utf-8")
 
     cfg = _cfg(
         {
@@ -150,7 +154,8 @@ def test_preload_logs_in_when_state_missing_even_if_concurrent(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(qa_exec.subprocess, "run", fake_run)
-    _preload_auth(tmp_path, cfg, ["buyer"])
+    failures = _preload_auth(tmp_path, cfg, ["buyer"])
+    assert failures == {}
     assert (tmp_path / ".yard-qa" / "missing.json").is_file()
 
 
@@ -192,3 +197,23 @@ def test_preload_loads_every_used_account(tmp_path: Path, monkeypatch):
     assert "a.json" in joined
     assert "b.json" in joined
     assert sum(1 for c in calls if "state-load" in c) == 2
+
+
+def test_preload_delegates_to_ai_when_creds_present_and_no_replay(tmp_path: Path):
+    """When state and replay are missing, but creds exist, AI explores dynamically."""
+    cfg = _cfg(
+        {
+            "buyer": QaAccount(
+                "buyer",
+                username="buyer01",
+                password="pw",
+                state_file=".yard-qa/missing.json",
+            )
+        },
+        default="buyer",
+    )
+    logs: list[str] = []
+    failures = _preload_auth(tmp_path, cfg, ["buyer"], on_log=logs.append)
+    assert failures == {}
+    assert any("will be explored by AI worker" in msg for msg in logs)
+

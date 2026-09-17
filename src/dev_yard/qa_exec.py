@@ -14,35 +14,17 @@ from dev_yard.qa_config import QaAccount, QaConfig, TestRejected, default_state_
 from dev_yard.qa_schedule import CaseJob, normalize_status
 
 _ASSERT_TYPES = {"ui", "net", "db"}
-_USER_SELECTORS = (
-    'input[name="username"]',
-    'input[name="user"]',
-    'input[name="login"]',
-    'input[autocomplete="username"]',
-    'input[type="email"]',
-    "getByLabel('用户名')",
-    "getByPlaceholder('用户名')",
-    "getByPlaceholder('Username')",
-)
-_PASS_SELECTORS = (
-    'input[name="password"]',
-    'input[type="password"]',
-    "getByLabel('密码')",
-    "getByPlaceholder('密码')",
-    "getByPlaceholder('Password')",
-)
-_SUBMIT_SELECTORS = (
-    'button[type="submit"]',
-    "getByRole('button', { name: '登录' })",
-    "getByRole('button', { name: 'Log in' })",
-    "getByRole('button', { name: 'Sign in' })",
-)
 
 
 def state_path(root: Path, cfg: QaConfig, acct: QaAccount) -> Path:
     rel = acct.state_file or default_state_file(cfg.active_env, acct.name)
     path = Path(rel)
     return path if path.is_absolute() else root / path
+
+
+def auth_replay_path(root: Path, cfg: QaConfig, acct: QaAccount) -> Path:
+    state = state_path(root, cfg, acct)
+    return state.with_suffix(".replay.sh")
 
 
 def _which_playwright() -> str:
@@ -89,17 +71,21 @@ def _cli(
     return _run(cmd, cwd=cwd, timeout=timeout, label=label)
 
 
+class _AiAuthPending(TestRejected):
+    """Signals that authentication state will be explored dynamically by AI worker."""
+
+
 def ensure_auth(
     root: Path,
     cfg: QaConfig,
     names: list[str] | None = None,
     on_log: Any | None = None,
 ) -> dict[str, str]:
-    """Load a saved session, or log in once on the host when the file is missing.
+    """Pre-check auth states in workspace, or run saved replay scripts.
 
-    Returns `{account: error}` for accounts whose session could not be set up.
-    Auth is per-account best effort: one bad account must not abort the whole
-    run, it only blocks the cases that actually use it.
+    Returns `{account: error}` ONLY for accounts that cannot authenticate at all
+    (e.g. missing state file AND missing username/password credentials).
+    Accounts with credentials will be explored and saved dynamically by the AI worker.
     """
     env = cfg.env
     if names is None:
@@ -112,6 +98,9 @@ def ensure_auth(
             continue
         try:
             binary = _ensure_one(root, cfg, name, acct, binary, on_log)
+        except _AiAuthPending as e:
+            if on_log is not None:
+                on_log(f"{e}\n")
         except TestRejected as e:
             failures[name] = str(e)
             if on_log is not None:
@@ -128,92 +117,76 @@ def _ensure_one(
     on_log: Any | None,
 ) -> str:
     state = state_path(root, cfg, acct)
+    replay = auth_replay_path(root, cfg, acct)
     state.parent.mkdir(parents=True, exist_ok=True)
     has_creds = bool(acct.username and acct.password)
+
+    if binary is None:
+        binary = _which_playwright()
+
+    # 1. Fast path: load saved state file if present
     if state.is_file():
-        if binary is None:
-            binary = _which_playwright()
         if on_log is not None:
             on_log(f"$ playwright-cli state-load {state}")
         r = _cli(binary, cfg, "qap-preload", ["state-load", str(state)], root)
         if r.returncode == 0:
             _cli(binary, cfg, "qap-preload", ["close"], root)
             return binary
-        # Drop the broken session before falling back to a fresh login.
         _cli(binary, cfg, "qap-preload", ["close"], root)
-        if not has_creds:
-            err = (r.stderr or r.stdout or "").strip() or str(r.returncode)
-            raise TestRejected(f"auth state-load failed for account {name!r}: {err}")
-    elif not has_creds:
+
+    # 2. Replay path: run saved explored login script if present
+    if replay.is_file():
+        if on_log is not None:
+            on_log(f"replaying saved auth script: {replay}")
+        if _run_auth_replay(binary, cfg, acct, state, replay, root, on_log):
+            return binary
+
+    # 3. AI Exploration path:
+    if not has_creds:
         raise TestRejected(
             f"missing auth state_file {state} for account {name!r}; "
-            "put username/password in qa.yaml or log in once"
+            "put username/password in qa.yaml so AI can explore login"
         )
-    if binary is None:
-        binary = _which_playwright()
-    _host_login(root, cfg, acct, state, binary, on_log)
-    _cli(binary, cfg, "qap-preload", ["close"], root)
-    return binary
+
+    raise _AiAuthPending(
+        f"auth for account {name!r} will be explored by AI worker during execution"
+    )
 
 
-def _host_login(
-    root: Path,
+def _run_auth_replay(
+    binary: str,
     cfg: QaConfig,
     acct: QaAccount,
     state: Path,
-    binary: str,
+    replay: Path,
+    root: Path,
     on_log: Any | None,
-) -> None:
-    """Best-effort form login. SSO with extra MFA still needs a saved session."""
-    session = "qap-preload"
-    if on_log is not None:
-        on_log(f"host login {acct.name} → {state}")
-    opened = _cli(
-        binary,
-        cfg,
-        session,
-        ["open", cfg.env.base_url],
-        root,
-        timeout=180,
-    )
-    if opened.returncode != 0:
-        err = (opened.stderr or opened.stdout or "").strip() or str(opened.returncode)
-        raise TestRejected(f"auth open failed for account {acct.name!r}: {err}")
-    user_ok = _first_ok(
-        binary, cfg, session, root, "fill", _USER_SELECTORS, acct.username
-    )
-    pass_ok = _first_ok(
-        binary, cfg, session, root, "fill", _PASS_SELECTORS, acct.password
-    )
-    if not (user_ok and pass_ok):
-        raise TestRejected(
-            f"could not fill login form for account {acct.name!r}; "
-            "save a session with playwright-cli state-save first"
-        )
-    if not _first_ok(binary, cfg, session, root, "click", _SUBMIT_SELECTORS):
-        raise TestRejected(
-            f"could not submit login form for account {acct.name!r}"
-        )
-    saved = _cli(binary, cfg, session, ["state-save", str(state)], root)
-    if saved.returncode != 0 or not state.is_file():
-        err = (saved.stderr or saved.stdout or "").strip() or str(saved.returncode)
-        raise TestRejected(f"auth state-save failed for account {acct.name!r}: {err}")
-
-
-def _first_ok(
-    binary: str,
-    cfg: QaConfig,
-    session: str,
-    cwd: Path,
-    action: str,
-    selectors: tuple[str, ...],
-    value: str | None = None,
 ) -> bool:
-    for sel in selectors:
-        args = [action, sel] if value is None else [action, sel, value]
-        r = _cli(binary, cfg, session, args, cwd, timeout=30)
+    session = "qap-preload"
+    env = os.environ.copy()
+    env["PLAYWRIGHT_SESSION"] = session
+    env["BASE_URL"] = cfg.env.base_url
+    env["USERNAME"] = acct.username or ""
+    env["PASSWORD"] = acct.password or ""
+    if on_log is not None:
+        on_log(f"$ bash {replay}")
+    try:
+        r = subprocess.run(
+            ["bash", str(replay)],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
         if r.returncode == 0:
-            return True
+            saved = _cli(binary, cfg, session, ["state-save", str(state)], root)
+            _cli(binary, cfg, session, ["close"], root)
+            return saved.returncode == 0 and state.is_file()
+    except Exception as e:
+        if on_log is not None:
+            on_log(f"auth replay error: {e}")
+    _cli(binary, cfg, session, ["close"], root)
     return False
 
 

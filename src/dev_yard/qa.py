@@ -126,11 +126,11 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
     lines += [
         "",
         "A case frontmatter `account:` picks one of the above; no `account` uses "
-        "the default. Load that account's state_file before the case steps. "
-        "The host already logged in and saved the session.",
-        "Passwords are not listed here. Never copy a password into result.yaml "
+        "the default. Load that account's state_file before the case steps if available. "
+        "If not authenticated or redirected to login, inspect the login form dynamically "
+        "and complete login with the account's credentials.",
+        "Passwords are not listed in evidence files. Never copy a password into result.yaml "
         "or evidence; redact DSNs and passwords as `***`.",
-        "Do not `state-save` (sessions are shared read-only across concurrent cases).",
         "",
         "## Notes",
         "",
@@ -486,6 +486,8 @@ def _duties(kind: str, jira: str) -> str:
         "Do not spawn other cases. Do not change case expected values to go green.\n"
         "URLs come from context.md base_url + Routes, else frontend route code. "
         "Do not guess hosts. Hash routers need `#/` in the path.\n"
+        "Authentication: load state_file if available. If unauthenticated or redirected to login, "
+        "inspect the page dynamically with snapshot, fill credentials, submit, and save state.\n"
         "Host already ran data.setup if the case has one; do not re-run it. "
         "Host will run cleanup after you finish.\n"
         "Assertions in result.yaml must use type (ui|net|db) plus expected and actual."
@@ -507,9 +509,25 @@ def _run_prompt(root: Path, jira: str, cfg: QaConfig, job: CaseJob, run_id: str)
     acct = cfg.env.accounts.get(account)
     account_line = f"Account: {account or '(none)'}"
     if acct:
+        state_str = acct.state_file or str(default_state_file(cfg.active_env, acct.name, jira))
+        replay_str = str(Path(state_str).with_suffix(".replay.sh"))
+        user_str = acct.username or "(none)"
+        pass_str = acct.password or "(none)"
         account_line += (
-            f"  state_file: {acct.state_file or '(none)'}"
-            "  (host already logged in; load this state_file, do not state-save)"
+            f"\nAccount Details:\n"
+            f"  username: {user_str}\n"
+            f"  password: {pass_str}\n"
+            f"  state_file: {state_str}\n"
+            f"  auth_replay: {replay_str}\n"
+            f"Login & Session Protocol:\n"
+            f"  1. If `{state_str}` exists, run `playwright-cli -s=qap-{job.id} state-load {state_str}`.\n"
+            f"  2. Navigate to target URL. If unauthenticated / on login page:\n"
+            f"     - If `{replay_str}` exists, replay or reference its login commands.\n"
+            f"     - Otherwise, explore login form with snapshot (inspect actual inputs/buttons dynamically).\n"
+            f"     - Fill username and password, submit, and verify entry into system.\n"
+            f"     - Save session: `playwright-cli -s=qap-{job.id} state-save {state_str}`\n"
+            f"     - Save explored login commands to `{replay_str}` for future runs to reuse.\n"
+            f"  3. Never write passwords to result.yaml or evidence files; redact as `***`."
         )
     replay = replay_path(job)
     replay_line = (

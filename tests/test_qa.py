@@ -744,11 +744,15 @@ def test_preload_auth_reports_missing_state_file(tmp_path: Path, monkeypatch):
     assert "missing auth state_file" in failures["default"]
 
 
-def test_preload_auth_logs_in_when_creds_present_but_state_missing(
+def test_preload_auth_replays_saved_script_when_state_missing(
     tmp_path: Path, monkeypatch
 ):
     from dev_yard.qa import _preload_auth
     from dev_yard.qa_config import QaAccount, QaBrowser, QaConfig, QaEnv, QaWorker
+
+    replay_file = tmp_path / ".yard-qa" / "missing.replay.sh"
+    replay_file.parent.mkdir(parents=True, exist_ok=True)
+    replay_file.write_text("playwright-cli fill ...\n", encoding="utf-8")
 
     cfg = QaConfig(
         active_env="local",
@@ -779,9 +783,37 @@ def test_preload_auth_logs_in_when_creds_present_but_state_missing(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr("dev_yard.qa_exec.subprocess.run", fake_run)
-    _preload_auth(tmp_path, cfg)
+    failures = _preload_auth(tmp_path, cfg)
+    assert failures == {}
     assert any("state-save" in c for c in calls)
     assert (tmp_path / ".yard-qa" / "missing.json").is_file()
+
+
+def test_preload_auth_delegates_to_ai_when_creds_present_and_no_replay(tmp_path: Path):
+    from dev_yard.qa import _preload_auth
+    from dev_yard.qa_config import QaAccount, QaBrowser, QaConfig, QaEnv, QaWorker
+
+    cfg = QaConfig(
+        active_env="local",
+        env=QaEnv(
+            name="local",
+            base_url="http://127.0.0.1:1",
+            accounts={
+                "default": QaAccount(
+                    name="default",
+                    username="admin",
+                    password="s3cret",
+                    state_file=".yard-qa/missing.json",
+                )
+            },
+        ),
+        browser=QaBrowser(),
+        workers=(QaWorker(id="a", provider="rcc", model="g", concurrency=2, priority=1),),
+    )
+    logs: list[str] = []
+    failures = _preload_auth(tmp_path, cfg, on_log=logs.append)
+    assert failures == {}
+    assert any("will be explored by AI worker" in line for line in logs)
 
 
 def test_schedule_normalizes_status_case():
