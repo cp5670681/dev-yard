@@ -252,6 +252,7 @@ const barTitle = computed(() => {
   if (name === "requirement" || name === "doc") return String(route.params.jira || "需求");
   if (name === "repos") return "仓库";
   if (name === "settings") return "模型";
+  if (name === "qa-config") return "测试配置";
   if (name === "open") return "打开需求";
   return "需求";
 });

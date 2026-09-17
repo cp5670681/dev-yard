@@ -1,12 +1,26 @@
 <template>
   <div>
-    <div class="mb-6">
-      <h1 class="text-h5 text-sm-h4 mb-1">测试配置</h1>
-      <p class="text-medium-emphasis mb-0">
-        写入工作区根 <code>qa.yaml</code>，<code>req test</code> 跑测时读它。可配置多个环境，
-        <b>默认环境</b> 是跑测时未指定 <code>--env</code> 时用的那个。账号密码、DB 连接串
-        <b>明文</b>存这里（文件已 gitignore），加账号直接多填一行，无需再配环境变量。
-      </p>
+    <div class="qa-head">
+      <div style="min-width: 0">
+        <h1 class="text-h5 text-sm-h4 mb-1">测试配置</h1>
+        <p class="text-medium-emphasis text-body-2 mb-0">
+          写入工作区根 <code>qa.yaml</code>，<code>req test</code> 跑测时读它。密码与 DB 连接串
+          <b>明文</b>存这里（文件已 gitignore）。<b>默认环境</b>是跑测未指定 <code>--env</code> 时用的那个。
+        </p>
+      </div>
+      <div class="d-flex align-center ga-2 flex-shrink-0 qa-actions">
+        <v-chip
+          v-if="dirty"
+          size="small"
+          color="warning"
+          variant="tonal"
+          :prepend-icon="mdiAlertCircleOutline"
+        >
+          未保存
+        </v-chip>
+        <v-btn variant="text" :prepend-icon="mdiRefresh" :disabled="saving" @click="load">刷新</v-btn>
+        <v-btn color="primary" :prepend-icon="mdiContentSave" :loading="saving" @click="save">保存</v-btn>
+      </div>
     </div>
 
     <v-alert v-if="error" type="error" class="mb-4" closable @click:close="error = ''">
@@ -29,295 +43,495 @@
       </v-card-actions>
     </v-card>
 
-    <template v-if="form && currentEnv">
-      <v-card variant="outlined" class="mb-4">
-        <v-card-title>环境</v-card-title>
-        <v-card-text>
-          <v-row>
-            <v-col cols="12" md="6">
-              <v-select
-                :model-value="editing"
-                :items="envNames"
-                label="编辑哪个环境"
-                variant="outlined"
-                density="comfortable"
-                hide-details
-                @update:model-value="selectEnv"
-              />
-            </v-col>
-            <v-col cols="12" md="6" class="d-flex align-center">
-              <v-switch
-                :model-value="form.active_env === editing"
-                label="设为默认环境（active_env）"
-                color="primary"
-                hide-details
-                density="comfortable"
-                @update:model-value="setActive"
-              />
-            </v-col>
-          </v-row>
-          <v-row dense class="mt-1">
-            <v-col cols="12" sm="6">
-              <v-text-field
-                v-model="nameDraft"
-                label="环境名"
-                variant="outlined"
-                density="comfortable"
-                hide-details
-                hint="改名后保存即生效。"
-                @change="renameCurrent"
-              />
-            </v-col>
-            <v-col cols="12" sm="6" class="d-flex align-center ga-1">
-              <v-text-field
-                v-model="newEnvName"
-                label="新增环境名"
-                variant="outlined"
-                density="comfortable"
-                hide-details
-                placeholder="test"
-              />
-              <v-btn :prepend-icon="mdiPlus" variant="tonal" @click="addEnv">新增</v-btn>
-              <v-btn
-                :prepend-icon="mdiDeleteOutline"
-                color="error"
-                variant="text"
-                :disabled="envNames.length <= 1"
-                @click="removeEnv"
-              >
-                删除
-              </v-btn>
-            </v-col>
-          </v-row>
-        </v-card-text>
-      </v-card>
+    <v-row v-if="form && currentEnv">
+      <v-col cols="12" md="4" lg="3">
+        <v-card variant="outlined" class="env-rail">
+          <v-card-item>
+            <template #prepend>
+              <v-avatar color="primary" variant="tonal" size="36" rounded="sm">
+                <v-icon :icon="mdiServerNetwork" size="20" />
+              </v-avatar>
+            </template>
+            <template #title>环境</template>
+            <template #subtitle>{{ envNames.length }} 个 · 默认 {{ form.active_env }}</template>
+          </v-card-item>
+          <v-divider />
+          <v-list nav density="comfortable" class="py-2">
+            <v-list-item
+              v-for="name in envNames"
+              :key="name"
+              :active="name === editing"
+              active-class="jira-nav-active"
+              @click="selectEnv(name)"
+            >
+              <template #prepend>
+                <v-icon
+                  :icon="mdiServerNetwork"
+                  :color="name === form.active_env ? 'primary' : undefined"
+                />
+              </template>
+              <v-list-item-title class="d-flex align-center ga-2">
+                <span class="text-truncate">{{ name }}</span>
+                <v-chip
+                  v-if="name === form.active_env"
+                  size="x-small"
+                  color="primary"
+                  variant="tonal"
+                >
+                  默认
+                </v-chip>
+              </v-list-item-title>
+              <v-list-item-subtitle class="text-truncate">
+                {{ envSummary(name) }}
+              </v-list-item-subtitle>
+            </v-list-item>
+          </v-list>
+          <v-divider />
+          <v-card-text class="pa-3">
+            <v-text-field
+              v-model="newEnvName"
+              label="新环境名"
+              variant="outlined"
+              density="comfortable"
+              hide-details
+              placeholder="test"
+              @keydown.enter="addEnv"
+            />
+            <v-btn
+              block
+              variant="tonal"
+              class="mt-2"
+              :prepend-icon="mdiPlus"
+              :disabled="!newEnvName.trim()"
+              @click="addEnv"
+            >
+              新增环境
+            </v-btn>
+          </v-card-text>
+        </v-card>
+      </v-col>
 
-      <v-card variant="outlined" class="mb-4">
-        <v-card-title>{{ editing }} · 连接</v-card-title>
+      <v-col cols="12" md="8" lg="9">
+        <v-card variant="outlined">
+          <v-toolbar density="comfortable" color="transparent" flat class="px-2">
+            <v-toolbar-title class="text-body-1 d-flex align-center ga-2">
+              <span class="font-weight-bold">{{ editing }}</span>
+              <v-chip v-if="editing === form.active_env" size="x-small" color="primary" variant="flat">
+                默认环境
+              </v-chip>
+            </v-toolbar-title>
+            <v-btn
+              v-if="editing !== form.active_env"
+              :prepend-icon="mdiStarOutline"
+              variant="text"
+              size="small"
+              @click="setActive(true)"
+            >
+              设为默认
+            </v-btn>
+            <v-btn :prepend-icon="mdiPencilOutline" variant="text" size="small" @click="openRename">
+              重命名
+            </v-btn>
+            <v-btn
+              :icon="mdiDeleteOutline"
+              variant="text"
+              size="small"
+              color="error"
+              :disabled="envNames.length <= 1"
+              title="删除这个环境"
+              @click="removeEnv"
+            />
+          </v-toolbar>
+          <v-divider />
+          <v-tabs v-model="tab" color="primary" align-tabs="start" show-arrows>
+            <v-tab value="conn" :prepend-icon="mdiLinkVariant">连接</v-tab>
+            <v-tab value="auth" :prepend-icon="mdiAccountKeyOutline">
+              登录态
+              <v-chip size="x-small" class="ml-2" variant="tonal">{{ namedAccounts }}</v-chip>
+            </v-tab>
+            <v-tab value="notes" :prepend-icon="mdiNoteTextOutline">备注</v-tab>
+          </v-tabs>
+          <v-divider />
+          <v-window v-model="tab">
+            <v-window-item value="conn">
+              <v-card-text class="pa-4">
+                <v-text-field
+                  v-model="currentEnv.base_url"
+                  label="前端地址 base_url"
+                  variant="outlined"
+                  density="comfortable"
+                  placeholder="http://127.0.0.1:8080"
+                  :prepend-inner-icon="mdiWeb"
+                  persistent-hint
+                  hint="跑测时浏览器从这里开；默认环境必填，其他环境可以留空。"
+                  class="mb-4"
+                />
+                <v-text-field
+                  v-model="currentEnv.script.runner"
+                  label="造数脚本执行器 script.runner"
+                  variant="outlined"
+                  density="comfortable"
+                  placeholder="bin/rails runner"
+                  :prepend-inner-icon="mdiScriptTextOutline"
+                  persistent-hint
+                  hint="可留空；留空则造数只允许 .sql 脚本。"
+                  class="mb-4"
+                />
+                <v-text-field
+                  v-model="currentEnv.db.url"
+                  label="数据库连接串 db.url"
+                  variant="outlined"
+                  density="comfortable"
+                  placeholder="postgres://user:pass@host:5432/db"
+                  :prepend-inner-icon="mdiDatabaseOutline"
+                  persistent-hint
+                  hint="可留空；留空则禁止用 usql 做 DB 断言。密码含特殊字符需 URL 编码。"
+                />
+              </v-card-text>
+            </v-window-item>
+
+            <v-window-item value="auth">
+              <v-card-text class="pa-4">
+                <v-combobox
+                  v-model="currentEnv.auth.default"
+                  :items="accountNames"
+                  label="默认账号 auth.default"
+                  variant="outlined"
+                  density="comfortable"
+                  persistent-hint
+                  hint="跑测默认用哪个账号；填下面的账号名，也可以手输。"
+                  class="mb-4"
+                />
+
+                <div class="d-flex align-center justify-space-between mb-2">
+                  <div class="text-subtitle-2">
+                    账号
+                    <span class="text-caption text-medium-emphasis">（{{ namedAccounts }} 个已命名）</span>
+                  </div>
+                  <v-btn :prepend-icon="mdiPlus" variant="tonal" size="small" @click="addAccount">
+                    加账号
+                  </v-btn>
+                </div>
+                <p class="text-caption text-medium-emphasis mb-3">
+                  显示 <code>{{ MASK }}</code> 表示密码已存，保存会保留；填新值覆盖，留空清除。
+                </p>
+
+                <v-sheet
+                  v-if="!currentAccounts.length"
+                  border
+                  rounded="lg"
+                  class="pa-6 text-center text-body-2 text-medium-emphasis mb-3"
+                >
+                  这个环境还没有账号。点右上「加账号」登记一个，跑测时用
+                  <code>auth.default</code> 指定默认登录哪个。
+                </v-sheet>
+
+                <v-sheet v-for="(acct, i) in currentAccounts" :key="i" border rounded="lg" class="pa-3 mb-3">
+                  <div class="d-flex align-center ga-2 mb-2">
+                    <v-icon :icon="mdiAccountOutline" size="18" color="primary" />
+                    <span class="text-subtitle-2">{{ acct.name.trim() || `账号 ${i + 1}` }}</span>
+                    <v-chip
+                      v-if="acct.name.trim() && acct.name.trim() === currentEnv.auth.default"
+                      size="x-small"
+                      color="primary"
+                      variant="tonal"
+                    >
+                      默认
+                    </v-chip>
+                    <v-spacer />
+                    <v-btn
+                      :icon="mdiDeleteOutline"
+                      variant="text"
+                      size="x-small"
+                      color="error"
+                      title="删除这个账号"
+                      @click="removeAccount(i)"
+                    />
+                  </div>
+                  <v-row dense>
+                    <v-col cols="12" sm="6">
+                      <v-text-field
+                        v-model="acct.name"
+                        label="账号名"
+                        variant="outlined"
+                        density="comfortable"
+                        hide-details
+                      />
+                    </v-col>
+                    <v-col cols="12" sm="6">
+                      <v-text-field
+                        v-model="acct.username"
+                        label="username"
+                        variant="outlined"
+                        density="comfortable"
+                        hide-details
+                      />
+                    </v-col>
+                    <v-col cols="12" sm="6">
+                      <v-text-field
+                        v-model="acct.password"
+                        label="password"
+                        :type="isRevealed(i) ? 'text' : 'password'"
+                        :append-inner-icon="isRevealed(i) ? mdiEyeOffOutline : mdiEyeOutline"
+                        variant="outlined"
+                        density="comfortable"
+                        hide-details
+                        @click:append-inner="toggleReveal(i)"
+                      />
+                    </v-col>
+                    <v-col cols="12" sm="6">
+                      <v-text-field
+                        v-model="acct.state_file"
+                        label="state_file（登录态文件，可留空）"
+                        variant="outlined"
+                        density="comfortable"
+                        hide-details
+                      />
+                    </v-col>
+                  </v-row>
+                </v-sheet>
+              </v-card-text>
+            </v-window-item>
+
+            <v-window-item value="notes">
+              <v-card-text class="pa-4">
+                <v-textarea
+                  v-model="currentDraft.notes"
+                  label="notes（一行一条）"
+                  variant="outlined"
+                  density="comfortable"
+                  rows="5"
+                  persistent-hint
+                  hint="会注入 context.md，提醒跑测的人注意什么。"
+                />
+              </v-card-text>
+            </v-window-item>
+          </v-window>
+        </v-card>
+      </v-col>
+    </v-row>
+
+    <v-row v-if="form && currentEnv" class="mt-1">
+      <v-col cols="12" md="6">
+        <v-card variant="outlined">
+          <v-card-item>
+            <template #prepend>
+              <v-avatar color="secondary" variant="tonal" size="36" rounded="sm">
+                <v-icon :icon="mdiMonitor" size="20" />
+              </v-avatar>
+            </template>
+            <template #title>浏览器与并发</template>
+            <template #subtitle>全环境共用</template>
+          </v-card-item>
+          <v-card-text>
+            <v-combobox
+              v-model="form.browser.channel"
+              :items="CHANNELS"
+              label="browser.channel"
+              variant="outlined"
+              density="comfortable"
+              hide-details
+              class="mb-2"
+            />
+            <v-switch
+              v-model="form.browser.headed"
+              label="headed（有头窗口）"
+              color="primary"
+              hide-details
+              density="comfortable"
+            />
+            <v-alert
+              v-if="totalConcurrency > 1"
+              type="info"
+              density="compact"
+              variant="tonal"
+              class="mt-2"
+            >
+              总并发 {{ totalConcurrency }} &gt; 1，宿主会强制无头，有头窗口会抢资源。
+            </v-alert>
+          </v-card-text>
+        </v-card>
+      </v-col>
+
+      <v-col cols="12" md="6">
+        <v-card variant="outlined">
+          <v-card-item>
+            <template #prepend>
+              <v-avatar color="primary" variant="tonal" size="36" rounded="sm">
+                <v-icon :icon="mdiRobotOutline" size="20" />
+              </v-avatar>
+            </template>
+            <template #title>模型池</template>
+            <template #subtitle>
+              同时跑几条用例、用哪些模型 · 总并发 {{ totalConcurrency }}
+            </template>
+          </v-card-item>
+          <v-card-text>
+            <v-sheet
+              v-if="!form.workers.length"
+              border
+              rounded="lg"
+              class="pa-4 text-center text-body-2 text-medium-emphasis mb-3"
+            >
+              没配模型池：跑测回退到工作区 pi 的 qa-run 模型，1 并发。
+            </v-sheet>
+            <v-sheet v-for="(w, i) in form.workers" :key="i" border rounded="lg" class="pa-3 mb-3">
+              <div class="d-flex align-center ga-2 mb-2">
+                <v-icon :icon="mdiRobotOutline" size="18" color="primary" />
+                <span class="text-subtitle-2">{{ w.id || w.model || `模型 ${i + 1}` }}</span>
+                <v-chip size="x-small" variant="tonal">{{ w.concurrency || 1 }} 并发</v-chip>
+                <v-spacer />
+                <v-btn
+                  :icon="mdiDeleteOutline"
+                  variant="text"
+                  size="x-small"
+                  color="error"
+                  title="删掉这一行"
+                  @click="form.workers.splice(i, 1)"
+                />
+              </div>
+              <v-row dense>
+                <v-col cols="12" sm="6">
+                  <v-select
+                    v-model="w.provider"
+                    :items="providerItems"
+                    label="provider"
+                    variant="outlined"
+                    density="comfortable"
+                    hide-details
+                    clearable
+                    @update:model-value="onProviderChange(i, $event)"
+                  />
+                </v-col>
+                <v-col cols="12" sm="6">
+                  <v-select
+                    v-model="w.model"
+                    :items="modelItems(w.provider)"
+                    label="model"
+                    variant="outlined"
+                    density="comfortable"
+                    hide-details
+                    clearable
+                  />
+                </v-col>
+                <v-col cols="12" sm="4">
+                  <v-text-field
+                    v-model="w.id"
+                    label="id（可留空）"
+                    variant="outlined"
+                    density="comfortable"
+                    hide-details
+                  />
+                </v-col>
+                <v-col cols="6" sm="4">
+                  <v-text-field
+                    v-model.number="w.concurrency"
+                    label="并发"
+                    type="number"
+                    min="1"
+                    max="8"
+                    variant="outlined"
+                    density="comfortable"
+                    hide-details
+                  />
+                </v-col>
+                <v-col cols="6" sm="4">
+                  <v-text-field
+                    v-model.number="w.priority"
+                    label="优先级（小的先跑）"
+                    type="number"
+                    variant="outlined"
+                    density="comfortable"
+                    hide-details
+                  />
+                </v-col>
+              </v-row>
+            </v-sheet>
+            <v-btn block variant="tonal" :prepend-icon="mdiPlus" @click="addWorker">加一个模型</v-btn>
+          </v-card-text>
+        </v-card>
+      </v-col>
+    </v-row>
+
+    <div v-if="form && currentEnv" class="d-flex justify-end mt-4">
+      <v-btn color="primary" :prepend-icon="mdiContentSave" :loading="saving" @click="save">
+        保存到 qa.yaml
+      </v-btn>
+    </div>
+
+    <v-expansion-panels v-if="state" variant="accordion" class="mt-4">
+      <v-expansion-panel>
+        <v-expansion-panel-title>
+          <v-icon :icon="mdiFileCodeOutline" class="mr-2" />
+          原始 YAML
+          <span class="text-caption text-medium-emphasis ml-2">磁盘上的当前内容</span>
+        </v-expansion-panel-title>
+        <v-expansion-panel-text>
+          <p class="text-medium-emphasis text-body-2">
+            密码、DB 连接串已脱敏为 <code>{{ MASK }}</code>。保存会重排这个文件，注释不会保留。
+          </p>
+          <pre class="qa-raw">{{ state.raw || "（还没有 qa.yaml，保存后创建）" }}</pre>
+        </v-expansion-panel-text>
+      </v-expansion-panel>
+    </v-expansion-panels>
+
+    <v-dialog v-model="renameDialog" max-width="420">
+      <v-card>
+        <v-card-title>重命名环境</v-card-title>
         <v-card-text>
-          <v-row>
-            <v-col cols="12" md="6">
-              <v-text-field
-                v-model="currentEnv.base_url"
-                label="base_url"
-                variant="outlined"
-                density="comfortable"
-                placeholder="http://127.0.0.1:8080"
-                hide-details="auto"
-                hint="必填。前端地址，跑测时浏览器从这里开。"
-              />
-            </v-col>
-            <v-col cols="12" md="6">
-              <v-text-field
-                v-model="currentEnv.db.url"
-                label="db.url"
-                variant="outlined"
-                density="comfortable"
-                placeholder="postgres://user:pass@host:5432/db"
-                hide-details="auto"
-                hint="可留空；留空则禁止用 usql 做 DB 断言。密码含特殊字符需 URL 编码；显示 ******** 表示已存，保存会保留。"
-              />
-            </v-col>
-          </v-row>
           <v-text-field
-            v-model="currentEnv.script.runner"
-            label="script.runner"
+            v-model="nameDraft"
+            label="环境名"
             variant="outlined"
             density="comfortable"
-            placeholder="bin/rails runner"
-            hide-details="auto"
-            hint="可留空；留空则造数只允许 .sql。"
-          />
-        </v-card-text>
-      </v-card>
-
-      <v-card variant="outlined" class="mb-4">
-        <v-card-title>{{ editing }} · 登录态</v-card-title>
-        <v-card-text>
-          <v-text-field
-            v-model="currentEnv.auth.default"
-            label="auth.default"
-            variant="outlined"
-            density="comfortable"
+            autofocus
             hide-details
-            hint="默认用哪个账号，对应下面的账号名。"
+            @keydown.enter="confirmRename"
           />
-          <v-row v-for="(acct, i) in currentAccounts" :key="i" class="mt-2" dense>
-            <v-col cols="12" sm="3">
-              <v-text-field v-model="acct.name" label="账号名" variant="outlined" density="comfortable" hide-details />
-            </v-col>
-            <v-col cols="12" sm="3">
-              <v-text-field
-                v-model="acct.username"
-                label="username"
-                variant="outlined"
-                density="comfortable"
-                hide-details
-              />
-            </v-col>
-            <v-col cols="12" sm="3">
-              <v-text-field
-                v-model="acct.password"
-                label="password"
-                type="password"
-                variant="outlined"
-                density="comfortable"
-                hide-details="auto"
-                hint="显示 ******** 表示已存，保存会保留；填新值替换，留空清除。"
-              />
-            </v-col>
-            <v-col cols="12" sm="2">
-              <v-text-field
-                v-model="acct.state_file"
-                label="state_file"
-                variant="outlined"
-                density="comfortable"
-                hide-details
-              />
-            </v-col>
-            <v-col cols="12" sm="1" class="d-flex align-center">
-              <v-btn :icon="mdiDeleteOutline" variant="text" size="small" @click="currentAccounts.splice(i, 1)" />
-            </v-col>
-          </v-row>
-          <v-btn :prepend-icon="mdiPlus" variant="text" class="mt-2" @click="addAccount">加账号</v-btn>
-        </v-card-text>
-      </v-card>
-
-      <v-card variant="outlined" class="mb-4">
-        <v-card-title>{{ editing }} · 备注</v-card-title>
-        <v-card-text>
-          <v-textarea
-            v-model="currentDraft.notes"
-            label="notes（一行一条）"
-            variant="outlined"
-            density="comfortable"
-            rows="3"
-            hide-details
-            hint="会注入 context.md，提醒跑测的人注意什么。"
-          />
-        </v-card-text>
-      </v-card>
-
-      <v-card variant="outlined" class="mb-4">
-        <v-card-title>浏览器与并发</v-card-title>
-        <v-card-subtitle>全环境共用。</v-card-subtitle>
-        <v-card-text>
-          <v-row>
-            <v-col cols="12" sm="6">
-              <v-combobox
-                v-model="form.browser.channel"
-                :items="CHANNELS"
-                label="browser.channel"
-                variant="outlined"
-                density="comfortable"
-                hide-details
-              />
-            </v-col>
-            <v-col cols="12" sm="6" class="d-flex align-center">
-              <v-switch
-                v-model="form.browser.headed"
-                label="headed（有头窗口）"
-                color="primary"
-                hide-details
-                density="comfortable"
-              />
-            </v-col>
-          </v-row>
-          <p class="text-caption text-medium-emphasis mt-2 mb-0">
-            总并发 &gt; 1 时宿主强制无头，有头窗口会抢资源。当前总并发：{{ totalConcurrency }}。
+          <p class="text-caption text-medium-emphasis mt-3 mb-0">
+            改名后保存即生效。用旧环境名跑的脚本、命令要一起改。
           </p>
         </v-card-text>
-      </v-card>
-
-      <v-card variant="outlined" class="mb-4">
-        <v-card-title>模型池</v-card-title>
-        <v-card-subtitle>
-          同时跑几条用例、用哪些模型。留空则回退到工作区 pi 的 qa-run 模型、1 并发。
-        </v-card-subtitle>
-        <v-card-text>
-          <v-row v-for="(w, i) in form.workers" :key="i" dense>
-            <v-col cols="12" sm="2">
-              <v-text-field v-model="w.id" label="id" variant="outlined" density="comfortable" hide-details />
-            </v-col>
-            <v-col cols="12" sm="3">
-              <v-select
-                v-model="w.provider"
-                :items="providerItems"
-                label="provider"
-                variant="outlined"
-                density="comfortable"
-                hide-details
-                clearable
-                @update:model-value="onProviderChange(i, $event)"
-              />
-            </v-col>
-            <v-col cols="12" sm="3">
-              <v-select
-                v-model="w.model"
-                :items="modelItems(w.provider)"
-                label="model"
-                variant="outlined"
-                density="comfortable"
-                hide-details
-                clearable
-              />
-            </v-col>
-            <v-col cols="12" sm="1">
-              <v-text-field
-                v-model.number="w.concurrency"
-                label="并发"
-                type="number"
-                min="1"
-                max="8"
-                variant="outlined"
-                density="comfortable"
-                hide-details
-              />
-            </v-col>
-            <v-col cols="12" sm="2">
-              <v-text-field
-                v-model.number="w.priority"
-                label="优先"
-                type="number"
-                variant="outlined"
-                density="comfortable"
-                hide-details
-              />
-            </v-col>
-            <v-col cols="12" sm="1" class="d-flex align-center">
-              <v-btn :icon="mdiDeleteOutline" variant="text" size="small" @click="form.workers.splice(i, 1)" />
-            </v-col>
-          </v-row>
-          <v-btn :prepend-icon="mdiPlus" variant="text" class="mt-2" @click="addWorker">加模型</v-btn>
-        </v-card-text>
-        <v-card-actions class="px-6 pb-4">
+        <v-card-actions>
           <v-spacer />
-          <v-btn color="primary" :loading="saving" @click="save">保存</v-btn>
+          <v-btn variant="text" @click="renameDialog = false">取消</v-btn>
+          <v-btn color="primary" @click="confirmRename">确定</v-btn>
         </v-card-actions>
       </v-card>
-    </template>
-
-    <v-card v-if="state" variant="outlined" class="mt-4">
-      <v-card-title>原始 YAML</v-card-title>
-      <v-card-text>
-        <p class="text-medium-emphasis text-body-2">
-          磁盘上的当前内容（密码、DB 连接串已脱敏为 ********），保存后由服务端写回。
-          保存会重排这个文件，注释不会保留。
-        </p>
-        <pre class="qa-raw">{{ state.raw || "（还没有 qa.yaml，保存后创建）" }}</pre>
-      </v-card-text>
-    </v-card>
+    </v-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
-import { mdiDeleteOutline, mdiPlus } from "@mdi/js";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
+import {
+  mdiAccountKeyOutline,
+  mdiAccountOutline,
+  mdiAlertCircleOutline,
+  mdiContentSave,
+  mdiDatabaseOutline,
+  mdiDeleteOutline,
+  mdiEyeOffOutline,
+  mdiEyeOutline,
+  mdiFileCodeOutline,
+  mdiLinkVariant,
+  mdiMonitor,
+  mdiNoteTextOutline,
+  mdiPencilOutline,
+  mdiPlus,
+  mdiRefresh,
+  mdiRobotOutline,
+  mdiScriptTextOutline,
+  mdiServerNetwork,
+  mdiStarOutline,
+  mdiWeb,
+} from "@mdi/js";
 import { getQaConfig, saveQaConfig } from "@/api/client";
 import type { QaConfigPayload, QaConfigState, QaEnvCfg } from "@/api/types";
 import { useSnack } from "@/composables/snack";
 
 const CHANNELS = ["chrome", "chromium", "msedge", "firefox", "webkit"];
+const MASK = "********";
 
 interface AccountRow {
   name: string;
@@ -342,6 +556,12 @@ const nameDraft = ref("");
 const newEnvName = ref("");
 const error = ref("");
 const saving = ref(false);
+const dirty = ref(false);
+const tab = ref("conn");
+const renameDialog = ref(false);
+const revealed = ref<Set<string>>(new Set());
+/** Suppress the dirty flag while `load` writes into the form. */
+let loading = false;
 
 const catalog = computed(() => state.value?.catalog ?? { providers: [], error: null });
 const catalogError = computed(() => catalog.value.error || "");
@@ -355,8 +575,20 @@ const currentDraft = computed<EnvDraft>(
   () => drafts.value[editing.value] ?? { accounts: [], notes: "" },
 );
 const currentAccounts = computed(() => currentDraft.value.accounts);
+const accountNames = computed(() =>
+  currentAccounts.value.map((a) => a.name.trim()).filter(Boolean),
+);
+const namedAccounts = computed(() => accountNames.value.length);
 const totalConcurrency = computed(() =>
   (form.value?.workers ?? []).reduce((sum, w) => sum + (Number(w.concurrency) || 1), 0),
+);
+
+watch(
+  [form, drafts],
+  () => {
+    if (!loading) dirty.value = true;
+  },
+  { deep: true },
 );
 
 function modelItems(providerId: string | null | undefined): string[] {
@@ -431,8 +663,39 @@ function initDraft(name: string) {
       });
     }
   }
-  if (!accounts.length) accounts.push({ name: "", username: "", password: "", state_file: "" });
   drafts.value[name] = { accounts, notes: (env?.notes ?? []).join("\n") };
+}
+
+function safeHost(url: string) {
+  try {
+    return new URL(url).host || url;
+  } catch {
+    return url;
+  }
+}
+
+function accountCount(name: string) {
+  const draft = drafts.value[name];
+  if (draft) return draft.accounts.filter((a) => a.name.trim()).length;
+  return Object.keys(form.value?.envs[name]?.auth.accounts ?? {}).length;
+}
+
+function envSummary(name: string) {
+  const url = (form.value?.envs[name]?.base_url ?? "").trim();
+  const address = url ? safeHost(url) : "未填 base_url";
+  return `${address} · ${accountCount(name)} 个账号`;
+}
+
+function isRevealed(i: number) {
+  return revealed.value.has(`${editing.value}:${i}`);
+}
+
+function toggleReveal(i: number) {
+  const key = `${editing.value}:${i}`;
+  const next = new Set(revealed.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  revealed.value = next;
 }
 
 function selectEnv(next: string | null) {
@@ -489,6 +752,17 @@ function removeEnv() {
   if (!drafts.value[editing.value]) initDraft(editing.value);
 }
 
+function openRename() {
+  error.value = "";
+  nameDraft.value = editing.value;
+  renameDialog.value = true;
+}
+
+function confirmRename() {
+  renameCurrent();
+  if (!error.value) renameDialog.value = false;
+}
+
 function renameCurrent() {
   if (!form.value) return;
   const from = editing.value;
@@ -498,7 +772,10 @@ function renameCurrent() {
     nameDraft.value = from;
     return;
   }
-  if (to === from) return;
+  if (to === from) {
+    error.value = "";
+    return;
+  }
   if (form.value.envs[to]) {
     error.value = `环境「${to}」已存在。`;
     nameDraft.value = from;
@@ -533,30 +810,44 @@ function addAccount() {
   currentAccounts.value.push({ name: "", username: "", password: "", state_file: "" });
 }
 
-function load() {
+function removeAccount(index: number) {
+  const row = currentAccounts.value[index];
+  if (!row) return;
+  currentAccounts.value.splice(index, 1);
+  if (currentEnv.value && row.name.trim() === currentEnv.value.auth.default) {
+    currentEnv.value.auth.default = accountNames.value[0] ?? "default";
+  }
+}
+
+async function load() {
   error.value = "";
-  return getQaConfig()
-    .then((res) => {
-      state.value = res;
-      if (!res.payload) {
-        form.value = null;
-        return;
-      }
-      form.value = res.payload;
-      form.value.renamed = {};
-      drafts.value = {};
-      const names = Object.keys(res.payload.envs);
-      for (const name of names) initDraft(name);
-      editing.value = names.includes(res.payload.active_env)
-        ? res.payload.active_env
-        : names[0] ?? "";
-      nameDraft.value = editing.value;
-      for (const w of res.payload.workers) ensureSaved(w.provider, w.model);
-      if (!res.payload.workers.length) addWorker();
-    })
-    .catch((e) => {
-      error.value = e instanceof Error ? e.message : String(e);
-    });
+  loading = true;
+  try {
+    const res = await getQaConfig();
+    state.value = res;
+    if (!res.payload) {
+      form.value = null;
+      return;
+    }
+    form.value = res.payload;
+    form.value.renamed = {};
+    drafts.value = {};
+    const names = Object.keys(res.payload.envs);
+    for (const name of names) initDraft(name);
+    editing.value = names.includes(res.payload.active_env)
+      ? res.payload.active_env
+      : names[0] ?? "";
+    nameDraft.value = editing.value;
+    tab.value = "conn";
+    for (const w of res.payload.workers) ensureSaved(w.provider, w.model);
+    if (!res.payload.workers.length) addWorker();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    await nextTick();
+    loading = false;
+    dirty.value = false;
+  }
 }
 
 function buildAccounts(rows: AccountRow[]): Record<string, AccountRow> {
@@ -628,6 +919,7 @@ async function save() {
     });
     state.value = saved;
     form.value.renamed = {};
+    dirty.value = false;
     snack.notify("已写入 qa.yaml", "success");
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -640,6 +932,38 @@ onMounted(load);
 </script>
 
 <style scoped>
+.qa-head {
+  position: sticky;
+  top: 56px;
+  z-index: 4;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  margin-bottom: 8px;
+  background: rgb(var(--v-theme-background));
+  border-bottom: 1px solid rgb(var(--v-theme-surface-variant));
+}
+
+@media (min-width: 960px) {
+  .env-rail {
+    position: sticky;
+    top: 140px;
+  }
+}
+
+@media (max-width: 599px) {
+  .qa-head {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .qa-head .qa-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
 .qa-raw {
   background: rgba(var(--v-theme-surface-variant), 0.5);
   border-radius: 4px;
