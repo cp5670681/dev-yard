@@ -59,6 +59,30 @@ export const ACTION_LABELS: Record<string, string> = {
   repo_add: "仓库 · clone",
 };
 
+export const QA_STATE_LABELS: Record<string, string> = {
+  pending: "待测试",
+  ready: "就绪",
+  running: "测试中",
+  passed: "通过",
+  failed: "失败",
+  blocked: "阻塞",
+  skipped: "跳过",
+};
+
+export const QA_STATE_COLOR: Record<string, string> = {
+  pending: "grey",
+  ready: "info",
+  running: "primary",
+  passed: "success",
+  failed: "error",
+  blocked: "warning",
+  skipped: "grey-darken-1",
+};
+
+export function qaStateColor(state: string) {
+  return QA_STATE_COLOR[state] || "grey";
+}
+
 export function phaseColor(phase: string) {
   return PHASE_COLOR[phase] || "grey";
 }

@@ -257,10 +257,16 @@
 
       <TicketBoard
         :tickets="detail.tickets"
+        :qa-cases="detail.qa?.cases"
+        :qa-progress="liveProgress"
+        :jira="jira"
+        :phase="detail.phase"
         @implement="(id) => confirmAction('implement', id)"
         @review="(id) => confirmAction('review', id)"
         @diff="(id) => openDiff(id)"
         @feedback="(ticket) => openReview(ticket)"
+        @preview-screenshot="(url) => preview = url"
+        @fill-bug="confirmAction('fill-test-report')"
       />
       <v-card v-if="detail.assets.length" class="mt-6" variant="outlined">
         <v-card-title>截图</v-card-title>
@@ -478,11 +484,11 @@
 
     <v-dialog v-model="previewOpen" max-width="960">
       <v-card v-if="preview">
-        <v-img :src="assetUrl(preview)" :alt="preview" />
+        <v-img :src="previewImgSrc(preview)" :alt="preview" />
         <v-card-actions>
-          <span class="text-caption px-2">{{ preview }}</span>
+          <span class="text-caption px-2 text-truncate">{{ preview }}</span>
           <v-spacer />
-          <v-btn :href="assetUrl(preview)" target="_blank" variant="text">新窗口</v-btn>
+          <v-btn :href="previewImgSrc(preview)" target="_blank" variant="text">新窗口</v-btn>
           <v-btn variant="text" @click="preview = ''">关闭</v-btn>
         </v-card-actions>
       </v-card>
@@ -702,6 +708,14 @@ async function load() {
 
 function assetUrl(name: string) {
   return `/r/${encodeURIComponent(jira.value)}/assets/${encodeURIComponent(name)}`;
+}
+
+function previewImgSrc(nameOrUrl: string) {
+  if (!nameOrUrl) return "";
+  if (nameOrUrl.startsWith("/") || nameOrUrl.startsWith("http")) {
+    return nameOrUrl;
+  }
+  return assetUrl(nameOrUrl);
 }
 
 async function copy(text: string, msg = "已复制路径") {

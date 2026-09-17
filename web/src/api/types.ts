@@ -112,6 +112,22 @@ export interface Step {
   current: boolean;
 }
 
+export interface QaCaseItem {
+  id: string;
+  title: string;
+  module?: string;
+  priority?: string;
+  repo?: string;
+  covers?: string[];
+  depends_on?: string[];
+  state: string;
+  model?: string;
+  reason?: string;
+  failure?: { step?: number; step_desc?: string; evidence?: string } | null;
+  screenshots?: string[];
+  run_id?: string;
+}
+
 export interface ReqDetail {
   jira: string;
   title: string | null;
@@ -152,9 +168,11 @@ export interface ReqDetail {
         blocked?: number;
         skipped?: number;
       };
+      cases?: QaRunCase[];
     };
     progress: QaProgress | null;
     incomplete_run?: { run_id?: string; pending?: number } | null;
+    cases?: QaCaseItem[];
   } | null;
 }
 

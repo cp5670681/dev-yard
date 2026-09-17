@@ -58,6 +58,7 @@ def latest_run_summary(qa: Path) -> dict[str, Any] | None:
         "run_id": top.get("run_id"),
         "env": top.get("env"),
         "summary": top.get("summary") or {},
+        "cases": top.get("cases") or [],
     }
 
 
@@ -77,14 +78,83 @@ def qa_detail_summary(root: Path, jira: str) -> dict[str, Any]:
         if qa.is_dir()
         else None
     )
+    latest_run = latest_run_summary(qa) if qa.is_dir() else None
+    case_payloads = list_case_payloads(qa) if qa.is_dir() else []
+
+    run_cases_map: dict[str, dict[str, Any]] = {}
+    if latest_run and isinstance(latest_run.get("cases"), list):
+        for rc in latest_run["cases"]:
+            if isinstance(rc, dict) and rc.get("case"):
+                run_cases_map[str(rc["case"])] = rc
+
+    prog_cases_map: dict[str, dict[str, Any]] = {}
+    if progress and isinstance(progress.get("cases"), list):
+        for pc in progress["cases"]:
+            if isinstance(pc, dict) and pc.get("id"):
+                prog_cases_map[str(pc["id"])] = pc
+
+    merged_cases: list[dict[str, Any]] = []
+    for cp in case_payloads:
+        cid = cp["id"]
+        prog = prog_cases_map.get(cid)
+        rc = run_cases_map.get(cid)
+
+        state = "pending"
+        model = str(cp.get("model") or "")
+        reason = ""
+        failure = None
+        screenshots: list[str] = []
+
+        if prog:
+            state = str(prog.get("state") or "pending")
+            model = str(prog.get("model") or "")
+            reason = str(prog.get("reason") or "")
+        elif rc:
+            state = str(rc.get("status") or "pending")
+            model = str(rc.get("model") or "")
+            reason = str(rc.get("reason") or "")
+            failure = rc.get("failure")
+            screenshots = list(rc.get("screenshots") or [])
+        elif not cp.get("depends_on"):
+            state = "ready"
+
+        run_id = (
+            str(progress.get("run_id"))
+            if progress and progress.get("run_id")
+            else (
+                str(latest_run.get("run_id"))
+                if latest_run and latest_run.get("run_id")
+                else ""
+            )
+        )
+
+        merged_cases.append(
+            {
+                "id": cid,
+                "title": cp.get("title") or cid,
+                "module": cp.get("module") or "",
+                "priority": cp.get("priority") or "P1",
+                "repo": cp.get("repo") or "",
+                "covers": cp.get("covers") or [],
+                "depends_on": cp.get("depends_on") or [],
+                "state": state,
+                "model": model,
+                "reason": reason,
+                "failure": failure,
+                "screenshots": screenshots,
+                "run_id": run_id,
+            }
+        )
+
     return {
         "has_cases": has_cases,
         "has_meta": has_meta,
         "envs": env_names,
         "active_env": active_env,
-        "latest_run": latest_run_summary(qa) if qa.is_dir() else None,
+        "latest_run": latest_run,
         "progress": progress,
         "incomplete_run": incomplete,
+        "cases": merged_cases,
     }
 
 

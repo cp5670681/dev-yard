@@ -80,6 +80,14 @@ def test_qa_api_has_cases_and_run(tmp_path: Path, git_src: Path, monkeypatch):
     assert detail["qa"]["progress"]["cases"][0]["state"] == "running"
     assert detail["qa"]["progress"]["pools"][0]["inflight"] == 1
     assert detail["qa"]["incomplete_run"]["run_id"] == "2026-09-16-153000"
+    assert len(detail["qa"]["cases"]) == 1
+    assert detail["qa"]["cases"][0]["id"] == "case-01"
+    assert detail["qa"]["cases"][0]["priority"] == "P0"
+    assert detail["qa"]["cases"][0]["repo"] == "backend"
+    assert detail["qa"]["cases"][0]["covers"] == ["D1"]
+    assert detail["qa"]["cases"][0]["state"] == "running"
+    assert detail["qa"]["cases"][0]["model"] == "grok-4"
+    assert detail["qa"]["cases"][0]["run_id"] == "2026-09-16-153000"
 
     png = client.get(
         "/r/QA-W1/qa/evidence/2026-09-16-153000/case-01/screenshots/step-01.png"
