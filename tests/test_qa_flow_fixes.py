@@ -14,6 +14,7 @@ from dev_yard.qa import (
     _tree_state,
     _write_skipped_result,
     discover_cases,
+    find_incomplete_run,
     write_context_md,
 )
 from dev_yard.qa_config import (
@@ -23,6 +24,7 @@ from dev_yard.qa_config import (
     load_qa_config,
     redact_qa_yaml,
     save_qa_config,
+    save_req_accounts,
 )
 from dev_yard.qa_report import map_qa_result
 from dev_yard.qa_schedule import CaseJob, PoolSlot, run_schedule
@@ -59,7 +61,7 @@ def test_case_id_traversal_rejected(tmp_path: Path):
 # --- #5 same-account serialization ----------------------------------------
 
 
-def test_same_account_cases_do_not_overlap():
+def test_same_account_cases_overlap_by_default():
     cases = [
         CaseJob(id="c1", title="a", repo="be", priority="P0", account="acct"),
         CaseJob(id="c2", title="b", repo="be", priority="P0", account="acct"),
@@ -79,11 +81,123 @@ def test_same_account_cases_do_not_overlap():
         return {"status": "passed"}
 
     run_schedule(cases, pools, run)
+    assert peak["acct"] == 2
+    assert all(c.state == "passed" for c in cases)
+
+
+def test_same_account_cases_serialize_when_enabled():
+    cases = [
+        CaseJob(id="c1", title="a", repo="be", priority="P0", account="acct"),
+        CaseJob(id="c2", title="b", repo="be", priority="P0", account="acct"),
+    ]
+    pools = [PoolSlot(id="p", provider="rcc", model="m", concurrency=2, priority=1)]
+    guard = threading.Lock()
+    live = {"acct": 0}
+    peak = {"acct": 0}
+
+    def run(job, slot):
+        with guard:
+            live["acct"] += 1
+            peak["acct"] = max(peak["acct"], live["acct"])
+        time.sleep(0.05)
+        with guard:
+            live["acct"] -= 1
+        return {"status": "passed"}
+
+    run_schedule(cases, pools, run, serialize_accounts=True)
     assert peak["acct"] == 1
     assert all(c.state == "passed" for c in cases)
 
 
-# --- #6 run lock / atomic run dir -----------------------------------------
+# --- #1 requirement-scoped login state ------------------------------------
+
+
+def test_req_accounts_state_file_is_namespaced_by_jira(tmp_path: Path):
+    init_yard(tmp_path)
+    (tmp_path / "repos.yaml").write_text(
+        "repos: {}\npi:\n  provider: rcc\n  model: grok-4\n", encoding="utf-8"
+    )
+    (tmp_path / "qa.yaml").write_text(
+        "active_env: local\nenvs:\n  local:\n    base_url: http://127.0.0.1:8080\n",
+        encoding="utf-8",
+    )
+    save_req_accounts(
+        tmp_path,
+        "J-1",
+        "local",
+        "admin",
+        {"admin": QaAccount("admin", username="u", password="p")},
+    )
+    save_req_accounts(
+        tmp_path,
+        "J-2",
+        "local",
+        "admin",
+        {"admin": QaAccount("admin", username="u", password="p")},
+    )
+    a = load_qa_config(tmp_path, jira="J-1").env.accounts["admin"].state_file
+    b = load_qa_config(tmp_path, jira="J-2").env.accounts["admin"].state_file
+    assert a == ".yard-qa/requirements/J-1/auth-local-admin.json"
+    assert b == ".yard-qa/requirements/J-2/auth-local-admin.json"
+    assert a != b
+
+
+# --- #3 resume only matches the right env / case set ----------------------
+
+
+def _run_with_progress(tmp_path: Path, env: str, ids: list[str]) -> Path:
+    run = tmp_path / "qa" / "evidence" / "2026-01-01-000000"
+    run.mkdir(parents=True)
+    cases = "".join(f"  - {{id: {i}, state: running}}\n" for i in ids)
+    (run / "progress.yaml").write_text(
+        f"run_id: 2026-01-01-000000\nenv: {env}\ncases:\n{cases}", encoding="utf-8"
+    )
+    return run
+
+
+def test_find_incomplete_run_checks_env(tmp_path: Path):
+    qa = tmp_path / "qa"
+    _run_with_progress(tmp_path, "test", ["c1"])
+    assert find_incomplete_run(qa, {"c1"}, "local") is None
+    assert find_incomplete_run(qa, {"c1"}, "test") is not None
+
+
+def test_find_incomplete_run_checks_case_set(tmp_path: Path):
+    qa = tmp_path / "qa"
+    _run_with_progress(tmp_path, "local", ["c1"])
+    assert find_incomplete_run(qa, {"c1", "c2"}, "local") is None
+    assert find_incomplete_run(qa, {"c1"}, "local") is not None
+
+
+def test_find_incomplete_run_none_when_all_terminal(tmp_path: Path):
+    qa = tmp_path / "qa"
+    run = _run_with_progress(tmp_path, "local", ["c1"])
+    (run / "progress.yaml").write_text(
+        "run_id: 2026-01-01-000000\nenv: local\n"
+        "cases:\n  - {id: c1, state: passed}\n",
+        encoding="utf-8",
+    )
+    (run / "result.yaml").write_text(
+        "run_id: 2026-01-01-000000\nsummary: {total: 1, passed: 1}\n",
+        encoding="utf-8",
+    )
+    assert find_incomplete_run(qa, {"c1"}, "local") is None
+
+
+# --- #5 script revert must not delete someone else's file -----------------
+
+
+def test_revert_new_paths_skips_files_outside_script_window(tmp_path: Path):
+    from dev_yard.qa_exec import _created_in_window
+
+    p = tmp_path / "old.txt"
+    p.write_text("x", encoding="utf-8")
+    now = time.time()
+    assert _created_in_window(p, (now - 100, now - 50)) is False
+    assert _created_in_window(p, (now - 100, now)) is True
+
+
+# --- #8 run lock / atomic run dir -----------------------------------------
 
 
 def test_claim_run_dir_is_unique(tmp_path: Path):
@@ -250,7 +364,9 @@ def test_read_case_result_surfaces_assertions(tmp_path: Path):
 
     p = tmp_path / "result.yaml"
     p.write_text(
-        "case: c1\nstatus: failed\nassertions:\n  - type: ui\n    status: failed\n",
+        "case: c1\nstatus: failed\n"
+        "assertions:\n  - type: ui\n    expected: a\n    actual: b\n    status: failed\n"
+        "failure: {step: 1, step_desc: boom, evidence: x.png}\n",
         encoding="utf-8",
     )
     got = _read_case_result(

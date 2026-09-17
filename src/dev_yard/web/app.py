@@ -140,6 +140,7 @@ class ActionIn(BaseModel):
     repos: list[str] | None = None
     strategy: str = "ff-only"
     env: str = ""
+    resume: bool | None = None
 
 
 class AssistantSessionIn(BaseModel):
@@ -779,6 +780,7 @@ def create_app(
             "repos": body.repos,
             "strategy": body.strategy,
             "env": body.env,
+            "resume": body.resume,
         }
         try:
             submitted = _submit_action(action, jira, ids, extra)

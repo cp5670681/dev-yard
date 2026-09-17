@@ -340,6 +340,14 @@
               hide-details
               density="comfortable"
             />
+            <v-switch
+              v-model="form.serialize_accounts"
+              label="同账号用例串行（登录会互踢时再开）"
+              color="primary"
+              hide-details
+              density="comfortable"
+              class="mt-2"
+            />
             <v-alert
               v-if="totalConcurrency > 1"
               type="info"
@@ -922,6 +930,7 @@ async function save() {
         priority: intOr(w.priority, 100),
       })),
       envs,
+      serialize_accounts: Boolean(form.value.serialize_accounts),
       renamed: form.value.renamed ?? {},
     });
     state.value = saved;

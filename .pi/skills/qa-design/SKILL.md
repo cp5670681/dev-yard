@@ -25,12 +25,13 @@ description: >
 1. 每个 worktree 做 `git diff <default_base>...HEAD`。空 diff：停止并说明，不要编改动。
 2. 改动点 D1..Dn 写入 `qa/meta.yaml`。`repo` 必须是 `repos.yaml` 别名（context 地图里的 alias），不要写 frontend/backend 泛称。`role` 只作阅读提示。
 3. **增量**更新 `meta.yaml`：改 `changes` / `base_branches` / `feature_branches` / `module` / `requirement`；保留已有 `routes:`，不要整文件覆盖。
-4. 每个 D 至少 1 条用例；另加 1 条正常流。写到 `qa/cases/<module>/case-NN.md`。
-5. 步骤用业务语言。按钮/文案必须来自 worktree 代码，不来自想象。
+4. 覆盖：每个 D 至少 1 条 + 1 条正常流 + UI **可达**的后端错误分支（无权限/重复/超限）。控件 `disabled`/`maxlength`/无清空导致点不到的拦截，不要写成用例。
+5. 步骤用业务语言，不要写 selector、不要写 `bin/rails runner` / usql。按钮/文案必须来自 worktree 代码，不来自想象。
 6. 预期写需求口径。实现与 SPEC 不符时仍写需求值，并备注「需求偏差」。
 7. 跨仓改动拆成多条 case，或 `covers` 只含一个主仓。每条 frontmatter 必有 `repo:`（yard alias）。
 8. `depends_on` 仅当共享可变数据或业务先后时写；无依赖省略，以便并发领取。
 9. 需要非默认账号的用例，在 frontmatter 写 `account: <名字>`；名字必须来自 `context.md` 的 Accounts 列表（宿主跑前校验，未配置会直接报错让你先跑 `dev-yard req accounts <JIRA>`）。不写就用 `account.default`。
+10. 造数优先 `.sql`（usql 打 `qa.yaml` 的 db.url）。非 SQL 脚本由宿主在 freeze worktree 里跑 runner，并注入 `DATABASE_URL`；脚本不要往 worktree 写文件（ID 用 stdout 打出）。
 
 ## meta.yaml
 
@@ -75,6 +76,6 @@ data: { setup: setup.sql, cleanup: cleanup.sql }
 - DB: <预期含 DB 时>
 ```
 
-无 DB 则去掉 `data` 与 DB 预期。造数脚本与 case 同目录，幂等。
+无 DB 则去掉 `data` 与 DB 预期。造数脚本与 case 同目录，幂等。不要在步骤里写执行器命令。
 
 写完后停。不要跑浏览器、不要改 STATUS.yaml。

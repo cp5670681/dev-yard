@@ -114,6 +114,7 @@ export function runAction(
     repos?: string[];
     strategy?: string;
     env?: string;
+    resume?: boolean | null;
   } = {},
 ) {
   return api<JobsOut>(

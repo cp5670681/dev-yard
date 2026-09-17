@@ -12,39 +12,37 @@ description: >
 ## 必读
 
 - prompt 里的那条 case 全文
-- `reqs/<JIRA>/qa/context.md`（本次 run 固定的 `env`、base_url、worktree、state_file、db 是否已配）
-- 工作区根 `qa.yaml` 的 `envs.<ENV>`（登录账号密码、`db.url`、`script.runner`；明文存放，文件已 gitignore）——按 context.md 的 `env` 取，密码不要写进 result/证据
-- `reqs/<JIRA>/qa/meta.yaml` 的 `routes`（宿主也把它们拼进 context.md 的 `## Routes`，优先用那份）
-- 前端路由代码（需要时）
+- `reqs/<JIRA>/qa/context.md`（本次 run 固定的 `env`、base_url、worktree、state_file）
+- `reqs/<JIRA>/qa/meta.yaml` 的 `routes`（宿主也拼进 context.md 的 `## Routes`）
+- 若 prompt 给出 `.replay.sh`：先回放，失败再对该步探索
 
-页面 URL = `context.md` 的 `base_url` + 已知路由。不要猜 host。
+页面 URL = `context.md` 的 `base_url` + 已知路由。不要猜 host。hash 路由必须带 `#/`（如 `http://host/#/works/...`）。
 
-`context.md` 的 `env` 是本次 run 唯一允许的环境；即使文件里列了其它 `available envs`，也不要切换或用它们的地址。
+造数 / 清理由**宿主**执行。不要再跑 `data.setup` / `data.cleanup`，不要对 freeze worktree 跑 `bin/rails runner`。
 
 ## 禁止
 
 - 改任何 worktree 文件（含测试、配置、源码）
 - git checkout / commit / push / switch；部署
 - 为变绿改 case 预期或 setup
-- 动别人的 playwright 会话；并发时 `state-save`
+- 动别人的 playwright 会话；`state-save`（宿主已登录，会话只读加载）
 - 写 `reqs/` 下 `qa/` 以外的路径
 
-可写路径：`reqs/<JIRA>/qa/**`。
+可写路径：`reqs/<JIRA>/qa/**` 以及同目录 `.replay.sh`。
 
 ## 做法
 
-1. 登录态：用 prompt 的 `Account`（无则用 context.md 的 `account.default`）在 context.md 的 Accounts 列表里找它的 `state_file`，先 `playwright-cli state-load <state_file>`；文件不存在或加载后仍是登录页 → 读该账号 username/password（优先 `.yard-qa/requirements/<JIRA>/accounts.yaml` 的 `envs.<ENV>.auth.accounts.<name>`，没有则 `qa.yaml` 同路径），在 base_url 登录页填表提交（SSO 跳转则填完回跳；非必填的多因子字段留空），成功后 `state-save` 到该 state_file（仅当 context.md 的 `concurrency` 为 1）。并发（>1）且 session 缺失时宿主已在跑前报错；若运行中仍失败 → 该 case `blocked`，reason 写清账号与原因，不要 state-save。
-2. 按 case `data.setup` 造数：`.sql` 走 `usql "<qa.yaml envs.<ENV>.db.url>"`（仅当 context 标明 db 已配）；其它脚本走 `script.runner`。未配则不要跑 usql。
-3. playwright 会话 `-s=qap-<case-id>`。无头默认；prompt 的 `headed` 为准。
-4. 按步骤操作。selector 可按语义重定位一次；业务路径不可改。
-5. 三层断言：UI → 网络（有提交时）→ DB（预期含 DB 时）。下层为准。
-6. 四态：`passed | failed | blocked | skipped`。登录失败 / 5xx / DB 连不上 = **blocked**，不是产品失败。
-7. 失败只取证。截图写到 prompt 给出的 `screenshots/`（绝对路径记进 result）。
-8. 写该 case 的 `result.yaml`。不要写 run 级 `evidence/<run_id>/result.yaml`（宿主汇总）。
-9. 按 `data.cleanup` 清理。
-10. 命令、日志、result、证据里出现的 DSN 与密码一律脱敏为 `***`，不要原样回显。
+1. 登录态：`playwright-cli state-load <state_file>`，会话 `-s=qap-<case-id>`。加载后仍是登录页 → 该 case `blocked`（reason 写账号），不要自己填密码、不要 state-save。
+2. 无头默认；prompt 的 `headed` 为准。截图一律用**绝对路径**写到 prompt 给出的 `screenshots/`。
+3. **回放**：有 `.replay.sh` 则逐条执行（命令间不主动 snapshot）。某步元素找不到 → 对该步重新 snapshot 按语义定位，并用 `playwright-cli --raw generate-locator` 修好脚本里那一行。goto 的 host 换成本次 `base_url`。
+4. **探索**（无回放）：每步 snapshot → 按语义操作 → 失败重试 1 次 → 把稳定的 getByRole/getByLabel 命令追加进 `.replay.sh`。文案与用例不一致仍完成操作，但 ui 断言判 failed（文案漂移）。
+5. 三层断言：UI → 网络（有提交时）→ DB（预期含 DB 时）。下层为准。HTTP 2xx ≠ 成功，必看 response-body。
+6. 瞬态 toast：操作后立即 snapshot；抓不到则断言「关键请求未发出 + 页面未变」。
+7. 四态：`passed | failed | blocked | skipped`。登录失败 / 5xx / DB 连不上 = **blocked**。
+8. 失败只取证。写该 case 的 `result.yaml`。不要写 run 级 `evidence/<run_id>/result.yaml`。
+9. 命令、日志、result 里的 DSN 与密码脱敏为 `***`。
 
-## result.yaml
+## result.yaml（字段必须齐全）
 
 ```yaml
 case: case-01
@@ -56,9 +54,9 @@ provider: <池 provider>
 status: passed
 reason: ""
 assertions:
-  - type: ui
-    expected: ...
-    actual: ...
+  - type: ui            # ui | net | db
+    expected: "..."
+    actual: "..."
     status: passed
 failure:
   step: 3
@@ -66,4 +64,15 @@ failure:
   evidence: screenshots/step-03.png
 ```
 
-`failure` 仅 `failed` 时写。`blocked`/`skipped` 把原因写在 `reason`。
+`failure` 仅 `failed` 时写。每条 assertion 必须有 `type`、`expected`、`actual`、`status`。缺字段宿主会把本 case 标 blocked，不当 passed。
+
+## 陷阱
+
+| 陷阱 | 对策 |
+|---|---|
+| HTTP 2xx ≠ 成功 | 看 response-body |
+| 异步未返回就断言 | 先查 requests |
+| hash 路由拼错 | 用 meta.yaml `routes:`；带 `#/` |
+| 截图落仓库根 | `--filename` 绝对路径 |
+| ref 过期 | 重新 snapshot，不要写死 ref |
+| 组件状态残留 | 每条 case 先导航到目标页 |

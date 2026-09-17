@@ -50,6 +50,8 @@ class CaseJob:
     covers: list[str] = field(default_factory=list)
     module: str = ""
     account: str = ""
+    setup: str = ""
+    cleanup: str = ""
     state: str = "pending"
     pool: str | None = None
     model: str | None = None
@@ -126,7 +128,7 @@ def pick_case(cases: list[CaseJob], busy_accounts: set[str] | None = None) -> Ca
     ready = [
         c
         for c in cases
-        if c.state == "ready" and not (c.account and c.account in busy)
+        if c.state == "ready" and not (busy and c.account and c.account in busy)
     ]
     if not ready:
         return None
@@ -228,6 +230,7 @@ def run_schedule(
     pools: list[PoolSlot],
     run_case: RunCase,
     on_progress: ProgressCb | None = None,
+    serialize_accounts: bool = False,
 ) -> None:
     validate_dag(cases)
     refresh_ready(cases)
@@ -248,7 +251,9 @@ def run_schedule(
             if not breaker:
                 while True:
                     slot = pick_pool(pools)
-                    job = pick_case(cases, inflight_accounts)
+                    job = pick_case(
+                        cases, inflight_accounts if serialize_accounts else None
+                    )
                     if slot is None or job is None:
                         break
                     job.state = "running"
@@ -257,9 +262,8 @@ def run_schedule(
                     job.provider = slot.provider
                     job.started_at = now_iso()
                     slot.inflight += 1
-                    if job.account:
-                        # Cases on one account must not run at once: they share
-                        # the login state and would stomp each other.
+                    if serialize_accounts and job.account:
+                        # Opt-in: some apps kick other sessions on the same account.
                         inflight_accounts.add(job.account)
                     ping()
                     fut = pool.submit(_safe_run, run_case, job, slot)
@@ -270,7 +274,7 @@ def run_schedule(
             for fut in done:
                 job, slot = inflight.pop(fut)
                 slot.inflight = max(0, slot.inflight - 1)
-                if job.account:
+                if serialize_accounts and job.account:
                     inflight_accounts.discard(job.account)
                 result = fut.result()
                 status = normalize_status(result.get("status"))

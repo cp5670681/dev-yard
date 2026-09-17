@@ -24,7 +24,9 @@ class QaConfigUnreadable(TestRejected):
 
 # env keys the form owns; anything else in that env is carried through a save
 _MANAGED_ENV_KEYS = frozenset({"base_url", "auth", "db", "script", "notes"})
-_MANAGED_TOP_KEYS = frozenset({"active_env", "browser", "workers", "envs"})
+_MANAGED_TOP_KEYS = frozenset(
+    {"active_env", "browser", "workers", "envs", "serialize_accounts"}
+)
 _MANAGED_BROWSER_KEYS = frozenset({"channel", "headed"})
 _MANAGED_WORKER_KEYS = frozenset(
     {"id", "provider", "model", "concurrency", "priority"}
@@ -109,6 +111,7 @@ class QaConfig:
     browser: QaBrowser
     workers: tuple[QaWorker, ...]
     env_names: tuple[str, ...] = ()
+    serialize_accounts: bool = False
 
     @property
     def total_concurrency(self) -> int:
@@ -119,6 +122,47 @@ class QaConfig:
         if self.total_concurrency > 1:
             return False
         return self.browser.headed
+
+
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"true", "yes", "1", "on"}
+
+
+def _slug(value: str, fallback: str) -> str:
+    out = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in (value or ""))
+    return out or fallback
+
+
+def default_state_file(env: str, account: str, jira: str | None = None) -> str:
+    """Where a login state lives when the account does not name a file.
+
+    Requirement-scoped accounts (`.yard-qa/requirements/<JIRA>/accounts.yaml`)
+    are namespaced by JIRA so two requirements sharing an env+account name do
+    not stomp each other's session (their base_urls may be different apps).
+    """
+    env_s = _slug(env, "env")
+    acct = _slug(account, "default")
+    if jira:
+        return f".yard-qa/requirements/{_slug(jira, 'req')}/auth-{env_s}-{acct}.json"
+    return f".yard-qa/auth-{env_s}-{acct}.json"
+
+
+def _with_state_files(
+    env: str, accounts: dict[str, QaAccount], jira: str | None = None
+) -> dict[str, QaAccount]:
+    filled: dict[str, QaAccount] = {}
+    for acct_name, acct in accounts.items():
+        state = acct.state_file or default_state_file(env, acct_name, jira)
+        filled[acct_name] = (
+            acct if acct.state_file == state else replace(acct, state_file=state)
+        )
+    return filled
 
 
 def _blank(value: Any) -> str:
@@ -173,11 +217,12 @@ def _parse_env(name: str, raw: Any) -> QaEnv:
     if notes_raw and not isinstance(notes_raw, list):
         raise TestRejected("qa.yaml notes must be a list")
     default, accounts = _parse_auth(raw.get("auth"))
+    filled = _with_state_files(name, accounts)
     return QaEnv(
         name=name,
         base_url=base_url,
         auth_default=default,
-        accounts=accounts,
+        accounts=filled,
         db_url=_blank(db.get("url")),
         script_runner=_blank(script.get("runner")),
         notes=tuple(str(n) for n in notes_raw),
@@ -291,6 +336,7 @@ def _parse_config(root: Path, data: dict[str, Any], env: str | None = None) -> Q
         browser=browser,
         workers=workers,
         env_names=tuple(_env_names(envs)) or (env_name,),
+        serialize_accounts=_as_bool(data.get("serialize_accounts"), False),
     )
 
 
@@ -315,7 +361,8 @@ def load_qa_config(
     if overlay is None:
         return cfg
     default, accounts = overlay
-    return replace(cfg, env=replace(cfg.env, auth_default=default, accounts=accounts))
+    filled = _with_state_files(cfg.active_env, accounts, jira)
+    return replace(cfg, env=replace(cfg.env, auth_default=default, accounts=filled))
 
 
 def load_req_accounts(
@@ -651,6 +698,7 @@ def default_qa_payload(root: Path) -> dict[str, Any]:
         "workers": _workers_payload(root, None),
         "envs": {"local": _env_payload(None)},
         "env_names": ["local"],
+        "serialize_accounts": False,
     }
 
 
@@ -673,6 +721,7 @@ def qa_payload(root: Path) -> dict[str, Any]:
             "workers": workers,
             "envs": {"local": _env_payload(None)},
             "env_names": ["local"],
+            "serialize_accounts": _as_bool(data.get("serialize_accounts"), False),
         }
     names = _env_names(envs)
     active = _default_env_name(data, envs)
@@ -682,6 +731,7 @@ def qa_payload(root: Path) -> dict[str, Any]:
         "workers": workers,
         "envs": {name: _env_payload(envs.get(name)) for name in names},
         "env_names": names,
+        "serialize_accounts": _as_bool(data.get("serialize_accounts"), False),
     }
 
 
@@ -760,6 +810,9 @@ def save_qa_config(root: Path, payload: Any) -> None:
     if workers:
         out["workers"] = workers
     out["envs"] = merged
+    serialize = _as_bool(payload.get("serialize_accounts"), False)
+    if serialize:
+        out["serialize_accounts"] = True
     _parse_workers(root, out.get("workers"))
     path = paths.qa_yaml(root)
     _assert_secret_ignored(root, path)

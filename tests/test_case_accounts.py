@@ -121,22 +121,13 @@ def test_run_lock_release_keeps_another_holders_lock(tmp_path: Path):
     assert lock.exists()
 
 
-def test_preload_skips_missing_state_with_creds_when_sequential(tmp_path: Path):
-    cfg = _cfg(
-        {
-            "buyer": QaAccount(
-                "buyer",
-                username="buyer01",
-                password="pw",
-                state_file=".yard-qa/missing.json",
-            )
-        },
-        default="buyer",
-    )
-    _preload_auth(tmp_path, cfg, ["buyer"])
+def test_preload_logs_in_when_state_missing_even_if_concurrent(
+    tmp_path: Path, monkeypatch
+):
+    import subprocess
 
+    from dev_yard import qa_exec
 
-def test_preload_rejects_missing_state_with_creds_when_concurrent(tmp_path: Path):
     cfg = _cfg(
         {
             "buyer": QaAccount(
@@ -149,22 +140,31 @@ def test_preload_rejects_missing_state_with_creds_when_concurrent(tmp_path: Path
         default="buyer",
         concurrency=2,
     )
-    with pytest.raises(TestRejected, match="concurrency"):
-        _preload_auth(tmp_path, cfg, ["buyer"])
+    monkeypatch.setattr(qa_exec.shutil, "which", lambda _: "/bin/true")
+
+    def fake_run(cmd, **kwargs):
+        if "state-save" in cmd:
+            dest = Path(cmd[-1])
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text("{}", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(qa_exec.subprocess, "run", fake_run)
+    _preload_auth(tmp_path, cfg, ["buyer"])
+    assert (tmp_path / ".yard-qa" / "missing.json").is_file()
 
 
-def test_preload_rejects_missing_state_without_creds(tmp_path: Path):
+def test_preload_reports_missing_state_without_creds(tmp_path: Path):
     cfg = _cfg(
         {"buyer": QaAccount("buyer", state_file=".yard-qa/missing.json")},
         default="buyer",
     )
-    with pytest.raises(TestRejected, match="missing auth state_file"):
-        _preload_auth(tmp_path, cfg, ["buyer"])
+    failures = _preload_auth(tmp_path, cfg, ["buyer"])
+    assert "buyer" in failures
+    assert "missing auth state_file" in failures["buyer"]
 
 
 def test_preload_loads_every_used_account(tmp_path: Path, monkeypatch):
-    from dev_yard import qa as qa_mod
-
     cfg = _cfg(
         {
             "admin": QaAccount("admin", state_file=".yard-qa/a.json"),
@@ -182,11 +182,13 @@ def test_preload_loads_every_used_account(tmp_path: Path, monkeypatch):
         stderr = ""
         stdout = ""
 
-    monkeypatch.setattr(qa_mod.shutil, "which", lambda _: "/bin/true")
+    monkeypatch.setattr("dev_yard.qa_exec.shutil.which", lambda _: "/bin/true")
     monkeypatch.setattr(
-        qa_mod.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or _R()
+        "dev_yard.qa_exec.subprocess.run",
+        lambda cmd, **kw: calls.append(cmd) or _R(),
     )
     _preload_auth(tmp_path, cfg, ["admin", "buyer"])
-    assert len(calls) == 2
-    assert "a.json" in " ".join(calls[0])
-    assert "b.json" in " ".join(calls[1])
+    joined = " ".join(" ".join(c) for c in calls)
+    assert "a.json" in joined
+    assert "b.json" in joined
+    assert sum(1 for c in calls if "state-load" in c) == 2

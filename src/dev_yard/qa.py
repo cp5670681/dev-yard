@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import codecs
 import hashlib
+import json
 import os
 import re
-import shutil
-import subprocess
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 from typing import Any, Callable
 
 import yaml
@@ -16,11 +16,19 @@ import yaml
 from dev_yard import gitops, paths, status as st
 from dev_yard.config import load_repos
 from dev_yard.qa_config import QaConfig, TestRejected, load_qa_config, redact_url
+from dev_yard.qa_exec import (
+    ensure_auth,
+    normalize_case_result,
+    replay_path,
+    run_case_script,
+)
 from dev_yard.qa_report import map_qa_result
 from dev_yard.qa_schedule import (
+    TERMINAL,
     CaseJob,
     PoolSlot,
     normalize_status,
+    now_iso,
     progress_line,
     progress_payload,
     run_schedule,
@@ -118,17 +126,11 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
     lines += [
         "",
         "A case frontmatter `account:` picks one of the above; no `account` uses "
-        "the default. Load that account's state_file before the case steps "
-        "(the host does not log in for you).",
-        "Passwords are not listed here. Read them from the requirement accounts "
-        f"file `.yard-qa/requirements/{jira}/accounts.yaml` (preferred when this "
-        f"requirement has one), else `qa.yaml envs.{cfg.active_env}.auth.accounts.<name>`.",
-        "If a state_file is missing or not logged in, open `base_url`, log in with "
-        "that account's username/password, then `state-save` to state_file "
-        "(only when this run is sequential).",
-        "Never copy a password into result.yaml, evidence, or this context.md; "
-        "redact DSNs and passwords as `***` in commands and evidence.",
-        "Do not `state-save` while more than one case is in flight.",
+        "the default. Load that account's state_file before the case steps. "
+        "The host already logged in and saved the session.",
+        "Passwords are not listed here. Never copy a password into result.yaml "
+        "or evidence; redact DSNs and passwords as `***`.",
+        "Do not `state-save` (sessions are shared read-only across concurrent cases).",
         "",
         "## Notes",
         "",
@@ -193,6 +195,7 @@ def discover_cases(qa: Path) -> list[CaseJob]:
         elif not isinstance(covers, list):
             covers = []
         module = path.parent.name
+        data = meta.get("data") if isinstance(meta.get("data"), dict) else {}
         out.append(
             CaseJob(
                 id=cid,
@@ -205,6 +208,8 @@ def discover_cases(qa: Path) -> list[CaseJob]:
                 covers=[str(c).strip() for c in covers if str(c).strip()],
                 module=module,
                 account=str(meta.get("account") or "").strip(),
+                setup=str(data.get("setup") or "").strip(),
+                cleanup=str(data.get("cleanup") or "").strip(),
             )
         )
     return out
@@ -434,51 +439,9 @@ def _preload_auth(
     cfg: QaConfig,
     names: list[str] | None = None,
     on_log: LogFn | None = None,
-) -> None:
-    env = cfg.env
-    if names is None:
-        names = [env.auth_default] if env.auth_default else []
-    binary = shutil.which("playwright-cli")
-    for name in names:
-        acct = env.accounts.get(name)
-        if acct is None or not acct.state_file:
-            continue
-        has_creds = bool(acct.username and acct.password)
-        state = Path(acct.state_file)
-        if not state.is_absolute():
-            state = root / state
-        if not state.is_file():
-            if has_creds and cfg.total_concurrency <= 1:
-                # Sequential: the case agent logs in and state-saves.
-                continue
-            if has_creds:
-                raise TestRejected(
-                    f"account {name!r} has no saved session at {acct.state_file!r} "
-                    "and concurrency > 1; run once sequentially first to log in"
-                )
-            raise TestRejected(
-                f"missing auth state_file {acct.state_file!r} for account {name!r}; "
-                "log in once and playwright-cli state-save, or put "
-                "username/password in qa.yaml"
-            )
-        if not binary:
-            raise TestRejected("playwright-cli not found; cannot load auth state")
-        # Validation-only session: cases use their own `-s=qap-<id>` and load
-        # this file themselves, so preloading here just proves it is usable.
-        cmd = [
-            binary,
-            "--browser",
-            cfg.browser.channel,
-            "-s=qap-preload",
-            "state-load",
-            str(state),
-        ]
-        if on_log is not None:
-            on_log(f"$ {' '.join(cmd)}")
-        r = subprocess.run(cmd, cwd=root, capture_output=True, text=True)
-        if r.returncode != 0:
-            err = (r.stderr or r.stdout or "").strip() or str(r.returncode)
-            raise TestRejected(f"auth state-load failed for account {name!r}: {err}")
+) -> dict[str, str]:
+    """Ensure sessions exist; returns {account: error} for the ones that failed."""
+    return ensure_auth(root, cfg, names, on_log)
 
 
 def _porcelain_entry(line: str) -> tuple[str, str] | None:
@@ -522,7 +485,10 @@ def _duties(kind: str, jira: str) -> str:
         "Do not git checkout, commit, push, switch, or deploy.\n"
         "Do not spawn other cases. Do not change case expected values to go green.\n"
         "URLs come from context.md base_url + Routes, else frontend route code. "
-        "Do not guess hosts."
+        "Do not guess hosts. Hash routers need `#/` in the path.\n"
+        "Host already ran data.setup if the case has one; do not re-run it. "
+        "Host will run cleanup after you finish.\n"
+        "Assertions in result.yaml must use type (ui|net|db) plus expected and actual."
     )
 
 
@@ -543,9 +509,19 @@ def _run_prompt(root: Path, jira: str, cfg: QaConfig, job: CaseJob, run_id: str)
     if acct:
         account_line += (
             f"  state_file: {acct.state_file or '(none)'}"
-            "  (log in with its username/password from the requirement accounts "
-            "file or qa.yaml if needed)"
+            "  (host already logged in; load this state_file, do not state-save)"
         )
+    replay = replay_path(job)
+    replay_line = (
+        f"Replay script (run these UI commands; on locator miss re-explore that step "
+        f"and patch the file): `{replay}`\n"
+        if replay
+        else "No replay script yet. Explore with snapshot, then write semantic "
+        f"locator commands to `{Path(job.path).with_suffix('.replay.sh')}` "
+        "if the case path is known.\n"
+        if job.path
+        else ""
+    )
     extra = (
         _duties("run", jira)
         + "\n\n"
@@ -556,8 +532,13 @@ def _run_prompt(root: Path, jira: str, cfg: QaConfig, job: CaseJob, run_id: str)
         + f"headed: {headed}\n"
         + account_line
         + "\n"
-        + f"Write case result to `{evidence / 'result.yaml'}` "
+        + replay_line
+        + "HTTP 2xx is not success — read response bodies. "
+        "Toast assertions: snapshot immediately, else assert the request was not sent.\n"
+        "Screenshots: absolute paths under the screenshots dir below.\n"
+        f"Write case result to `{evidence / 'result.yaml'}` "
         + f"and screenshots to `{evidence / 'screenshots'}`.\n"
+        + "result.yaml assertions: each item needs type (ui|net|db), expected, actual, status.\n"
         + "This invocation runs only the case below.\n\n"
         + f"# Case {job.id}\n\n"
         + (Path(job.path).read_text(encoding="utf-8") if job.path else job.body)
@@ -593,7 +574,9 @@ def _write_progress(
     return payload
 
 
-def _read_case_result(path: Path, job: CaseJob, slot: PoolSlot) -> dict[str, Any]:
+def _read_case_result(
+    path: Path, job: CaseJob, slot: PoolSlot, *, strict: bool = True
+) -> dict[str, Any]:
     if not path.is_file():
         return {
             "status": "blocked",
@@ -620,20 +603,37 @@ def _read_case_result(path: Path, job: CaseJob, slot: PoolSlot) -> dict[str, Any
             "model": slot.model,
             "provider": slot.provider,
         }
-    status = normalize_status(data.get("status"))
-    assertions = data.get("assertions")
-    return {
-        "status": status,
-        "reason": str(data.get("reason") or ""),
-        "repo": str(data.get("repo") or job.repo),
-        "title": str(data.get("title") or job.title),
-        "covers": data.get("covers") or job.covers,
-        "model": str(data.get("model") or slot.model or ""),
-        "provider": str(data.get("provider") or slot.provider or ""),
-        "failure": data.get("failure") if isinstance(data.get("failure"), dict) else None,
-        "assertions": assertions if isinstance(assertions, list) else [],
-        "raw": data,
-    }
+    cleaned = normalize_case_result(
+        data, job, require_assertions=strict
+    )
+    if cleaned is None:
+        if not strict:
+            return {
+                "status": normalize_status(data.get("status")),
+                "reason": str(data.get("reason") or ""),
+                "repo": str(data.get("repo") or job.repo),
+                "title": str(data.get("title") or job.title),
+                "covers": data.get("covers") or job.covers,
+                "model": str(data.get("model") or slot.model or ""),
+                "provider": str(data.get("provider") or slot.provider or ""),
+                "failure": data.get("failure")
+                if isinstance(data.get("failure"), dict)
+                else None,
+                "assertions": data.get("assertions")
+                if isinstance(data.get("assertions"), list)
+                else [],
+                "raw": data,
+            }
+        return {
+            "status": "blocked",
+            "reason": "malformed result.yaml: assertions need type/expected/actual",
+            "repo": job.repo,
+            "model": slot.model,
+            "provider": slot.provider,
+        }
+    cleaned["model"] = str(data.get("model") or slot.model or "")
+    cleaned["provider"] = str(data.get("provider") or slot.provider or "")
+    return cleaned
 
 
 def _write_skipped_result(path: Path, job: CaseJob) -> None:
@@ -663,6 +663,180 @@ def _summarize(cases: list[CaseJob]) -> dict[str, int]:
     return counts
 
 
+def _progress_doc(run_dir: Path) -> dict[str, Any] | None:
+    path = run_dir / "progress.yaml"
+    if not path.is_file():
+        return None
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def find_incomplete_run(
+    qa: Path,
+    case_ids: set[str] | None = None,
+    env: str | None = None,
+) -> tuple[str, Path] | None:
+    """Latest evidence dir that still has work left, or None.
+
+    A run only counts when it belongs to `env` and was produced for the same
+    case set, so switching env or redesigning cases never resumes a stale run.
+    """
+    evidence = qa / "evidence"
+    if not evidence.is_dir():
+        return None
+    dirs = sorted((p for p in evidence.iterdir() if p.is_dir()), reverse=True)
+    if not dirs:
+        return None
+    run_dir = dirs[0]
+    if not _run_matches(run_dir, case_ids, env):
+        return None
+    if _run_incomplete(run_dir, case_ids or set()):
+        return run_dir.name, run_dir
+    return None
+
+
+def _run_matches(
+    run_dir: Path, case_ids: set[str] | None, env: str | None
+) -> bool:
+    data = _progress_doc(run_dir)
+    if data is None:
+        # No progress file: the old run wrote only case results, so env and the
+        # case set cannot be verified. Fall back to the result-based check.
+        return True
+    run_env = str(data.get("env") or "")
+    if env and run_env and run_env != env:
+        return False
+    if case_ids is not None:
+        ids = {
+            str(c.get("id"))
+            for c in (data.get("cases") or [])
+            if isinstance(c, dict) and c.get("id")
+        }
+        if ids and ids != set(case_ids):
+            return False
+    return True
+
+
+def _run_incomplete(run_dir: Path, case_ids: set[str]) -> bool:
+    doc = _progress_doc(run_dir)
+    if doc is not None and doc.get("cases"):
+        # Progress is authoritative once the run wrote it: only a case it still
+        # calls active, or a missing run summary, means there is work left.
+        for item in doc.get("cases") or []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("state") or "") in {"pending", "ready", "running"}:
+                return True
+        return not (run_dir / "result.yaml").is_file()
+    if not (run_dir / "result.yaml").is_file():
+        return True
+    ids = case_ids or {
+        p.name
+        for p in run_dir.iterdir()
+        if p.is_dir() and p.name not in {"repo-baseline", "_root_png"}
+    }
+    for cid in ids:
+        path = run_dir / cid / "result.yaml"
+        if not path.is_file():
+            return True
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError:
+            return True
+        if not isinstance(data, dict):
+            return True
+        if normalize_status(data.get("status")) not in TERMINAL:
+            return True
+    return False
+
+
+def _pending_in(run_dir: Path) -> int:
+    data = _progress_doc(run_dir)
+    if data is not None:
+        return sum(
+            1
+            for c in (data.get("cases") or [])
+            if isinstance(c, dict)
+            and str(c.get("state") or "") in {"pending", "ready", "running"}
+        )
+    pending = 0
+    for p in sorted(run_dir.iterdir()):
+        if not p.is_dir() or p.name in {"repo-baseline", "_root_png"}:
+            continue
+        rp = p / "result.yaml"
+        if not rp.is_file():
+            pending += 1
+            continue
+        try:
+            raw = yaml.safe_load(rp.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError:
+            pending += 1
+            continue
+        if not isinstance(raw, dict):
+            pending += 1
+            continue
+        if normalize_status(raw.get("status")) not in TERMINAL:
+            pending += 1
+    return pending
+
+
+def incomplete_run_payload(
+    qa: Path,
+    case_ids: set[str] | None = None,
+    env: str | None = None,
+) -> dict[str, Any] | None:
+    """`{run_id, pending}` for the run a resume would pick, or None."""
+    found = find_incomplete_run(qa, case_ids, env)
+    if found is None:
+        return None
+    run_id, run_dir = found
+    return {"run_id": run_id, "pending": _pending_in(run_dir)}
+
+
+def _apply_resume(cases: list[CaseJob], run_dir: Path) -> int:
+    """Mark finished cases so the scheduler will not dispatch them. Returns skip count.
+
+    `progress.yaml` is the authority: a case it still calls pending/ready/running
+    is re-run even if the interrupted attempt left a `result.yaml` behind, so a
+    stale file never masquerades as this run's outcome.
+    """
+    doc = _progress_doc(run_dir)
+    prev_by_id: dict[str, dict[str, Any]] = {}
+    if doc is not None:
+        prev_by_id = {
+            str(c.get("id")): c
+            for c in doc.get("cases") or []
+            if isinstance(c, dict) and c.get("id")
+        }
+    dummy = PoolSlot(id="resume", provider=None, model=None, concurrency=1, priority=1)
+    skipped = 0
+    for job in cases:
+        prev = prev_by_id.get(job.id) or {}
+        state = str(prev.get("state") or "")
+        if prev_by_id and state not in TERMINAL:
+            continue
+        path = run_dir / job.id / "result.yaml"
+        got = _read_case_result(path, job, dummy, strict=False) if path.is_file() else {}
+        status = state if state in TERMINAL else str(got.get("status") or "")
+        if status not in TERMINAL:
+            continue
+        job.state = status
+        job.reason = str(got.get("reason") or prev.get("reason") or "")
+        job.model = str(got.get("model") or prev.get("model") or "")
+        job.provider = str(got.get("provider") or prev.get("provider") or "")
+        job.failure = got.get("failure") if isinstance(got.get("failure"), dict) else None
+        if isinstance(got.get("assertions"), list):
+            job.assertions = got["assertions"]
+        job.pool = prev.get("pool") or job.pool
+        job.started_at = prev.get("started_at") or job.started_at
+        job.ended_at = prev.get("ended_at") or job.ended_at
+        skipped += 1
+    return skipped
+
+
 def req_test(
     root: Path,
     jira: str,
@@ -673,6 +847,7 @@ def req_test(
     run_only: bool = False,
     redesign: bool = False,
     ingest: bool = True,
+    resume: bool | None = None,
     runner: Runner | None = None,
     case_runner: Callable[[CaseJob, PoolSlot], dict[str, Any]] | None = None,
     on_progress: ProgressFn | None = None,
@@ -689,6 +864,7 @@ def req_test(
             run_only=run_only,
             redesign=redesign,
             ingest=ingest,
+            resume=resume,
             runner=runner,
             case_runner=case_runner,
             on_progress=on_progress,
@@ -706,6 +882,7 @@ def _req_test(
     run_only: bool = False,
     redesign: bool = False,
     ingest: bool = True,
+    resume: bool | None = None,
     runner: Runner | None = None,
     case_runner: Callable[[CaseJob, PoolSlot], dict[str, Any]] | None = None,
     on_progress: ProgressFn | None = None,
@@ -740,7 +917,23 @@ def _req_test(
         raise TestRejected(f"{jira} qa-design produced no cases")
 
     evidence = qa / "evidence"
-    run_id, run_dir = _claim_run_dir(evidence)
+    case_ids = {c.id for c in cases}
+    incomplete = find_incomplete_run(qa, case_ids, cfg.active_env)
+    if resume is True and incomplete is None:
+        raise TestRejected(
+            f"--resume: no incomplete run for {jira} in env {cfg.active_env}; "
+            "use --fresh to start a new run"
+        )
+    resuming = incomplete is not None and (
+        resume is True or (resume is None and not redesign)
+    )
+    if resuming:
+        run_id, run_dir = incomplete
+        if on_log is not None:
+            on_log(f"resuming run {run_id}")
+        _apply_resume(cases, run_dir)
+    else:
+        run_id, run_dir = _claim_run_dir(evidence)
     aliases = _involved_aliases(root, jira)
     tree_before: dict[str, dict[str, str]] = {}
     baseline_dir = run_dir / "repo-baseline"
@@ -752,21 +945,53 @@ def _req_test(
             raise TestRejected(
                 f"cannot read `git status` in {wt}; aborting before the run"
             )
-        tree_before[alias] = snap
-        text = _porcelain(wt)
-        (baseline_dir / f"{alias}.txt").write_text(text + ("\n" if text else ""), encoding="utf-8")
+        baseline_json = baseline_dir / f"{alias}.json"
+        baseline_txt = baseline_dir / f"{alias}.txt"
+        # On resume, compare against the run's *original* baseline so a mutation
+        # left behind by the interrupted attempt is still caught. Only a fresh
+        # run records a new baseline.
+        if resuming and baseline_json.is_file():
+            try:
+                loaded = json.loads(baseline_json.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                loaded = None
+            if isinstance(loaded, dict):
+                tree_before[alias] = {
+                    str(k): str(v) for k, v in loaded.items()
+                }
+            else:
+                tree_before[alias] = snap
+        else:
+            tree_before[alias] = snap
+            baseline_json.write_text(
+                json.dumps(snap, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        if not baseline_txt.is_file():
+            text = _porcelain(wt)
+            baseline_txt.write_text(
+                text + ("\n" if text else ""), encoding="utf-8"
+            )
     root_png_before = _root_png_names(root)
     _check_case_accounts(cfg, cases, jira)
-    # Resolve the default account name onto each case so the scheduler serializes
-    # cases that share a login state (an empty `account` still uses the default).
+    # Resolve the default account so context/login use a real name. Concurrent
+    # cases may share it unless qa.yaml serialize_accounts is true.
     for job in cases:
         resolved = _case_account(cfg, job)
         if resolved in cfg.env.accounts:
             job.account = resolved
-    _preload_auth(root, cfg, _used_accounts(cfg, cases), on_log)
+    auth_failures = _preload_auth(root, cfg, _used_accounts(cfg, cases), on_log)
+    if auth_failures:
+        stamp = now_iso()
+        for job in cases:
+            acct = _case_account(cfg, job)
+            if acct in auth_failures:
+                job.state = "blocked"
+                job.reason = f"auth failed: {auth_failures[acct]}"
+                job.ended_at = stamp
 
     pools = [PoolSlot.from_worker(w) for w in cfg.workers]
     progress_path = run_dir / "progress.yaml"
+    script_lock = Lock()
 
     def ping() -> None:
         _write_progress(
@@ -795,27 +1020,69 @@ def _req_test(
             if on_log is not None:
                 on_log(line if line.endswith("\n") else line + "\n")
 
-        code, raw = run_pi_print(argv, root, prompt, on_line=_echo)
-        result_path = case_dir / "result.yaml"
-        if code != 0 and not result_path.is_file():
-            return {
+        setup_failed: str | None = None
+        if job.setup:
+            try:
+                with script_lock:
+                    out = run_case_script(
+                        root, jira, cfg, job, "setup", on_log=on_log
+                    )
+                if out and on_log is not None:
+                    on_log(out[-500:])
+            except TestRejected as e:
+                setup_failed = f"setup failed: {e}"
+
+        if setup_failed is not None:
+            got = {
                 "status": "blocked",
-                "reason": f"worker exit: pi exit {code}",
+                "reason": setup_failed,
                 "repo": job.repo,
                 "model": slot.model,
                 "provider": slot.provider,
             }
-        got = _read_case_result(result_path, job, slot)
-        if not got.get("model"):
-            got["model"] = slot.model
-        if not got.get("provider"):
-            got["provider"] = slot.provider
-        if raw and on_log is not None and code != 0:
-            on_log(raw[-500:])
+        else:
+            # A resumed case dir may hold the interrupted attempt's result;
+            # never let a stale file stand in for this run's outcome.
+            result_path.unlink(missing_ok=True)
+            code, raw = run_pi_print(argv, root, prompt, on_line=_echo)
+            if code != 0 and not result_path.is_file():
+                got = {
+                    "status": "blocked",
+                    "reason": f"worker exit: pi exit {code}",
+                    "repo": job.repo,
+                    "model": slot.model,
+                    "provider": slot.provider,
+                }
+            else:
+                got = _read_case_result(result_path, job, slot)
+                if not got.get("model"):
+                    got["model"] = slot.model
+                if not got.get("provider"):
+                    got["provider"] = slot.provider
+                if raw and on_log is not None and code != 0:
+                    on_log(raw[-500:])
+        if job.cleanup:
+            try:
+                with script_lock:
+                    run_case_script(root, jira, cfg, job, "cleanup", on_log=on_log)
+            except TestRejected as e:
+                got = dict(got)
+                if normalize_status(got.get("status")) == "passed":
+                    # cleanup failure means polluting data we cannot trust.
+                    got["status"] = "blocked"
+                got["reason"] = (
+                    (got.get("reason") or "") + f" cleanup failed: {e}"
+                ).strip()
         return got
 
     runner_fn = case_runner or default_case_runner
-    run_schedule(cases, pools, runner_fn, on_progress=ping)
+    run_schedule(
+        cases,
+        pools,
+        runner_fn,
+        on_progress=ping,
+        serialize_accounts=cfg.serialize_accounts,
+    )
 
     for job in cases:
         if job.state in {"skipped", "blocked"} and job.ended_at:

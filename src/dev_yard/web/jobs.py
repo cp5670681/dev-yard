@@ -434,6 +434,7 @@ def default_execute(root: Path, job: Job) -> None:
                 run_only=bool(extra.get("run_only")),
                 redesign=bool(extra.get("redesign")),
                 ingest=not bool(extra.get("no_ingest")),
+                resume=extra.get("resume"),
                 on_log=job.append,
                 on_progress=job.set_qa_progress,
             )

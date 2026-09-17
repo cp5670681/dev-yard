@@ -458,6 +458,14 @@
             variant="outlined"
             density="comfortable"
             hide-details
+            class="mb-2"
+          />
+          <v-checkbox
+            v-if="confirm.action === 'run-test' && incompleteRun"
+            v-model="confirm.resume"
+            hide-details
+            density="compact"
+            :label="`继续未完成的 run ${incompleteRun.run_id || ''}（剩 ${incompleteRun.pending || 0} 条）`"
           />
         </v-card-text>
         <v-card-actions>
@@ -547,8 +555,16 @@ const previewOpen = computed({
     if (!v) preview.value = "";
   },
 });
-const confirm = reactive({ open: false, action: "", ticketId: "", text: "", env: "" });
+const confirm = reactive({
+  open: false,
+  action: "",
+  ticketId: "",
+  text: "",
+  env: "",
+  resume: true,
+});
 const qaEnvs = computed(() => detail.value?.qa?.envs ?? []);
+const incompleteRun = computed(() => detail.value?.qa?.incomplete_run || null);
 const deleteOpen = ref(false);
 const diffDialog = reactive({ open: false, ticketId: "" });
 const reviewDialog = reactive({ open: false, ticket: null as Ticket | null });
@@ -732,6 +748,7 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
       const envs = qaEnvs.value;
       const preferred = detail.value?.qa?.active_env || "";
       confirm.env = envs.includes(preferred) ? preferred : envs[0] || "";
+      confirm.resume = Boolean(incompleteRun.value);
     }
     confirm.open = true;
     return;
@@ -742,7 +759,8 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
 function runConfirmed() {
   confirm.open = false;
   const env = confirm.action === "run-test" ? confirm.env : undefined;
-  void onAction(confirm.action, confirm.ticketId || undefined, env);
+  const resume = confirm.action === "run-test" ? confirm.resume : undefined;
+  void onAction(confirm.action, confirm.ticketId || undefined, env, resume);
 }
 
 async function doDelete() {
@@ -807,7 +825,7 @@ async function submitReport() {
   }
 }
 
-async function onAction(action: string, ticketId?: string, env?: string) {
+async function onAction(action: string, ticketId?: string, env?: string, resume?: boolean) {
   error.value = "";
   acting.value = action;
   try {
@@ -815,6 +833,7 @@ async function onAction(action: string, ticketId?: string, env?: string) {
       ticket_id: ticketId,
       force: action === "open" ? forceOpen.value : false,
       env: env || undefined,
+      resume: action === "run-test" ? Boolean(resume) : undefined,
     });
     const job = out.jobs[0]?.id;
     if (job) {

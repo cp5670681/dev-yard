@@ -469,6 +469,12 @@ def req_test_cmd(
     run_only: bool = typer.Option(False, "--run-only"),
     redesign: bool = typer.Option(False, "--redesign"),
     no_ingest: bool = typer.Option(False, "--no-ingest"),
+    resume: bool = typer.Option(
+        False, "--resume", help="Continue the latest incomplete run"
+    ),
+    fresh: bool = typer.Option(
+        False, "--fresh", help="Ignore an incomplete run and start a new one"
+    ),
 ) -> None:
     """Design and run UI cases after submit-test. Ingests into the test slot."""
     from dev_yard.qa import req_test
@@ -476,6 +482,9 @@ def req_test_cmd(
     from dev_yard.test_report import ReportRejected
 
     root = root_opt()
+    if resume and fresh:
+        _die(ValueError("--resume and --fresh are mutually exclusive"))
+        return
     try:
         result = req_test(
             root,
@@ -486,6 +495,7 @@ def req_test_cmd(
             run_only=run_only,
             redesign=redesign,
             ingest=not no_ingest,
+            resume=True if resume else False if fresh else None,
             on_log=lambda line: typer.echo(line.rstrip() if isinstance(line, str) else line),
         )
     except (ValueError, FileNotFoundError, TestRejected, ReportRejected, GitError) as e:

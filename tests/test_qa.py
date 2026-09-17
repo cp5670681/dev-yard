@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -450,6 +451,9 @@ def test_req_test_uses_requirement_accounts(tmp_path: Path, git_src: Path, monke
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)
     yard = _testing_req(tmp_path, git_src, "QA-A1")
+    state = yard / ".yard-qa" / "requirements" / "QA-A1" / "auth-local-buyer.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text("{}", encoding="utf-8")
     save_req_accounts(
         yard,
         "QA-A1",
@@ -470,6 +474,7 @@ def test_req_test_uses_requirement_accounts(tmp_path: Path, git_src: Path, monke
         "---\nid: case-01\ntitle: t\nrepo: backend\naccount: buyer\n---\n\nbody\n",
         encoding="utf-8",
     )
+    monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: None)
     result = req_test(
         yard,
         "QA-A1",
@@ -535,7 +540,7 @@ def test_req_test_blocked_while_bug_tickets_open(
         )
 
 
-def test_req_test_serializes_default_account_cases(
+def test_req_test_runs_same_account_cases_in_parallel(
     tmp_path: Path, git_src: Path, monkeypatch
 ):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
@@ -549,9 +554,13 @@ def test_req_test_serializes_default_account_cases(
         "    concurrency: 2\n    priority: 1\n"
         "envs:\n  local:\n    base_url: http://127.0.0.1:8080\n"
         "    auth:\n      default: admin\n"
-        "      accounts:\n        admin: { username: admin, password: pw }\n",
+        "      accounts:\n        admin: { username: admin, password: pw, "
+        "state_file: .yard-qa/auth-local-admin.json }\n",
         encoding="utf-8",
     )
+    stfile = yard / ".yard-qa" / "auth-local-admin.json"
+    stfile.parent.mkdir(parents=True, exist_ok=True)
+    stfile.write_text("{}", encoding="utf-8")
     mod = yard / "reqs" / "QA-S1" / "qa" / "cases" / "mod"
     mod.mkdir(parents=True)
     for i in (1, 2):
@@ -572,7 +581,55 @@ def test_req_test_serializes_default_account_cases(
             live["n"] -= 1
         return {"status": "passed", "repo": "backend"}
 
+    monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: None)
     req_test(yard, "QA-S1", print_mode=True, run_only=True, ingest=False, case_runner=run)
+    assert peak["n"] == 2
+
+
+def test_req_test_serializes_when_configured(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-S2")
+    (yard / "qa.yaml").write_text(
+        "active_env: local\n"
+        "serialize_accounts: true\n"
+        "browser:\n  channel: chrome\n  headed: false\n"
+        "workers:\n"
+        "  - id: a\n    provider: rcc\n    model: grok-4\n"
+        "    concurrency: 2\n    priority: 1\n"
+        "envs:\n  local:\n    base_url: http://127.0.0.1:8080\n"
+        "    auth:\n      default: admin\n"
+        "      accounts:\n        admin: { username: admin, password: pw, "
+        "state_file: .yard-qa/auth-local-admin.json }\n",
+        encoding="utf-8",
+    )
+    stfile = yard / ".yard-qa" / "auth-local-admin.json"
+    stfile.parent.mkdir(parents=True, exist_ok=True)
+    stfile.write_text("{}", encoding="utf-8")
+    mod = yard / "reqs" / "QA-S2" / "qa" / "cases" / "mod"
+    mod.mkdir(parents=True)
+    for i in (1, 2):
+        (mod / f"case-0{i}.md").write_text(
+            f"---\nid: case-0{i}\ntitle: t\nrepo: backend\n---\n\nbody\n",
+            encoding="utf-8",
+        )
+    guard = threading.Lock()
+    live = {"n": 0}
+    peak = {"n": 0}
+
+    def run(job, slot):
+        with guard:
+            live["n"] += 1
+            peak["n"] = max(peak["n"], live["n"])
+        time.sleep(0.05)
+        with guard:
+            live["n"] -= 1
+        return {"status": "passed", "repo": "backend"}
+
+    monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: None)
+    req_test(yard, "QA-S2", print_mode=True, run_only=True, ingest=False, case_runner=run)
     assert peak["n"] == 1
 
 
@@ -666,7 +723,7 @@ def test_preload_auth_runs_when_account_configured(tmp_path: Path, git_src: Path
     assert seen_names == [["default"]]
 
 
-def test_preload_auth_fails_without_state_file(tmp_path: Path, monkeypatch):
+def test_preload_auth_reports_missing_state_file(tmp_path: Path, monkeypatch):
     from dev_yard.qa import _preload_auth
     from dev_yard.qa_config import QaAccount, QaBrowser, QaConfig, QaEnv, QaWorker
 
@@ -682,13 +739,14 @@ def test_preload_auth_fails_without_state_file(tmp_path: Path, monkeypatch):
         browser=QaBrowser(),
         workers=(QaWorker(id="a", provider="rcc", model="g", concurrency=1, priority=1),),
     )
-    monkeypatch.setattr("dev_yard.qa.shutil.which", lambda name: "/bin/true")
-    with pytest.raises(TestRejected, match="missing auth state_file"):
-        _preload_auth(tmp_path, cfg)
+    failures = _preload_auth(tmp_path, cfg)
+    assert "default" in failures
+    assert "missing auth state_file" in failures["default"]
 
 
-def test_preload_auth_skips_when_creds_present_but_state_missing(tmp_path: Path):
-    """Plaintext creds let the agent log in; a missing session is not fatal."""
+def test_preload_auth_logs_in_when_creds_present_but_state_missing(
+    tmp_path: Path, monkeypatch
+):
     from dev_yard.qa import _preload_auth
     from dev_yard.qa_config import QaAccount, QaBrowser, QaConfig, QaEnv, QaWorker
 
@@ -707,9 +765,23 @@ def test_preload_auth_skips_when_creds_present_but_state_missing(tmp_path: Path)
             },
         ),
         browser=QaBrowser(),
-        workers=(QaWorker(id="a", provider="rcc", model="g", concurrency=1, priority=1),),
+        workers=(QaWorker(id="a", provider="rcc", model="g", concurrency=2, priority=1),),
     )
+    monkeypatch.setattr("dev_yard.qa_exec.shutil.which", lambda name: "/bin/true")
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if "state-save" in cmd:
+            dest = Path(cmd[-1])
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text("{}", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr("dev_yard.qa_exec.subprocess.run", fake_run)
     _preload_auth(tmp_path, cfg)
+    assert any("state-save" in c for c in calls)
+    assert (tmp_path / ".yard-qa" / "missing.json").is_file()
 
 
 def test_schedule_normalizes_status_case():
@@ -759,3 +831,308 @@ def test_cli_req_test_passes_env(tmp_path: Path, monkeypatch):
     assert out.exit_code == 0, out.output
     assert seen["jira"] == "QA-1"
     assert seen["env"] == "test"
+
+
+def test_malformed_assertions_are_rejected():
+    from dev_yard.qa_exec import normalize_case_result
+    from dev_yard.qa_schedule import CaseJob
+
+    job = CaseJob(id="case-01", title="t", repo="backend")
+    assert (
+        normalize_case_result(
+            {"status": "passed", "assertions": [{"id": "A1", "status": "passed"}]},
+            job,
+            require_assertions=True,
+        )
+        is None
+    )
+    got = normalize_case_result(
+        {
+            "status": "passed",
+            "assertions": [
+                {
+                    "type": "ui",
+                    "expected": "ok",
+                    "actual": "ok",
+                    "status": "passed",
+                }
+            ],
+        },
+        job,
+        require_assertions=True,
+    )
+    assert got is not None
+    assert got["status"] == "passed"
+
+
+def test_req_test_resumes_incomplete_run(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RS")
+    mod = yard / "reqs" / "QA-RS" / "qa" / "cases" / "mod"
+    mod.mkdir(parents=True)
+    for i in (1, 2):
+        (mod / f"case-0{i}.md").write_text(
+            f"---\nid: case-0{i}\ntitle: t\nrepo: backend\n---\n\nbody\n",
+            encoding="utf-8",
+        )
+    run_dir = yard / "reqs" / "QA-RS" / "qa" / "evidence" / "2026-09-17-160518"
+    (run_dir / "case-01").mkdir(parents=True)
+    (run_dir / "case-01" / "result.yaml").write_text(
+        "case: case-01\nstatus: passed\nrepo: backend\n"
+        "assertions:\n  - {type: ui, expected: a, actual: a, status: passed}\n",
+        encoding="utf-8",
+    )
+    (run_dir / "progress.yaml").write_text(
+        "run_id: 2026-09-17-160518\nenv: local\n"
+        "cases:\n"
+        "  - {id: case-01, state: passed, repo: backend}\n"
+        "  - {id: case-02, state: running, repo: backend}\n",
+        encoding="utf-8",
+    )
+    seen: list[str] = []
+
+    def run(job, slot):
+        seen.append(job.id)
+        return {"status": "passed", "repo": "backend"}
+
+    result = req_test(
+        yard,
+        "QA-RS",
+        print_mode=True,
+        run_only=True,
+        ingest=False,
+        resume=True,
+        case_runner=run,
+    )
+    assert result["run_id"] == "2026-09-17-160518"
+    assert seen == ["case-02"]
+
+
+def test_req_test_fresh_starts_new_run(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-FR")
+    mod = yard / "reqs" / "QA-FR" / "qa" / "cases" / "mod"
+    mod.mkdir(parents=True)
+    (mod / "case-01.md").write_text(
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    old = yard / "reqs" / "QA-FR" / "qa" / "evidence" / "2026-09-17-160518"
+    old.mkdir(parents=True)
+    (old / "progress.yaml").write_text(
+        "run_id: 2026-09-17-160518\ncases:\n  - {id: case-01, state: running}\n",
+        encoding="utf-8",
+    )
+    result = req_test(
+        yard,
+        "QA-FR",
+        print_mode=True,
+        run_only=True,
+        ingest=False,
+        resume=False,
+        case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
+    )
+    assert result["run_id"] != "2026-09-17-160518"
+
+
+def _write_case(yard: Path, key: str, name: str, body: str) -> None:
+    mod = yard / "reqs" / key / "qa" / "cases" / "mod"
+    mod.mkdir(parents=True, exist_ok=True)
+    (mod / name).write_text(body, encoding="utf-8")
+
+
+def test_req_test_resume_errors_without_incomplete_run(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RN")
+    _write_case(
+        yard,
+        "QA-RN",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+    with pytest.raises(TestRejected, match="no incomplete run"):
+        req_test(yard, "QA-RN", print_mode=True, run_only=True, resume=True)
+
+
+def test_req_test_resume_ignores_incomplete_run_from_other_env(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RE")
+    _write_case(
+        yard,
+        "QA-RE",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+    run_dir = yard / "reqs" / "QA-RE" / "qa" / "evidence" / "2026-09-17-160518"
+    run_dir.mkdir(parents=True)
+    (run_dir / "progress.yaml").write_text(
+        "run_id: 2026-09-17-160518\nenv: test\n"
+        "cases:\n  - {id: case-01, state: running, repo: backend}\n",
+        encoding="utf-8",
+    )
+    # active_env is local, so the test-env run is not resumable
+    with pytest.raises(TestRejected, match="no incomplete run"):
+        req_test(yard, "QA-RE", print_mode=True, run_only=True, resume=True)
+
+
+def test_req_test_resume_catches_mutation_from_prior_run(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RM")
+    _write_case(
+        yard,
+        "QA-RM",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+    run_dir = yard / "reqs" / "QA-RM" / "qa" / "evidence" / "2026-09-17-160518"
+    (run_dir / "repo-baseline").mkdir(parents=True)
+    (run_dir / "progress.yaml").write_text(
+        "run_id: 2026-09-17-160518\nenv: local\n"
+        "cases:\n  - {id: case-01, state: running, repo: backend}\n",
+        encoding="utf-8",
+    )
+    # Original run started from a clean worktree.
+    (run_dir / "repo-baseline" / "backend.json").write_text("{}", encoding="utf-8")
+    wt = yard / "reqs" / "QA-RM" / "worktrees" / "backend"
+    (wt / "leftover_by_worker.txt").write_text("mutated\n", encoding="utf-8")
+    with pytest.raises(TestRejected, match="mutated worktree"):
+        req_test(
+            yard,
+            "QA-RM",
+            print_mode=True,
+            run_only=True,
+            ingest=False,
+            resume=True,
+            case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
+        )
+
+
+def test_req_test_stale_result_is_not_accepted_on_resume(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-STALE")
+    _write_case(
+        yard,
+        "QA-STALE",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+    run_dir = yard / "reqs" / "QA-STALE" / "qa" / "evidence" / "2026-09-17-160518"
+    (run_dir / "case-01").mkdir(parents=True)
+    (run_dir / "progress.yaml").write_text(
+        "run_id: 2026-09-17-160518\nenv: local\n"
+        "cases:\n  - {id: case-01, state: running, repo: backend}\n",
+        encoding="utf-8",
+    )
+    # Leftover from the interrupted attempt: must not stand in for this run.
+    (run_dir / "case-01" / "result.yaml").write_text(
+        "case: case-01\nstatus: passed\nrepo: backend\n"
+        "assertions:\n  - {type: ui, expected: a, actual: a, status: passed}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("dev_yard.qa.run_pi_print", lambda *a, **k: (1, "boom"))
+    monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: {})
+    result = req_test(
+        yard, "QA-STALE", print_mode=True, run_only=True, ingest=False, resume=True
+    )
+    assert result["summary"]["blocked"] == 1
+    assert result["summary"]["passed"] == 0
+
+
+def test_req_test_blocks_only_cases_on_failed_account(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-AUTH")
+    _write_qa_yaml(
+        yard,
+        "    auth:\n      default: admin\n      accounts:\n"
+        "        admin: { username: admin, password: pw, "
+        "state_file: .yard-qa/auth-local-admin.json }\n"
+        "        buyer: { username: buyer, password: pw, "
+        "state_file: .yard-qa/auth-local-buyer.json }\n",
+    )
+    (yard / ".yard-qa").mkdir(parents=True, exist_ok=True)
+    for n in ("auth-local-admin.json", "auth-local-buyer.json"):
+        (yard / ".yard-qa" / n).write_text("{}", encoding="utf-8")
+    _write_case(
+        yard,
+        "QA-AUTH",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+    _write_case(
+        yard,
+        "QA-AUTH",
+        "case-02.md",
+        "---\nid: case-02\ntitle: t\nrepo: backend\naccount: buyer\n---\n\nbody\n",
+    )
+    monkeypatch.setattr(
+        "dev_yard.qa._preload_auth", lambda *a, **k: {"buyer": "login failed"}
+    )
+    seen: list[str] = []
+
+    def run(job, slot):
+        seen.append(job.id)
+        return {"status": "passed", "repo": "backend"}
+
+    result = req_test(
+        yard,
+        "QA-AUTH",
+        print_mode=True,
+        run_only=True,
+        ingest=False,
+        case_runner=run,
+    )
+    assert seen == ["case-01"]
+    assert result["summary"]["passed"] == 1
+    assert result["summary"]["blocked"] == 1
+
+
+def test_req_test_setup_failure_still_runs_cleanup(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-SU")
+    _write_case(
+        yard,
+        "QA-SU",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n"
+        "data: { setup: setup.sql, cleanup: cleanup.sql }\n---\n\nbody\n",
+    )
+    kinds: list[str] = []
+
+    def fake_script(root, jira, cfg, job, kind, **kw):
+        kinds.append(kind)
+        if kind == "setup":
+            raise TestRejected("setup blew up")
+        return ""
+
+    monkeypatch.setattr("dev_yard.qa.run_case_script", fake_script)
+    monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: {})
+    result = req_test(
+        yard, "QA-SU", print_mode=True, run_only=True, ingest=False
+    )
+    assert kinds == ["setup", "cleanup"]
+    assert result["summary"]["blocked"] == 1
+

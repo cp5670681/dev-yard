@@ -154,6 +154,7 @@ export interface ReqDetail {
       };
     };
     progress: QaProgress | null;
+    incomplete_run?: { run_id?: string; pending?: number } | null;
   } | null;
 }
 
@@ -277,6 +278,7 @@ export interface QaConfigPayload {
   workers: QaWorkerCfg[];
   envs: Record<string, QaEnvCfg>;
   env_names: string[];
+  serialize_accounts?: boolean;
   /** new env name → old name, so a rename keeps masked secrets on the server. */
   renamed?: Record<string, string>;
 }
