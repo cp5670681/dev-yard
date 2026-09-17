@@ -552,6 +552,31 @@ def test_preload_auth_fails_without_state_file(tmp_path: Path, monkeypatch):
         _preload_auth(tmp_path, cfg)
 
 
+def test_preload_auth_skips_when_creds_present_but_state_missing(tmp_path: Path):
+    """Plaintext creds let the agent log in; a missing session is not fatal."""
+    from dev_yard.qa import _preload_auth
+    from dev_yard.qa_config import QaAccount, QaBrowser, QaConfig, QaEnv, QaWorker
+
+    cfg = QaConfig(
+        active_env="local",
+        env=QaEnv(
+            name="local",
+            base_url="http://127.0.0.1:1",
+            accounts={
+                "default": QaAccount(
+                    name="default",
+                    username="admin",
+                    password="s3cret",
+                    state_file=".yard-qa/missing.json",
+                )
+            },
+        ),
+        browser=QaBrowser(),
+        workers=(QaWorker(id="a", provider="rcc", model="g", concurrency=1, priority=1),),
+    )
+    _preload_auth(tmp_path, cfg)
+
+
 def test_schedule_normalizes_status_case():
     cases = [CaseJob(id="case-01", title="a", repo="backend")]
     pools = [PoolSlot(id="a", provider="rcc", model="g", concurrency=1, priority=1)]

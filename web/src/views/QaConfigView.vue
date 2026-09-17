@@ -4,8 +4,8 @@
       <h1 class="text-h5 text-sm-h4 mb-1">测试配置</h1>
       <p class="text-medium-emphasis mb-0">
         写入工作区根 <code>qa.yaml</code>，<code>req test</code> 跑测时读它。可配置多个环境，
-        <b>默认环境</b> 是跑测时未指定 <code>--env</code> 时用的那个。凭据只填<b>环境变量名</b>，
-        密码本身放 <code>.env</code>，不要写进来。
+        <b>默认环境</b> 是跑测时未指定 <code>--env</code> 时用的那个。账号密码、DB 连接串
+        <b>明文</b>存这里（文件已 gitignore），加账号直接多填一行，无需再配环境变量。
       </p>
     </div>
 
@@ -109,13 +109,13 @@
             </v-col>
             <v-col cols="12" md="6">
               <v-text-field
-                v-model="currentEnv.db.url_env"
-                label="db.url_env"
+                v-model="currentEnv.db.url"
+                label="db.url"
                 variant="outlined"
                 density="comfortable"
-                placeholder="YARD_QA_DB_URL"
+                placeholder="postgres://user:pass@host:5432/db"
                 hide-details="auto"
-                hint="可留空；留空则禁止用 usql 做 DB 断言。"
+                hint="可留空；留空则禁止用 usql 做 DB 断言。密码含特殊字符需 URL 编码；显示 ******** 表示已存，保存会保留。"
               />
             </v-col>
           </v-row>
@@ -148,8 +148,8 @@
             </v-col>
             <v-col cols="12" sm="3">
               <v-text-field
-                v-model="acct.username_env"
-                label="username_env"
+                v-model="acct.username"
+                label="username"
                 variant="outlined"
                 density="comfortable"
                 hide-details
@@ -157,11 +157,13 @@
             </v-col>
             <v-col cols="12" sm="3">
               <v-text-field
-                v-model="acct.password_env"
-                label="password_env"
+                v-model="acct.password"
+                label="password"
+                type="password"
                 variant="outlined"
                 density="comfortable"
-                hide-details
+                hide-details="auto"
+                hint="显示 ******** 表示已存，保存会保留；填新值替换，留空清除。"
               />
             </v-col>
             <v-col cols="12" sm="2">
@@ -299,7 +301,8 @@
       <v-card-title>原始 YAML</v-card-title>
       <v-card-text>
         <p class="text-medium-emphasis text-body-2">
-          磁盘上的当前内容，保存后由服务端写回。保存会重排这个文件，注释不会保留。
+          磁盘上的当前内容（密码、DB 连接串已脱敏为 ********），保存后由服务端写回。
+          保存会重排这个文件，注释不会保留。
         </p>
         <pre class="qa-raw">{{ state.raw || "（还没有 qa.yaml，保存后创建）" }}</pre>
       </v-card-text>
@@ -318,8 +321,8 @@ const CHANNELS = ["chrome", "chromium", "msedge", "firefox", "webkit"];
 
 interface AccountRow {
   name: string;
-  username_env: string;
-  password_env: string;
+  username: string;
+  password: string;
   state_file: string;
 }
 
@@ -405,14 +408,14 @@ function blankEnv(): QaEnvCfg {
   return {
     base_url: "",
     auth: { default: "default", accounts: {} },
-    db: { url_env: "" },
+    db: { url: "" },
     script: { runner: "" },
     notes: [],
   };
 }
 
 function blankDraft(): EnvDraft {
-  return { accounts: [{ name: "", username_env: "", password_env: "", state_file: "" }], notes: "" };
+  return { accounts: [{ name: "", username: "", password: "", state_file: "" }], notes: "" };
 }
 
 function initDraft(name: string) {
@@ -422,13 +425,13 @@ function initDraft(name: string) {
     for (const [acctName, a] of Object.entries(env.auth.accounts ?? {})) {
       accounts.push({
         name: acctName,
-        username_env: a.username_env,
-        password_env: a.password_env,
+        username: a.username,
+        password: a.password,
         state_file: a.state_file,
       });
     }
   }
-  if (!accounts.length) accounts.push({ name: "", username_env: "", password_env: "", state_file: "" });
+  if (!accounts.length) accounts.push({ name: "", username: "", password: "", state_file: "" });
   drafts.value[name] = { accounts, notes: (env?.notes ?? []).join("\n") };
 }
 
@@ -522,7 +525,7 @@ function addWorker() {
 }
 
 function addAccount() {
-  currentAccounts.value.push({ name: "", username_env: "", password_env: "", state_file: "" });
+  currentAccounts.value.push({ name: "", username: "", password: "", state_file: "" });
 }
 
 function load() {
@@ -566,7 +569,7 @@ function accountProblems(): string[] {
     const seen = new Set<string>();
     draft.accounts.forEach((row, i) => {
       const name = row.name.trim();
-      const filled = [row.username_env, row.password_env, row.state_file].some((v) => v.trim());
+      const filled = [row.username, row.password, row.state_file].some((v) => v.trim());
       if (!name) {
         if (filled) problems.push(`环境 ${envName} 第 ${i + 1} 个账号没填名字，保存会把它丢掉。`);
         return;

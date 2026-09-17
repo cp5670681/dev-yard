@@ -249,15 +249,15 @@ export interface PiSettings {
 }
 
 export interface QaAccountCfg {
-  username_env: string;
-  password_env: string;
+  username: string;
+  password: string;
   state_file: string;
 }
 
 export interface QaEnvCfg {
   base_url: string;
   auth: { default: string; accounts: Record<string, QaAccountCfg> };
-  db: { url_env: string };
+  db: { url: string };
   script: { runner: string };
   notes: string[];
 }

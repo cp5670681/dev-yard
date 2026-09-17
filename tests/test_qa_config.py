@@ -6,6 +6,7 @@ import pytest
 import yaml
 
 from dev_yard.qa_config import (
+    MASK,
     QaConfigUnreadable,
     TestRejected,
     default_qa_payload,
@@ -50,13 +51,13 @@ def _payload(root: Path) -> dict:
                     "default": "default",
                     "accounts": {
                         "default": {
-                            "username_env": "YARD_QA_USER",
-                            "password_env": "YARD_QA_PASSWORD",
+                            "username": "admin",
+                            "password": "s3cret",
                             "state_file": ".yard-qa/auth-local-default.json",
                         }
                     },
                 },
-                "db": {"url_env": "YARD_QA_DB_URL"},
+                "db": {"url": "postgres://localhost:5432/app"},
                 "script": {"runner": "bin/rails runner"},
                 "notes": ["先起前端", "别用生产库"],
             }
@@ -97,7 +98,7 @@ def test_save_then_load_roundtrip(tmp_path: Path):
     cfg = load_qa_config(root)
     assert cfg.active_env == "local"
     assert cfg.env.base_url == "http://127.0.0.1:8080"
-    assert cfg.env.db_url_env == "YARD_QA_DB_URL"
+    assert cfg.env.db_url == "postgres://localhost:5432/app"
     assert cfg.env.script_runner == "bin/rails runner"
     assert cfg.env.notes == ("先起前端", "别用生产库")
     assert cfg.browser.channel == "chrome"
@@ -110,10 +111,80 @@ def test_save_then_payload_roundtrip_keeps_accounts(tmp_path: Path):
     root = _yard(tmp_path)
     save_qa_config(root, _payload(root))
     again = qa_payload(root)
-    assert again["envs"]["local"]["auth"]["accounts"]["default"]["username_env"] == "YARD_QA_USER"
+    assert again["envs"]["local"]["auth"]["accounts"]["default"]["username"] == "admin"
+    assert again["envs"]["local"]["auth"]["accounts"]["default"]["password"] == MASK
     assert again["envs"]["local"]["auth"]["accounts"]["default"]["state_file"] == (
         ".yard-qa/auth-local-default.json"
     )
+
+
+def test_payload_masks_secrets_and_save_keeps_them(tmp_path: Path):
+    """The form never receives real secrets; returning the mask keeps them."""
+    root = _yard(tmp_path)
+    save_qa_config(root, _payload(root))
+    payload = qa_payload(root)
+    assert payload["envs"]["local"]["db"]["url"] == MASK
+    payload["envs"]["local"]["notes"] = ["改过"]
+    save_qa_config(root, payload)
+    cfg = load_qa_config(root)
+    assert cfg.env.db_url == "postgres://localhost:5432/app"
+    assert cfg.env.accounts["default"].password == "s3cret"
+
+
+def test_save_can_replace_a_masked_password(tmp_path: Path):
+    root = _yard(tmp_path)
+    save_qa_config(root, _payload(root))
+    payload = qa_payload(root)
+    payload["envs"]["local"]["auth"]["accounts"]["default"]["password"] = "new-pass"
+    payload["envs"]["local"]["db"]["url"] = "postgres://new"
+    save_qa_config(root, payload)
+    cfg = load_qa_config(root)
+    assert cfg.env.accounts["default"].password == "new-pass"
+    assert cfg.env.db_url == "postgres://new"
+
+
+def test_redact_qa_yaml_masks_passwords_and_urls():
+    from dev_yard.qa_config import redact_qa_yaml
+
+    text = (
+        "envs:\n"
+        "  local:\n"
+        "    auth:\n"
+        "      accounts:\n"
+        "        admin:\n"
+        "          username: admin\n"
+        "          password: s3cret\n"
+        "    db:\n      url: postgres://user:pw@host/db\n"
+    )
+    out = redact_qa_yaml(text)
+    assert "s3cret" not in out
+    assert "user:pw@host" not in out
+    assert "username: admin" in out
+    assert out.count(MASK) == 2
+
+
+def test_redact_qa_yaml_covers_inline_and_unterminated_values():
+    from dev_yard.qa_config import redact_qa_yaml
+
+    inline = "envs: {local: {auth: {accounts: {d: {password: s3cret}}}},\n"
+    inline += "  db: {url: \"postgres://u:s3cret@h/db\"}}\n"
+    out = redact_qa_yaml(inline)
+    assert "s3cret" not in out
+    assert out.count(MASK) == 2
+
+    # A YAML parse error can echo an unterminated value with no closing quote.
+    err = "while parsing: url: \"postgres://u:SUPERSECRET@h/db"
+    assert "SUPERSECRET" not in redact_qa_yaml(err)
+
+
+def test_redact_qa_yaml_masks_values_with_spaces():
+    from dev_yard.qa_config import redact_qa_yaml
+
+    block = "          password: s3 cr et\n"
+    flow = 'db: {url: "postgres://u:s3 cr et@h/db"}\n'
+    out = redact_qa_yaml(block + flow)
+    assert "s3 cr et" not in out
+    assert out.count(MASK) == 2
 
 
 def test_payload_reports_missing_file_as_defaults(tmp_path: Path):
@@ -140,7 +211,7 @@ def test_save_roundtrips_multiple_envs(tmp_path: Path):
     payload["envs"]["test"] = {
         "base_url": "https://test.example.com",
         "auth": {"default": "default", "accounts": {}},
-        "db": {"url_env": ""},
+        "db": {"url": ""},
         "script": {"runner": ""},
         "notes": ["test 环境"],
     }
@@ -187,7 +258,7 @@ def test_save_removes_an_env_dropped_from_the_payload(tmp_path: Path):
     payload["envs"]["test"] = {
         "base_url": "https://test.example.com",
         "auth": {"default": "default", "accounts": {}},
-        "db": {"url_env": ""},
+        "db": {"url": ""},
         "script": {"runner": ""},
         "notes": [],
     }
@@ -275,9 +346,9 @@ def test_save_keeps_nested_unknown_keys(tmp_path: Path):
         "envs:\n"
         "  local:\n    base_url: http://127.0.0.1:8080\n"
         "    auth:\n      default: default\n      sso: true\n"
-        "      accounts:\n        default:\n          username_env: U\n"
+        "      accounts:\n        default:\n          username: admin\n"
         "          future: keep\n"
-        "    db:\n      url_env: DB_URL\n      driver: pg\n"
+        "    db:\n      url: postgres://db\n      driver: pg\n"
         "    script:\n      runner: bin/rails runner\n      shell: bash\n",
         encoding="utf-8",
     )
@@ -300,7 +371,7 @@ def test_save_allows_a_placeholder_non_active_env(tmp_path: Path):
     payload["envs"]["test"] = {
         "base_url": "",
         "auth": {"default": "default", "accounts": {}},
-        "db": {"url_env": ""},
+        "db": {"url": ""},
         "script": {"runner": ""},
         "notes": [],
     }
@@ -319,15 +390,15 @@ def test_save_keeps_a_cleared_managed_key_cleared(tmp_path: Path):
     (root / "qa.yaml").write_text(
         "workers:\n  - id: a\n    provider: rcc\n    model: grok-4\n"
         "envs:\n  local:\n    base_url: http://127.0.0.1:8080\n"
-        "    db:\n      url_env: YARD_QA_DB_URL\n",
+        "    db:\n      url: postgres://db\n",
         encoding="utf-8",
     )
     payload = qa_payload(root)
-    payload["envs"]["local"]["db"]["url_env"] = ""
+    payload["envs"]["local"]["db"]["url"] = ""
     save_qa_config(root, payload)
     data = yaml.safe_load((root / "qa.yaml").read_text(encoding="utf-8"))
     assert "db" not in data["envs"]["local"]
-    assert load_qa_config(root).env.db_url_env == ""
+    assert load_qa_config(root).env.db_url == ""
 
 
 def test_payload_reports_non_mapping_envs_as_unreadable(tmp_path: Path):
@@ -413,6 +484,38 @@ def test_save_rejects_duplicate_worker_id(tmp_path: Path):
     ]
     with pytest.raises(TestRejected, match="not unique"):
         save_qa_config(root, payload)
+
+
+def test_save_drops_legacy_env_var_keys(tmp_path: Path):
+    """Old *_env fields are no longer read and must not survive a save."""
+    root = _yard(tmp_path)
+    _configure_pi(root)
+    (root / "qa.yaml").write_text(
+        "workers:\n  - id: a\n    provider: rcc\n    model: grok-4\n"
+        "envs:\n  local:\n    base_url: http://127.0.0.1:8080\n"
+        "    auth:\n      default: default\n"
+        "      accounts:\n        default:\n"
+        "          username_env: OLD_USER\n          password_env: OLD_PASS\n"
+        "    db:\n      url_env: OLD_DB_URL\n",
+        encoding="utf-8",
+    )
+    cfg = load_qa_config(root)
+    assert cfg.env.db_url == ""
+    assert cfg.env.accounts["default"].username == ""
+    payload = qa_payload(root)
+    payload["envs"]["local"]["auth"]["accounts"]["default"] = {
+        "username": "admin",
+        "password": "s3cret",
+        "state_file": ".yard-qa/auth.json",
+    }
+    payload["envs"]["local"]["db"]["url"] = "postgres://db"
+    save_qa_config(root, payload)
+    data = yaml.safe_load((root / "qa.yaml").read_text(encoding="utf-8"))
+    env = data["envs"]["local"]
+    assert "url_env" not in env["db"]
+    assert "username_env" not in env["auth"]["accounts"]["default"]
+    assert "password_env" not in env["auth"]["accounts"]["default"]
+    assert load_qa_config(root).env.db_url == "postgres://db"
 
 
 def test_payload_raises_on_corrupt_yaml(tmp_path: Path):

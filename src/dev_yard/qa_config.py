@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,18 +24,39 @@ class QaConfigUnreadable(TestRejected):
 
 # env keys the form owns; anything else in that env is carried through a save
 _MANAGED_ENV_KEYS = frozenset({"base_url", "auth", "db", "script", "notes"})
-# managed keys nested one level below the env; the rest are carried through
-_MANAGED_ACCOUNT_KEYS = frozenset({"username_env", "password_env", "state_file"})
+# managed keys nested one level below the env; the rest are carried through.
+# Legacy `*_env` keys are included so a save drops them instead of carrying
+# dead fields forward.
+_MANAGED_ACCOUNT_KEYS = frozenset(
+    {"username", "password", "state_file", "username_env", "password_env"}
+)
 _MANAGED_AUTH_KEYS = frozenset({"default", "accounts"})
-_MANAGED_DB_KEYS = frozenset({"url_env"})
+_MANAGED_DB_KEYS = frozenset({"url", "url_env"})
 _MANAGED_SCRIPT_KEYS = frozenset({"runner"})
+
+# Secrets are stored plaintext in qa.yaml (gitignored). The web form never sees
+# them: payloads carry this sentinel instead, and a save that returns it keeps
+# the value already on disk.
+MASK = "********"
+# Matches `password: x`, `password="x"` and inline `{url: "x"}` alike. Quoted
+# values run to their closing quote; bare values run to end of line or the flow
+# delimiter, so an unterminated value (as a YAML parse error may echo) is still
+# fully masked.
+_SECRET = re.compile(
+    r"""\b(password|url)([ \t]*[:=][ \t]*)(?:"[^"]*"|'[^']*'|[^\n,}\]]+)"""
+)
+
+
+def redact_qa_yaml(text: str) -> str:
+    """Mask credential values in a qa.yaml dump (or a parse error) for display."""
+    return _SECRET.sub(lambda m: f"{m.group(1)}{m.group(2)}{MASK}", text)
 
 
 @dataclass(frozen=True)
 class QaAccount:
     name: str
-    username_env: str = ""
-    password_env: str = ""
+    username: str = ""
+    password: str = ""
     state_file: str = ""
 
 
@@ -44,7 +66,7 @@ class QaEnv:
     base_url: str
     auth_default: str = "default"
     accounts: dict[str, QaAccount] = field(default_factory=dict)
-    db_url_env: str = ""
+    db_url: str = ""
     script_runner: str = ""
     notes: tuple[str, ...] = ()
 
@@ -110,8 +132,8 @@ def _parse_accounts(raw: Any) -> dict[str, QaAccount]:
             raise TestRejected(f"qa.yaml auth.accounts.{name} must be a mapping")
         out[str(name)] = QaAccount(
             name=str(name),
-            username_env=_blank(item.get("username_env")),
-            password_env=_blank(item.get("password_env")),
+            username=_blank(item.get("username")),
+            password=_blank(item.get("password")),
             state_file=_blank(item.get("state_file")),
         )
     return out
@@ -136,7 +158,7 @@ def _parse_env(name: str, raw: Any) -> QaEnv:
         base_url=base_url,
         auth_default=default,
         accounts=accounts,
-        db_url_env=_blank(db.get("url_env")),
+        db_url=_blank(db.get("url")),
         script_runner=_blank(script.get("runner")),
         notes=tuple(str(n) for n in notes_raw),
     )
@@ -315,10 +337,15 @@ def _env_to_raw(raw: Any, field: str, previous: Any = None) -> dict[str, Any]:
             prev_accounts.get(name) if isinstance(prev_accounts.get(name), dict) else {}
         )
         entry = {k: v for k, v in prev_entry.items() if k not in _MANAGED_ACCOUNT_KEYS}
-        for key in ("username_env", "password_env", "state_file"):
+        for key in ("username", "password", "state_file"):
             value = _blank(entry_in.get(key))
-            if value:
-                entry[key] = value
+            if not value:
+                continue
+            if key == "password" and value == MASK:
+                value = _blank(prev_entry.get("password"))
+                if not value:
+                    continue
+            entry[key] = value
         if entry:
             accounts[str(name)] = entry
     out: dict[str, Any] = {"base_url": _blank(env.get("base_url"))}
@@ -331,8 +358,11 @@ def _env_to_raw(raw: Any, field: str, previous: Any = None) -> dict[str, Any]:
     db = _raw_mapping(env.get("db"), f"{field}.db")
     prev_db = prev.get("db") if isinstance(prev.get("db"), dict) else {}
     db_out = {k: v for k, v in prev_db.items() if k not in _MANAGED_DB_KEYS}
-    if _blank(db.get("url_env")):
-        db_out["url_env"] = _blank(db.get("url_env"))
+    db_url = _blank(db.get("url"))
+    if db_url == MASK:
+        db_url = _blank(prev_db.get("url"))
+    if db_url:
+        db_out["url"] = db_url
     if db_out:
         out["db"] = db_out
 
@@ -421,8 +451,8 @@ def _env_payload(raw: Any) -> dict[str, Any]:
     for name, item in accounts_raw.items():
         row = item if isinstance(item, dict) else {}
         accounts[str(name)] = {
-            "username_env": _blank(row.get("username_env")),
-            "password_env": _blank(row.get("password_env")),
+            "username": _blank(row.get("username")),
+            "password": MASK if _blank(row.get("password")) else "",
             "state_file": _blank(row.get("state_file")),
         }
     db = env.get("db") if isinstance(env.get("db"), dict) else {}
@@ -434,7 +464,7 @@ def _env_payload(raw: Any) -> dict[str, Any]:
             "default": _blank(auth.get("default")) or "default",
             "accounts": accounts,
         },
-        "db": {"url_env": _blank(db.get("url_env"))},
+        "db": {"url": MASK if _blank(db.get("url")) else ""},
         "script": {"runner": _blank(script.get("runner"))},
         "notes": [str(n) for n in notes],
     }

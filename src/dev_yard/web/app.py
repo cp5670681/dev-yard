@@ -25,6 +25,7 @@ from dev_yard.pi_catalog import list_pi_catalog
 from dev_yard.qa_config import (
     QaConfigUnreadable,
     qa_payload,
+    redact_qa_yaml,
     save_qa_config,
 )
 from dev_yard.qa_config import TestRejected as QaConfigRejected
@@ -1026,7 +1027,8 @@ def create_app(
             parse_error = ""
         except QaConfigRejected as e:
             payload = None
-            parse_error = str(e)
+            # YAML errors echo the offending line, which may hold a secret.
+            parse_error = redact_qa_yaml(str(e))
         raw = ""
         if exists:
             try:
@@ -1035,6 +1037,7 @@ def create_app(
                 raw = path.read_bytes().decode("utf-8", errors="replace")
             except OSError as e:
                 raw = f"(cannot read qa.yaml: {e})"
+            raw = redact_qa_yaml(raw)
         return {
             "exists": exists,
             "parse_error": parse_error,

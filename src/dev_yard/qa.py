@@ -60,7 +60,7 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
     env = cfg.env
     acct = env.accounts.get(env.auth_default)
     state_file = acct.state_file if acct else ""
-    db = "configured" if env.db_url_env else "not configured"
+    db = "configured" if env.db_url else "not configured"
     headed = "true" if cfg.headed else "false"
     others = [n for n in cfg.env_names if n != cfg.active_env]
     lines += [
@@ -71,8 +71,9 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
         f"- available envs: {', '.join(cfg.env_names) or cfg.active_env}",
         f"- base_url: {env.base_url}",
         f"- browser: {cfg.browser.channel} headed={headed}",
+        f"- account: {env.auth_default or '(none)'} (see qa.yaml)",
         f"- state_file: {state_file or '(none)'}",
-        f"- db: {db}",
+        f"- db: {db} (qa.yaml envs.{cfg.active_env}.db.url)",
         f"- script.runner: {env.script_runner or '(sql only)'}",
         "",
         "This run uses only the env above; do not switch env or guess another host.",
@@ -83,7 +84,13 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
         )
     lines += [
         "",
-        "Credentials come from environment variable names in qa.yaml; do not write passwords.",
+        "Login accounts and the DB DSN live in `qa.yaml` (gitignored) under "
+        f"`envs.{cfg.active_env}`; read them from that file.",
+        "If state_file is missing or not logged in, open `base_url`, log in with "
+        "that account's username/password, then `state-save` to state_file "
+        "(only when this run is sequential).",
+        "Never copy a password into result.yaml, evidence, or this context.md; "
+        "redact DSNs and passwords as `***` in commands and evidence.",
         "Do not `state-save` while more than one case is in flight.",
         "",
         "## Notes",
@@ -230,19 +237,26 @@ def _preload_auth(root: Path, cfg: QaConfig, on_log: LogFn | None = None) -> Non
     acct = env.accounts.get(env.auth_default)
     if acct is None:
         return
-    if not acct.state_file and not (acct.username_env and acct.password_env):
+    has_creds = bool(acct.username and acct.password)
+    if not acct.state_file:
+        # Creds-only account: the run agent logs in from qa.yaml itself.
         return
-    state = Path(acct.state_file) if acct.state_file else None
-    if state is not None and not state.is_absolute():
+    state = Path(acct.state_file)
+    if not state.is_absolute():
         state = root / state
+    if not state.is_file():
+        if has_creds:
+            # No saved session yet, but qa.yaml has the password: let the run
+            # agent log in and state-save rather than aborting the whole run.
+            return
+        raise TestRejected(
+            f"missing auth state_file {acct.state_file!r}; "
+            "log in once and playwright-cli state-save, or put "
+            "username/password in qa.yaml"
+        )
     binary = shutil.which("playwright-cli")
     if not binary:
         raise TestRejected("playwright-cli not found; cannot load auth state")
-    if state is None or not state.is_file():
-        raise TestRejected(
-            f"missing auth state_file {acct.state_file!r}; "
-            "log in once and playwright-cli state-save"
-        )
     cmd = [
         binary,
         "--browser",

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from dev_yard.qa_config import load_qa_config
+from dev_yard.qa_config import MASK, load_qa_config
 from dev_yard.service import init_yard, repo_add, req_open
 from dev_yard.web.app import check_bind_host, create_app, render_markdown
 from dev_yard.web.board import asset_file
@@ -877,7 +877,7 @@ def test_qa_config_api(tmp_path: Path, monkeypatch):
             "local": {
                 "base_url": "http://127.0.0.1:8080",
                 "auth": {"default": "default", "accounts": {}},
-                "db": {"url_env": "YARD_QA_DB_URL"},
+                "db": {"url": "postgres://127.0.0.1:5432/app"},
                 "script": {"runner": ""},
                 "notes": ["先起前端"],
             }
@@ -909,7 +909,7 @@ def test_qa_config_api(tmp_path: Path, monkeypatch):
             "test": {
                 "base_url": "https://test.example.com",
                 "auth": {"default": "default", "accounts": {}},
-                "db": {"url_env": ""},
+                "db": {"url": ""},
                 "script": {"runner": ""},
                 "notes": [],
             },
@@ -930,6 +930,63 @@ def test_qa_config_api(tmp_path: Path, monkeypatch):
     assert broken.json()["payload"] is None
     assert client.put("/api/qa-config", json=payload).status_code == 409
     assert (yard / "qa.yaml").read_text(encoding="utf-8") == "envs: [unclosed\n"
+
+
+def test_qa_config_api_never_exposes_secrets(tmp_path: Path, monkeypatch):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    monkeypatch.setattr(
+        "dev_yard.web.app.list_pi_catalog",
+        lambda: {"providers": [], "error": None},
+    )
+    client = _client(yard)
+    payload = {
+        "active_env": "local",
+        "browser": {"channel": "chrome", "headed": False},
+        "workers": [
+            {"id": "a", "provider": "rcc", "model": "grok-4", "concurrency": 1, "priority": 1}
+        ],
+        "envs": {
+            "local": {
+                "base_url": "http://127.0.0.1:8080",
+                "auth": {
+                    "default": "default",
+                    "accounts": {
+                        "default": {
+                            "username": "admin",
+                            "password": "s3cret",
+                            "state_file": ".yard-qa/auth.json",
+                        }
+                    },
+                },
+                "db": {"url": "postgres://user:pw@host/db"},
+                "script": {"runner": ""},
+                "notes": [],
+            }
+        },
+    }
+    assert client.put("/api/qa-config", json=payload).status_code == 200
+    got = client.get("/api/qa-config").json()
+    assert "s3cret" not in got["raw"]
+    assert "user:pw@host" not in got["raw"]
+    assert got["payload"]["envs"]["local"]["auth"]["accounts"]["default"]["password"] == MASK
+    assert got["payload"]["envs"]["local"]["db"]["url"] == MASK
+    masked = got["payload"]
+    masked["envs"]["local"]["notes"] = ["改过"]
+    assert client.put("/api/qa-config", json=masked).status_code == 200
+    cfg = load_qa_config(yard)
+    assert cfg.env.accounts["default"].password == "s3cret"
+    assert cfg.env.db_url == "postgres://user:pw@host/db"
+
+    # A broken file leaks nothing through raw or the parse error.
+    (yard / "qa.yaml").write_text(
+        'envs:\n  local:\n    db:\n      url: "postgres://u:LEAK@h/db\n',
+        encoding="utf-8",
+    )
+    broken = client.get("/api/qa-config").json()
+    assert broken["payload"] is None
+    assert "LEAK" not in broken["raw"]
+    assert "LEAK" not in broken["parse_error"]
 
 
 def test_qa_config_api_survives_a_non_utf8_file(tmp_path: Path):
