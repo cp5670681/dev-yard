@@ -1168,3 +1168,48 @@ def test_req_test_setup_failure_still_runs_cleanup(
     assert kinds == ["setup", "cleanup"]
     assert result["summary"]["blocked"] == 1
 
+
+def test_req_test_default_case_runner_success(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-DEF")
+    _write_case(
+        yard,
+        "QA-DEF",
+        "case-01.md",
+        "---\nid: case-01\ntitle: test case 1\nrepo: backend\n---\n\nbody\n",
+    )
+
+    def fake_run_pi_print(argv, root, prompt, on_line=None):
+        # Locate the evidence dir from prompt or find it under yard/reqs/QA-DEF/qa/evidence
+        ev_dirs = list((yard / "reqs" / "QA-DEF" / "qa" / "evidence").iterdir())
+        assert ev_dirs
+        case_dir = ev_dirs[0] / "case-01"
+        assert case_dir.is_dir()
+        result_yaml = case_dir / "result.yaml"
+        result_yaml.write_text(
+            yaml.safe_dump(
+                {
+                    "case": "case-01",
+                    "status": "passed",
+                    "repo": "backend",
+                    "assertions": [
+                        {"type": "ui", "expected": "ok", "actual": "ok", "status": "passed"}
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return 0, "ok"
+
+    monkeypatch.setattr("dev_yard.qa.run_pi_print", fake_run_pi_print)
+    monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: {})
+    result = req_test(
+        yard, "QA-DEF", print_mode=True, run_only=True, ingest=False
+    )
+    assert result["summary"]["passed"] == 1
+    assert result["summary"]["blocked"] == 0
+
+

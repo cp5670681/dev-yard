@@ -1033,6 +1033,7 @@ def _req_test(
         case_dir = run_dir / job.id
         case_dir.mkdir(parents=True, exist_ok=True)
         (case_dir / "screenshots").mkdir(exist_ok=True)
+        result_path = case_dir / "result.yaml"
 
         def _echo(line: str) -> None:
             if on_log is not None:
