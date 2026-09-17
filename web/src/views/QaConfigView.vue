@@ -1,6 +1,6 @@
 <template>
   <div>
-    <div class="qa-head">
+    <div ref="headRef" class="qa-head">
       <div style="min-width: 0">
         <h1 class="text-h5 text-sm-h4 mb-1">测试配置</h1>
         <p class="text-medium-emphasis text-body-2 mb-0">
@@ -45,7 +45,7 @@
 
     <v-row v-if="form && currentEnv">
       <v-col cols="12" md="4" lg="3">
-        <v-card variant="outlined" class="env-rail">
+        <v-card variant="outlined" class="env-rail" :style="{ top: railTop }">
           <v-card-item>
             <template #prepend>
               <v-avatar color="primary" variant="tonal" size="36" rounded="sm">
@@ -453,10 +453,8 @@
       </v-col>
     </v-row>
 
-    <div v-if="form && currentEnv" class="d-flex justify-end mt-4">
-      <v-btn color="primary" :prepend-icon="mdiContentSave" :loading="saving" @click="save">
-        保存到 qa.yaml
-      </v-btn>
+    <div v-if="form && currentEnv" class="d-flex align-center justify-end ga-2 mt-4">
+      <span class="text-caption text-medium-emphasis">{{ saveHint }}</span>
     </div>
 
     <v-expansion-panels v-if="state" variant="accordion" class="mt-4">
@@ -503,7 +501,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   mdiAccountKeyOutline,
   mdiAccountOutline,
@@ -562,6 +560,10 @@ const renameDialog = ref(false);
 const revealed = ref<Set<string>>(new Set());
 /** Suppress the dirty flag while `load` writes into the form. */
 let loading = false;
+const headRef = ref<HTMLElement | null>(null);
+/** Sticky offset for the env rail: app bar (56) + the sticky header + a gap. */
+const railTop = ref("140px");
+let headRo: ResizeObserver | undefined;
 
 const catalog = computed(() => state.value?.catalog ?? { providers: [], error: null });
 const catalogError = computed(() => catalog.value.error || "");
@@ -582,6 +584,11 @@ const namedAccounts = computed(() => accountNames.value.length);
 const totalConcurrency = computed(() =>
   (form.value?.workers ?? []).reduce((sum, w) => sum + (Number(w.concurrency) || 1), 0),
 );
+const saveHint = computed(() => {
+  if (dirty.value) return "有改动未保存，点右上角「保存」写回 qa.yaml。";
+  if (state.value && !state.value.exists) return "还没有 qa.yaml，点右上角「保存」创建。";
+  return "已与 qa.yaml 一致。";
+});
 
 watch(
   [form, drafts],
@@ -928,7 +935,20 @@ async function save() {
   }
 }
 
-onMounted(load);
+function measureHead() {
+  const height = headRef.value?.offsetHeight ?? 0;
+  railTop.value = `${56 + height + 8}px`;
+}
+
+onMounted(() => {
+  load();
+  measureHead();
+  if (typeof ResizeObserver !== "undefined" && headRef.value) {
+    headRo = new ResizeObserver(measureHead);
+    headRo.observe(headRef.value);
+  }
+});
+onUnmounted(() => headRo?.disconnect());
 </script>
 
 <style scoped>
@@ -949,7 +969,6 @@ onMounted(load);
 @media (min-width: 960px) {
   .env-rail {
     position: sticky;
-    top: 140px;
   }
 }
 
