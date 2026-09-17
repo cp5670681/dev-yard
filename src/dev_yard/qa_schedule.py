@@ -58,6 +58,7 @@ class CaseJob:
     ended_at: str | None = None
     reason: str = ""
     failure: dict[str, Any] | None = None
+    assertions: list[Any] = field(default_factory=list)
 
 
 RunCase = Callable[[CaseJob, PoolSlot], dict[str, Any]]
@@ -120,8 +121,13 @@ def pick_pool(pools: list[PoolSlot]) -> PoolSlot | None:
     return min(free, key=lambda p: (p.priority, p.id))
 
 
-def pick_case(cases: list[CaseJob]) -> CaseJob | None:
-    ready = [c for c in cases if c.state == "ready"]
+def pick_case(cases: list[CaseJob], busy_accounts: set[str] | None = None) -> CaseJob | None:
+    busy = busy_accounts or set()
+    ready = [
+        c
+        for c in cases
+        if c.state == "ready" and not (c.account and c.account in busy)
+    ]
     if not ready:
         return None
     return min(ready, key=lambda c: (case_rank(c.priority), c.id))
@@ -236,12 +242,13 @@ def run_schedule(
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         inflight: dict[Any, tuple[CaseJob, PoolSlot]] = {}
+        inflight_accounts: set[str] = set()
         while True:
             refresh_ready(cases)
             if not breaker:
                 while True:
                     slot = pick_pool(pools)
-                    job = pick_case(cases)
+                    job = pick_case(cases, inflight_accounts)
                     if slot is None or job is None:
                         break
                     job.state = "running"
@@ -250,6 +257,10 @@ def run_schedule(
                     job.provider = slot.provider
                     job.started_at = now_iso()
                     slot.inflight += 1
+                    if job.account:
+                        # Cases on one account must not run at once: they share
+                        # the login state and would stomp each other.
+                        inflight_accounts.add(job.account)
                     ping()
                     fut = pool.submit(_safe_run, run_case, job, slot)
                     inflight[fut] = (job, slot)
@@ -259,6 +270,8 @@ def run_schedule(
             for fut in done:
                 job, slot = inflight.pop(fut)
                 slot.inflight = max(0, slot.inflight - 1)
+                if job.account:
+                    inflight_accounts.discard(job.account)
                 result = fut.result()
                 status = normalize_status(result.get("status"))
                 job.state = status
@@ -268,6 +281,8 @@ def run_schedule(
                     if isinstance(result.get("failure"), dict)
                     else None
                 )
+                if isinstance(result.get("assertions"), list):
+                    job.assertions = result["assertions"]
                 if result.get("model"):
                     job.model = str(result.get("model"))
                 if result.get("provider"):

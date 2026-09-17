@@ -19,6 +19,9 @@ def map_qa_result(run: dict[str, Any], cases: list[dict[str, Any]]) -> InboundRe
         return None
     if failed == 0 and blocked > 0:
         return None
+    # A skipped-only run proves nothing: do not ingest it as a pass.
+    if failed == 0 and passed == 0:
+        return None
 
     by_id = {}
     for item in cases:

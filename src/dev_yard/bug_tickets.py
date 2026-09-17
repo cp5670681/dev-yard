@@ -318,7 +318,11 @@ def fix_ticket_ids(
     kind: str,
 ) -> list[str]:
     if ids:
-        return [tid for tid in ids if tid in tickets]
+        return [
+            tid
+            for tid in ids
+            if tid in tickets and getattr(tickets[tid], "source", "") == kind
+        ]
     runnable = {"ready", "blocked", "implementing"}
     slots = st.tickets_map(data.get("tickets"))
     out: list[str] = []

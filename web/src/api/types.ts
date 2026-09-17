@@ -277,6 +277,8 @@ export interface QaConfigPayload {
   workers: QaWorkerCfg[];
   envs: Record<string, QaEnvCfg>;
   env_names: string[];
+  /** new env name → old name, so a rename keeps masked secrets on the server. */
+  renamed?: Record<string, string>;
 }
 
 /** PUT body: the env names are derived from `envs`, so they are not sent. */

@@ -192,6 +192,11 @@ def accept_test_report(
         if report.verdict in {"failed", "blocked"} and not report.findings:
             raise ReportRejected("findings are required when submitting bugs")
         if report.verdict == "passed":
+            if data.get("phase") != "testing":
+                raise ReportRejected(
+                    f"{jira} phase={data.get('phase')}; run `dev-yard req submit-test` "
+                    "before passing"
+                )
             parsed = load_tickets(req)
             data = st.sync_tickets(data, parsed)
             if not st.all_done(data):

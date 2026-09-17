@@ -49,6 +49,17 @@ def test_submit_test_requires_contract(tmp_path: Path, git_src: Path, monkeypatc
         submit_test(yard, "AB-40")
 
 
+def test_pass_requires_submit_test(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _done_with_contract(tmp_path, git_src, "AB-49")
+    assert st.load(yard, "AB-49")["phase"] == "frozen"
+    with pytest.raises(ReportRejected, match="submit-test"):
+        accept_test_report(
+            yard, "AB-49", InboundReport(verdict="passed", body="# ok\n", source="web")
+        )
+
+
 def test_submit_and_accept_pass(tmp_path: Path, git_src: Path, monkeypatch):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)

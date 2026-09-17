@@ -301,6 +301,7 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
         and has_worktrees
         and not qa_reason
         and detail.phase == "testing"
+        and tickets_done
     )
     if not can_fill:
         run_reason = (

@@ -105,6 +105,22 @@ def test_used_accounts_lists_each_once():
     assert names == ["buyer", "admin"]
 
 
+def test_run_lock_release_keeps_another_holders_lock(tmp_path: Path):
+    """A finished run must not unlink a lock a successor already holds."""
+    from dev_yard.qa import _run_lock
+
+    lock = tmp_path / ".yard-qa" / "locks" / "J-1.run.lock"
+    with _run_lock(tmp_path, "J-1"):
+        with pytest.raises(TestRejected):
+            with _run_lock(tmp_path, "J-1"):
+                pass
+    assert not lock.exists()
+    # if the lock was replaced while we held it, our release must not unlink it
+    with _run_lock(tmp_path, "J-1"):
+        lock.write_text("4242:someoneelse", encoding="utf-8")
+    assert lock.exists()
+
+
 def test_preload_skips_missing_state_with_creds_when_sequential(tmp_path: Path):
     cfg = _cfg(
         {

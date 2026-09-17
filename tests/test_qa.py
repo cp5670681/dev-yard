@@ -504,6 +504,78 @@ def test_req_test_rejects_unconfigured_case_account(
         )
 
 
+def test_req_test_blocked_while_bug_tickets_open(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard.test_report import accept_test_report, parse_inbound
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-R1")
+    accept_test_report(
+        yard,
+        "QA-R1",
+        parse_inbound(
+            {
+                "verdict": "failed",
+                "body": "x",
+                "findings": [{"id": "F1", "title": "x", "repo": "backend"}],
+            },
+            "api",
+        ),
+    )
+    with pytest.raises(TestRejected, match="open tickets"):
+        req_test(
+            yard,
+            "QA-R1",
+            print_mode=True,
+            run_only=True,
+            ingest=False,
+            case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
+        )
+
+
+def test_req_test_serializes_default_account_cases(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-S1")
+    (yard / "qa.yaml").write_text(
+        "active_env: local\n"
+        "browser:\n  channel: chrome\n  headed: false\n"
+        "workers:\n"
+        "  - id: a\n    provider: rcc\n    model: grok-4\n"
+        "    concurrency: 2\n    priority: 1\n"
+        "envs:\n  local:\n    base_url: http://127.0.0.1:8080\n"
+        "    auth:\n      default: admin\n"
+        "      accounts:\n        admin: { username: admin, password: pw }\n",
+        encoding="utf-8",
+    )
+    mod = yard / "reqs" / "QA-S1" / "qa" / "cases" / "mod"
+    mod.mkdir(parents=True)
+    for i in (1, 2):
+        (mod / f"case-0{i}.md").write_text(
+            f"---\nid: case-0{i}\ntitle: t\nrepo: backend\n---\n\nbody\n",
+            encoding="utf-8",
+        )
+    guard = threading.Lock()
+    live = {"n": 0}
+    peak = {"n": 0}
+
+    def run(job, slot):
+        with guard:
+            live["n"] += 1
+            peak["n"] = max(peak["n"], live["n"])
+        time.sleep(0.05)
+        with guard:
+            live["n"] -= 1
+        return {"status": "passed", "repo": "backend"}
+
+    req_test(yard, "QA-S1", print_mode=True, run_only=True, ingest=False, case_runner=run)
+    assert peak["n"] == 1
+
+
 def test_plugin_cannot_use_qa_stage_name(tmp_path: Path):
     from dev_yard import stages
 

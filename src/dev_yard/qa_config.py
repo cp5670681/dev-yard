@@ -24,6 +24,11 @@ class QaConfigUnreadable(TestRejected):
 
 # env keys the form owns; anything else in that env is carried through a save
 _MANAGED_ENV_KEYS = frozenset({"base_url", "auth", "db", "script", "notes"})
+_MANAGED_TOP_KEYS = frozenset({"active_env", "browser", "workers", "envs"})
+_MANAGED_BROWSER_KEYS = frozenset({"channel", "headed"})
+_MANAGED_WORKER_KEYS = frozenset(
+    {"id", "provider", "model", "concurrency", "priority"}
+)
 # managed keys nested one level below the env; the rest are carried through.
 # Legacy `*_env` keys are included so a save drops them instead of carrying
 # dead fields forward.
@@ -43,13 +48,24 @@ MASK = "********"
 # delimiter, so an unterminated value (as a YAML parse error may echo) is still
 # fully masked.
 _SECRET = re.compile(
-    r"""\b(password|url)([ \t]*[:=][ \t]*)(?:"[^"]*"|'[^']*'|[^\n,}\]]+)"""
+    r"""(?<![A-Za-z0-9_])(password|passwd|url|token|secret|api_key|apikey"""
+    r"""|secret_key|access_key|private_key)([ \t]*[:=][ \t]*)"""
+    r"""(?:"[^"]*"|'[^']*'|[^\n,}\]]+)"""
 )
+# Credentials embedded in a URL (`scheme://user:pass@host`), e.g. a base_url.
+# Requires a colon in the userinfo so a bare `ssh://git@host` is left alone.
+_URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s:]*:[^/@\s]*@")
+
+
+def redact_url(text: str) -> str:
+    """Mask credentials embedded in URLs while keeping scheme and host."""
+    return _URL_USERINFO.sub(lambda m: f"{m.group(1)}{MASK}@", text)
 
 
 def redact_qa_yaml(text: str) -> str:
     """Mask credential values in a qa.yaml dump (or a parse error) for display."""
-    return _SECRET.sub(lambda m: f"{m.group(1)}{m.group(2)}{MASK}", text)
+    masked = _SECRET.sub(lambda m: f"{m.group(1)}{m.group(2)}{MASK}", text)
+    return redact_url(masked)
 
 
 @dataclass(frozen=True)
@@ -372,7 +388,7 @@ def _assert_secret_ignored(root: Path, path: Path) -> None:
     if ignored is not None and ignored.returncode != 0:
         raise TestRejected(
             f"{rel} is not gitignored; refusing to write plaintext secrets there. "
-            "Add `.yard-qa/` to .gitignore."
+            "Add it (or `.yard-qa/`) to .gitignore."
         )
 
 
@@ -432,7 +448,9 @@ def _read_data(root: Path) -> dict[str, Any]:
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError as e:
-        raise QaConfigUnreadable(f"qa.yaml is not readable YAML: {e}") from e
+        raise QaConfigUnreadable(
+            f"qa.yaml is not readable YAML: {redact_qa_yaml(str(e))}"
+        ) from e
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -516,16 +534,24 @@ def _env_to_raw(raw: Any, field: str, previous: Any = None) -> dict[str, Any]:
     return out
 
 
-def _workers_to_raw(raw: Any) -> list[dict[str, Any]]:
-    """Form payload rows → worker mappings; defaults are left implicit."""
+def _workers_to_raw(raw: Any, previous: Any = None) -> list[dict[str, Any]]:
+    """Form payload rows → worker mappings; defaults are left implicit.
+
+    Worker keys the form does not own are carried over by row index from
+    `previous`, so a save never drops hand-written per-worker config.
+    """
     if raw is None:
         return []
     if not isinstance(raw, list):
         raise TestRejected("qa.yaml workers must be a list")
+    prev = previous if isinstance(previous, list) else []
     out: list[dict[str, Any]] = []
     for i, item in enumerate(raw):
         row = _raw_mapping(item, f"workers[{i}]")
-        entry: dict[str, Any] = {}
+        prev_row = prev[i] if i < len(prev) and isinstance(prev[i], dict) else {}
+        entry: dict[str, Any] = {
+            k: v for k, v in prev_row.items() if k not in _MANAGED_WORKER_KEYS
+        }
         wid = _blank(row.get("id"))
         if wid:
             entry["id"] = wid
@@ -690,12 +716,20 @@ def save_qa_config(root: Path, payload: Any) -> None:
     if not isinstance(envs_in, dict) or not envs_in:
         raise TestRejected("qa payload must carry at least one env under envs")
     existing = _raw_mapping(data.get("envs"), "envs")
+    renamed_raw = payload.get("renamed")
+    renamed = renamed_raw if isinstance(renamed_raw, dict) else {}
     merged: dict[str, Any] = {}
     for raw_name, env_raw in envs_in.items():
         name = _blank(raw_name)
         if not name:
             raise TestRejected("qa.yaml env name must not be empty")
         previous = existing.get(name)
+        if previous is None:
+            # The form renamed this env: recover its old entry so masked
+            # secrets resolve to the stored value instead of being dropped.
+            old = renamed.get(name)
+            if isinstance(old, str):
+                previous = existing.get(old)
         prev_env = previous if isinstance(previous, dict) else {}
         # Keys the form does not own stay as written; the ones it does own
         # follow the form, so clearing a field clears it.
@@ -706,21 +740,29 @@ def save_qa_config(root: Path, payload: Any) -> None:
         raise TestRejected(f"active_env {env_name!r} is not one of the envs")
     # The env a run would use must be runnable; the rest may be unfinished.
     _parse_env(env_name, merged[env_name])
-    out: dict[str, Any] = {"active_env": env_name}
+    # Unknown top-level keys survive the save (the docstring's promise).
+    out: dict[str, Any] = {
+        k: v for k, v in data.items() if k not in _MANAGED_TOP_KEYS
+    }
+    out["active_env"] = env_name
     browser_raw = _raw_mapping(payload.get("browser"), "browser")
     headed = browser_raw.get("headed", False)
     if isinstance(headed, str):
         headed = headed.lower() in {"true", "yes", "1"}
-    out["browser"] = {
-        "channel": _blank(browser_raw.get("channel")) or "chrome",
-        "headed": bool(headed),
+    prev_browser = data.get("browser") if isinstance(data.get("browser"), dict) else {}
+    browser_out = {
+        k: v for k, v in prev_browser.items() if k not in _MANAGED_BROWSER_KEYS
     }
-    workers = _workers_to_raw(payload.get("workers"))
+    browser_out["channel"] = _blank(browser_raw.get("channel")) or "chrome"
+    browser_out["headed"] = bool(headed)
+    out["browser"] = browser_out
+    workers = _workers_to_raw(payload.get("workers"), data.get("workers"))
     if workers:
         out["workers"] = workers
     out["envs"] = merged
     _parse_workers(root, out.get("workers"))
     path = paths.qa_yaml(root)
+    _assert_secret_ignored(root, path)
     tmp = path.with_suffix(".yaml.tmp")
     tmp.write_text(
         yaml.safe_dump(out, sort_keys=False, allow_unicode=True), encoding="utf-8"

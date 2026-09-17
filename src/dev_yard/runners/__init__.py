@@ -131,8 +131,21 @@ def run_pi_print(
     cwd: Path,
     prompt: str,
     on_line: Callable[[str], None] | None = None,
+    timeout: float | None = None,
 ) -> tuple[int, str]:
-    """Run `pi -p` with the prompt on stdin so large diffs do not hit ARG_MAX."""
+    """Run `pi -p` with the prompt on stdin so large diffs do not hit ARG_MAX.
+
+    A hung worker would otherwise pin its scheduler slot forever, so the process
+    is killed after `YARD_PI_TIMEOUT` seconds (default 3600; 0 disables).
+    """
+    import threading
+
+    limit = timeout
+    if limit is None:
+        try:
+            limit = float(os.environ.get("YARD_PI_TIMEOUT", "3600") or "0")
+        except ValueError:
+            limit = 3600.0
     try:
         proc = subprocess.Popen(
             argv,
@@ -148,16 +161,35 @@ def run_pi_print(
         raise
     assert proc.stdin is not None
     assert proc.stdout is not None
+    timed_out = {"hit": False}
+    timer: threading.Timer | None = None
+    if limit and limit > 0:
+        def _kill() -> None:
+            timed_out["hit"] = True
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
+        timer = threading.Timer(limit, _kill)
+        timer.daemon = True
+        timer.start()
     try:
-        proc.stdin.write(prompt)
+        try:
+            proc.stdin.write(prompt)
+        finally:
+            proc.stdin.close()
+        chunks: list[str] = []
+        for line in proc.stdout:
+            chunks.append(line)
+            if on_line is not None:
+                on_line(line)
     finally:
-        proc.stdin.close()
-    chunks: list[str] = []
-    for line in proc.stdout:
-        chunks.append(line)
-        if on_line is not None:
-            on_line(line)
+        if timer is not None:
+            timer.cancel()
     code = proc.wait()
+    if timed_out["hit"]:
+        return 124, "".join(chunks) + f"\n[timed out after {int(limit)}s; killed]\n"
     return code, "".join(chunks)
 
 

@@ -129,6 +129,7 @@ class QaConfigIn(BaseModel):
     browser: dict[str, Any] = Field(default_factory=dict)
     workers: list[dict[str, Any]] = Field(default_factory=list)
     envs: dict[str, Any] = Field(default_factory=dict)
+    renamed: dict[str, str] = Field(default_factory=dict)
 
 
 class ActionIn(BaseModel):

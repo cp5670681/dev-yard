@@ -299,12 +299,23 @@ def test_from_contract_explicit_ids(tmp_path: Path, git_src: Path, monkeypatch):
     implement(yard, "AB-24", None, runner=DryRunRunner())
     review(yard, "AB-24", None, runner=DryRunRunner())
     data = st.load(yard, "AB-24")
+    data["contract_review"] = "failed"
     data["contract_summary"] = "gap in T1"
     st.save(yard, "AB-24", data)
     cap = _Capture()
-    ran = implement(yard, "AB-24", ["T1"], from_contract=True, runner=cap)
-    assert ran == ["T1"]
+    ran = implement(yard, "AB-24", ["B1"], from_contract=True, runner=cap)
+    assert ran == ["B1"]
     assert "gap in T1" in cap.prompts[0]
+
+
+def test_from_test_explicit_normal_id_is_rejected(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-24b")
+    implement(yard, "AB-24b", None, runner=DryRunRunner())
+    review(yard, "AB-24b", None, runner=DryRunRunner())
+    with pytest.raises(ValueError, match="none of T1 are test bug tickets"):
+        implement(yard, "AB-24b", ["T1"], from_test=True, runner=DryRunRunner())
 
 
 def test_from_contract_dry_run_does_not_mutate(tmp_path: Path, git_src: Path, monkeypatch):
@@ -352,7 +363,10 @@ def test_from_contract_ids_prefers_bug_tickets():
     }
     data = {"tickets": {"T1": {"state": "done"}, "B1": {"state": "ready"}}}
     assert from_contract_ids(tickets, None, data) == ["B1"]
-    assert from_contract_ids(tickets, ["T1"], data) == ["T1"]
+    # Explicit ids only keep tickets of the right source; a normal ticket is not
+    # silently re-implemented as a contract fix.
+    assert from_contract_ids(tickets, ["T1"], data) == []
+    assert from_contract_ids(tickets, ["B1"], data) == ["B1"]
 
 
 def test_review_skips_ids_not_implemented(tmp_path: Path, git_src: Path, monkeypatch):

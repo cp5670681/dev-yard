@@ -516,6 +516,11 @@ function renameCurrent() {
     drafts.value[to] = draft;
   }
   if (form.value.active_env === from) form.value.active_env = to;
+  // Remember the original name so the server can recover masked secrets.
+  if (!form.value.renamed) form.value.renamed = {};
+  const origin = form.value.renamed[from] ?? from;
+  delete form.value.renamed[from];
+  if (origin !== to) form.value.renamed[to] = origin;
   editing.value = to;
   nameDraft.value = to;
 }
@@ -538,6 +543,7 @@ function load() {
         return;
       }
       form.value = res.payload;
+      form.value.renamed = {};
       drafts.value = {};
       const names = Object.keys(res.payload.envs);
       for (const name of names) initDraft(name);
@@ -618,8 +624,10 @@ async function save() {
         priority: intOr(w.priority, 100),
       })),
       envs,
+      renamed: form.value.renamed ?? {},
     });
     state.value = saved;
+    form.value.renamed = {};
     snack.notify("已写入 qa.yaml", "success");
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);

@@ -891,6 +891,10 @@ def implement(
             raise ValueError(
                 "no ready contract bug tickets; run a failed contract review first"
             )
+        if ids and not targets:
+            raise ValueError(
+                f"none of {', '.join(ids)} are {kind} bug tickets"
+            )
     else:
         targets = ids or st.ready_ids(data)
     runner = runner or get_runner(root, "implement", dry_run=dry_run, print_mode=print_mode)
