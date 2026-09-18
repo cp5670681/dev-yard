@@ -1365,6 +1365,12 @@ def test_ticket_review_api(tmp_path: Path, git_src: Path, monkeypatch):
     assert "Missing error handling" in data1["ticket"]["last_summary"]
     assert len(data1["jobs"]) == 0
 
+    # Requirement payload carries server-rendered markdown for the review dialog
+    detail = client.get("/api/requirements/REV-01").json()
+    t1 = next(t for t in detail["tickets"] if t["id"] == "T1")
+    assert "Missing error handling" in t1["last_summary_html"]
+    assert "<p>" in t1["last_summary_html"]
+
     # Review override: fail with feedback and auto_implement
     r_auto = client.post(
         "/api/requirements/REV-01/tickets/T1/review",

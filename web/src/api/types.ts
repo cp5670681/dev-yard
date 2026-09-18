@@ -94,6 +94,7 @@ export interface Ticket {
   can_implement: boolean;
   can_review: boolean;
   last_summary: string | null;
+  last_summary_html?: string | null;
   source?: string;
   finding?: string;
 }

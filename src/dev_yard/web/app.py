@@ -398,6 +398,11 @@ def create_app(
                     "can_implement": t.can_implement,
                     "can_review": t.can_review,
                     "last_summary": t.last_summary,
+                    "last_summary_html": (
+                        render_markdown(t.last_summary, detail.jira)
+                        if t.last_summary
+                        else ""
+                    ),
                     "source": t.source,
                     "finding": t.finding,
                 }

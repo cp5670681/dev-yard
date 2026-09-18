@@ -84,7 +84,37 @@
           确认代码符合要求。若该票有独立 Worktree 子分支，将自动合并并转为 done 状态。
         </v-alert>
 
+        <div class="d-flex justify-end mb-2">
+          <v-btn-toggle
+            v-model="mode"
+            mandatory
+            density="compact"
+            color="primary"
+            variant="outlined"
+          >
+            <v-btn value="preview" size="small" :prepend-icon="mdiEyeOutline">
+              预览
+            </v-btn>
+            <v-btn value="edit" size="small" :prepend-icon="mdiPencilOutline">
+              编辑
+            </v-btn>
+          </v-btn-toggle>
+        </div>
+
+        <!-- 预览模式 -->
+        <div v-if="mode === 'preview'" class="preview-container">
+          <div v-if="previewHtml" class="markdown" v-html="previewHtml" />
+          <pre v-else-if="summary" class="job-log">{{ summary }}</pre>
+          <v-empty-state
+            v-else
+            title="暂无审查意见"
+            text="点击「编辑」录入审查意见与修改要求。"
+          />
+        </div>
+
+        <!-- 编辑模式 -->
         <v-textarea
+          v-else
           v-model="summary"
           label="审查意见与修改要求（Markdown）"
           rows="10"
@@ -133,6 +163,8 @@ import {
   mdiAutoFix,
   mdiCheckCircleOutline,
   mdiClose,
+  mdiEyeOutline,
+  mdiPencilOutline,
 } from "@mdi/js";
 import { submitTicketReview } from "../api/client";
 import type { JobSnapshot, Ticket } from "../api/types";
@@ -156,6 +188,13 @@ const summary = ref("");
 const autoImplement = ref(true);
 const loading = ref(false);
 const error = ref("");
+const mode = ref<"preview" | "edit">("preview");
+const previewHtml = computed(() => {
+  if (summary.value === (props.ticket?.last_summary || "") && props.ticket?.last_summary_html) {
+    return props.ticket.last_summary_html;
+  }
+  return "";
+});
 
 const stateColor = computed(() => {
   if (!props.ticket?.state) return "";
@@ -176,6 +215,7 @@ watch(
       }
       autoImplement.value = true;
       error.value = "";
+      mode.value = props.ticket.last_summary ? "preview" : "edit";
     }
   },
   { immediate: true },
@@ -208,5 +248,19 @@ async function submit() {
 }
 .font-mono {
   font-family: var(--font-mono, monospace);
+}
+.preview-container {
+  min-height: 120px;
+}
+.job-log {
+  background: rgba(var(--v-theme-surface-variant), 0.5);
+  color: rgb(var(--v-theme-on-surface));
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 4px;
+  padding: 0.8rem 1rem;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
 }
 </style>
