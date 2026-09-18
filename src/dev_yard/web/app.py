@@ -645,6 +645,28 @@ def create_app(
             case["html"] = render_markdown(body, jira) if body else ""
         return payload
 
+    @app.get("/api/requirements/{jira}/qa/cases/{case_id}")
+    def api_qa_case(jira: str, case_id: str):
+        from dev_yard.qa_board import qa_case_detail
+
+        if paths.is_reserved_req_name(jira):
+            raise HTTPException(404, f"no requirement {jira}")
+        if (
+            not case_id
+            or case_id in {".", ".."}
+            or "/" in case_id
+            or "\\" in case_id
+        ):
+            raise HTTPException(404, "unknown case")
+        detail_or_404(jira)
+        data = qa_case_detail(root, jira, case_id)
+        if data is None:
+            raise HTTPException(404, f"unknown case {case_id}")
+        body = data.pop("body", "")
+        data["jira"] = jira
+        data["html"] = render_markdown(body, jira) if body else ""
+        return data
+
     @app.get("/api/requirements/{jira}/tickets/{ticket_id}/diff")
     def api_ticket_diff(jira: str, ticket_id: str):
         if paths.is_reserved_req_name(jira):

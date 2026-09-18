@@ -103,6 +103,7 @@ def qa_detail_summary(root: Path, jira: str) -> dict[str, Any]:
         model = str(cp.get("model") or "")
         reason = ""
         failure = None
+        assertions: list[dict[str, Any]] = []
         screenshots: list[str] = []
 
         if prog:
@@ -114,6 +115,7 @@ def qa_detail_summary(root: Path, jira: str) -> dict[str, Any]:
             model = str(rc.get("model") or "")
             reason = str(rc.get("reason") or "")
             failure = rc.get("failure")
+            assertions = list(rc.get("assertions") or [])
             screenshots = list(rc.get("screenshots") or [])
         elif not cp.get("depends_on"):
             state = "ready"
@@ -141,6 +143,7 @@ def qa_detail_summary(root: Path, jira: str) -> dict[str, Any]:
                 "model": model,
                 "reason": reason,
                 "failure": failure,
+                "assertions": assertions,
                 "screenshots": screenshots,
                 "run_id": run_id,
             }
@@ -257,6 +260,26 @@ def list_runs(qa: Path) -> list[dict[str, Any]]:
     return runs
 
 
+def _assertion_rows(raw: Any) -> list[dict[str, Any]]:
+    """Normalize agent-written assertion lists into a stable string shape."""
+    if not isinstance(raw, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "type": str(item.get("type") or ""),
+                "expected": str(item.get("expected") or ""),
+                "actual": str(item.get("actual") or ""),
+                "status": str(item.get("status") or ""),
+                "carrier": item.get("carrier"),
+            }
+        )
+    return rows
+
+
 def _case_run_row(run_dir: Path, cid: str, listed: dict[str, Any]) -> dict[str, Any]:
     case_dir = run_dir / cid
     raw, bad = _load_yaml(case_dir / "result.yaml")
@@ -268,6 +291,7 @@ def _case_run_row(run_dir: Path, cid: str, listed: dict[str, Any]) -> dict[str, 
             "model": listed.get("model") or "",
             "reason": "结果文件无法解析",
             "failure": None,
+            "assertions": [],
             "screenshots": _screenshots(case_dir),
         }
     data = raw if isinstance(raw, dict) else {}
@@ -279,6 +303,7 @@ def _case_run_row(run_dir: Path, cid: str, listed: dict[str, Any]) -> dict[str, 
         "model": str(data.get("model") or listed.get("model") or ""),
         "reason": str(data.get("reason") or listed.get("reason") or ""),
         "failure": failure,
+        "assertions": _assertion_rows(data.get("assertions")),
         "screenshots": _screenshots(case_dir),
         "title": str(data.get("title") or ""),
     }
@@ -308,6 +333,69 @@ def qa_page_payload(root: Path, jira: str) -> dict[str, Any]:
         "meta": meta_out,
         "cases": list_case_payloads(qa),
         "runs": list_runs(qa),
+    }
+
+
+def qa_case_detail(root: Path, jira: str, case_id: str) -> dict[str, Any] | None:
+    """One case: definition + newest run row + live state for the detail dialog."""
+    qa = paths.qa_dir(root, jira)
+    if not qa.is_dir():
+        return None
+    # Match by exact id against discovered payloads — never join case_id into a path.
+    cp = next((c for c in list_case_payloads(qa) if c.get("id") == case_id), None)
+    if cp is None:
+        return None
+    progress = latest_progress(qa)
+    progress_cases: list[Any] = []
+    if isinstance(progress, dict) and isinstance(progress.get("cases"), list):
+        progress_cases = progress["cases"]
+    prog = next(
+        (p for p in progress_cases if isinstance(p, dict) and p.get("id") == case_id),
+        None,
+    )
+    latest: dict[str, Any] | None = None
+    for run in list_runs(qa):  # newest first: first run that actually has this case
+        run_cases = run.get("cases") if isinstance(run.get("cases"), list) else []
+        rc = next(
+            (r for r in run_cases if isinstance(r, dict) and r.get("case") == case_id),
+            None,
+        )
+        if rc is None:
+            continue
+        # While the case is still in flight, its failure/screenshots on disk are
+        # stale (previous run) — hide them and let the live strip speak instead.
+        live_active = bool(prog) and str(prog.get("state") or "") in {
+            "pending",
+            "ready",
+            "running",
+        }
+        latest = {
+            "run_id": str(run.get("run_id") or ""),
+            "env": str(run.get("env") or ""),
+            "state": str((prog or {}).get("state") or rc.get("status") or ""),
+            "model": str((prog or {}).get("model") or rc.get("model") or ""),
+            "reason": str((prog or {}).get("reason") or rc.get("reason") or ""),
+            "failure": None if live_active else rc.get("failure"),
+            "assertions": [] if live_active else list(rc.get("assertions") or []),
+            "screenshots": [] if live_active else list(rc.get("screenshots") or []),
+        }
+        break
+    live = None
+    if prog:
+        live = {
+            "run_id": str((progress or {}).get("run_id") or ""),
+            "state": str(prog.get("state") or ""),
+            "model": prog.get("model"),
+            "reason": str(prog.get("reason") or ""),
+        }
+    return {
+        "case": {
+            k: cp.get(k)
+            for k in ("id", "title", "module", "priority", "repo", "covers", "depends_on", "path")
+        },
+        "body": cp.get("body") or "",
+        "latest_run": latest,
+        "live": live,
     }
 
 
