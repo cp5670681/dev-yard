@@ -18,8 +18,8 @@
     <div ref="chatEl" class="pi-chat pa-4" @scroll="onScroll">
       <v-empty-state v-if="!entries.length" :title="empty" />
       <v-card
-        v-for="(entry, i) in entries"
-        :key="i"
+        v-for="entry in visible"
+        :key="entry.seq"
         class="mb-3"
         :variant="entry.role === 'user' ? 'tonal' : 'outlined'"
       >
@@ -61,19 +61,30 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useDisplay } from "vuetify";
 import type { PiEntry } from "@/api/types";
 import { closePi, piTarget } from "@/state/pi";
 
 const { smAndDown } = useDisplay();
 
-const entries = ref<PiEntry[]>([]);
+type ChatRow = PiEntry & { seq: number };
+
+const WINDOW = 100;
+
+const entries = ref<ChatRow[]>([]);
+const start = ref(0);
+const visible = computed(() => entries.value.slice(start.value));
 const meta = ref("");
 const empty = ref("连接对话流…");
 const chatEl = ref<HTMLElement | null>(null);
 let follow = true;
 let es: EventSource | null = null;
+let buffer: ChatRow[] = [];
+let rafId = 0;
+let nextSeq = 1;
+let prepending = false;
+let finished = false;
 
 function roleLabel(role?: string) {
   if (role === "user") return "user";
@@ -90,6 +101,7 @@ function onScroll() {
   const el = chatEl.value;
   if (!el) return;
   follow = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  if (!follow && el.scrollTop < 48) void loadOlder();
 }
 
 function stop() {
@@ -97,36 +109,96 @@ function stop() {
   es = null;
 }
 
+// 同步:缓冲的 SSE 帧一次性并入 entries,每帧最多一次响应式更新 + 一次滚动。
+function flush() {
+  rafId = 0;
+  if (!buffer.length) return;
+  entries.value.push(...buffer.splice(0));
+  empty.value = "";
+  if (!follow) return;
+  start.value = Math.max(0, entries.value.length - WINDOW);
+  void nextTick(() => {
+    const el = chatEl.value;
+    if (el) el.scrollTop = el.scrollHeight;
+  });
+}
+
+// 向上加载更早消息;程序化写 scrollTop 不触发 scroll 事件,需有界循环防卡顶。
+async function loadOlder() {
+  if (prepending || start.value <= 0) return;
+  prepending = true;
+  try {
+    for (;;) {
+      const el = chatEl.value;
+      if (!el || !el.isConnected) return;
+      const anchor = el.firstElementChild;
+      const before = anchor ? anchor.getBoundingClientRect().top : 0;
+      start.value = Math.max(0, start.value - WINDOW);
+      await nextTick();
+      const el2 = chatEl.value;
+      if (!el2 || !el2.isConnected) return;
+      if (anchor && anchor.isConnected) {
+        el2.scrollTop += anchor.getBoundingClientRect().top - before;
+      }
+      if (start.value <= 0 || el2.scrollTop >= 48) return;
+    }
+  } finally {
+    prepending = false;
+  }
+}
+
 watch(
   piTarget,
   (target) => {
     stop();
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = 0;
+    buffer.length = 0;
+    prepending = false;
+    finished = false;
+    nextSeq = 1;
     entries.value = [];
+    start.value = 0;
     meta.value = "";
     empty.value = "连接对话流…";
     follow = true;
     if (!target) return;
     const url = `/api/jobs/${encodeURIComponent(target.jobId)}/pi/${encodeURIComponent(String(target.run))}/events`;
-    es = new EventSource(url);
-    es.addEventListener("snapshot", (e) => {
+    const source = new EventSource(url);
+    es = source;
+    source.addEventListener("snapshot", (e) => {
+      if (es !== source) return;
       const data = JSON.parse((e as MessageEvent).data) as { cwd?: string; found?: boolean };
       meta.value = `${data.cwd || ""}${data.found ? "" : " · 等待 session…"}`;
       if (data.found) empty.value = "";
     });
-    es.addEventListener("entry", (e) => {
-      empty.value = "";
-      entries.value.push(JSON.parse((e as MessageEvent).data) as PiEntry);
-      if (follow) {
-        void nextTick(() => {
-          const el = chatEl.value;
-          if (el) el.scrollTop = el.scrollHeight;
-        });
-      }
+    source.addEventListener("entry", (e) => {
+      if (es !== source) return;
+      const row = JSON.parse((e as MessageEvent).data) as ChatRow;
+      row.seq = nextSeq++;
+      buffer.push(row);
+      if (!rafId) rafId = requestAnimationFrame(flush);
     });
-    es.addEventListener("done", () => {
+    source.addEventListener("done", () => {
+      if (es !== source) return;
+      finished = true;
+      flush();
       stop();
       if (!entries.value.length) empty.value = "没有找到对话记录";
     });
+    source.onerror = () => {
+      if (finished || es !== source) return;
+      if (source.readyState === EventSource.CONNECTING) {
+        if (entries.value.length) {
+          flush();
+          stop();
+        }
+        return;
+      }
+      flush();
+      stop();
+      if (!entries.value.length) empty.value = "对话流连接失败";
+    };
   },
   { immediate: true },
 );
@@ -136,6 +208,7 @@ watch(
 .pi-chat {
   height: calc(100vh - 88px);
   overflow: auto;
+  overflow-anchor: none;
 }
 .pi-text {
   white-space: pre-wrap;

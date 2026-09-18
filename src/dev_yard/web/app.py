@@ -947,7 +947,7 @@ def create_app(
         async def gen():
             sse = PiChatSse(job, run_index, root)
             while True:
-                frames, done, seq = sse.poll()
+                frames, done, seq = await asyncio.to_thread(sse.poll)
                 for frame in frames:
                     yield frame
                 if done:

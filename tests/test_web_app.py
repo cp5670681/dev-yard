@@ -433,6 +433,23 @@ def test_spa_icons_use_mdi_path_constants():
     assert offenders == []
 
 
+def test_pi_drawer_keeps_scroll_anchor_and_ignores_done_error():
+    src = (
+        Path(__file__).resolve().parents[1]
+        / "web"
+        / "src"
+        / "components"
+        / "PiDrawer.vue"
+    ).read_text()
+    assert "anchor.isConnected" in src
+    assert "el2.firstElementChild" not in src
+    assert "anchor.getBoundingClientRect().top - before" in src
+    assert "finished = true" in src
+    assert "if (finished || es !== source) return;" in src
+    assert 'empty.value = "没有找到对话记录"' in src
+    assert 'empty.value = "对话流连接失败"' in src
+
+
 def test_assistant_drawer_is_wired():
     root = Path(__file__).resolve().parents[1]
     app_vue = (root / "web" / "src" / "App.vue").read_text()
