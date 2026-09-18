@@ -452,6 +452,31 @@ def test_assistant_drawer_is_wired():
     assert "v-html" in drawer
 
 
+def test_case_detail_dialog_is_wired():
+    """Board and QA page open case details in place, not via page jumps."""
+    root = Path(__file__).resolve().parents[1]
+    req_view = (root / "web" / "src" / "views" / "RequirementView.vue").read_text()
+    qa_view = (root / "web" / "src" / "views" / "QaView.vue").read_text()
+    board = (root / "web" / "src" / "components" / "TicketBoard.vue").read_text()
+    assert "CaseDetailDialog" in req_view
+    assert "openCaseDetail" in req_view
+    assert "CaseDetailDialog" in qa_view
+    assert "openCaseDetail" in qa_view
+    # The three former /qa?case= jump sites now emit/click instead of :to.
+    assert "qa?case=" not in (root / "web" / "src" / "components" / "TicketCard.vue").read_text()
+    assert "qa?case=" not in (root / "web" / "src" / "components" / "QaTestCard.vue").read_text()
+    assert "qa?case=" not in req_view
+    assert '"open-case"' in board
+
+
+def test_screenshot_viewer_replaces_preview_dialogs():
+    root = Path(__file__).resolve().parents[1]
+    for name in ("RequirementView.vue", "QaView.vue"):
+        src = (root / "web" / "src" / "views" / name).read_text()
+        assert "ScreenshotViewer" in src, f"{name} must use ScreenshotViewer"
+        assert 'v-model="previewOpen"' not in src, f"{name} still has the old preview dialog"
+
+
 def test_app_js_uses_event_source():
     from dev_yard.web.app import HERE
 
