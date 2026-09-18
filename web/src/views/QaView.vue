@@ -24,141 +24,321 @@
       </template>
     </v-empty-state>
 
-    <v-card v-if="payload?.meta && payload.meta.status !== 'unreadable'" class="mb-4" variant="outlined">
-      <v-card-title>改动点</v-card-title>
-      <v-card-text>
-        <v-table density="compact">
+    <template v-if="payload">
+      <!-- Run selector + summary chips -->
+      <div v-if="runs.length" class="d-flex flex-wrap align-center ga-2 mb-3">
+        <v-select
+          v-model="selectedRunId"
+          :items="runItems"
+          label="执行轮次"
+          density="compact"
+          hide-details
+          variant="outlined"
+          class="run-select"
+        />
+        <template v-if="showSummary">
+          <v-chip size="small" color="success" variant="tonal">
+            通过 {{ summary.passed || 0 }}
+          </v-chip>
+          <v-chip size="small" color="error" variant="tonal">
+            失败 {{ summary.failed || 0 }}
+          </v-chip>
+          <v-chip size="small" color="warning" variant="tonal">
+            阻塞 {{ summary.blocked || 0 }}
+          </v-chip>
+          <v-chip v-if="summary.skipped" size="small" color="grey" variant="tonal">
+            跳过 {{ summary.skipped }}
+          </v-chip>
+        </template>
+        <v-chip v-else-if="liveActive" size="small" color="warning" variant="flat">
+          <v-progress-circular indeterminate size="10" width="2" class="mr-1" />
+          执行中
+        </v-chip>
+      </div>
+
+      <!-- Live banner (newest run in flight) -->
+      <v-card v-if="liveActive" class="mb-4" variant="tonal" color="warning">
+        <v-card-text>
+          <p class="text-caption mb-2">
+            <span v-for="(p, i) in livePools" :key="p.id">
+              <span v-if="i"> · </span>{{ p.model || p.id }} {{ p.inflight }}/{{ p.concurrency }}
+            </span>
+          </p>
+          <div class="d-flex flex-wrap ga-2 mb-2">
+            <v-chip
+              v-for="c in liveRunning"
+              :key="c.id"
+              size="small"
+              color="primary"
+              variant="tonal"
+              class="cursor-pointer"
+              :title="`查看用例 ${c.id} 详情`"
+              @click="openCaseDetail(c.id)"
+            >
+              {{ c.id }} {{ c.title }} · {{ c.model }}
+            </v-chip>
+          </div>
+          <p v-if="liveReady.length" class="text-caption text-medium-emphasis mb-0">
+            就绪未派发 {{ liveReady.map((c) => c.id).join(", ") }}
+          </p>
+        </v-card-text>
+      </v-card>
+
+      <!-- New failures vs previous run -->
+      <v-alert
+        v-if="newFailures.length && !newFailuresDismissed"
+        type="warning"
+        variant="tonal"
+        border="start"
+        closable
+        class="mb-4"
+        @click:close="newFailuresDismissed = true"
+      >
+        <div class="d-flex flex-wrap align-center ga-1">
+          <span class="font-weight-medium">较上轮新增失败 {{ newFailures.length }} 条：</span>
+          <v-chip
+            v-for="c in newFailures"
+            :key="c.case"
+            size="small"
+            color="error"
+            variant="tonal"
+            class="cursor-pointer"
+            @click="openCaseDetail(c.case)"
+          >
+            {{ c.case }}
+          </v-chip>
+        </div>
+      </v-alert>
+
+      <!-- Per-case table for selected run -->
+      <v-card v-if="selectedRun" variant="outlined" class="mb-4">
+        <v-card-title class="py-2 px-3">本轮执行（{{ selectedRun.cases.length }} 条）</v-card-title>
+        <v-table v-if="selectedRun.cases.length" density="compact" hover>
           <thead>
             <tr>
-              <th>id</th>
-              <th>repo</th>
-              <th>ref</th>
-              <th>desc</th>
+              <th class="pr-1" style="width: 84px">状态</th>
+              <th>用例</th>
+              <th style="width: 72px">断言</th>
+              <th style="width: 26%">失败原因</th>
+              <th style="width: 130px">截图</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="ch in changes" :key="ch.id">
-              <td><code>{{ ch.id }}</code></td>
-              <td>{{ ch.repo }}</td>
-              <td class="text-break">{{ ch.ref }}</td>
-              <td>{{ ch.desc }}</td>
-            </tr>
-          </tbody>
-        </v-table>
-      </v-card-text>
-    </v-card>
-
-    <v-card v-if="payload?.cases.length" class="mb-4" variant="outlined">
-      <v-card-title>用例</v-card-title>
-      <v-list density="compact">
-        <v-list-item
-          v-for="c in payload.cases"
-          :key="c.id"
-          :active="selectedCase === c.id"
-          :to="`/r/${jira}/qa?case=${encodeURIComponent(c.id)}`"
-        >
-          <v-list-item-title>
-            <code>{{ c.id }}</code>
-            {{ c.title }}
-          </v-list-item-title>
-          <v-list-item-subtitle>
-            {{ c.priority || "-" }} · {{ c.repo || "-" }} · covers {{ (c.covers || []).join(", ") || "-" }}
-            · {{ latestStatus(c.id) }}
-          </v-list-item-subtitle>
-        </v-list-item>
-      </v-list>
-      <v-card-text v-if="openCase">
-        <div v-if="openCase.status === 'unreadable'" class="text-error">结果文件无法解析</div>
-        <div v-else class="markdown" v-html="openCase.html" />
-      </v-card-text>
-    </v-card>
-
-    <v-expansion-panels v-if="payload?.runs.length" v-model="openRuns" multiple variant="accordion">
-      <v-expansion-panel v-for="run in payload.runs" :key="run.run_id">
-        <v-expansion-panel-title>
-          <div class="d-flex flex-wrap align-center ga-2">
-            <span>{{ run.run_id }}</span>
-            <v-chip v-if="run.status === 'unreadable'" size="x-small" color="error" variant="tonal">
-              无法解析
-            </v-chip>
-            <span v-else class="text-caption text-medium-emphasis">
-              {{ run.env }} · passed {{ run.summary?.passed || 0 }} /
-              failed {{ run.summary?.failed || 0 }} /
-              blocked {{ run.summary?.blocked || 0 }} /
-              skipped {{ run.summary?.skipped || 0 }}
-            </span>
-          </div>
-        </v-expansion-panel-title>
-        <v-expansion-panel-text>
-          <p v-if="run.status === 'unreadable'" class="text-error">结果文件无法解析</p>
-          <v-list v-else density="compact">
-            <v-list-item v-for="c in run.cases" :key="c.case">
-              <v-list-item-title>
+            <tr
+              v-for="c in selectedRun.cases"
+              :key="c.case"
+              class="cursor-pointer case-row"
+              :title="`查看 ${c.case} 详情`"
+              @click="openCaseDetail(c.case)"
+            >
+              <td class="pr-1">
                 <v-progress-circular
-                  v-if="isRunning(run, c)"
+                  v-if="isRunningCase(c)"
                   indeterminate
                   size="12"
                   width="2"
                   class="mr-1"
                 />
-                <code>{{ c.case }}</code>
-                {{ c.title || "" }}
-                <v-chip size="x-small" class="ml-2" :color="statusColor(c.status)" variant="tonal">
+                <v-chip size="x-small" :color="statusColor(c.status)" variant="tonal">
                   {{ c.status || "未跑" }}
                 </v-chip>
-                <span v-if="c.model" class="text-caption ml-2">{{ c.model }}</span>
-              </v-list-item-title>
-              <v-list-item-subtitle v-if="c.reason">{{ c.reason }}</v-list-item-subtitle>
-              <div v-if="(c.status === 'failed' || c.status === 'blocked') && shotList(run, c).length" class="mt-2">
-                <v-row>
-                  <v-col v-for="name in shotList(run, c)" :key="name" cols="6" md="3">
-                    <v-card variant="tonal" class="cursor-pointer" @click="preview = shotUrl(run.run_id, c.case, name)">
-                      <v-img :src="shotUrl(run.run_id, c.case, name)" :alt="name" height="96" cover />
-                      <v-card-subtitle class="text-truncate">{{ name }}</v-card-subtitle>
-                    </v-card>
-                  </v-col>
-                </v-row>
-              </div>
-            </v-list-item>
-          </v-list>
-        </v-expansion-panel-text>
-      </v-expansion-panel>
-    </v-expansion-panels>
-
-    <v-dialog v-model="previewOpen" max-width="960">
-      <v-card v-if="preview">
-        <v-img :src="preview" />
-        <v-card-actions>
-          <v-spacer />
-          <v-btn :href="preview" target="_blank" variant="text">新窗口</v-btn>
-          <v-btn variant="text" @click="preview = ''">关闭</v-btn>
-        </v-card-actions>
+              </td>
+              <td>
+                <v-tooltip location="top" max-width="420" :disabled="!c.title">
+                  <template #activator="{ props: tip }">
+                    <span v-bind="tip" class="text-truncate d-inline-block" style="max-width: 100%">
+                      <code class="mr-1">{{ c.case }}</code>{{ c.title || "" }}
+                    </span>
+                  </template>
+                  <span>{{ c.title || c.case }}</span>
+                </v-tooltip>
+                <span v-if="c.model" class="text-caption text-medium-emphasis ml-2 d-none d-md-inline">
+                  {{ c.model }}
+                </span>
+              </td>
+              <td>
+                <v-chip
+                  v-if="casePass(c).total"
+                  size="x-small"
+                  :color="casePass(c).passed === casePass(c).total ? 'success' : 'error'"
+                  variant="tonal"
+                >
+                  {{ casePass(c).passed }}/{{ casePass(c).total }}
+                </v-chip>
+                <span v-else class="text-caption text-disabled">-</span>
+              </td>
+              <td>
+                <span
+                  v-if="c.failure?.step_desc"
+                  class="text-error text-caption reason-cell d-inline-block text-truncate"
+                  :title="failTitle(c)"
+                >
+                  步骤 {{ c.failure.step || "?" }}: {{ c.failure.step_desc }}
+                </span>
+                <span v-else-if="c.reason" class="text-caption text-medium-emphasis reason-cell d-inline-block text-truncate" :title="c.reason">
+                  {{ c.reason }}
+                </span>
+                <span v-else class="text-caption text-disabled">-</span>
+              </td>
+              <td @click.stop>
+                <div v-if="caseShots(c).length" class="d-flex ga-1 align-center">
+                  <v-img
+                    v-for="(shot, i) in caseShots(c).slice(0, 2)"
+                    :key="shot.url"
+                    :src="shot.url"
+                    :alt="shot.caption || ''"
+                    width="40"
+                    height="28"
+                    cover
+                    class="rounded-sm cursor-pointer shot-thumb"
+                    :title="shot.caption"
+                    @click="openViewer(c, i)"
+                  />
+                  <span
+                    v-if="caseShots(c).length > 2"
+                    class="text-caption text-primary cursor-pointer flex-shrink-0"
+                    @click="openViewer(c, 2)"
+                  >
+                    +{{ caseShots(c).length - 2 }}
+                  </span>
+                </div>
+                <span v-else class="text-caption text-disabled">-</span>
+              </td>
+            </tr>
+          </tbody>
+        </v-table>
+        <v-card-text v-else class="text-medium-emphasis text-body-2 py-6 text-center">
+          本轮还没有执行记录。
+        </v-card-text>
       </v-card>
-    </v-dialog>
+
+      <!-- Collapsed sections: definitions / changes / run history -->
+      <v-expansion-panels class="mb-4" variant="accordion">
+        <v-expansion-panel v-if="payload.cases.length" title="用例定义">
+          <v-expansion-panel-text>
+            <v-list density="compact">
+              <v-list-item
+                v-for="c in payload.cases"
+                :key="c.id"
+                class="cursor-pointer"
+                :title="`查看 ${c.id} 详情`"
+                @click="openCaseDetail(c.id)"
+              >
+                <v-list-item-title>
+                  <code>{{ c.id }}</code>
+                  {{ c.title }}
+                </v-list-item-title>
+                <v-list-item-subtitle>
+                  {{ c.priority || "-" }} · {{ c.repo || "-" }} · covers {{ (c.covers || []).join(", ") || "-" }}
+                  · {{ latestStatus(c.id) }}
+                </v-list-item-subtitle>
+              </v-list-item>
+            </v-list>
+          </v-expansion-panel-text>
+        </v-expansion-panel>
+
+        <v-expansion-panel v-if="changes.length" title="改动点">
+          <v-expansion-panel-text>
+            <v-table density="compact">
+              <thead>
+                <tr>
+                  <th>id</th>
+                  <th>repo</th>
+                  <th>ref</th>
+                  <th>desc</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="ch in changes" :key="ch.id">
+                  <td><code>{{ ch.id }}</code></td>
+                  <td>{{ ch.repo }}</td>
+                  <td class="text-break">{{ ch.ref }}</td>
+                  <td>{{ ch.desc }}</td>
+                </tr>
+              </tbody>
+            </v-table>
+          </v-expansion-panel-text>
+        </v-expansion-panel>
+
+        <v-expansion-panel v-if="runs.length" title="历史轮次">
+          <v-expansion-panel-text>
+            <v-table density="compact">
+              <thead>
+                <tr>
+                  <th>run</th>
+                  <th>env</th>
+                  <th>结果</th>
+                  <th style="width: 80px"></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="run in runs" :key="run.run_id">
+                  <td>
+                    <code>{{ run.run_id }}</code>
+                    <v-chip v-if="run.status === 'unreadable'" size="x-small" color="error" variant="tonal" class="ml-1">
+                      无法解析
+                    </v-chip>
+                    <v-chip v-if="selectedRunId === run.run_id" size="x-small" color="primary" variant="tonal" class="ml-1">
+                      当前
+                    </v-chip>
+                  </td>
+                  <td>{{ run.env || "-" }}</td>
+                  <td class="text-caption">
+                    passed {{ run.summary?.passed || 0 }} /
+                    failed {{ run.summary?.failed || 0 }} /
+                    blocked {{ run.summary?.blocked || 0 }} /
+                    skipped {{ run.summary?.skipped || 0 }}
+                  </td>
+                  <td>
+                    <v-btn
+                      v-if="selectedRunId !== run.run_id"
+                      size="x-small"
+                      variant="tonal"
+                      @click="selectRun(run.run_id)"
+                    >
+                      查看
+                    </v-btn>
+                  </td>
+                </tr>
+              </tbody>
+            </v-table>
+          </v-expansion-panel-text>
+        </v-expansion-panel>
+      </v-expansion-panels>
+    </template>
+
+    <CaseDetailDialog v-model="caseDialog.open" :jira="jira" :case-id="caseDialog.caseId" />
+    <ScreenshotViewer
+      v-model="viewer.open"
+      v-model:index="viewer.index"
+      :images="viewer.images"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { mdiClipboardCheckOutline } from "@mdi/js";
-import { useRoute } from "vue-router";
 import { getQa, getRequirement } from "@/api/client";
-import type { DocMeta, QaPage } from "@/api/types";
+import type { DocMeta, QaPage, ShotItem } from "@/api/types";
+import CaseDetailDialog from "@/components/CaseDetailDialog.vue";
 import ReqDocTabs from "@/components/ReqDocTabs.vue";
+import ScreenshotViewer from "@/components/ScreenshotViewer.vue";
+import { assertionPassCount, caseShotItems } from "@/composables/qa";
+import { runningJobs, watchJobs } from "@/state/jobs";
 
 const route = useRoute();
+const router = useRouter();
 const jira = computed(() => String(route.params.jira || ""));
 const payload = ref<QaPage | null>(null);
 const docs = ref<DocMeta[]>([]);
 const error = ref("");
-const preview = ref("");
-const previewOpen = computed({
-  get: () => Boolean(preview.value),
-  set: (v: boolean) => {
-    if (!v) preview.value = "";
-  },
-});
-const openRuns = ref<number[]>([]);
+const selectedRunId = ref("");
+const newFailuresDismissed = ref(false);
+const caseDialog = reactive({ open: false, caseId: "" });
+const caseFromQuery = ref(false);
+const viewer = reactive({ open: false, index: 0, images: [] as ShotItem[] });
 
 const crumbs = computed(() => [
   { title: "需求", to: "/" },
@@ -176,35 +356,104 @@ const changes = computed(() => {
   return Array.isArray(raw) ? raw : [];
 });
 
-const selectedCase = computed(() => String(route.query.case || ""));
-const openCase = computed(() => {
-  if (!selectedCase.value || !payload.value) return null;
-  return payload.value.cases.find((c) => c.id === selectedCase.value) || null;
+const runs = computed(() => payload.value?.runs || []);
+
+const selectedRun = computed(() => {
+  const list = runs.value;
+  return list.find((r) => r.run_id === selectedRunId.value) || list[0] || null;
 });
 
-function latestStatus(id: string) {
-  const run = payload.value?.runs[0];
-  if (!run) return "未跑";
-  const live = run.progress?.cases?.find((c) => c.id === id);
-  if (live?.state === "running") return `${live.model || ""} 在跑`.trim();
-  const row = run.cases.find((c) => c.case === id);
-  return row?.status || "未跑";
-}
+const summary = computed(() => selectedRun.value?.summary || {});
 
-function isRunning(run: QaPage["runs"][number], c: QaPage["runs"][number]["cases"][number]) {
-  const live = run.progress?.cases?.find((x) => x.id === c.case);
+const liveProgress = computed(() => selectedRun.value?.progress || null);
+
+const liveActive = computed(() => {
+  if (!selectedRun.value || selectedRun.value !== runs.value[0]) return false;
+  return Boolean(
+    liveProgress.value?.cases?.some((c) =>
+      ["pending", "ready", "running"].includes(c.state),
+    ),
+  );
+});
+
+const showSummary = computed(
+  () => Boolean(summary.value && (summary.value.total || selectedRun.value?.cases.length)),
+);
+
+const livePools = computed(() => liveProgress.value?.pools || []);
+const liveRunning = computed(
+  () => liveProgress.value?.cases?.filter((c) => c.state === "running") || [],
+);
+const liveReady = computed(
+  () => liveProgress.value?.cases?.filter((c) => c.state === "ready") || [],
+);
+
+const runItems = computed(() =>
+  runs.value.map((run) => ({
+    title: `${run.run_id} · ${run.env || "-"} · ✓${run.summary?.passed || 0} ✗${run.summary?.failed || 0}${
+      run.status === "unreadable" ? " · 无法解析" : ""
+    }`,
+    value: run.run_id,
+  })),
+);
+
+const newFailures = computed(() => {
+  const run = selectedRun.value;
+  if (!run) return [];
+  const idx = runs.value.findIndex((r) => r.run_id === run.run_id);
+  const prev = idx >= 0 ? runs.value[idx + 1] : undefined;
+  if (!prev) return [];
+  return run.cases.filter((c) => {
+    if (c.status !== "failed" && c.status !== "blocked") return false;
+    const before = prev.cases.find((p) => p.case === c.case);
+    return !before || (before.status !== "failed" && before.status !== "blocked");
+  });
+});
+
+const hasActiveRun = computed(() =>
+  Boolean(
+    runs.value[0]?.progress?.cases?.some((c) =>
+      ["pending", "ready", "running"].includes(c.state),
+    ),
+  ),
+);
+
+function isRunningCase(c: QaPage["runs"][number]["cases"][number]) {
+  const live = liveProgress.value?.cases?.find((x) => x.id === c.case);
   return live?.state === "running";
 }
 
-function shotList(_run: QaPage["runs"][number], c: QaPage["runs"][number]["cases"][number]) {
-  const names = new Set(c.screenshots || []);
-  const ev = c.failure?.evidence;
-  if (ev) names.add(String(ev).split("/").pop() || ev);
-  return [...names];
+function casePass(c: QaPage["runs"][number]["cases"][number]) {
+  return assertionPassCount(c.assertions);
 }
 
-function shotUrl(runId: string, caseId: string, name: string) {
-  return `/r/${encodeURIComponent(jira.value)}/qa/evidence/${encodeURIComponent(runId)}/${encodeURIComponent(caseId)}/screenshots/${encodeURIComponent(name)}`;
+function failTitle(c: QaPage["runs"][number]["cases"][number]): string {
+  return [c.failure?.step_desc, c.reason].filter(Boolean).join("\n");
+}
+
+function caseShots(c: QaPage["runs"][number]["cases"][number]): ShotItem[] {
+  const runId = selectedRun.value?.run_id || "";
+  if (!runId) return [];
+  return caseShotItems(jira.value, runId, c.case, c.screenshots || [], c.failure?.evidence);
+}
+
+function openViewer(c: QaPage["runs"][number]["cases"][number], index: number) {
+  viewer.images = caseShots(c);
+  viewer.index = index;
+  viewer.open = true;
+}
+
+function openCaseDetail(caseId: string, fromQuery = false) {
+  if (!caseId) return;
+  caseDialog.caseId = caseId;
+  caseDialog.open = true;
+  caseFromQuery.value = fromQuery;
+}
+
+function selectRun(runId: string) {
+  selectedRunId.value = runId;
+  newFailuresDismissed.value = false;
+  if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 function statusColor(status: string) {
@@ -215,18 +464,101 @@ function statusColor(status: string) {
   return "info";
 }
 
+function latestStatus(id: string) {
+  const run = runs.value[0];
+  if (!run) return "未跑";
+  const live = run.progress?.cases?.find((c) => c.id === id);
+  if (live?.state === "running") return `${live.model || ""} 在跑`.trim();
+  const row = run.cases.find((c) => c.case === id);
+  return row?.status || "未跑";
+}
+
 async function load() {
   error.value = "";
   try {
     const [qa, detail] = await Promise.all([getQa(jira.value), getRequirement(jira.value)]);
     payload.value = qa;
     docs.value = detail.docs || [];
-    openRuns.value = qa.runs.length ? [0] : [];
+    const ids = qa.runs.map((r) => r.run_id);
+    if (!ids.includes(selectedRunId.value)) {
+      selectedRunId.value = ids[0] || "";
+      newFailuresDismissed.value = false;
+    }
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   }
 }
 
-onMounted(load);
+// Deep link: /r/:jira/qa?case=case-XX opens the dialog once.
+watch(
+  () => route.query.case,
+  (value) => {
+    const caseId = String(value || "");
+    if (caseId) openCaseDetail(caseId, true);
+  },
+  { immediate: true },
+);
+
+watch(
+  () => caseDialog.open,
+  (open) => {
+    if (open || !caseFromQuery.value) return;
+    caseFromQuery.value = false;
+    const query = { ...route.query };
+    delete query.case;
+    void router.replace({ query });
+  },
+);
+
+// Auto-refresh: SSE for web jobs, interval for CLI-started runs.
+let stopJobs: (() => void) | undefined;
+let pollTimer: ReturnType<typeof setInterval> | undefined;
+
+watch(runningJobs, (jobs, prev) => {
+  const mine = (list: typeof jobs) =>
+    list.some((j) => j.jira === jira.value && j.action === "run-test");
+  if (mine(jobs) && !mine(prev || [])) void load();
+});
+
+watch(
+  hasActiveRun,
+  (active) => {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = undefined;
+    }
+    if (active) pollTimer = setInterval(() => void load(), 5000);
+  },
+  { immediate: true },
+);
+
+onMounted(() => {
+  stopJobs = watchJobs();
+  void load();
+});
+onUnmounted(() => {
+  stopJobs?.();
+  if (pollTimer) clearInterval(pollTimer);
+});
 watch(jira, load);
 </script>
+
+<style scoped>
+.run-select {
+  max-width: 460px;
+  min-width: 280px;
+}
+.case-row:hover {
+  background: rgba(var(--v-theme-primary), 0.04);
+}
+.reason-cell {
+  max-width: 100%;
+  vertical-align: middle;
+}
+.shot-thumb {
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+}
+.cursor-pointer {
+  cursor: pointer;
+}
+</style>
