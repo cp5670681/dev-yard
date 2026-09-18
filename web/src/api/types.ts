@@ -112,6 +112,19 @@ export interface Step {
   current: boolean;
 }
 
+export interface QaAssertion {
+  type: string;
+  expected?: string;
+  actual?: string;
+  status?: string;
+  carrier?: string | null;
+}
+
+export interface ShotItem {
+  url: string;
+  caption?: string;
+}
+
 export interface QaCaseItem {
   id: string;
   title: string;
@@ -124,6 +137,7 @@ export interface QaCaseItem {
   model?: string;
   reason?: string;
   failure?: { step?: number; step_desc?: string; evidence?: string } | null;
+  assertions?: QaAssertion[];
   screenshots?: string[];
   run_id?: string;
 }
@@ -198,7 +212,41 @@ export interface QaRunCase {
   model?: string;
   reason?: string;
   failure?: { step?: number; step_desc?: string; evidence?: string } | null;
+  assertions?: QaAssertion[];
   screenshots?: string[];
+}
+
+export interface QaCaseDetailLatestRun {
+  run_id: string;
+  env?: string;
+  state?: string;
+  model?: string;
+  reason?: string;
+  failure?: { step?: number; step_desc?: string; evidence?: string } | null;
+  assertions?: QaAssertion[];
+  screenshots?: string[];
+}
+
+export interface QaCaseDetail {
+  jira: string;
+  case: {
+    id: string;
+    title: string;
+    module?: string;
+    priority?: string;
+    repo?: string;
+    covers?: string[];
+    depends_on?: string[];
+    path?: string;
+  };
+  html: string;
+  latest_run: QaCaseDetailLatestRun | null;
+  live: {
+    run_id?: string;
+    state?: string;
+    model?: string | null;
+    reason?: string;
+  } | null;
 }
 
 export interface QaPage {

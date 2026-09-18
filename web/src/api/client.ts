@@ -8,6 +8,7 @@ import type {
   JobSnapshot,
   Meta,
   PiSettings,
+  QaCaseDetail,
   QaConfigSave,
   QaConfigState,
   QaPage,
@@ -70,6 +71,12 @@ export function deleteRequirement(jira: string) {
 
 export function getQa(jira: string) {
   return api<QaPage>(`/api/requirements/${encodeURIComponent(jira)}/qa`);
+}
+
+export function getQaCase(jira: string, caseId: string) {
+  return api<QaCaseDetail>(
+    `/api/requirements/${encodeURIComponent(jira)}/qa/cases/${encodeURIComponent(caseId)}`,
+  );
 }
 
 export function getDoc(jira: string, slug: string) {
