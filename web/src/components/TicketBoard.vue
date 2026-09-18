@@ -4,7 +4,7 @@
     <!-- 1. 需求开发任务 (Dev / Requirement Tickets) -->
     <!-- ========================================== -->
     <div class="board-section mb-5">
-      <div class="board-section-header cursor-pointer select-none" @click="isDevExpanded = !isDevExpanded">
+      <div class="board-section-header cursor-pointer select-none" @click="toggleDev()">
         <div class="d-flex align-center ga-2 flex-wrap">
           <v-icon
             :icon="isDevExpanded ? mdiChevronDown : mdiChevronRight"
@@ -32,7 +32,7 @@
             size="x-small"
             class="text-medium-emphasis"
             :prepend-icon="isDevExpanded ? mdiChevronUp : mdiChevronDown"
-            @click.stop="isDevExpanded = !isDevExpanded"
+            @click.stop="toggleDev()"
           >
             {{ isDevExpanded ? '收起' : '展开' }}
           </v-btn>
@@ -118,7 +118,7 @@
     <!-- 2. 自动化测试 (Automated QA / Test Tickets) -->
     <!-- ========================================== -->
     <div class="board-section mb-5">
-      <div class="board-section-header cursor-pointer select-none" @click="isQaExpanded = !isQaExpanded">
+      <div class="board-section-header cursor-pointer select-none" @click="toggleQa()">
         <div class="d-flex align-center ga-2 flex-wrap">
           <v-icon
             :icon="isQaExpanded ? mdiChevronDown : mdiChevronRight"
@@ -177,7 +177,7 @@
             size="x-small"
             class="text-medium-emphasis"
             :prepend-icon="isQaExpanded ? mdiChevronUp : mdiChevronDown"
-            @click.stop="isQaExpanded = !isQaExpanded"
+            @click.stop="toggleQa()"
           >
             {{ isQaExpanded ? '收起' : '展开' }}
           </v-btn>
@@ -257,7 +257,7 @@
     <!-- 3. 缺陷与 Bug 修复 (Bug Fix Tickets - B1..Bn) -->
     <!-- ========================================== -->
     <div class="board-section mb-2">
-      <div class="board-section-header cursor-pointer select-none" @click="isBugExpanded = !isBugExpanded">
+      <div class="board-section-header cursor-pointer select-none" @click="toggleBug()">
         <div class="d-flex align-center ga-2 flex-wrap">
           <v-icon
             :icon="isBugExpanded ? mdiChevronDown : mdiChevronRight"
@@ -301,7 +301,7 @@
             size="x-small"
             class="text-medium-emphasis"
             :prepend-icon="isBugExpanded ? mdiChevronUp : mdiChevronDown"
-            @click.stop="isBugExpanded = !isBugExpanded"
+            @click.stop="toggleBug()"
           >
             {{ isBugExpanded ? '收起' : '展开' }}
           </v-btn>
@@ -328,11 +328,13 @@
                       class="ghx-card-gap"
                       :ticket="t"
                       :jira="jira"
+                      :case-info="bugCaseInfo(t)"
                       @implement="$emit('implement', $event)"
                       @review="$emit('review', $event)"
                       @diff="$emit('diff', $event)"
                       @feedback="$emit('feedback', $event)"
                       @open-case="$emit('open-case', $event)"
+                      @preview-screenshot="$emit('preview-screenshot', $event)"
                     />
                   </div>
                 </div>
@@ -363,12 +365,14 @@
                 class="mb-3"
                 :ticket="t"
                 :jira="jira"
+                :case-info="bugCaseInfo(t)"
                 show-state
                 @implement="$emit('implement', $event)"
                 @review="$emit('review', $event)"
                 @diff="$emit('diff', $event)"
                 @feedback="$emit('feedback', $event)"
                 @open-case="$emit('open-case', $event)"
+                @preview-screenshot="$emit('preview-screenshot', $event)"
               />
               <div v-if="!filteredBugTickets.length" class="text-center text-medium-emphasis py-6 text-caption">
                 这一栏没有 Bug 票
@@ -386,7 +390,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useDisplay } from "vuetify";
 import {
   mdiChevronDown,
@@ -402,6 +406,7 @@ import type { Ticket, QaCaseItem, QaProgress } from "@/api/types";
 import TicketCard from "./TicketCard.vue";
 import QaTestCard from "./QaTestCard.vue";
 import { TICKET_STATE_LABELS, QA_STATE_LABELS } from "@/composables/labels";
+import { findingCaseId } from "@/composables/qa";
 
 const props = withDefaults(
   defineProps<{
@@ -430,26 +435,56 @@ defineEmits<{
 
 const { mdAndUp } = useDisplay();
 
-// Collapsible states
+// Collapsible states. Defaults follow phase/live state; once the user touches
+// a section we stop overriding it (no fighting manual toggles on every refresh).
 const isDevExpanded = ref(true);
 const isQaExpanded = ref(true);
 const isBugExpanded = ref(true);
+const touched = { dev: false, qa: false, bug: false };
 
-// Auto-expand/collapse adjustments based on content
+function toggleDev() {
+  touched.dev = true;
+  isDevExpanded.value = !isDevExpanded.value;
+}
+function toggleQa() {
+  touched.qa = true;
+  isQaExpanded.value = !isQaExpanded.value;
+}
+function toggleBug() {
+  touched.bug = true;
+  isBugExpanded.value = !isBugExpanded.value;
+}
+
+const qaLiveActive = computed(
+  () =>
+    props.qaProgress?.cases?.some((c) => ["pending", "ready", "running"].includes(c.state)) ??
+    false,
+);
+
+const qaHasTerminal = computed(() =>
+  allQaCases.value.some((c) =>
+    ["passed", "failed", "blocked", "skipped"].includes(c.state),
+  ),
+);
+
+function applyDefaults() {
+  if (!touched.dev) isDevExpanded.value = props.phase !== "testing";
+  if (!touched.qa) {
+    isQaExpanded.value =
+      props.phase === "testing" || qaLiveActive.value || qaHasTerminal.value;
+  }
+  if (!touched.bug) isBugExpanded.value = bugTickets.value.length > 0;
+}
+
+onMounted(applyDefaults);
 watch(
-  () => [props.tickets, props.qaCases, props.phase],
+  () => props.phase,
   () => {
-    // If there are bug tickets, ensure Bug section is expanded
-    const hasBugs = props.tickets.some((t) => t.id.startsWith("B"));
-    if (hasBugs) {
-      isBugExpanded.value = true;
-    }
-    // If testing phase or QA cases exist, ensure QA section is expanded
-    if (props.phase === "testing" || (props.qaCases && props.qaCases.length > 0)) {
-      isQaExpanded.value = true;
-    }
+    touched.dev = false;
+    touched.qa = false;
+    touched.bug = false;
+    applyDefaults();
   },
-  { immediate: true }
 );
 
 // Standard Ticket Columns (7 columns)
@@ -609,6 +644,16 @@ const filteredQaCases = computed(() => {
 const bugTickets = computed(() => {
   return props.tickets.filter((t) => t.id.startsWith("B") || t.source === "test" || t.source === "contract");
 });
+
+// Live-merged QA case info keyed by id, so B tickets can show their failure summary.
+const qaCaseById = computed(
+  () => new Map(allQaCases.value.map((c) => [c.id, c] as const)),
+);
+
+function bugCaseInfo(t: Ticket): QaCaseItem | null {
+  const cid = findingCaseId(t.finding || "");
+  return cid ? qaCaseById.value.get(cid) ?? null : null;
+}
 
 const bugFilter = ref("active");
 

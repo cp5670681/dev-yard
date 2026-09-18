@@ -39,6 +39,20 @@
     <v-alert v-if="error" type="error" class="mb-4" closable @click:close="error = ''">
       {{ error }}
     </v-alert>
+    <v-alert
+      v-if="runEndBanner.show"
+      :type="runEndBanner.color"
+      variant="tonal"
+      border="start"
+      closable
+      class="mb-4"
+      @click:close="runEndBanner.show = false"
+    >
+      <div class="d-flex flex-wrap align-center ga-2">
+        <span class="font-weight-medium">{{ runEndBanner.text }}</span>
+        <router-link class="text-caption" :to="`/r/${jira}/qa`">打开测试页 ›</router-link>
+      </div>
+    </v-alert>
     <JobPanel
       v-for="id in jobIds"
       :key="id"
@@ -267,7 +281,7 @@
         @review="(id) => confirmAction('review', id)"
         @diff="(id) => openDiff(id)"
         @feedback="(ticket) => openReview(ticket)"
-        @preview-screenshot="(url) => preview = url"
+        @preview-screenshot="openPreview"
         @fill-bug="confirmAction('fill-test-report')"
         @open-case="openCaseDetail"
       />
@@ -282,7 +296,7 @@
                   :elevation="isHovering ? 6 : 0"
                   variant="tonal"
                   class="cursor-pointer"
-                  @click="preview = name"
+                  @click="openPreview(name)"
                 >
                   <v-img :src="assetUrl(name)" :alt="name" height="120" cover />
                   <v-card-subtitle class="text-truncate">{{ name }}</v-card-subtitle>
@@ -485,17 +499,6 @@
       </v-card>
     </v-dialog>
 
-    <v-dialog v-model="previewOpen" max-width="960">
-      <v-card v-if="preview">
-        <v-img :src="previewImgSrc(preview)" :alt="preview" />
-        <v-card-actions>
-          <span class="text-caption px-2 text-truncate">{{ preview }}</span>
-          <v-spacer />
-          <v-btn :href="previewImgSrc(preview)" target="_blank" variant="text">新窗口</v-btn>
-          <v-btn variant="text" @click="preview = ''">关闭</v-btn>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
     <ContractReviewDialog
       v-model="contractDialog"
       :jira="jira"
@@ -503,6 +506,12 @@
       :summary="detail?.contract_summary || null"
       :summary-html="detail?.contract_summary_html"
       @reviewed="onContractReviewed"
+    />
+
+    <ScreenshotViewer
+      v-model="viewer.open"
+      v-model:index="viewer.index"
+      :images="viewer.images"
     />
 
     <TicketDiffDialog
@@ -541,10 +550,11 @@ import {
   mdiWrench,
 } from "@mdi/js";
 import { deleteRequirement, getRequirement, runAction, submitTestReport } from "@/api/client";
-import type { Action, JobSnapshot, QaProgress, ReqDetail, Ticket } from "@/api/types";
+import type { Action, JobSnapshot, QaProgress, ReqDetail, ShotItem, Ticket } from "@/api/types";
 import ContractReviewDialog from "@/components/ContractReviewDialog.vue";
 import JobPanel from "@/components/JobPanel.vue";
 import ReqDocTabs from "@/components/ReqDocTabs.vue";
+import ScreenshotViewer from "@/components/ScreenshotViewer.vue";
 import TicketBoard from "@/components/TicketBoard.vue";
 import CaseDetailDialog from "@/components/CaseDetailDialog.vue";
 import TicketDiffDialog from "@/components/TicketDiffDialog.vue";
@@ -563,12 +573,11 @@ const detail = ref<ReqDetail | null>(null);
 const error = ref("");
 const forceOpen = ref(false);
 const acting = ref("");
-const preview = ref("");
-const previewOpen = computed({
-  get: () => !!preview.value,
-  set: (v: boolean) => {
-    if (!v) preview.value = "";
-  },
+const viewer = reactive({ open: false, index: 0, images: [] as ShotItem[] });
+const runEndBanner = reactive({
+  show: false,
+  text: "",
+  color: "success" as "success" | "error" | "warning",
 });
 const confirm = reactive({
   open: false,
@@ -731,6 +740,26 @@ function onJobUpdate(job: JobSnapshot) {
   }
 }
 
+// While a run is in flight, poll so CLI-started runs (no web job) still update
+// the board; when it settles, surface the run-end banner once.
+let boardPoll: ReturnType<typeof setInterval> | undefined;
+
+watch(
+  liveHasActive,
+  (now, was) => {
+    if (boardPoll) {
+      clearInterval(boardPoll);
+      boardPoll = undefined;
+    }
+    if (now) {
+      boardPoll = setInterval(() => void load(), 5000);
+      return;
+    }
+    if (was) void load().then(showRunEndBanner);
+  },
+  { immediate: true },
+);
+
 let stop: (() => void) | undefined;
 
 async function load() {
@@ -755,6 +784,13 @@ function previewImgSrc(nameOrUrl: string) {
     return nameOrUrl;
   }
   return assetUrl(nameOrUrl);
+}
+
+function openPreview(nameOrUrl: string) {
+  if (!nameOrUrl) return;
+  viewer.images = [{ url: previewImgSrc(nameOrUrl), caption: nameOrUrl }];
+  viewer.index = 0;
+  viewer.open = true;
 }
 
 async function copy(text: string, msg = "已复制路径") {
@@ -901,15 +937,38 @@ async function onAction(action: string, ticketId?: string, env?: string, resume?
   }
 }
 
-function onJobDone() {
-  void load();
+function onJobDone(job?: JobSnapshot) {
+  void load().then(() => {
+    if (job?.action === "run-test") showRunEndBanner();
+  });
+}
+
+let lastBannerRunId = "";
+
+function showRunEndBanner() {
+  const run = detail.value?.qa?.latest_run;
+  if (!run?.run_id || run.run_id === lastBannerRunId) return;
+  lastBannerRunId = run.run_id;
+  const s = run.summary || {};
+  const failed = s.failed || 0;
+  const blocked = s.blocked || 0;
+  const bugs = detail.value?.tickets.filter((t) => t.source === "test").length || 0;
+  const text = [`本轮 ${s.passed || 0} 通过 / ${failed} 失败 / ${blocked} 阻塞`];
+  if (bugs > 0) text.push(`已拆 ${bugs} 张 B 票`);
+  runEndBanner.text = text.join(" → ");
+  runEndBanner.color = failed > 0 ? "error" : blocked > 0 ? "warning" : "success";
+  runEndBanner.show = true;
+  snack.notify(runEndBanner.text, failed > 0 ? "error" : "success");
 }
 
 onMounted(() => {
   stop = watchJobs();
   void load();
 });
-onUnmounted(() => stop?.());
+onUnmounted(() => {
+  stop?.();
+  if (boardPoll) clearInterval(boardPoll);
+});
 watch(jira, () => void load());
 watch(runningJobs, () => {
   if (!detail.value) void load();
