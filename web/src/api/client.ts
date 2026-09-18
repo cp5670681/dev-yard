@@ -203,6 +203,19 @@ export function saveQaConfig(payload: QaConfigSave) {
   });
 }
 
+export function checkQaEnv(payload: { env?: string; jira?: string }) {
+  return api<{
+    ok: boolean;
+    env: string;
+    use: string;
+    site: string;
+    steps: { step: string; status: string; detail: string }[];
+  }>("/api/qa-check-env", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function getJob(jobId: string) {
   return api<JobSnapshot>(`/api/jobs/${encodeURIComponent(jobId)}`);
 }

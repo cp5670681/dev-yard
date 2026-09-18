@@ -15,9 +15,11 @@ app = typer.Typer(help="dev-yard: multi-repo requirement worktrees")
 repo_app = typer.Typer(help="Register source repos")
 req_app = typer.Typer(help="Requirements")
 ticket_app = typer.Typer(help="Tickets / child worktrees")
+qa_app = typer.Typer(help="QA environment helpers")
 app.add_typer(repo_app, name="repo")
 app.add_typer(req_app, name="req")
 app.add_typer(ticket_app, name="ticket")
+app.add_typer(qa_app, name="qa")
 
 
 def version_callback(value: bool) -> None:
@@ -456,6 +458,43 @@ def req_accounts(
     typer.echo(
         f"写入 {path}（账号: {', '.join(accounts)}，default: {default}）"
     )
+
+
+@qa_app.command("check-env")
+def qa_check_env(
+    env: str = typer.Option("", "--env", help="qa.yaml envs.<name>; default active_env"),
+    jira: str = typer.Option("", "--jira", help="Requirement key; used to locate freeze worktree"),
+) -> None:
+    """Parse exec recipe, ping, run a hello script, print the roundtrip."""
+    from dev_yard import paths as p
+    from dev_yard.qa_config import TestRejected
+    from dev_yard.script_exec import ExecUnreachable, check_env
+
+    root = root_opt()
+    worktree = None
+    key = jira.strip()
+    if key:
+        req = p.req_dir(root, key)
+        wt_root = req / "worktrees"
+        if wt_root.is_dir():
+            for child in sorted(wt_root.iterdir()):
+                if child.is_dir():
+                    worktree = child
+                    break
+    try:
+        result = check_env(
+            root,
+            env_name=env.strip() or None,
+            jira=key or None,
+            worktree=worktree,
+            on_log=lambda line: typer.echo(line.rstrip() if isinstance(line, str) else line),
+        )
+    except (ValueError, FileNotFoundError, TestRejected, ExecUnreachable, GitError) as e:
+        _die(e)
+        return
+    for step in result.get("steps") or []:
+        typer.echo(f"{step.get('status', '?')} {step.get('step')}: {step.get('detail') or ''}".rstrip())
+    typer.echo(f"ok env={result.get('env')} use={result.get('use')} site={result.get('site')}")
 
 
 @req_app.command("test")

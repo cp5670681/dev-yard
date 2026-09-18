@@ -54,12 +54,15 @@ def latest_run_summary(qa: Path) -> dict[str, Any] | None:
     if not runs:
         return None
     top = runs[0]
-    return {
+    out = {
         "run_id": top.get("run_id"),
         "env": top.get("env"),
         "summary": top.get("summary") or {},
         "cases": top.get("cases") or [],
     }
+    if top.get("env_fault"):
+        out["env_fault"] = top["env_fault"]
+    return out
 
 
 def qa_detail_summary(root: Path, jira: str) -> dict[str, Any]:
@@ -247,16 +250,20 @@ def list_runs(qa: Path) -> list[dict[str, Any]]:
                 continue
             if (child / "result.yaml").is_file():
                 case_rows.append(_case_run_row(run_dir, child.name, {}))
-        runs.append(
-            {
-                "run_id": str(run.get("run_id") or run_dir.name),
-                "env": str(run.get("env") or ""),
-                "summary": run.get("summary") if isinstance(run.get("summary"), dict) else {},
-                "workers": run.get("workers") if isinstance(run.get("workers"), list) else [],
-                "progress": progress if isinstance(progress, dict) else None,
-                "cases": case_rows,
-            }
-        )
+        row = {
+            "run_id": str(run.get("run_id") or run_dir.name),
+            "env": str(run.get("env") or ""),
+            "summary": run.get("summary") if isinstance(run.get("summary"), dict) else {},
+            "workers": run.get("workers") if isinstance(run.get("workers"), list) else [],
+            "progress": progress if isinstance(progress, dict) else None,
+            "cases": case_rows,
+        }
+        fault = run.get("env_fault")
+        if not isinstance(fault, dict) and isinstance(progress, dict):
+            fault = progress.get("env_fault")
+        if isinstance(fault, dict) and fault:
+            row["env_fault"] = fault
+        runs.append(row)
     return runs
 
 

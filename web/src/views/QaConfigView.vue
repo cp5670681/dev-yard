@@ -19,6 +19,15 @@
           未保存
         </v-chip>
         <v-btn variant="text" :prepend-icon="mdiRefresh" :disabled="saving" @click="load">刷新</v-btn>
+        <v-btn
+          variant="tonal"
+          :prepend-icon="mdiLanCheck"
+          :loading="checking"
+          :disabled="saving"
+          @click="checkEnv"
+        >
+          检查环境
+        </v-btn>
         <v-btn color="primary" :prepend-icon="mdiContentSave" :loading="saving" @click="save">保存</v-btn>
       </div>
     </div>
@@ -145,6 +154,7 @@
           <v-divider />
           <v-tabs v-model="tab" color="primary" align-tabs="start" show-arrows>
             <v-tab value="conn" :prepend-icon="mdiLinkVariant">连接</v-tab>
+            <v-tab value="exec" :prepend-icon="mdiPipe">脚本执行</v-tab>
             <v-tab value="auth" :prepend-icon="mdiAccountKeyOutline">
               登录态
               <v-chip size="x-small" class="ml-2" variant="tonal">{{ namedAccounts }}</v-chip>
@@ -187,6 +197,111 @@
                   persistent-hint
                   hint="可留空；留空则禁止用 usql 做 DB 断言。密码含特殊字符需 URL 编码。"
                 />
+              </v-card-text>
+            </v-window-item>
+
+            <v-window-item value="exec">
+              <v-card-text class="pa-4" v-if="currentEnv.exec">
+                <v-alert
+                  v-if="currentEnv.exec.parse_error"
+                  type="error"
+                  variant="tonal"
+                  class="mb-4"
+                >
+                  {{ currentEnv.exec.parse_error }}
+                </v-alert>
+                <v-select
+                  v-model="currentEnv.exec.use"
+                  :items="EXEC_USES"
+                  label="exec.use 执行现场"
+                  variant="outlined"
+                  density="comfortable"
+                  class="mb-4"
+                  hint="local = freeze worktree；其它 = 远程。远程 base_url 配 local 会被拒绝。"
+                  persistent-hint
+                />
+                <v-row dense>
+                  <v-col cols="12" sm="6">
+                    <v-text-field
+                      v-model="currentEnv.exec.runner"
+                      label="runner"
+                      variant="outlined"
+                      density="comfortable"
+                      placeholder="bin/rails runner"
+                      class="mb-2"
+                    />
+                  </v-col>
+                  <v-col cols="12" sm="6">
+                    <v-text-field
+                      v-model.number="currentEnv.exec.timeout"
+                      label="timeout（秒）"
+                      variant="outlined"
+                      density="comfortable"
+                      class="mb-2"
+                    />
+                  </v-col>
+                  <v-col cols="12" sm="6">
+                    <v-select
+                      v-model="currentEnv.exec.payload"
+                      :items="['file', 'bundle']"
+                      label="payload"
+                      variant="outlined"
+                      density="comfortable"
+                    />
+                  </v-col>
+                  <v-col cols="12" sm="6">
+                    <v-select
+                      v-model="currentEnv.exec.db_exec"
+                      :items="['host', 'inherit']"
+                      label="db.exec"
+                      variant="outlined"
+                      density="comfortable"
+                      hint="host = 本机 usql；inherit = 同一条 exec 管道"
+                      persistent-hint
+                    />
+                  </v-col>
+                </v-row>
+                <v-checkbox v-model="currentEnv.exec.allow_cross_site" label="allow_cross_site（调试用，浏览器与脚本不在同一世界）" hide-details class="mb-2" />
+                <template v-if="currentEnv.exec.use === 'ssh'">
+                  <v-text-field v-model="currentEnv.exec.target" label="ssh target" variant="outlined" density="comfortable" class="mb-2" />
+                  <v-text-field v-model.number="currentEnv.exec.port" label="ssh port" variant="outlined" density="comfortable" class="mb-2" />
+                  <v-text-field v-model="currentEnv.exec.workdir" label="workdir" variant="outlined" density="comfortable" class="mb-2" />
+                </template>
+                <template v-else-if="currentEnv.exec.use === 'docker'">
+                  <v-text-field v-model="currentEnv.exec.container" label="docker container" variant="outlined" density="comfortable" class="mb-2" />
+                  <v-text-field v-model="currentEnv.exec.workdir" label="workdir" variant="outlined" density="comfortable" class="mb-2" />
+                </template>
+                <template v-else-if="currentEnv.exec.use === 'jms-k8s'">
+                  <v-text-field v-model="currentEnv.exec.jms_host" label="jms.host 堡垒机域名" variant="outlined" density="comfortable" class="mb-2" />
+                  <v-text-field v-model.number="currentEnv.exec.jms_port" label="jms.port" variant="outlined" density="comfortable" class="mb-2" />
+                  <v-text-field v-model="currentEnv.exec.jms_user" label="jms.user 前两段（alice@root）" variant="outlined" density="comfortable" class="mb-2" />
+                  <v-text-field v-model="currentEnv.exec.default_node" label="default_node" variant="outlined" density="comfortable" class="mb-2" />
+                  <v-textarea v-model="currentEnv.exec.nodes_text" label="nodes（每行 名: IP）" variant="outlined" density="comfortable" rows="3" class="mb-2" />
+                  <v-text-field v-model="currentEnv.exec.namespace" label="namespace" variant="outlined" density="comfortable" class="mb-2" />
+                  <v-text-field v-model="currentEnv.exec.container" label="container" variant="outlined" density="comfortable" class="mb-2" />
+                  <v-text-field v-model="currentEnv.exec.pod_selector" label="pod.selector（优先）" variant="outlined" density="comfortable" class="mb-2" />
+                  <v-text-field v-model="currentEnv.exec.pod_pattern" label="pod.pattern（无 selector 时）" variant="outlined" density="comfortable" class="mb-2" />
+                  <v-text-field v-model="currentEnv.exec.workdir" label="workdir（空=不加 cd）" variant="outlined" density="comfortable" class="mb-2" />
+                </template>
+                <template v-else-if="currentEnv.exec.use === 'raw'">
+                  <v-checkbox v-model="currentEnv.exec.shell" label="shell: true（否则 run/ping 按 argv，一行一个）" hide-details class="mb-2" />
+                  <v-textarea v-model="currentEnv.exec.run_text" label="run" variant="outlined" density="comfortable" rows="3" class="mb-2" hint="宿主把脚本喂进 stdin，不要写 < {script}" persistent-hint />
+                  <v-textarea v-model="currentEnv.exec.ping_text" label="ping" variant="outlined" density="comfortable" rows="2" class="mb-2" />
+                </template>
+                <template v-else-if="currentEnv.exec.use === 'delegate'">
+                  <v-text-field v-model="currentEnv.exec.skill" label="skill（与 command 二选一）" variant="outlined" density="comfortable" class="mb-2" />
+                  <v-textarea v-model="currentEnv.exec.run_text" label="command argv（一行一个；配了 skill 则忽略）" variant="outlined" density="comfortable" rows="2" class="mb-2" />
+                  <v-textarea v-model="currentEnv.exec.ping_text" label="ping argv" variant="outlined" density="comfortable" rows="2" class="mb-2" />
+                </template>
+                <v-alert v-if="checkResult" :type="checkResult.ok ? 'success' : 'error'" class="mt-4" variant="tonal">
+                  {{ checkResult.ok ? "check-env 通过" : "check-env 失败" }}
+                  · {{ checkResult.env }} / {{ checkResult.use }}
+                  <ul v-if="checkResult.steps?.length" class="mt-2 text-body-2">
+                    <li v-for="s in checkResult.steps" :key="s.step">
+                      {{ s.status }} {{ s.step }}{{ s.detail ? `: ${s.detail}` : "" }}
+                    </li>
+                  </ul>
+                </v-alert>
               </v-card-text>
             </v-window-item>
 
@@ -520,8 +635,10 @@ import {
   mdiEyeOffOutline,
   mdiEyeOutline,
   mdiFileCodeOutline,
+  mdiLanCheck,
   mdiLinkVariant,
   mdiMonitor,
+  mdiPipe,
   mdiNoteTextOutline,
   mdiPencilOutline,
   mdiPlus,
@@ -532,11 +649,12 @@ import {
   mdiStarOutline,
   mdiWeb,
 } from "@mdi/js";
-import { getQaConfig, saveQaConfig } from "@/api/client";
-import type { QaConfigPayload, QaConfigState, QaEnvCfg } from "@/api/types";
+import { checkQaEnv, getQaConfig, saveQaConfig } from "@/api/client";
+import type { QaConfigPayload, QaConfigState, QaEnvCfg, QaExecCfg } from "@/api/types";
 import { useSnack } from "@/composables/snack";
 
 const CHANNELS = ["chrome", "chromium", "msedge", "firefox", "webkit"];
+const EXEC_USES = ["local", "ssh", "jms-k8s", "docker", "raw", "delegate"];
 const MASK = "********";
 
 interface AccountRow {
@@ -562,6 +680,13 @@ const nameDraft = ref("");
 const newEnvName = ref("");
 const error = ref("");
 const saving = ref(false);
+const checking = ref(false);
+const checkResult = ref<{
+  ok: boolean;
+  env: string;
+  use: string;
+  steps?: { step: string; status: string; detail: string }[];
+} | null>(null);
 const dirty = ref(false);
 const tab = ref("conn");
 const renameDialog = ref(false);
@@ -651,13 +776,44 @@ function intOr(value: unknown, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function blankExec(): QaExecCfg {
+  return {
+    use: "local",
+    payload: "file",
+    parallel: false,
+    allow_cross_site: false,
+    timeout: 300,
+    runner: "",
+    workdir: "",
+    sql_runner: "",
+    target: "",
+    port: 22,
+    container: "",
+    jms_host: "",
+    jms_port: 22222,
+    jms_user: "",
+    default_node: "",
+    nodes_text: "",
+    namespace: "",
+    pod_selector: "",
+    pod_pattern: "",
+    shell: false,
+    run_text: "",
+    ping_text: "",
+    skill: "",
+    db_exec: "host",
+    parse_error: "",
+  };
+}
+
 function blankEnv(): QaEnvCfg {
   return {
     base_url: "",
     auth: { default: "default", accounts: {} },
-    db: { url: "" },
+    db: { url: "", exec: "host" },
     script: { runner: "" },
     notes: [],
+    exec: blankExec(),
   };
 }
 
@@ -848,7 +1004,11 @@ async function load() {
     form.value.renamed = {};
     drafts.value = {};
     const names = Object.keys(res.payload.envs);
-    for (const name of names) initDraft(name);
+    for (const name of names) {
+      const env = res.payload.envs[name];
+      if (!env.exec) env.exec = blankExec();
+      initDraft(name);
+    }
     editing.value = names.includes(res.payload.active_env)
       ? res.payload.active_env
       : names[0] ?? "";
@@ -893,6 +1053,26 @@ function accountProblems(): string[] {
   return problems;
 }
 
+async function checkEnv() {
+  if (!form.value) return;
+  if (dirty.value) {
+    await save();
+    if (error.value) return;
+  }
+  checking.value = true;
+  error.value = "";
+  checkResult.value = null;
+  try {
+    const res = await checkQaEnv({ env: editing.value });
+    checkResult.value = res;
+    snack.notify(res.ok ? "check-env 通过" : "check-env 未通过", res.ok ? "success" : "error");
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    checking.value = false;
+  }
+}
+
 async function save() {
   if (!form.value || !currentEnv.value) return;
   const problems = accountProblems();
@@ -913,8 +1093,9 @@ async function save() {
       envs[name] = {
         base_url: env.base_url,
         auth: { default: env.auth.default, accounts: buildAccounts(draft.accounts) },
-        db: { ...env.db },
+        db: { ...env.db, exec: env.exec?.db_exec || env.db.exec || "host" },
         script: { ...env.script },
+        exec: { ...(env.exec || blankExec()) },
         notes: draft.notes
           .split("\n")
           .map((line) => line.trim())

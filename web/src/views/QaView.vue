@@ -56,6 +56,16 @@
         </v-chip>
       </div>
 
+      <v-alert
+        v-if="envFault"
+        type="error"
+        variant="tonal"
+        class="mb-4"
+        :title="`环境故障 ${envFault.class || ''}`"
+      >
+        {{ envFault.message }}
+      </v-alert>
+
       <!-- Live banner (newest run in flight) -->
       <v-card v-if="liveActive" class="mb-4" variant="tonal" color="warning">
         <v-card-text>
@@ -366,6 +376,10 @@ const selectedRun = computed(() => {
 const summary = computed(() => selectedRun.value?.summary || {});
 
 const liveProgress = computed(() => selectedRun.value?.progress || null);
+
+const envFault = computed(
+  () => selectedRun.value?.env_fault || liveProgress.value?.env_fault || null,
+);
 
 const liveActive = computed(() => {
   if (!selectedRun.value || selectedRun.value !== runs.value[0]) return false;

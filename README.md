@@ -240,6 +240,7 @@ dev-yard web --host 0.0.0.0 --allow-remote
 | `dev-yard req push <key> [repos..]` | 推送各仓 Worktree 分支到远端 | `--remote`, `--force` |
 | `dev-yard req submit-test <key>` | 标记提测 | |
 | `dev-yard req test <key>` | 提测后自动测（qa-design + qa-run） | `--env`, `--print`, `--design-only`, `--run-only`, `--redesign`, `--no-ingest` |
+| `dev-yard qa check-env` | 解析 exec 配方、ping、hello 回显 | `--env`, `--jira` |
 | `dev-yard req accept-test <key>` | 录入测试报告 | `--verdict`, `--body-file` |
 | `dev-yard grill <key>` | 需求答辩与对齐 | `--print`, `--dry-run` |
 | `dev-yard spec <key>` | 制定方案与契约 | `--print`, `--dry-run` |

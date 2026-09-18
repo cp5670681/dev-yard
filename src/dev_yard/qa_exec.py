@@ -205,8 +205,11 @@ def run_case_script(
     kind: str,
     *,
     on_log: Any | None = None,
+    executor: Any | None = None,
 ) -> str:
-    """Run setup or cleanup. Reverts worktree files the script created."""
+    """Run setup or cleanup. Reverts worktree files the script created (local only)."""
+    from dev_yard.script_exec import ExecErrorClass, resolve_executor
+
     name = job.setup if kind == "setup" else job.cleanup
     if not name:
         return ""
@@ -217,14 +220,40 @@ def run_case_script(
     if not script.is_file():
         raise TestRejected(f"{job.id} {kind} file missing: {script}")
     wt = paths.req_worktree(root, jira, job.repo) if job.repo else None
+    inherit = (cfg.env.db_exec or "host") == "inherit"
+    if script.suffix.lower() == ".sql" and not inherit:
+        return _run_sql(cfg, script, on_log)
     started = time.time()
-    before = _porcelain_paths(wt) if wt and wt.is_dir() else set()
+    local = executor is None or getattr(executor, "site", "local") == "local"
+    if executor is None:
+        executor = resolve_executor(
+            cfg.env, base_url=cfg.env.base_url, worktree=wt, root=root
+        )
+        local = executor.site == "local"
+    else:
+        executor.worktree = wt
+        local = executor.site == "local"
+    before = _porcelain_paths(wt) if local and wt and wt.is_dir() else set()
     try:
-        if script.suffix.lower() == ".sql":
-            return _run_sql(cfg, script, on_log)
-        return _run_runner(cfg, wt, script, on_log)
+        result = executor.run(
+            script,
+            on_log=on_log,
+            env_extra={
+                "QA_ENV": cfg.active_env,
+                "QA_JIRA": jira,
+                "QA_CASE_ID": job.id,
+                "QA_SCRIPT_KIND": kind,
+            },
+        )
+        if result.code != 0:
+            err = (result.stderr or result.stdout or "").strip() or str(result.code)
+            raise TestRejected(
+                f"{executor.label} {script.name} failed: {err}",
+                error_class=str(result.error_class or ExecErrorClass.SCRIPT),
+            )
+        return (result.stdout or "").strip()
     finally:
-        if wt and wt.is_dir():
+        if local and wt and wt.is_dir():
             _revert_new_paths(wt, before, window=(started, time.time()))
 
 
@@ -241,41 +270,6 @@ def _run_sql(cfg: QaConfig, script: Path, on_log: Any | None) -> str:
     if r.returncode != 0:
         err = (r.stderr or r.stdout or "").strip() or str(r.returncode)
         raise TestRejected(f"usql {script.name} failed: {err}")
-    return (r.stdout or "").strip()
-
-
-def _run_runner(
-    cfg: QaConfig, worktree: Path | None, script: Path, on_log: Any | None
-) -> str:
-    runner = cfg.env.script_runner
-    if not runner:
-        raise TestRejected(
-            f"non-sql script {script.name} needs qa.yaml script.runner"
-        )
-    if worktree is None or not worktree.is_dir():
-        raise TestRejected(
-            f"cannot run {script.name}: freeze worktree missing for this case"
-        )
-    if not cfg.env.db_url:
-        raise TestRejected(
-            "script.runner needs qa.yaml db.url so it talks to the same DB as the browser, "
-            "not the worktree's local database.yml"
-        )
-    env = os.environ.copy()
-    env["DATABASE_URL"] = cfg.env.db_url
-    cmd = [*runner.split(), str(script)]
-    if on_log is not None:
-        on_log(f"$ (cd {worktree}) {runner} {script}")
-    r = _run(
-        cmd,
-        cwd=worktree,
-        env=env,
-        timeout=300,
-        label=f"{runner} {script.name}",
-    )
-    if r.returncode != 0:
-        err = (r.stderr or r.stdout or "").strip() or str(r.returncode)
-        raise TestRejected(f"{runner} {script.name} failed: {err}")
     return (r.stdout or "").strip()
 
 

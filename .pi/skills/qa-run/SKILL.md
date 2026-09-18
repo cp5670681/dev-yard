@@ -18,7 +18,9 @@ description: >
 
 页面 URL = `context.md` 的 `base_url` + 已知路由。不要猜 host。hash 路由必须带 `#/`（如 `http://host/#/works/...`）。
 
-造数 / 清理由**宿主**执行。不要再跑 `data.setup` / `data.cleanup`，不要对 freeze worktree 跑 `bin/rails runner`。
+造数 / 清理由**宿主**按本次 env 的 exec 配方执行。不要再跑 `data.setup` / `data.cleanup`，不要自己 ssh/kubectl，不要对 freeze worktree 跑 `bin/rails runner`。
+
+若 `context.md` 的 `exec.site` 是 remote：浏览器和脚本都打**已部署**现场，不是 freeze worktree。DB 断言以部署版模型为准。
 
 ## 禁止
 

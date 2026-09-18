@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 import re
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext as _nullcontext
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
@@ -15,7 +15,13 @@ import yaml
 
 from dev_yard import gitops, paths, status as st
 from dev_yard.config import load_repos
-from dev_yard.qa_config import QaConfig, TestRejected, load_qa_config, redact_url
+from dev_yard.qa_config import (
+    QaConfig,
+    TestRejected,
+    default_state_file,
+    load_qa_config,
+    redact_url,
+)
 from dev_yard.qa_exec import (
     ensure_auth,
     normalize_case_result,
@@ -89,8 +95,25 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
         "(state-save is only allowed when this is 1)",
         f"- db: {db} (qa.yaml envs.{cfg.active_env}.db.url)",
         f"- script.runner: {env.script_runner or '(sql only)'}",
+        f"- exec.use: {getattr(env.exec_cfg, 'use', None) or 'local'}",
+        f"- exec.site: {getattr(env.exec_cfg, 'site', None) or 'local'}",
         "",
         "This run uses only the env above; do not switch env or guess another host.",
+    ]
+    site = getattr(env.exec_cfg, "site", None) or "local"
+    if site == "remote":
+        lines.append(
+            "This env's site is remote: the browser and setup/cleanup scripts hit the "
+            "**deployed** environment, not the freeze worktree. DB assertions and seed "
+            "models follow the deployed code. Worktrees are for reading code and the "
+            "mutation gate only."
+        )
+    lines += [
+        "",
+        "Setup/cleanup scripts (host-run): single file; stdin + QA_ENV/QA_JIRA/"
+        "QA_CASE_ID/QA_SCRIPT_KIND; stdout is the only channel back; state lives in "
+        "the DB, never on the execution host's disk; do not assume two runs land on "
+        "the same replica; do not read ARGV.",
     ]
     if others:
         lines.append(
@@ -578,8 +601,9 @@ def _write_progress(
     cases: list[CaseJob],
     on_progress: ProgressFn | None,
     on_log: LogFn | None,
+    env_fault: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    payload = progress_payload(run_id, env, pools, cases)
+    payload = progress_payload(run_id, env, pools, cases, env_fault=env_fault)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
@@ -1010,15 +1034,72 @@ def _req_test(
     pools = [PoolSlot.from_worker(w) for w in cfg.workers]
     progress_path = run_dir / "progress.yaml"
     script_lock = Lock()
+    env_fault: dict[str, Any] | None = None
+    fuse_class: str | None = None
+    fuse_streak = 0
+    from dev_yard.script_exec import (
+        ExecUnreachable,
+        FUSE_CLASSES,
+        resolve_executor,
+    )
+
+    first_wt = None
+    for job in cases:
+        if job.repo:
+            cand = paths.req_worktree(root, jira, job.repo)
+            if cand.is_dir():
+                first_wt = cand
+                break
+    executor = resolve_executor(
+        cfg.env, base_url=cfg.env.base_url, worktree=first_wt, root=root
+    )
+    if executor.cross_site_warning and on_log is not None:
+        on_log(executor.cross_site_warning + "\n")
+    serial = not bool(getattr(cfg.env.exec_cfg, "parallel", False))
+    hold_setup = serial or executor.use == "jms-k8s"
 
     def ping() -> None:
         _write_progress(
-            progress_path, run_id, cfg.active_env, pools, cases, on_progress, on_log
+            progress_path,
+            run_id,
+            cfg.active_env,
+            pools,
+            cases,
+            on_progress,
+            on_log,
+            env_fault=env_fault,
         )
+
+    try:
+        executor.ping()
+    except (ExecUnreachable, TestRejected) as e:
+        env_fault = {
+            "class": getattr(e, "error_class", None) or "unreachable",
+            "message": str(e),
+        }
+        stamp = now_iso()
+        for job in cases:
+            if job.setup and job.state not in TERMINAL:
+                job.state = "blocked"
+                job.reason = f"env fault: {e}"
+                job.ended_at = stamp
+        if on_log is not None:
+            on_log(f"env fault: {e}\n")
 
     ping()
 
+    def _mark_env_fault(message: str, cls: str) -> None:
+        nonlocal env_fault
+        env_fault = {"class": cls, "message": message}
+        stamp = now_iso()
+        for c in cases:
+            if c.setup and c.state not in TERMINAL:
+                c.state = "blocked"
+                c.reason = f"env fault: {message}"
+                c.ended_at = stamp
+
     def default_case_runner(job: CaseJob, slot: PoolSlot) -> dict[str, Any]:
+        nonlocal fuse_streak, fuse_class
         spec = load_registry(root)["qa-run"]
         prompt = _run_prompt(root, jira, cfg, job, run_id)
         argv = pi_argv(
@@ -1041,15 +1122,38 @@ def _req_test(
 
         setup_failed: str | None = None
         if job.setup:
-            try:
-                with script_lock:
-                    out = run_case_script(
-                        root, jira, cfg, job, "setup", on_log=on_log
-                    )
-                if out and on_log is not None:
-                    on_log(out[-500:])
-            except TestRejected as e:
-                setup_failed = f"setup failed: {e}"
+            ctx = script_lock if hold_setup else _nullcontext()
+            with ctx:
+                if env_fault is not None:
+                    setup_failed = f"env fault: {env_fault.get('message')}"
+                else:
+                    try:
+                        out = run_case_script(
+                            root,
+                            jira,
+                            cfg,
+                            job,
+                            "setup",
+                            on_log=on_log,
+                            executor=executor,
+                        )
+                        if out and on_log is not None:
+                            on_log(out[-500:])
+                        fuse_streak = 0
+                        fuse_class = None
+                    except TestRejected as e:
+                        setup_failed = f"setup failed: {e}"
+                        cls = str(getattr(e, "error_class", None) or "")
+                        if cls == "auth" and executor.use == "jms-k8s":
+                            _mark_env_fault(str(e), cls)
+                        elif cls in FUSE_CLASSES:
+                            if cls == fuse_class:
+                                fuse_streak += 1
+                            else:
+                                fuse_class = cls
+                                fuse_streak = 1
+                            if fuse_streak >= 2:
+                                _mark_env_fault(str(e), cls)
 
         if setup_failed is not None:
             got = {
@@ -1082,8 +1186,17 @@ def _req_test(
                     on_log(raw[-500:])
         if job.cleanup:
             try:
-                with script_lock:
-                    run_case_script(root, jira, cfg, job, "cleanup", on_log=on_log)
+                ctx = script_lock if serial else _nullcontext()
+                with ctx:
+                    run_case_script(
+                        root,
+                        jira,
+                        cfg,
+                        job,
+                        "cleanup",
+                        on_log=on_log,
+                        executor=executor,
+                    )
             except TestRejected as e:
                 got = dict(got)
                 if normalize_status(got.get("status")) == "passed":
@@ -1095,13 +1208,16 @@ def _req_test(
         return got
 
     runner_fn = case_runner or default_case_runner
-    run_schedule(
-        cases,
-        pools,
-        runner_fn,
-        on_progress=ping,
-        serialize_accounts=cfg.serialize_accounts,
-    )
+    try:
+        run_schedule(
+            cases,
+            pools,
+            runner_fn,
+            on_progress=ping,
+            serialize_accounts=cfg.serialize_accounts,
+        )
+    finally:
+        executor.close()
 
     for job in cases:
         if job.state in {"skipped", "blocked"} and job.ended_at:
@@ -1157,6 +1273,8 @@ def _req_test(
         ],
         "summary": summary,
     }
+    if env_fault:
+        run_doc["env_fault"] = env_fault
     if extra:
         run_doc["mutation"] = extra
     (run_dir / "result.yaml").write_text(

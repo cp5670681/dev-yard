@@ -31,7 +31,12 @@ description: >
 7. 跨仓改动拆成多条 case，或 `covers` 只含一个主仓。每条 frontmatter 必有 `repo:`（yard alias）。
 8. `depends_on` 仅当共享可变数据或业务先后时写；无依赖省略，以便并发领取。
 9. 需要非默认账号的用例，在 frontmatter 写 `account: <名字>`；名字必须来自 `context.md` 的 Accounts 列表（宿主跑前校验，未配置会直接报错让你先跑 `dev-yard req accounts <JIRA>`）。不写就用 `account.default`。
-10. 造数优先 `.sql`（usql 打 `qa.yaml` 的 db.url）。非 SQL 脚本由宿主在 freeze worktree 里跑 runner，并注入 `DATABASE_URL`；脚本不要往 worktree 写文件（ID 用 stdout 打出）。
+10. 造数优先 `.sql`（host usql 打 `qa.yaml` 的 db.url；`db.exec: inherit` 时走与脚本同一条 exec 管道）。非 SQL 脚本由宿主按本次 env 的 `exec` 配方执行（local = freeze worktree + stdin；remote = 已部署现场 + stdin）。脚本契约：
+    - **单文件**，不要 `require` 邻居（多文件才用 payload bundle）。
+    - 状态落 **DB**，禁止把 setup→cleanup 约定写到执行现场本地文件（pod 会换副本）。
+    - 业务参数只读 `ENV['QA_ENV']` / `QA_JIRA` / `QA_CASE_ID` / `QA_SCRIPT_KIND`，**不要读 ARGV**（stdin 模式下 ARGV 是空的）。
+    - stdout 是唯一回传通道（seed id 用 `puts`/`print`）。
+    - 幂等，且不假设两次执行落在同一副本。
 
 ## meta.yaml
 

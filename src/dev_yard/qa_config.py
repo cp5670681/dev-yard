@@ -17,13 +17,17 @@ class TestRejected(ValueError):
 
     __test__ = False
 
+    def __init__(self, message: str, error_class: str | None = None) -> None:
+        super().__init__(message)
+        self.error_class = error_class
+
 
 class QaConfigUnreadable(TestRejected):
     """qa.yaml exists but cannot be parsed; the form must not clobber it."""
 
 
 # env keys the form owns; anything else in that env is carried through a save
-_MANAGED_ENV_KEYS = frozenset({"base_url", "auth", "db", "script", "notes"})
+_MANAGED_ENV_KEYS = frozenset({"base_url", "auth", "db", "script", "notes", "exec"})
 _MANAGED_TOP_KEYS = frozenset(
     {"active_env", "browser", "workers", "envs", "serialize_accounts"}
 )
@@ -38,7 +42,7 @@ _MANAGED_ACCOUNT_KEYS = frozenset(
     {"username", "password", "state_file", "username_env", "password_env"}
 )
 _MANAGED_AUTH_KEYS = frozenset({"default", "accounts"})
-_MANAGED_DB_KEYS = frozenset({"url", "url_env"})
+_MANAGED_DB_KEYS = frozenset({"url", "url_env", "exec"})
 _MANAGED_SCRIPT_KEYS = frozenset({"runner"})
 
 # Secrets are stored plaintext in qa.yaml (gitignored). The web form never sees
@@ -87,6 +91,8 @@ class QaEnv:
     db_url: str = ""
     script_runner: str = ""
     notes: tuple[str, ...] = ()
+    db_exec: str = "host"
+    exec_cfg: Any = None
 
 
 @dataclass(frozen=True)
@@ -218,14 +224,21 @@ def _parse_env(name: str, raw: Any) -> QaEnv:
         raise TestRejected("qa.yaml notes must be a list")
     default, accounts = _parse_auth(raw.get("auth"))
     filled = _with_state_files(name, accounts)
+    script_runner = _blank(script.get("runner"))
+    from dev_yard.exec_cfg import default_exec, parse_exec
+
+    exec_cfg = parse_exec(name, raw, script_runner=script_runner)
+    db_exec = _blank(db.get("exec")) or "host"
     return QaEnv(
         name=name,
         base_url=base_url,
         auth_default=default,
         accounts=filled,
         db_url=_blank(db.get("url")),
-        script_runner=_blank(script.get("runner")),
+        script_runner=script_runner,
         notes=tuple(str(n) for n in notes_raw),
+        db_exec=db_exec,
+        exec_cfg=exec_cfg or default_exec(runner=script_runner, db_exec=db_exec),
     )
 
 
@@ -563,6 +576,12 @@ def _env_to_raw(raw: Any, field: str, previous: Any = None) -> dict[str, Any]:
         db_url = _blank(prev_db.get("url"))
     if db_url:
         db_out["url"] = db_url
+    db_exec = _blank(db.get("exec"))
+    exec_form = env.get("exec") if isinstance(env.get("exec"), dict) else {}
+    if not db_exec:
+        db_exec = _blank(exec_form.get("db_exec"))
+    if db_exec and db_exec != "host":
+        db_out["exec"] = db_exec
     if db_out:
         out["db"] = db_out
 
@@ -578,6 +597,13 @@ def _env_to_raw(raw: Any, field: str, previous: Any = None) -> dict[str, Any]:
     if not isinstance(notes, list):
         raise TestRejected("qa.yaml notes must be a list")
     out["notes"] = [str(n).strip() for n in notes if str(n).strip()]
+    from dev_yard.exec_cfg import exec_from_form
+
+    exec_raw = exec_from_form(env.get("exec"), f"{field}.exec")
+    if exec_raw:
+        out["exec"] = exec_raw
+    elif isinstance(prev.get("exec"), dict) and env.get("exec") is None:
+        out["exec"] = prev["exec"]
     return out
 
 
@@ -666,16 +692,24 @@ def _env_payload(raw: Any) -> dict[str, Any]:
     db = env.get("db") if isinstance(env.get("db"), dict) else {}
     script = env.get("script") if isinstance(env.get("script"), dict) else {}
     notes = env.get("notes") if isinstance(env.get("notes"), list) else []
-    return {
+    from dev_yard.exec_cfg import exec_payload
+
+    payload = {
         "base_url": _blank(env.get("base_url")),
         "auth": {
             "default": _blank(auth.get("default")) or "default",
             "accounts": accounts,
         },
-        "db": {"url": MASK if _blank(db.get("url")) else ""},
+        "db": {
+            "url": MASK if _blank(db.get("url")) else "",
+            "exec": _blank(db.get("exec")) or "host",
+        },
         "script": {"runner": _blank(script.get("runner"))},
         "notes": [str(n) for n in notes],
+        "exec": exec_payload(env),
     }
+    payload["exec"]["db_exec"] = payload["db"]["exec"]
+    return payload
 
 
 def _browser_payload(raw: Any) -> dict[str, Any]:

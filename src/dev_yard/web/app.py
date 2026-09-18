@@ -130,6 +130,12 @@ class QaConfigIn(BaseModel):
     workers: list[dict[str, Any]] = Field(default_factory=list)
     envs: dict[str, Any] = Field(default_factory=dict)
     renamed: dict[str, str] = Field(default_factory=dict)
+    serialize_accounts: bool = False
+
+
+class QaCheckEnvIn(BaseModel):
+    env: str = ""
+    jira: str = ""
 
 
 class ActionIn(BaseModel):
@@ -1088,6 +1094,29 @@ def create_app(
         except QaConfigRejected as e:
             raise HTTPException(400, str(e)) from e
         return _qa_config_out()
+
+    @app.post("/api/qa-check-env")
+    def api_qa_check_env(payload: QaCheckEnvIn):
+        from dev_yard.script_exec import ExecUnreachable, check_env
+
+        worktree = None
+        key = payload.jira.strip()
+        if key:
+            wt_root = paths.req_dir(root, key) / "worktrees"
+            if wt_root.is_dir():
+                for child in sorted(wt_root.iterdir()):
+                    if child.is_dir():
+                        worktree = child
+                        break
+        try:
+            return check_env(
+                root,
+                env_name=payload.env.strip() or None,
+                jira=key or None,
+                worktree=worktree,
+            )
+        except (QaConfigRejected, ExecUnreachable, FileNotFoundError, ValueError) as e:
+            raise HTTPException(400, str(e)) from e
 
     @app.get("/api/repos")
     def api_repos():

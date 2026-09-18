@@ -22,6 +22,7 @@ CLI 入口是 `dev-yard`（或 `devyard`），不要用 `yard`（会撞上 Ruby 
 | `dev-yard req submit-test` | 提测（须契约审查 passed）；不跑 agent |
 | `dev-yard req accounts` | 配本需求要用的账号，写 `.yard-qa/requirements/<JIRA>/accounts.yaml`（明文、随需求变、已 gitignore）；不跑 agent |
 | `dev-yard req test` | qa-design + qa-run（提测后自动测；产物在 `reqs/<JIRA>/qa/`） |
+| `dev-yard qa check-env` | 不跑 agent；解析 qa.yaml exec 配方 → ping → hello 回显 |
 | `dev-yard implement --from-test` | 修就绪的测试 bug 票（B 票） |
 
 ## 产物

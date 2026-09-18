@@ -43,9 +43,15 @@ export interface QaProgressCase {
   reason?: string;
 }
 
+export interface QaEnvFault {
+  class?: string;
+  message?: string;
+}
+
 export interface QaProgress {
   run_id: string;
   env?: string;
+  env_fault?: QaEnvFault;
   pools?: {
     id: string;
     provider?: string | null;
@@ -263,6 +269,7 @@ export interface QaPage {
     summary?: Record<string, number>;
     workers?: unknown[];
     progress?: QaProgress | null;
+    env_fault?: QaEnvFault;
     cases: QaRunCase[];
   }[];
 }
@@ -321,12 +328,41 @@ export interface QaAccountCfg {
   state_file: string;
 }
 
+export interface QaExecCfg {
+  use: string;
+  payload: string;
+  parallel: boolean;
+  allow_cross_site: boolean;
+  timeout: number;
+  runner: string;
+  workdir: string;
+  sql_runner: string;
+  target: string;
+  port: number;
+  container: string;
+  jms_host: string;
+  jms_port: number;
+  jms_user: string;
+  default_node: string;
+  nodes_text: string;
+  namespace: string;
+  pod_selector: string;
+  pod_pattern: string;
+  shell: boolean;
+  run_text: string;
+  ping_text: string;
+  skill: string;
+  db_exec: string;
+  parse_error?: string;
+}
+
 export interface QaEnvCfg {
   base_url: string;
   auth: { default: string; accounts: Record<string, QaAccountCfg> };
-  db: { url: string };
+  db: { url: string; exec?: string };
   script: { runner: string };
   notes: string[];
+  exec: QaExecCfg;
 }
 
 export interface QaWorkerCfg {

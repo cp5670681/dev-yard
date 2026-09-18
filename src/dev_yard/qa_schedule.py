@@ -103,8 +103,12 @@ def validate_dag(cases: list[CaseJob]) -> None:
         dfs(c.id)
 
 
-def env_block_class(reason: str) -> str:
+def env_block_class(reason: str) -> str | None:
     r = (reason or "").lower()
+    # Host-side setup fuse already skipped remaining setup cases; do not
+    # also trip the schedule breaker (that would block no-setup cases).
+    if r.startswith("env fault:") or r.startswith("setup failed:"):
+        return None
     if "login" in r or "auth" in r:
         return "login"
     if "5xx" in r or _HTTP_5XX.search(r):
@@ -174,8 +178,9 @@ def progress_payload(
     env: str,
     pools: list[PoolSlot],
     cases: list[CaseJob],
+    env_fault: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "run_id": run_id,
         "env": env,
         "pools": [
@@ -205,6 +210,9 @@ def progress_payload(
             for c in cases
         ],
     }
+    if env_fault:
+        payload["env_fault"] = env_fault
+    return payload
 
 
 def progress_line(payload: dict[str, Any]) -> str:
@@ -294,7 +302,9 @@ def run_schedule(
                 job.ended_at = now_iso()
                 if status == "blocked":
                     klass = env_block_class(job.reason)
-                    if last_block_class == klass:
+                    if klass is None:
+                        pass
+                    elif last_block_class == klass:
                         breaker = True
                         breaker_reason = job.reason or "environment blocked"
                     else:

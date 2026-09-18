@@ -417,7 +417,8 @@ def test_req_test_uses_the_selected_env(tmp_path: Path, git_src: Path, monkeypat
     yard = _testing_req(tmp_path, git_src, "QA-E2")
     _write_qa_yaml(
         yard,
-        "  test:\n    base_url: https://test.example.com\n",
+        "  test:\n    base_url: https://test.example.com\n"
+        "    exec:\n      use: local\n      allow_cross_site: true\n",
     )
 
     class _Design(_DesignRunner):
@@ -829,6 +830,14 @@ def test_schedule_normalizes_status_case():
     assert normalize_status("nope") == "blocked"
 
 
+def test_env_block_class_skips_setup_fuse():
+    from dev_yard.qa_schedule import env_block_class
+
+    assert env_block_class("env fault: no route") is None
+    assert env_block_class("setup failed: timeout") is None
+    assert env_block_class("login failed") == "login"
+
+
 def test_bad_frontmatter_rejects_run(tmp_path: Path, git_src: Path, monkeypatch):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)
@@ -1167,6 +1176,143 @@ def test_req_test_setup_failure_still_runs_cleanup(
     )
     assert kinds == ["setup", "cleanup"]
     assert result["summary"]["blocked"] == 1
+
+
+def test_req_test_ping_failure_blocks_setup_only(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard.script_exec import ExecErrorClass, ExecUnreachable
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-EF")
+    _write_case(
+        yard,
+        "QA-EF",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n"
+        "data: { setup: setup.sql }\n---\n\nbody\n",
+    )
+    _write_case(
+        yard,
+        "QA-EF",
+        "case-02.md",
+        "---\nid: case-02\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+
+    class Boom:
+        use = "ssh"
+        site = "remote"
+        label = "ssh"
+        cross_site_warning = ""
+
+        def ping(self, timeout=None):
+            raise ExecUnreachable("no route", ExecErrorClass.UNREACHABLE)
+
+        def close(self):
+            return None
+
+        def run(self, *a, **k):
+            raise AssertionError("setup should not run after ping fail")
+
+    monkeypatch.setattr("dev_yard.script_exec.resolve_executor", lambda *a, **k: Boom())
+    monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: {})
+    seen: list[str] = []
+
+    def run(job, slot):
+        seen.append(job.id)
+        return {"status": "passed", "repo": "backend"}
+
+    result = req_test(
+        yard,
+        "QA-EF",
+        print_mode=True,
+        run_only=True,
+        ingest=False,
+        case_runner=run,
+    )
+    assert seen == ["case-02"]
+    assert result["summary"]["blocked"] == 1
+    assert result["summary"]["passed"] == 1
+    evidence = yard / "reqs" / "QA-EF" / "qa" / "evidence"
+    run_dir = next(p for p in evidence.iterdir() if p.is_dir())
+    doc = yaml.safe_load((run_dir / "result.yaml").read_text(encoding="utf-8"))
+    assert doc["env_fault"]["class"] == "unreachable"
+
+
+def test_req_test_setup_fuse_spares_no_setup_cases(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard.script_exec import ExecErrorClass
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-FUSE")
+    for name in ("case-01.md", "case-02.md"):
+        _write_case(
+            yard,
+            "QA-FUSE",
+            name,
+            f"---\nid: {name[:-3]}\ntitle: t\nrepo: backend\n"
+            "data: { setup: setup.rb }\n---\n\nbody\n",
+        )
+    _write_case(
+        yard,
+        "QA-FUSE",
+        "case-03.md",
+        "---\nid: case-03\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+    setup_ids: list[str] = []
+
+    def fake_script(root, jira, cfg, job, kind, **kw):
+        if kind == "setup":
+            setup_ids.append(job.id)
+            raise TestRejected("no route", error_class=ExecErrorClass.UNREACHABLE)
+        return ""
+
+    monkeypatch.setattr("dev_yard.qa.run_case_script", fake_script)
+    monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: {})
+
+    def fake_pi(argv, root, prompt, on_line=None):
+        evidence = yard / "reqs" / "QA-FUSE" / "qa" / "evidence"
+        run_dir = next(p for p in evidence.iterdir() if p.is_dir())
+        for child in run_dir.iterdir():
+            dest = child / "result.yaml"
+            if not child.is_dir() or dest.is_file() or child.name in {"repo-baseline", "_root_png"}:
+                continue
+            dest.write_text(
+                yaml.safe_dump(
+                    {
+                        "case": child.name,
+                        "status": "passed",
+                        "repo": "backend",
+                        "assertions": [
+                            {
+                                "type": "ui",
+                                "expected": "ok",
+                                "actual": "ok",
+                                "status": "passed",
+                            }
+                        ],
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+        return 0, ""
+
+    monkeypatch.setattr("dev_yard.qa.run_pi_print", fake_pi)
+    result = req_test(
+        yard,
+        "QA-FUSE",
+        print_mode=True,
+        run_only=True,
+        ingest=False,
+    )
+    assert "case-03" not in setup_ids
+    assert set(setup_ids) <= {"case-01", "case-02"}
+    assert result["summary"]["blocked"] == 2
+    assert result["summary"]["passed"] == 1
 
 
 def test_req_test_default_case_runner_success(
