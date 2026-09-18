@@ -58,6 +58,16 @@
           >
             {{ stateLabel }}
           </v-chip>
+          <v-chip
+            v-if="passCount.total"
+            size="x-small"
+            :color="passCount.passed === passCount.total ? 'success' : 'error'"
+            variant="tonal"
+            class="px-1 font-weight-medium"
+            :title="`断言通过 ${passCount.passed}/${passCount.total}`"
+          >
+            {{ passCount.passed }}/{{ passCount.total }}
+          </v-chip>
           <v-spacer />
           <span v-if="testCase.repo" class="jira-repo-tag text-truncate">{{ testCase.repo }}</span>
         </div>
@@ -168,7 +178,8 @@
             variant="tonal"
             color="primary"
             class="flex-grow-1 font-weight-medium"
-            :to="`/r/${jira}/qa?case=${encodeURIComponent(testCase.id)}`"
+            title="就地查看用例步骤、断言结果与截图"
+            @click="emit('open-case', testCase.id)"
           >
             用例详情
           </v-btn>
@@ -197,6 +208,7 @@ import {
 } from "@mdi/js";
 import type { QaCaseItem } from "@/api/types";
 import { QA_STATE_LABELS, QA_STATE_COLOR } from "@/composables/labels";
+import { assertionPassCount, qaScreenshotUrl } from "@/composables/qa";
 
 const props = withDefaults(
   defineProps<{
@@ -211,6 +223,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   "preview-screenshot": [url: string];
+  "open-case": [caseId: string];
 }>();
 
 const isRunning = computed(() => props.testCase.state === "running");
@@ -239,10 +252,15 @@ const hasScreenshots = computed(() => {
   return (props.testCase.screenshots?.length || 0) > 0 && props.testCase.run_id;
 });
 
+const passCount = computed(() => assertionPassCount(props.testCase.assertions));
+
 function screenshotUrl(name: string): string {
-  return `/r/${encodeURIComponent(props.jira)}/qa/evidence/${encodeURIComponent(
-    props.testCase.run_id || ""
-  )}/${encodeURIComponent(props.testCase.id)}/screenshots/${encodeURIComponent(name)}`;
+  return qaScreenshotUrl(
+    props.jira,
+    props.testCase.run_id || "",
+    props.testCase.id,
+    name,
+  );
 }
 
 function openScreenshot(name: string) {

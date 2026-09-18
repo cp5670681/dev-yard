@@ -244,7 +244,9 @@
               size="small"
               color="primary"
               variant="tonal"
-              :to="`/r/${jira}/qa?case=${encodeURIComponent(c.id)}`"
+              class="cursor-pointer"
+              :title="`查看用例 ${c.id} 详情`"
+              @click="openCaseDetail(c.id)"
             >
               {{ c.id }} {{ c.title }} · {{ c.model }}
             </v-chip>
@@ -267,6 +269,7 @@
         @feedback="(ticket) => openReview(ticket)"
         @preview-screenshot="(url) => preview = url"
         @fill-bug="confirmAction('fill-test-report')"
+        @open-case="openCaseDetail"
       />
       <v-card v-if="detail.assets.length" class="mt-6" variant="outlined">
         <v-card-title>截图</v-card-title>
@@ -507,6 +510,11 @@
       :jira="jira"
       :ticket-id="diffDialog.ticketId"
     />
+    <CaseDetailDialog
+      v-model="caseDialog.open"
+      :jira="jira"
+      :case-id="caseDialog.caseId"
+    />
     <TicketReviewDialog
       v-model="reviewDialog.open"
       :jira="jira"
@@ -538,6 +546,7 @@ import ContractReviewDialog from "@/components/ContractReviewDialog.vue";
 import JobPanel from "@/components/JobPanel.vue";
 import ReqDocTabs from "@/components/ReqDocTabs.vue";
 import TicketBoard from "@/components/TicketBoard.vue";
+import CaseDetailDialog from "@/components/CaseDetailDialog.vue";
 import TicketDiffDialog from "@/components/TicketDiffDialog.vue";
 import TicketReviewDialog from "@/components/TicketReviewDialog.vue";
 import { runningJobs, watchJobs } from "@/state/jobs";
@@ -576,11 +585,41 @@ const diffDialog = reactive({ open: false, ticketId: "" });
 const reviewDialog = reactive({ open: false, ticket: null as Ticket | null });
 const contractDialog = ref(false);
 const jobProgress = ref<QaProgress | null>(null);
+const caseDialog = reactive({ open: false, caseId: "" });
+const caseFromQuery = ref(false);
 
 function openDiff(ticketId: string) {
   diffDialog.ticketId = ticketId;
   diffDialog.open = true;
 }
+
+function openCaseDetail(caseId: string, fromQuery = false) {
+  if (!caseId) return;
+  caseDialog.caseId = caseId;
+  caseDialog.open = true;
+  caseFromQuery.value = fromQuery;
+}
+
+watch(
+  () => caseDialog.open,
+  (open) => {
+    if (open || !caseFromQuery.value) return;
+    caseFromQuery.value = false;
+    // Deep link consumed: drop the param so internal reloads don't reopen it.
+    const query = { ...route.query };
+    delete query.case;
+    void router.replace({ query });
+  },
+);
+
+watch(
+  () => route.query.case,
+  (value) => {
+    const caseId = String(value || "");
+    if (caseId) openCaseDetail(caseId, true);
+  },
+  { immediate: true },
+);
 
 function openReview(ticket: Ticket) {
   reviewDialog.ticket = ticket;

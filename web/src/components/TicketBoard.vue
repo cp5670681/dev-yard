@@ -63,6 +63,7 @@
                       @review="$emit('review', $event)"
                       @diff="$emit('diff', $event)"
                       @feedback="$emit('feedback', $event)"
+                      @open-case="$emit('open-case', $event)"
                     />
                   </div>
                 </div>
@@ -98,6 +99,7 @@
                 @review="$emit('review', $event)"
                 @diff="$emit('diff', $event)"
                 @feedback="$emit('feedback', $event)"
+                @open-case="$emit('open-case', $event)"
               />
               <div v-if="!filteredDevTickets.length" class="text-center text-medium-emphasis py-6 text-caption">
                 这一栏没有票
@@ -203,6 +205,7 @@
                       :test-case="c"
                       :jira="jira"
                       @preview-screenshot="$emit('preview-screenshot', $event)"
+                      @open-case="$emit('open-case', $event)"
                     />
                   </div>
                 </div>
@@ -235,6 +238,7 @@
                 :jira="jira"
                 show-state
                 @preview-screenshot="$emit('preview-screenshot', $event)"
+                @open-case="$emit('open-case', $event)"
               />
               <div v-if="!filteredQaCases.length" class="text-center text-medium-emphasis py-6 text-caption">
                 这一栏没有测试用例
@@ -328,6 +332,7 @@
                       @review="$emit('review', $event)"
                       @diff="$emit('diff', $event)"
                       @feedback="$emit('feedback', $event)"
+                      @open-case="$emit('open-case', $event)"
                     />
                   </div>
                 </div>
@@ -363,6 +368,7 @@
                 @review="$emit('review', $event)"
                 @diff="$emit('diff', $event)"
                 @feedback="$emit('feedback', $event)"
+                @open-case="$emit('open-case', $event)"
               />
               <div v-if="!filteredBugTickets.length" class="text-center text-medium-emphasis py-6 text-caption">
                 这一栏没有 Bug 票
@@ -419,6 +425,7 @@ defineEmits<{
   feedback: [ticket: Ticket];
   "preview-screenshot": [url: string];
   "fill-bug": [];
+  "open-case": [caseId: string];
 }>();
 
 const { mdAndUp } = useDisplay();
