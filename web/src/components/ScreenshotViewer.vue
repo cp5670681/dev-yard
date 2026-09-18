@@ -117,8 +117,10 @@ watch(
 );
 watch(
   () => props.images,
-  () => {
-    if (localIndex.value >= props.images.length) localIndex.value = 0;
+  (imgs) => {
+    if (localIndex.value >= imgs.length) localIndex.value = 0;
+    // Self-close on an emptied list instead of rendering a blank overlay.
+    if (!imgs.length && props.modelValue) close();
   },
 );
 watch(

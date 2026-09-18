@@ -735,9 +735,14 @@ const liveReady = computed(
 );
 
 function onJobUpdate(job: JobSnapshot) {
-  if (job.action === "run-test" && job.qa_progress) {
-    jobProgress.value = job.qa_progress;
+  if (job.action !== "run-test") return;
+  if (job.state === "ok" || job.state === "error") {
+    // Drop the last progress snapshot on terminal states — it can still show
+    // active cases, which would pin liveHasActive (and the poll loop) forever.
+    jobProgress.value = null;
+    return;
   }
+  if (job.qa_progress) jobProgress.value = job.qa_progress;
 }
 
 // While a run is in flight, poll so CLI-started runs (no web job) still update
@@ -938,6 +943,7 @@ async function onAction(action: string, ticketId?: string, env?: string, resume?
 }
 
 function onJobDone(job?: JobSnapshot) {
+  if (job?.action === "run-test") jobProgress.value = null;
   void load().then(() => {
     if (job?.action === "run-test") showRunEndBanner();
   });
