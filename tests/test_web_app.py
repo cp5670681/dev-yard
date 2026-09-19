@@ -522,6 +522,13 @@ def test_screenshot_viewer_replaces_preview_dialogs():
         assert 'v-model="previewOpen"' not in src, f"{name} still has the old preview dialog"
 
 
+def test_board_has_no_assets_thumbnail_card():
+    """Requirement screenshots live in the docs (inline + asset index), not the board."""
+    root = Path(__file__).resolve().parents[1]
+    src = (root / "web" / "src" / "views" / "RequirementView.vue").read_text()
+    assert "detail.assets" not in src, "board still renders the assets thumbnail card"
+
+
 def test_job_panel_can_cancel_running_jobs():
     root = Path(__file__).resolve().parents[1]
     panel = (root / "web" / "src" / "components" / "JobPanel.vue").read_text()

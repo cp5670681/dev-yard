@@ -285,27 +285,6 @@
         @fill-bug="confirmAction('fill-test-report')"
         @open-case="openCaseDetail"
       />
-      <v-card v-if="detail.assets.length" class="mt-6" variant="outlined">
-        <v-card-title>截图</v-card-title>
-        <v-card-text>
-          <v-row>
-            <v-col v-for="name in detail.assets" :key="name" cols="6" md="3">
-              <v-hover v-slot="{ isHovering, props: hoverProps }">
-                <v-card
-                  v-bind="hoverProps"
-                  :elevation="isHovering ? 6 : 0"
-                  variant="tonal"
-                  class="cursor-pointer"
-                  @click="openPreview(name)"
-                >
-                  <v-img :src="assetUrl(name)" :alt="name" height="120" cover />
-                  <v-card-subtitle class="text-truncate">{{ name }}</v-card-subtitle>
-                </v-card>
-              </v-hover>
-            </v-col>
-          </v-row>
-        </v-card-text>
-      </v-card>
       <v-expansion-panels
         v-if="detail.worktrees.length || detail.contract_summary || detail.test"
         class="mt-4"
