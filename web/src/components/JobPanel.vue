@@ -20,6 +20,17 @@
       >
         查看对话{{ (job.pi_runs || []).length > 1 ? ` · ${run.index + 1}` : "" }}
       </v-btn>
+      <v-btn
+        v-if="stoppable"
+        variant="tonal"
+        size="small"
+        color="warning"
+        :prepend-icon="mdiStopCircleOutline"
+        :loading="cancelling"
+        @click="cancel"
+      >
+        停止
+      </v-btn>
     </v-card-title>
     <v-progress-linear
       v-if="job.state === 'running' || job.state === 'queued'"
@@ -42,12 +53,19 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { getJob } from "@/api/client";
+import { mdiStopCircleOutline } from "@mdi/js";
+import { cancelJob, getJob } from "@/api/client";
 import type { JobSnapshot } from "@/api/types";
 import { openPi } from "@/state/pi";
 import { ACTION_LABELS } from "@/composables/labels";
 import { useSnack } from "@/composables/snack";
 import GrillForm from "./GrillForm.vue";
+
+const TERMINAL = ["ok", "error", "cancelled"];
+
+function isTerminal(state: string): boolean {
+  return TERMINAL.includes(state);
+}
 
 const props = defineProps<{ jobId: string; initial?: JobSnapshot | null }>();
 const emit = defineEmits<{ done: [job: JobSnapshot]; update: [job: JobSnapshot] }>();
@@ -82,9 +100,23 @@ const tickets = computed(() => {
 const stateColor = computed(() => {
   if (job.value.state === "ok") return "success";
   if (job.value.state === "error") return "error";
+  if (job.value.state === "cancelled") return "warning";
   if (job.value.state === "waiting") return "primary";
   return "info";
 });
+const stoppable = computed(() => !isTerminal(job.value.state));
+const cancelling = ref(false);
+
+async function cancel() {
+  cancelling.value = true;
+  try {
+    await cancelJob(props.jobId);
+  } catch (e) {
+    snack.notify(e instanceof Error ? e.message : String(e), "error");
+  } finally {
+    cancelling.value = false;
+  }
+}
 const hint = computed(() => {
   if (job.value.action === "grill") {
     if (job.value.state === "waiting") return "勾选或改写后提交。有建议的选项已默认选中。";
@@ -101,7 +133,7 @@ let es: EventSource | null = null;
 function apply(next: JobSnapshot) {
   job.value = next;
   emit("update", next);
-  if (next.state === "ok" || next.state === "error") {
+  if (isTerminal(next.state)) {
     es?.close();
     es = null;
     emit("done", next);
@@ -149,7 +181,7 @@ function bind() {
     getJob(props.jobId)
       .then((next) => {
         apply(next);
-        if (closed && next.state !== "ok" && next.state !== "error") bind();
+        if (closed && !isTerminal(next.state)) bind();
       })
       .catch((e) => {
         const msg = e instanceof Error ? e.message : String(e);

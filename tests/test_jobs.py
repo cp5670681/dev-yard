@@ -76,6 +76,37 @@ def test_wait_board_unblocks_when_job_waits(tmp_path: Path):
     assert runner.running_brief() == []
 
 
+def test_cancel_waiting_grill_job_interrupts_wait():
+    import time
+
+    job = Job(id="abc", jira="AB-1", action="grill")
+    job.set_waiting({"round": 1, "questions": [{"id": "Q1"}]})
+    errors: list[Exception] = []
+
+    def wait():
+        try:
+            job.wait_answers()
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threading.Thread(target=wait, daemon=True).start()
+    time.sleep(0.05)
+    job.cancel()
+    deadline = time.time() + 2
+    while not errors and time.time() < deadline:
+        time.sleep(0.01)
+    assert len(errors) == 1
+    assert "grill interrupted" in str(errors[0])
+
+
+def test_cancel_is_noop_on_terminal_job():
+    job = Job(id="abc", jira="AB-1", action="open")
+    job.set_state("ok")
+    job.cancel()
+    job.cancel()
+    assert job.state == "ok"
+
+
 def test_board_sse_poll_captures_seq_before_items():
     class Fake:
         def __init__(self) -> None:
@@ -178,6 +209,46 @@ def test_submit_runs_sync_and_logs(tmp_path: Path):
     assert "hello from grill" in job.log
     assert runner.get(job.id) is job
     assert runner.latest("AB-1") is job
+
+
+def test_runner_cancel_marks_job_cancelled(tmp_path: Path):
+    import time
+
+    from dev_yard.web.jobs import JobCancelled
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+
+    def execute(root: Path, job) -> None:
+        while not job.cancel_requested.is_set():
+            time.sleep(0.01)
+        raise JobCancelled("implement cancelled (pi exit -9)")
+
+    runner = JobRunner(yard, execute=execute, sync=False)
+    job = runner.submit("implement", "AB-1", ticket_ids=["T1"])
+    deadline = time.time() + 2
+    while job.state != "running" and time.time() < deadline:
+        time.sleep(0.01)
+    assert runner.cancel(job.id) is job
+    assert job.done.wait(timeout=2)
+    assert job.state == "cancelled"
+    assert runner.running() == []
+    assert runner.running_brief() == []
+    assert "cancelled" in job.log
+
+
+def test_runner_cancel_unknown_job(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    assert JobRunner(yard).cancel("nope") is None
+
+
+def test_sse_done_frame_for_cancelled_job():
+    job = Job(id="abc", jira="AB-1", action="implement")
+    job.set_state("cancelled")
+    frames, done, _seq = JobSse(job).poll()
+    assert done is True
+    assert _parse_sse("".join(frames))[-1][0] == "done"
 
 
 def test_execute_error_marks_job(tmp_path: Path):
@@ -578,6 +649,103 @@ def test_job_log_runner_records_pi_run_before_popen(tmp_path: Path, monkeypatch)
 
     assert captured["argv"] == ["pi", "-p"]
     assert captured["stdin"] is subprocess.PIPE
+
+
+def test_run_pi_print_calls_on_spawn_with_proc(tmp_path: Path, monkeypatch):
+    spawned: list = []
+
+    class FakeStdin:
+        def write(self, data):
+            self.data = data
+
+        def close(self):
+            return None
+
+    class FakeProc:
+        stdout = iter(["line\n"])
+        stdin = FakeStdin()
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr("dev_yard.runners.subprocess.Popen", lambda *a, **k: FakeProc())
+    from dev_yard.runners import run_pi_print
+
+    code, raw = run_pi_print(["pi"], tmp_path, "p", on_spawn=spawned.append)
+    assert code == 0
+    assert raw == "line\n"
+    assert len(spawned) == 1
+    assert isinstance(spawned[0], FakeProc)
+
+
+def test_job_log_runner_registers_proc_on_job(tmp_path: Path, monkeypatch):
+    job = Job(id="abc", jira="AB-1", action="open")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+
+    class FakeStdin:
+        def write(self, data):
+            return None
+
+        def close(self):
+            return None
+
+    class FakeProc:
+        stdout = iter(["hello\n"])
+        stdin = FakeStdin()
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr("dev_yard.web.jobs.shutil.which", lambda b: "/usr/bin/pi")
+    monkeypatch.setattr("dev_yard.runners.subprocess.Popen", lambda *a, **k: FakeProc())
+    monkeypatch.setattr("dev_yard.web.jobs.pi_argv", lambda **k: ["pi", "-p"])
+    from dev_yard.web.jobs import JobLogRunner
+
+    JobLogRunner(job, tmp_path, "open").start("p", cwd, [])
+    with job._lock:
+        assert isinstance(job._proc, FakeProc)
+
+
+def test_job_log_runner_raises_when_cancelled_before_start(tmp_path: Path):
+    from dev_yard.web.jobs import JobCancelled, JobLogRunner
+
+    job = Job(id="abc", jira="AB-1", action="open")
+    job.cancel()
+    with pytest.raises(JobCancelled):
+        JobLogRunner(job, tmp_path, "open").start("p", tmp_path, [])
+
+
+def test_job_log_runner_raises_jobcancelled_when_pi_killed(tmp_path: Path, monkeypatch):
+    import time
+
+    from dev_yard.web.jobs import JobCancelled, JobLogRunner
+
+    script = tmp_path / "fakepi"
+    script.write_text("#!/bin/sh\necho started\nsleep 30\n")
+    script.chmod(0o755)
+    monkeypatch.setattr("dev_yard.web.jobs.pi_argv", lambda **k: [str(script), "-p"])
+    job = Job(id="abc", jira="AB-1", action="open")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    outcome: dict = {}
+
+    def run_start():
+        try:
+            JobLogRunner(job, tmp_path, "open").start("p", cwd, [])
+        except Exception as e:  # noqa: BLE001
+            outcome["err"] = e
+
+    t = threading.Thread(target=run_start, daemon=True)
+    t.start()
+    deadline = time.time() + 5
+    while job._proc is None and time.time() < deadline:
+        time.sleep(0.01)
+    assert job._proc is not None, "pi subprocess was never registered"
+    job.cancel()
+    t.join(timeout=5)
+    assert not t.is_alive(), "start() did not return after the subprocess was killed"
+    assert isinstance(outcome.get("err"), JobCancelled)
 
 
 def test_sse_poll_emits_pi_runs_on_state(tmp_path: Path):

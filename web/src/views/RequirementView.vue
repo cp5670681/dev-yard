@@ -736,7 +736,7 @@ const liveReady = computed(
 
 function onJobUpdate(job: JobSnapshot) {
   if (job.action !== "run-test") return;
-  if (job.state === "ok" || job.state === "error") {
+  if (job.state === "ok" || job.state === "error" || job.state === "cancelled") {
     // Drop the last progress snapshot on terminal states — it can still show
     // active cases, which would pin liveHasActive (and the poll loop) forever.
     jobProgress.value = null;

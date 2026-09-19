@@ -11,10 +11,30 @@ from typing import Any, Callable
 
 from dev_yard import grill_round, paths, service
 from dev_yard.pi_session import load_conversation
-from dev_yard.runners import RunResult, Runner, clip_summary, pi_argv, run_pi_print
+from dev_yard.runners import (
+    JobCancelled,
+    RunResult,
+    Runner,
+    clip_summary,
+    kill_proc_group,
+    pi_argv,
+    run_pi_print,
+)
+
+__all__ = [
+    "BoardSse",
+    "Job",
+    "JobCancelled",
+    "JobLogRunner",
+    "JobRunner",
+    "JobSse",
+    "PiChatSse",
+    "default_execute",
+    "format_sse",
+]
 
 Execute = Callable[[Path, "Job"], None]
-_TERMINAL = {"ok", "error"}
+_TERMINAL = {"ok", "error", "cancelled"}
 _TICKET_ACTIONS = {"implement", "review", "fix-contract", "fix-test"}
 # Names with dedicated execute branches. Keep aligned with board.BUILTIN_ACTION_IDS
 # (plus repo_add). Overridden grill/spec/tickets still take those branches.
@@ -63,6 +83,8 @@ class Job:
     _seq: int = field(default=0, repr=False, compare=False)
     _input: threading.Event = field(default_factory=threading.Event)
     _answers: list[dict[str, Any]] | None = None
+    _proc: "subprocess.Popen[str] | None" = field(default=None, repr=False, compare=False)
+    cancel_requested: threading.Event = field(default_factory=threading.Event)
     on_change: Callable[[], None] | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -171,6 +193,34 @@ class Job:
         with self._cv:
             self.qa_progress = payload
             self._bump()
+
+    def register_proc(self, proc: "subprocess.Popen[str]") -> None:
+        """Track the live pi subprocess so cancel() can kill it immediately."""
+        with self._cv:
+            self._proc = proc
+            cancelled = self.cancel_requested.is_set()
+        if cancelled:
+            _kill_proc(proc)
+
+    def cancel(self) -> None:
+        """Idempotent cancel request: kill the live pi subprocess and interrupt waits.
+
+        The job thread does not stop here — it reacts by raising JobCancelled at the
+        next checkpoint (wait_answers, or JobLogRunner around each pi run).
+        """
+        self.cancel_requested.set()
+        with self._cv:
+            proc = self._proc
+            if self.state == "waiting":
+                self._answers = None
+                self._input.set()
+        if proc is not None:
+            _kill_proc(proc)
+
+
+def _kill_proc(proc: "subprocess.Popen[str] | None") -> None:
+    if proc is not None:
+        kill_proc_group(proc)
 
 
 class JobSse:
@@ -307,6 +357,8 @@ class JobLogRunner(Runner):
         extra_read_paths: list[Path],
         repo: str | None = None,
     ) -> RunResult:
+        if self.job.cancel_requested.is_set():
+            raise JobCancelled(f"{self.bundle} cancelled before pi run")
         argv = pi_argv(
             root=self.root,
             bundle=self.bundle,
@@ -325,7 +377,11 @@ class JobLogRunner(Runner):
         def _log(line: str) -> None:
             self.job.append(line if line.endswith("\n") else line + "\n")
 
-        code, raw = run_pi_print(argv, cwd, prompt, on_line=_log)
+        code, raw = run_pi_print(
+            argv, cwd, prompt, on_line=_log, on_spawn=self.job.register_proc
+        )
+        if self.job.cancel_requested.is_set():
+            raise JobCancelled(f"{self.bundle} cancelled (pi exit {code})")
         blocked = code != 0 or "REVIEW_FAILED" in raw
         summary = clip_summary(raw, self.bundle) or f"pi exit {code}"
         return RunResult(
@@ -595,6 +651,13 @@ class JobRunner:
     def get(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)
 
+    def cancel(self, job_id: str) -> Job | None:
+        """Signal a running job to stop; None when the job id is unknown."""
+        job = self._jobs.get(job_id)
+        if job is not None:
+            job.cancel()
+        return job
+
     def latest(self, jira: str) -> Job | None:
         matches = [j for j in self._jobs.values() if j.jira == jira]
         return matches[-1] if matches else None
@@ -681,6 +744,9 @@ class JobRunner:
         try:
             self._execute(self.root, job)
             job.set_state("ok")
+        except JobCancelled as e:
+            job.append(str(e) or "cancelled")
+            job.set_state("cancelled")
         except Exception as e:
             job.append(str(e))
             job.set_state("error")

@@ -230,6 +230,12 @@ export function submitAnswers(
   });
 }
 
+export function cancelJob(jobId: string) {
+  return api<{ ok: boolean; state: string }>(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST",
+  });
+}
+
 export function getTicketDiff(jira: string, ticketId: string) {
   return api<TicketDiff>(
     `/api/requirements/${encodeURIComponent(jira)}/tickets/${encodeURIComponent(ticketId)}/diff`,

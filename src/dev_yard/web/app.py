@@ -1005,6 +1005,13 @@ def create_app(
             raise HTTPException(400, str(e)) from e
         return {"ok": True}
 
+    @app.post("/api/jobs/{job_id}/cancel")
+    def api_job_cancel(job_id: str):
+        job = jobs.cancel(job_id)
+        if job is None:
+            raise HTTPException(404, "unknown job")
+        return {"ok": True, "state": job.snapshot()["state"]}
+
     def _pi_settings_out():
         s = load_pi_settings(root)
         stages = {

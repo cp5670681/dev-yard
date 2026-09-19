@@ -40,6 +40,34 @@ def test_open_form_defaults_to_pi(tmp_path: Path):
     assert "query: job ? { job } : {}" in text
 
 
+def test_job_cancel_endpoint(tmp_path: Path):
+    import time
+
+    from dev_yard.web.jobs import JobCancelled
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+
+    def execute(root: Path, job) -> None:
+        while not job.cancel_requested.is_set():
+            time.sleep(0.01)
+        raise JobCancelled("implement cancelled (pi exit -9)")
+
+    runner = JobRunner(yard, execute=execute, sync=False)
+    client = _client(yard, job_runner=runner)
+    assert client.post("/api/jobs/nope/cancel").status_code == 404
+
+    job = runner.submit("implement", "AB-1", ticket_ids=["T1"])
+    r = client.post(f"/api/jobs/{job.id}/cancel")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert job.done.wait(timeout=2)
+    assert job.state == "cancelled"
+    again = client.post(f"/api/jobs/{job.id}/cancel")
+    assert again.status_code == 200
+    assert again.json()["state"] == "cancelled"
+
+
 def test_dashboard_lists_requirement(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)
@@ -492,6 +520,17 @@ def test_screenshot_viewer_replaces_preview_dialogs():
         src = (root / "web" / "src" / "views" / name).read_text()
         assert "ScreenshotViewer" in src, f"{name} must use ScreenshotViewer"
         assert 'v-model="previewOpen"' not in src, f"{name} still has the old preview dialog"
+
+
+def test_job_panel_can_cancel_running_jobs():
+    root = Path(__file__).resolve().parents[1]
+    panel = (root / "web" / "src" / "components" / "JobPanel.vue").read_text()
+    client_ts = (root / "web" / "src" / "api" / "client.ts").read_text()
+    req_view = (root / "web" / "src" / "views" / "RequirementView.vue").read_text()
+    assert "cancelJob" in panel, "JobPanel must offer a stop button"
+    assert "/cancel" in client_ts, "client must POST /api/jobs/{id}/cancel"
+    assert '"cancelled"' in panel, "JobPanel terminal states must include cancelled"
+    assert '"cancelled"' in req_view, "RequirementView must treat cancelled as terminal"
 
 
 def test_app_js_uses_event_source():

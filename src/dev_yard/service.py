@@ -11,7 +11,14 @@ from dev_yard import gitops, paths, status as st
 from dev_yard.config import Repo, git_project_name, load_repos, require_pair, save_repos
 from dev_yard.atlassian import collect_requirement
 from dev_yard.env import load_env
-from dev_yard.runners import RunResult, Runner, agent_binary, get_runner, pi_argv
+from dev_yard.runners import (
+    JobCancelled,
+    RunResult,
+    Runner,
+    agent_binary,
+    get_runner,
+    pi_argv,
+)
 from dev_yard.skillbind import session_prompt, session_prompt_for
 from dev_yard.stages import StageSpec, load_registry
 from dev_yard.bug_tickets import (
@@ -959,7 +966,18 @@ def implement(
                 finding=t.finding,
             ),
         )
-        result = runner.start(prompt, cwd, extra, repo=t.repo)
+        try:
+            result = runner.start(prompt, cwd, extra, repo=t.repo)
+        except JobCancelled:
+            # A cancelled run leaves nobody working on the ticket; fall the slot
+            # back to ready so the board does not spin on a stale "implementing".
+            with st.jira_lock(jira):
+                data = st.load(root, jira)
+                slot = data["tickets"].get(tid)
+                if slot and slot.get("state") == "implementing":
+                    slot["state"] = "ready"
+                    st.save(root, jira, data)
+            raise
         with st.jira_lock(jira):
             data = st.load(root, jira)
             slot = data["tickets"][tid]
@@ -994,6 +1012,29 @@ def implement(
             st.save(root, jira, data)
         ran.append(tid)
     return ran
+
+
+def _run_review_or_cancel(
+    root: Path,
+    jira: str,
+    runner: Runner,
+    prompt: str,
+    cwd: Path,
+    extra: list[Path],
+    tid: str,
+) -> RunResult:
+    try:
+        return runner.start(prompt, cwd, extra)
+    except JobCancelled:
+        # A cancelled review leaves nobody working on the ticket; fall the slot
+        # back to implemented so the board does not spin on a stale "reviewing".
+        with st.jira_lock(jira):
+            data = st.load(root, jira)
+            slot = data["tickets"].get(tid)
+            if slot and slot.get("state") == "reviewing":
+                slot["state"] = "implemented"
+                st.save(root, jira, data)
+        raise
 
 
 def review(
@@ -1110,7 +1151,7 @@ def review(
                 f"{_diff_vs_base(cwd, base, since)}"
             ),
         )
-        result = runner.start(prompt, cwd, extra)
+        result = _run_review_or_cancel(root, jira, runner, prompt, cwd, extra, tid)
         with st.jira_lock(jira):
             data = st.load(root, jira)
             slot = data["tickets"][tid]

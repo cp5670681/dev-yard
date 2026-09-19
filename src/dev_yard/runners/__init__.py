@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from collections.abc import Callable
@@ -21,6 +22,10 @@ class RunResult:
     ok: bool
     summary: str
     exit_code: int = 0
+
+
+class JobCancelled(RuntimeError):
+    """Raised inside a run path after cancel(); unwinds the calling service loop."""
 
 
 def clip_summary(raw: str, bundle: str = "") -> str:
@@ -126,17 +131,40 @@ def assistant_pi_argv(
     return argv
 
 
+def kill_proc_group(proc: subprocess.Popen) -> None:
+    """Kill pi and every descendant sharing its session.
+
+    Children inherit the stdout pipe, so a lone proc.kill() leaves the reader
+    blocked on EOF until they exit on their own. The process group (set via
+    start_new_session) lets one signal take them all down.
+    """
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        return
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
 def run_pi_print(
     argv: list[str],
     cwd: Path,
     prompt: str,
     on_line: Callable[[str], None] | None = None,
     timeout: float | None = None,
+    on_spawn: Callable[[subprocess.Popen], None] | None = None,
 ) -> tuple[int, str]:
     """Run `pi -p` with the prompt on stdin so large diffs do not hit ARG_MAX.
 
     A hung worker would otherwise pin its scheduler slot forever, so the process
     is killed after `YARD_PI_TIMEOUT` seconds (default 3600; 0 disables).
+    `on_spawn` fires right after the process starts so callers can kill it early.
     """
     import threading
 
@@ -154,11 +182,14 @@ def run_pi_print(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            start_new_session=True,
         )
     except OSError as e:
         if e.errno == errno.E2BIG:
             return 1, f"[Errno {errno.E2BIG}] Argument list too long: {argv[0]!r}"
         raise
+    if on_spawn is not None:
+        on_spawn(proc)
     assert proc.stdin is not None
     assert proc.stdout is not None
     timed_out = {"hit": False}
@@ -166,10 +197,7 @@ def run_pi_print(
     if limit and limit > 0:
         def _kill() -> None:
             timed_out["hit"] = True
-            try:
-                proc.kill()
-            except OSError:
-                pass
+            kill_proc_group(proc)
 
         timer = threading.Timer(limit, _kill)
         timer.daemon = True

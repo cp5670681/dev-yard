@@ -644,3 +644,29 @@ def test_sequential_tickets_auto_commit_and_diff_isolation(
     assert any(f["path"] == "file2.txt" for f in t2_diff["files"])
     assert not any(f["path"] == "file1.txt" for f in t2_diff["files"])
 
+
+
+class _CancelRunner(DryRunRunner):
+    def start(self, prompt, cwd, extra_read_paths, repo=None):
+        from dev_yard.web.jobs import JobCancelled
+
+        raise JobCancelled("implement cancelled (pi exit -9)")
+
+
+def test_implement_cancel_resets_implementing_to_ready(tmp_path, git_src, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-60")
+    with pytest.raises(Exception, match="cancelled"):
+        implement(yard, "AB-60", ["T1"], runner=_CancelRunner())
+    assert st.load(yard, "AB-60")["tickets"]["T1"]["state"] == "ready"
+
+
+def test_review_cancel_resets_reviewing_to_implemented(tmp_path, git_src, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-61")
+    implement(yard, "AB-61", None, runner=DryRunRunner())
+    with pytest.raises(Exception, match="cancelled"):
+        review(yard, "AB-61", None, runner=_CancelRunner())
+    assert st.load(yard, "AB-61")["tickets"]["T1"]["state"] == "implemented"
