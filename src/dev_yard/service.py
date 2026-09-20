@@ -372,6 +372,13 @@ def req_freeze(root: Path, jira: str, force: bool = False) -> list[Path]:
                 reset_existing=bool(force and phase in {"testing", "done"}),
             )
             created.append(wt)
+            sha = gitops.rev_parse(source, start)
+            if sha:
+                bases = data.get("base_shas")
+                if not isinstance(bases, dict):
+                    bases = {}
+                bases[alias] = sha
+                data["base_shas"] = bases
             for slot in data["tickets"].values():
                 if slot.get("repo") == alias:
                     slot["worktree"] = str(wt)
@@ -1250,6 +1257,9 @@ def review(
         if not aliases:
             raise ValueError("no repos in STATUS.yaml; freeze first")
         repos = load_repos(root)
+        saved_bases = data.get("base_shas")
+        if not isinstance(saved_bases, dict):
+            saved_bases = {}
         wt_lines: list[str] = []
         wt_paths: list[Path] = []
         diffs: list[str] = []
@@ -1259,9 +1269,12 @@ def review(
                 raise ValueError(f"missing worktree {wt}; freeze first")
             wt_paths.append(wt)
             repo = repos.get(alias)
-            base = repo.default_base if repo else "main"
-            wt_lines.append(f"- {alias}: {wt}  (diff vs {base}, already inlined below)")
-            diffs.append(f"### {alias}\n{_diff_vs_base(wt, base)}")
+            default_base = repo.default_base if repo else "main"
+            base = gitops.freeze_base(wt, default_base, saved_bases.get(alias))
+            wt_lines.append(
+                f"- {alias}: {wt}  (diff vs freeze point {base}, already inlined below)"
+            )
+            diffs.append(f"### {alias}\n{_diff_vs_base(wt, default_base, base)}")
         listed = "\n".join(wt_lines)
         prompt = session_prompt(
             root,
@@ -1270,12 +1283,18 @@ def review(
             extra=(
                 "Mode: --contract. Review every requirement worktree against SPEC.md contracts.\n"
                 "Do not spawn sub-agents; pi has none. Do not git-diff the yard repo.\n"
+                "The inlined diff is taken at this requirement's freeze point, so it "
+                "contains only this requirement's own work. Before blaming a hunk on "
+                "this requirement, confirm with `git log <base>..HEAD -- <file>` "
+                "(base shown per worktree) that its commits are in that range; code "
+                "inherited from the branch base is not scope creep.\n"
                 "If there are contract gaps, end the report with a YAML block:\n"
                 "findings:\n"
                 "  - id: F1\n"
                 "    title: short title\n"
                 "    repo: <repos.yaml alias>\n"
                 "    detail: what is missing\n"
+                "    files: [<path>, ...]  # files whose diff lines you cite; omit for missing/not-yet-written code\n"
                 "    depends_on: []  # other finding ids, if this fix must wait\n"
                 "One finding per independent gap; same-repo gaps may be separate findings.\n"
                 f"Worktrees:\n{listed}\n\n"

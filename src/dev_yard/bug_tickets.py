@@ -6,8 +6,9 @@ from typing import Any
 
 import yaml
 
-from dev_yard import paths
+from dev_yard import gitops, paths
 from dev_yard import status as st
+from dev_yard.config import load_repos
 from dev_yard.parse import as_bool, as_list
 from dev_yard.tickets import Ticket, load_tickets
 
@@ -31,12 +32,16 @@ def normalize_findings(raw: list[dict[str, Any]] | None) -> list[dict[str, Any]]
         parallel = (
             as_bool(raw_parallel, default=False) if raw_parallel is not None else None
         )
+        raw_files = item.get("files")
+        if raw_files is None:
+            raw_files = item.get("file")
         out.append(
             {
                 "id": fid,
                 "title": str(item.get("title") or fid).strip() or fid,
                 "detail": str(item.get("detail") or "").strip(),
                 "repo": str(item.get("repo") or "").strip(),
+                "files": as_list(raw_files),
                 "depends_on": as_list(item.get("depends_on")),
                 "parallel": parallel,
             }
@@ -143,23 +148,83 @@ def expand_findings_repos(
     return out
 
 
+def _drop_findings_not_on_requirement(
+    findings: list[dict[str, Any]],
+    root: Path,
+    jira: str,
+    data: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Drop findings whose cited files were never touched by this requirement.
+
+    A finding that names `files` claims those lines changed in the requirement
+    worktrees. If every cited file already existed before freeze and is absent
+    from the requirement's own diff, the finding is branch/upstream drift or a
+    mis-attribution, not work this requirement introduced. Findings without
+    `files`, or that cite a file that does not exist yet (a genuine missing-file
+    gap), are kept.
+    """
+    if not findings:
+        return findings
+    try:
+        repos = load_repos(root)
+    except Exception:
+        return findings
+    bases = data.get("base_shas") if isinstance(data.get("base_shas"), dict) else {}
+    changed_cache: dict[str, set[str] | None] = {}
+    out: list[dict[str, Any]] = []
+    for f in findings:
+        files = [str(p).strip() for p in (f.get("files") or []) if str(p).strip()]
+        repo = str(f.get("repo") or "").strip()
+        if not files or not repo:
+            out.append(f)
+            continue
+        wt = paths.req_worktree(root, jira, repo)
+        if not (wt / ".git").exists():
+            out.append(f)
+            continue
+        if repo not in changed_cache:
+            r = repos.get(repo)
+            default_base = r.default_base if r else "main"
+            base = gitops.freeze_base(wt, default_base, bases.get(repo))
+            changed_cache[repo] = gitops.changed_files(wt, base) | gitops.untracked_files(wt)
+        changed = changed_cache[repo] or set()
+        keep = False
+        for path in files:
+            norm = path.lstrip("./")
+            if norm in changed or not (wt / norm).exists():
+                keep = True
+                break
+        if keep:
+            out.append(f)
+    return out
+
+
 def _findings_for_kind(
     kind: str,
     data: dict[str, Any],
     tickets: list[Ticket],
+    root: Path | None = None,
+    jira: str = "",
 ) -> list[dict[str, Any]]:
     repos = _repo_list(data, tickets)
     if kind == "test":
         slot = data.get("test") if isinstance(data.get("test"), dict) else {}
-        findings = normalize_findings(slot.get("findings") or [])
+        raw = normalize_findings(slot.get("findings") or [])
     else:
-        findings = normalize_findings(data.get("contract_findings") or [])
-        if not findings:
-            findings = parse_findings_from_summary(data.get("contract_summary") or "")
+        raw = normalize_findings(data.get("contract_findings") or [])
+        if not raw:
+            raw = parse_findings_from_summary(data.get("contract_summary") or "")
+    findings = raw
+    if kind != "test" and findings and root is not None and jira:
+        findings = _drop_findings_not_on_requirement(findings, root, jira, data)
     findings = expand_findings_repos(findings, repos)
     if findings:
         return findings
     if kind == "test":
+        return []
+    if expand_findings_repos(raw, repos):
+        # Findings were reported against a known repo but none survive as this
+        # requirement's work; do not fall back to per-repo synthetic tickets.
         return []
     if data.get("contract_review") == "failed":
         return _synthetic_findings(kind, data, tickets)
@@ -217,7 +282,7 @@ def spawn_fix_tickets_result(
     with st.jira_lock(jira):
         existing = load_tickets(req) if md_path.exists() else []
         data = st.sync_tickets(st.load(root, jira), existing)
-        findings = _findings_for_kind(kind, data, existing)
+        findings = _findings_for_kind(kind, data, existing, root, jira)
         by_id = {t.id: t for t in existing}
         known = {
             (t.source, t.finding): t.id

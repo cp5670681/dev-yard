@@ -261,6 +261,46 @@ def merge_base(worktree: Path, ref: str) -> str | None:
         return None
 
 
+def rev_parse(path: Path, ref: str) -> str | None:
+    """Resolve a ref to a commit sha; None when unknown to this repo."""
+    try:
+        return run(["git", "rev-parse", "--verify", f"{ref}^{{commit}}"], cwd=path)
+    except GitError:
+        return None
+
+
+def freeze_base(worktree: Path, default_base: str, saved: str | None = None) -> str:
+    """Diff base at a requirement's freeze point.
+
+    Diffing a long-lived branch against the live `origin/<base>` mixes in
+    upstream commits that landed after the requirement forked, so a stale
+    branch looks like it reverted or introduced them. The recorded freeze sha
+    (written by `req_freeze`) wins; otherwise fall back to the fork point.
+    """
+    if isinstance(saved, str) and saved.strip() and rev_parse(worktree, saved):
+        return saved
+    base_ref = start_point(worktree, default_base)
+    return merge_base(worktree, base_ref) or base_ref
+
+
+def changed_files(worktree: Path, base: str) -> set[str]:
+    """Tracked files whose content differs from `base` (committed + unstaged)."""
+    try:
+        out = run(["git", "diff", "--name-only", base], cwd=worktree)
+    except GitError:
+        return set()
+    return {ln.strip() for ln in out.splitlines() if ln.strip()}
+
+
+def untracked_files(worktree: Path) -> set[str]:
+    """Files present in the working tree but not tracked by git."""
+    try:
+        out = run(["git", "ls-files", "--others", "--exclude-standard"], cwd=worktree)
+    except GitError:
+        return set()
+    return {ln.strip() for ln in out.splitlines() if ln.strip()}
+
+
 def first_parent(worktree: Path, sha: str) -> str | None:
     """The commit a merge/fast-forward landed on top of; None for root/unknown."""
     try:
