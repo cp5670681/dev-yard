@@ -280,16 +280,16 @@ exec:
 
 宿主把脚本所在目录打 tar 送到现场，解到临时目录，跑入口文件，最后删临时目录。现场仍禁止把跨调用状态写进这个临时目录。第一批实现可以只做 `file`，但接口从第一天带上 `payload`，避免 local 用路径、远程用 stdin 再分叉一次。
 
-### 3.6 `.sql` 走同一套现场
+### 3.6 `.sql` 一律在宿主跑
 
-本期实现非 SQL 即可跑通事故，但抽象必须一次定对：`.sql` 不是永远的「本机 usql」。
+`.sql` **不**走现场：无论 `exec.use` / `db.exec` 怎么配，都在宿主用 `usql` + `db.url` 执行（`qa_exec.py` 的 `run_case_script` 只对非 `.sql` 才解析 executor）。
 
-| `db.exec`（新，可选） | 含义 |
-|---|---|
-| 缺省 / `host` | 现状：宿主 usql + `db.url`。host 能直连测试库的公司继续用。 |
-| `inherit` | 同一 env 的 exec 配方，runner 换成 `usql` / `psql -f -`，stdin = SQL。host 够不着 DB、只能进 pod 的公司用这个。 |
+早期设计里有一个 `db.exec: inherit`（把 SQL 丢进同一 env 的 pod、runner 换 `psql -f -`），已在生产环境证伪并废弃：
 
-`inherit` 未实现时：`.sql` 仍走 host usql；`check-env` 若 `db.url` 不通，提示改 `db.exec: inherit` 而不是让 50 条 SQL 全超时。
+- research 容器里既没有 `psql` 也没有 `usql`，SQL 根本没执行；
+- JMS→kubectl 这条链路把远端非 0 退出码吞成 0，宿主误判 setup 成功，用例只因「种子不存在」被判 blocked（PG-13175 的 2 条阻塞即此）。
+
+所以现在 `.sql` 只保留宿主一条路：`db.url` 不通就直接报错，不再退回现场。`db.exec` 只接受 `host`，配 `inherit` 会在加载 qa.yaml 时直接报错。
 
 ## 4. 宿主侧接口
 
@@ -334,7 +334,7 @@ def resolve_executor(env_cfg: QaEnv, *, base_url: str) -> ScriptExecutor:
 `run_case_script`：
 
 ```python
-if script.suffix.lower() == ".sql" and db_exec != "inherit":
+if script.suffix.lower() == ".sql":
     return _run_sql(cfg, script, on_log)
 executor = resolve_executor(cfg.env, base_url=cfg.env.base_url)
 result = executor.run(script, on_log=on_log, env_extra={...QA_*...})
@@ -425,7 +425,7 @@ qa.yaml 已 gitignore，凭据明文直存（账号、db.url、JMS user）是本
 3. **L2 `jms-k8s` / `ssh` / `docker`**：stub 测试先行，再对本机 JMS 跑 check-env。这是修掉 PG-13054 的那一刀。
 4. **L1 raw**（argv 默认，`shell: true` 显式）。
 5. **L3 command**，然后 **L3 skill**（skill 最后，避免批跑误用）。
-6. **Web 表单 + `docs/recipes/`**。`db.exec: inherit` 可与 L2 并行，不挡非 SQL 路径。
+6. **Web 表单 + `docs/recipes/`**。不挡非 SQL 路径。
 
 ## 10. 新公司接入
 

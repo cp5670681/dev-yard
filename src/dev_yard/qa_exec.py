@@ -237,8 +237,9 @@ def run_case_script(
     if not script.is_file():
         raise TestRejected(f"{job.id} {kind} file missing: {script}")
     wt = paths.req_worktree(root, jira, job.repo) if job.repo else None
-    inherit = (cfg.env.db_exec or "host") == "inherit"
-    if script.suffix.lower() == ".sql" and not inherit:
+    # .sql 造数/清理一律在宿主用 usql 跑：无论 exec.use / db.exec 怎么配，
+    # 都不把 SQL 丢进现场（pod 里既无 psql 也无 usql，且远端退出码会被吞）。
+    if script.suffix.lower() == ".sql":
         return _run_sql(cfg, script, on_log)
     started = time.time()
     if executor is None:

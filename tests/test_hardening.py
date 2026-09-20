@@ -87,6 +87,48 @@ def test_run_case_script_rejects_absolute_path(tmp_path: Path):
         run_case_script(tmp_path, "AB-1", None, job, "setup")
 
 
+def test_sql_script_always_runs_on_host(tmp_path: Path, monkeypatch):
+    """`.sql` must never be routed into the pod, whatever db.exec says."""
+    from dev_yard import qa_exec
+    from dev_yard.qa_config import QaBrowser, QaConfig, QaEnv
+
+    case_dir = tmp_path / "cases"
+    case_dir.mkdir()
+    (case_dir / "setup.sql").write_text("select 1;\n", encoding="utf-8")
+    job = CaseJob(
+        id="c1",
+        title="t",
+        repo="",
+        setup="setup.sql",
+        path=str(case_dir / "case-c1.md"),
+    )
+    cfg = QaConfig(
+        active_env="test",
+        env=QaEnv(
+            name="test",
+            base_url="http://x",
+            db_url="postgres://localhost/app",
+            db_exec="inherit",
+        ),
+        browser=QaBrowser(),
+        workers=(),
+    )
+
+    seen: dict[str, str] = {}
+
+    def fake_sql(cfg, script, on_log):
+        seen["script"] = script.name
+        return "ok"
+
+    def no_executor(*args, **kwargs):
+        raise AssertionError("executor must not be resolved for .sql")
+
+    monkeypatch.setattr(qa_exec, "_run_sql", fake_sql)
+    monkeypatch.setattr("dev_yard.script_exec.resolve_executor", no_executor)
+    assert qa_exec.run_case_script(tmp_path, "AB-1", cfg, job, "setup") == "ok"
+    assert seen["script"] == "setup.sql"
+
+
 def test_shell_substitution_is_quoted(monkeypatch):
     from dev_yard.script_exec import _subst_shell
 

@@ -16,7 +16,7 @@ def _fail(msg: str) -> NoReturn:
 USES = ("local", "ssh", "jms-k8s", "docker", "raw", "delegate")
 REMOTE_USES = frozenset({"ssh", "jms-k8s", "docker", "raw", "delegate"})
 PAYLOADS = ("file", "bundle")
-DB_EXECS = ("host", "inherit")
+DB_EXECS = ("host",)
 
 _COMMON = frozenset(
     {"use", "with", "payload", "parallel", "allow_cross_site", "timeout", "ping_timeout"}
@@ -187,7 +187,10 @@ def parse_exec(env_name: str, raw_env: dict[str, Any], *, script_runner: str) ->
     db = raw_env.get("db") if isinstance(raw_env.get("db"), dict) else {}
     db_exec = _blank(db.get("exec")) or "host"
     if db_exec not in DB_EXECS:
-        _fail(f"qa.yaml {field}.db.exec 只能是 host 或 inherit")
+        _fail(
+            f"qa.yaml {field}.db.exec 只能是 host"
+            "（inherit 已废弃：.sql 一律在宿主用 usql 跑，不再进现场）"
+        )
     raw = raw_env.get("exec")
     if raw is None:
         return default_exec(runner=script_runner, db_exec=db_exec)

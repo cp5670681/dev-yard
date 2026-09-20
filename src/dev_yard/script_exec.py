@@ -348,10 +348,43 @@ def _clip_diag(result: ExecResult, limit: int = 240) -> str:
     return text
 
 
+_QA_EXIT_SENTINEL = "__QA_EXIT__="
+
+
+def _restore_remote_exit(result: ExecResult) -> ExecResult:
+    """Recover the real exit code JMS/kubectl swallowed.
+
+    A failing remote command still yields ssh exit 0 (the real code only shows
+    up as `command terminated with exit code N` text). Callers append an
+    in-band sentinel; strip it from stdout and restore `code`/`error_class`.
+    """
+    out = result.stdout or ""
+    if _QA_EXIT_SENTINEL not in out:
+        return result
+    kept: list[str] = []
+    code: int | None = None
+    for line in out.splitlines():
+        if line.startswith(_QA_EXIT_SENTINEL):
+            try:
+                code = int(line[len(_QA_EXIT_SENTINEL):].strip())
+            except ValueError:
+                kept.append(line)
+            continue
+        kept.append(line)
+    if code is None:
+        return result
+    text = "\n".join(kept)
+    if out.endswith("\n"):
+        text += "\n"
+    result.stdout = text
+    result.code = code
+    result.error_class = (
+        None if code == 0 else classify_error(result.stderr or text, code=code)
+    )
+    return result
+
+
 def _remote_runner(spec: QaExec, script: Path) -> list[str]:
-    if script.suffix.lower() == ".sql" and spec.db_exec == "inherit":
-        cmd = spec.sql_runner or "psql -v ON_ERROR_STOP=1 -f -"
-        return _tokens(cmd)
     runner = spec.runner
     if not runner:
         raise TestRejected(
@@ -688,6 +721,11 @@ class JmsK8sExecutor(ScriptExecutor):
         cmd = ["env", *assigns, *runner] if assigns else runner
         inner = _cd_wrap(self.spec.workdir, cmd)
         remote_cmd = " ".join(shlex.quote(a) for a in inner)
+        # JMS/kubectl 把远端退出码吞成 0（失败也返回 0），用哨兵带回来再还原。
+        # 前导 \n 保证哨兵独占一行（否则上一个命令的输出不以换行收尾时会漏读）。
+        remote_cmd += (
+            f"; __qa_code=$?; printf '\\n{_QA_EXIT_SENTINEL}%s\\n' \"$__qa_code\""
+        )
         remote = (
             f"kubectl exec -i -n {shlex.quote(self.spec.namespace)} {shlex.quote(pod)} "
             f"-c {shlex.quote(self.spec.k8s_container)} -- {remote_cmd}"
@@ -698,6 +736,7 @@ class JmsK8sExecutor(ScriptExecutor):
             timeout=t,
             on_log=on_log,
         )
+        r = _restore_remote_exit(r)
         if r.code != 0 and classify_error(r.stderr or r.stdout, code=r.code) == ExecErrorClass.AUTH:
             self._auth_fail(r)
         return r
@@ -955,7 +994,7 @@ def check_env(
                 error_class=result.error_class or ExecErrorClass.SCRIPT,
             )
         steps.append({"step": "hello", "status": "ok", "detail": HELLO})
-        if cfg.env.db_url and cfg.env.db_exec != "inherit":
+        if cfg.env.db_url:
             usql = shutil.which("usql")
             if usql:
                 try:
@@ -970,7 +1009,7 @@ def check_env(
                             {
                                 "step": "db",
                                 "status": "warn",
-                                "detail": "db.url 从本机不通；可改 db.exec: inherit 走同一现场",
+                                "detail": "db.url 从本机不通；.sql 造数需宿主能直连该库",
                             }
                         )
                     else:
@@ -980,7 +1019,7 @@ def check_env(
                         {
                             "step": "db",
                             "status": "warn",
-                            "detail": f"db.url 从本机超时/不通（{e}）；可改 db.exec: inherit 走同一现场",
+                            "detail": f"db.url 从本机超时/不通（{e}）；.sql 造数需宿主能直连该库",
                         }
                     )
         return {

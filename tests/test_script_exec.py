@@ -13,6 +13,7 @@ from dev_yard.script_exec import (
     ExecResult,
     ExecUnreachable,
     JmsK8sExecutor,
+    _restore_remote_exit,
     check_env,
     classify_error,
     resolve_executor,
@@ -335,6 +336,76 @@ def test_classify_timeout_and_auth():
     assert classify_error("", timeout=True) == ExecErrorClass.TIMEOUT
     assert classify_error("Permission denied (publickey)") == ExecErrorClass.AUTH
     assert classify_error("abort: no seed", code=1) == ExecErrorClass.SCRIPT
+
+
+def test_restore_remote_exit_reads_sentinel():
+    r = _restore_remote_exit(ExecResult(0, "boot\n__QA_EXIT__=127\n", ""))
+    assert r.code == 127
+    assert r.stdout == "boot\n"
+    assert r.error_class is not None
+
+    ok = _restore_remote_exit(ExecResult(0, "__QA_EXIT__=0\n", ""))
+    assert ok.code == 0
+    assert ok.error_class is None
+
+    plain = _restore_remote_exit(ExecResult(0, "hi\n", ""))
+    assert plain.code == 0
+    assert plain.stdout == "hi\n"
+
+
+def test_jms_k8s_recovers_swallowed_exit_code(tmp_path: Path):
+    root = _yard(tmp_path)
+    _write_env(
+        root,
+        {
+            "base_url": "http://research.dev1.example.com",
+            "exec": {
+                "use": "jms-k8s",
+                "with": {
+                    "jms": {"host": "jms.example.com", "port": 22222, "user": "alice@root"},
+                    "default_node": "k8s-1",
+                    "nodes": {"k8s-1": "10.0.1.5"},
+                    "namespace": "research",
+                    "container": "web",
+                    "runner": "bin/rails runner",
+                    "pod": {"selector": "app=research-web"},
+                },
+            },
+        },
+        name="test",
+    )
+    cfg = load_qa_config(root)
+    ex = resolve_executor(cfg.env, base_url=cfg.env.base_url)
+    remotes: list[str] = []
+
+    def fake_ssh(self, remote, *, stdin=None, timeout=30, on_log=None):
+        remotes.append(remote)
+        if "jsonpath" in remote:
+            return ExecResult(0, "research-abc", "")
+        return ExecResult(0, "boom\n\n__QA_EXIT__=3\n", "")
+
+    ex._ssh = fake_ssh.__get__(ex, JmsK8sExecutor)  # type: ignore[method-assign]
+    script = tmp_path / "seed.rb"
+    script.write_text("puts 1\n", encoding="utf-8")
+    result = ex.run(script, env_extra={"QA_CASE_ID": "case-01"})
+    assert result.code == 3
+    assert result.stdout.strip() == "boom"
+    # 哨兵必须以换行起头，否则上一条命令输出不以换行收尾时会漏读。
+    assert "\\n__QA_EXIT__=" in remotes[-1]
+    ex.close()
+
+
+def test_db_exec_inherit_is_rejected(tmp_path: Path):
+    root = _yard(tmp_path)
+    _write_env(
+        root,
+        {
+            "base_url": "http://127.0.0.1:3000",
+            "db": {"url": "postgres://localhost/app", "exec": "inherit"},
+        },
+    )
+    with pytest.raises(TestRejected, match="inherit"):
+        load_qa_config(root)
 
 
 def test_local_stdin_hello(tmp_path: Path):

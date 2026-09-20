@@ -252,11 +252,11 @@
                   <v-col cols="12" sm="6">
                     <v-select
                       v-model="currentEnv.exec.db_exec"
-                      :items="['host', 'inherit']"
+                      :items="['host']"
                       label="db.exec"
                       variant="outlined"
                       density="comfortable"
-                      hint="host = 本机 usql；inherit = 同一条 exec 管道"
+                      hint="host = 本机 usql；.sql 一律在宿主跑（inherit 已废弃）"
                       persistent-hint
                     />
                   </v-col>
