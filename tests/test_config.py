@@ -3,13 +3,19 @@ from pathlib import Path
 import pytest
 
 from dev_yard.config import (
+    GitSettings,
     PiSettings,
     StageModel,
     git_project_name,
+    load_git_settings,
     load_pi_settings,
     load_repos,
+    render_freeze_branch,
+    resolve_freeze_branch,
     resolve_pi_choice,
+    save_git_settings,
     save_pi_settings,
+    ticket_branch_name,
 )
 from dev_yard.service import init_yard, repo_add
 
@@ -187,6 +193,46 @@ def test_cli_repo_set_model(tmp_path: Path, git_src: Path, monkeypatch):
     res_clear = runner.invoke(app, ["repo", "set-model", "be"])
     assert res_clear.exit_code == 0
     assert "be implement (inherit)" in res_clear.output
+
+
+def test_git_settings_default_and_roundtrip(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    assert load_git_settings(yard).freeze_branch == "req/{jira}"
+    assert render_freeze_branch("req/{jira}", "AB-1") == "req/AB-1"
+    assert ticket_branch_name("req/AB-1", "T1") == "req/AB-1-T1"
+    save_git_settings(yard, GitSettings(freeze_branch="feature/{jira}"))
+    assert load_git_settings(yard).freeze_branch == "feature/{jira}"
+    save_pi_settings(yard, PiSettings(provider="rcc", model="glm-5.3"))
+    assert load_git_settings(yard).freeze_branch == "feature/{jira}"
+    save_git_settings(yard, GitSettings(freeze_branch="req/{jira}"))
+    text = (yard / "repos.yaml").read_text(encoding="utf-8")
+    assert "freeze_branch" not in text
+    assert "pi:" in text
+
+
+def test_git_settings_rejects_bad_template(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    with pytest.raises(ValueError, match=r"\{jira\}"):
+        save_git_settings(yard, GitSettings(freeze_branch="req/fixed"))
+    with pytest.raises(ValueError, match="unknown placeholders"):
+        save_git_settings(yard, GitSettings(freeze_branch="req/{jira}/{ticket}"))
+
+
+def test_load_git_settings_blank_section(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    (yard / "repos.yaml").write_text("repos: {}\ngit:\n", encoding="utf-8")
+    assert load_git_settings(yard).freeze_branch == "req/{jira}"
+
+
+def test_resolve_freeze_branch_prefers_status(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    save_git_settings(yard, GitSettings(freeze_branch="feature/{jira}"))
+    assert resolve_freeze_branch(yard, "AB-1") == "feature/AB-1"
+    assert resolve_freeze_branch(yard, "AB-1", {"branch": "req/AB-1"}) == "req/AB-1"
 
 
 def test_dump_workspace_preserves_unicode(tmp_path: Path):

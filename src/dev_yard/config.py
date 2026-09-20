@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -7,7 +8,7 @@ from urllib.parse import urlparse
 
 import yaml
 
-from dev_yard import paths
+from dev_yard import gitops, paths
 
 PI_STAGES = (
     "open",
@@ -210,6 +211,113 @@ def load_repos(root: Path) -> dict[str, Repo]:
             model=_blank(raw.get("model")),
         )
     return out
+
+
+DEFAULT_FREEZE_BRANCH = "req/{jira}"
+_PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
+_SAMPLE_JIRA = "PROJ-101"
+_SAMPLE_TICKET = "T1"
+
+
+@dataclass
+class GitSettings:
+    freeze_branch: str = DEFAULT_FREEZE_BRANCH
+
+
+def normalize_freeze_template(template: Any) -> str:
+    text = str(template or "").strip() or DEFAULT_FREEZE_BRANCH
+    names = _PLACEHOLDER_RE.findall(text)
+    if "jira" not in names:
+        raise ValueError("git.freeze_branch must contain {jira}")
+    extra = sorted({n for n in names if n != "jira"})
+    if extra:
+        raise ValueError(
+            "git.freeze_branch unknown placeholders: "
+            + ", ".join("{" + n + "}" for n in extra)
+        )
+    sample = text.replace("{jira}", _SAMPLE_JIRA)
+    gitops.assert_branch_name(sample)
+    gitops.assert_branch_name(ticket_branch_name(sample, _SAMPLE_TICKET))
+    return text
+
+
+def render_freeze_branch(template: str, jira: str) -> str:
+    key = (jira or "").strip()
+    if not key:
+        raise ValueError("jira key is required")
+    branch = normalize_freeze_template(template).replace("{jira}", key)
+    gitops.assert_branch_name(branch)
+    return branch
+
+
+def ticket_branch_name(freeze: str, ticket_id: str) -> str:
+    """Child branch of a freeze ref. Hyphen, not slash: git forbids nested refs."""
+    tid = (ticket_id or "").strip()
+    if not tid:
+        raise ValueError("ticket id is required")
+    name = f"{freeze}-{tid}"
+    gitops.assert_branch_name(name)
+    return name
+
+
+def load_git_settings(root: Path) -> GitSettings:
+    raw = load_workspace(root).get("git")
+    if not raw:
+        return GitSettings()
+    if not isinstance(raw, dict):
+        raise ValueError("repos.yaml git must be a mapping")
+    template = raw.get("freeze_branch", DEFAULT_FREEZE_BRANCH)
+    return GitSettings(freeze_branch=normalize_freeze_template(template))
+
+
+def save_git_settings(root: Path, settings: GitSettings) -> None:
+    template = normalize_freeze_template(settings.freeze_branch)
+    data = load_workspace(root)
+    data.setdefault("repos", data.get("repos") or {})
+    git = dict(data["git"]) if isinstance(data.get("git"), dict) else {}
+    if template == DEFAULT_FREEZE_BRANCH:
+        git.pop("freeze_branch", None)
+        if git:
+            data["git"] = git
+        else:
+            data.pop("git", None)
+    else:
+        git["freeze_branch"] = template
+        data["git"] = git
+    dump_workspace(root, data)
+
+
+def resolve_freeze_branch(
+    root: Path,
+    jira: str,
+    data: dict[str, Any] | None = None,
+    worktree: Path | None = None,
+) -> str:
+    """Prefer the name recorded at freeze, then the worktree checkout, then the template."""
+    if data:
+        stored = data.get("branch")
+        if isinstance(stored, str) and stored.strip():
+            return stored.strip()
+    if worktree is not None and (worktree / ".git").exists():
+        try:
+            name = gitops.current_branch(worktree)
+        except gitops.GitError:
+            name = ""
+        if name and name != "HEAD":
+            return name
+    return render_freeze_branch(load_git_settings(root).freeze_branch, jira)
+
+
+def git_settings_out(settings: GitSettings) -> dict[str, Any]:
+    freeze = render_freeze_branch(settings.freeze_branch, _SAMPLE_JIRA)
+    return {
+        "freeze_branch": settings.freeze_branch,
+        "default_freeze_branch": DEFAULT_FREEZE_BRANCH,
+        "preview": freeze,
+        "ticket_preview": ticket_branch_name(freeze, _SAMPLE_TICKET),
+        "placeholders": ["{jira}"],
+        "examples": [DEFAULT_FREEZE_BRANCH, "feature/{jira}", "feat/{jira}", "{jira}"],
+    }
 
 
 def save_repos(root: Path, repos: dict[str, Repo]) -> None:

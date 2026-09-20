@@ -1,21 +1,69 @@
 <template>
   <div>
-    <div class="mb-6">
-      <h1 class="text-h5 text-sm-h4 mb-1">模型</h1>
+    <div class="mb-4">
+      <h1 class="text-h5 text-sm-h4 mb-1">配置</h1>
       <p class="text-medium-emphasis mb-0">
-        选项来自本机 <code>pi --list-models</code>。provider 和 model 成对回退。实现：仓库对 →
-        阶段 implement → 全局 → 环境变量 → pi 默认。契约审查只用 contract 阶段/全局，审查只用 review 阶段/全局，不用仓库模型。保存到
-        <code>repos.yaml</code> 的 <code>pi:</code>。
+        写入工作区根 <code>repos.yaml</code>。冻结分支只影响之后新冻结的需求；已冻结的沿用
+        <code>STATUS.yaml</code> 里记下的名字。
       </p>
     </div>
+    <v-tabs v-model="tab" color="primary" class="mb-4" show-arrows>
+      <v-tab value="git" :prepend-icon="mdiSourceBranch">分支</v-tab>
+      <v-tab value="pi" :prepend-icon="mdiCreationOutline">模型</v-tab>
+    </v-tabs>
     <v-alert v-if="error" type="error" class="mb-4" closable @click:close="error = ''">
       {{ error }}
     </v-alert>
-    <v-alert v-if="catalogError" type="warning" class="mb-4">
+    <v-alert v-if="tab === 'pi' && catalogError" type="warning" class="mb-4">
       {{ catalogError }}
     </v-alert>
-    <v-card variant="outlined">
+
+    <v-card v-if="tab === 'git'" variant="outlined">
       <v-card-text>
+        <div class="text-subtitle-2 mb-2">冻结分支模板</div>
+        <p class="text-body-2 text-medium-emphasis mb-4">
+          必须包含 <code>{jira}</code>。并行票的子分支是「冻结名-票号」，不能写成
+          <code>冻结名/票号</code>（git 不允许嵌套 ref）。
+        </p>
+        <v-text-field
+          v-model="freezeBranch"
+          label="git.freeze_branch"
+          variant="outlined"
+          density="comfortable"
+          hide-details="auto"
+          placeholder="req/{jira}"
+        />
+        <div class="mt-3 mb-1 text-caption text-medium-emphasis">常用预设</div>
+        <div class="d-flex flex-wrap ga-2">
+          <v-chip
+            v-for="ex in examples"
+            :key="ex"
+            size="small"
+            :variant="freezeBranch === ex ? 'flat' : 'outlined'"
+            :color="freezeBranch === ex ? 'primary' : undefined"
+            @click="freezeBranch = ex"
+          >
+            {{ ex }}
+          </v-chip>
+        </div>
+        <v-alert type="info" variant="tonal" class="mt-4 mb-0" density="compact">
+          预览：冻结 <code>{{ preview }}</code>
+          · 并行票 <code>{{ ticketPreview }}</code>
+        </v-alert>
+      </v-card-text>
+      <v-card-actions class="px-6 pb-4">
+        <v-spacer />
+        <v-btn color="primary" :loading="savingGit" @click="saveGit">保存</v-btn>
+      </v-card-actions>
+    </v-card>
+
+    <v-card v-else variant="outlined">
+      <v-card-text>
+        <p class="text-body-2 text-medium-emphasis mb-4">
+          选项来自本机 <code>pi --list-models</code>。provider 和 model 成对回退。实现：仓库对 →
+          阶段 implement → 全局 → 环境变量 → pi 默认。契约审查只用 contract 阶段/全局，审查只用
+          review 阶段/全局，不用仓库模型。写入 <code>pi:</code>。
+        </p>
         <div class="text-subtitle-2 mb-3">全局默认</div>
         <v-row>
           <v-col cols="12" sm="6">
@@ -83,20 +131,31 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
-import { getPiSettings, savePiSettings } from "@/api/client";
+import { mdiCreationOutline, mdiSourceBranch } from "@mdi/js";
+import { getGitSettings, getPiSettings, saveGitSettings, savePiSettings } from "@/api/client";
 import type { PiCatalogProvider } from "@/api/types";
 import { STEP_LABELS } from "@/composables/labels";
 import { useSnack } from "@/composables/snack";
 
 const snack = useSnack();
+const tab = ref("git");
 const error = ref("");
 const catalogError = ref("");
 const saving = ref(false);
+const savingGit = ref(false);
 const provider = ref("");
 const model = ref("");
 const stageIds = ref<string[]>([]);
 const stages = reactive<Record<string, { provider: string; model: string }>>({});
 const catalog = ref<PiCatalogProvider[]>([]);
+const freezeBranch = ref("req/{jira}");
+const examples = ref<string[]>(["req/{jira}", "feature/{jira}", "feat/{jira}", "{jira}"]);
+
+const SAMPLE_JIRA = "PROJ-101";
+const SAMPLE_TICKET = "T1";
+
+const preview = computed(() => freezeBranch.value.replaceAll("{jira}", SAMPLE_JIRA));
+const ticketPreview = computed(() => `${preview.value}-${SAMPLE_TICKET}`);
 
 const providerItems = computed(() => catalog.value.map((p) => p.id));
 
@@ -142,6 +201,13 @@ function onProviderChange(stageId: string, next: string | null) {
 
 onMounted(async () => {
   try {
+    const git = await getGitSettings();
+    freezeBranch.value = git.freeze_branch || "req/{jira}";
+    if (git.examples?.length) examples.value = git.examples;
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  }
+  try {
     const cfg = await getPiSettings();
     provider.value = cfg.provider;
     model.value = cfg.model;
@@ -155,9 +221,24 @@ onMounted(async () => {
     }
     ensureSaved(cfg.provider, cfg.model);
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    const msg = e instanceof Error ? e.message : String(e);
+    error.value = error.value ? `${error.value}; ${msg}` : msg;
   }
 });
+
+async function saveGit() {
+  savingGit.value = true;
+  error.value = "";
+  try {
+    const saved = await saveGitSettings({ freeze_branch: freezeBranch.value });
+    freezeBranch.value = saved.freeze_branch;
+    snack.notify("已写入 repos.yaml", "success");
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    savingGit.value = false;
+  }
+}
 
 async function save() {
   saving.value = true;

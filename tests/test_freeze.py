@@ -1,7 +1,8 @@
 from pathlib import Path
 
-from dev_yard import status as st
-from dev_yard.service import init_yard, repo_add, req_freeze, req_open
+from dev_yard import gitops, status as st
+from dev_yard.config import GitSettings, save_git_settings
+from dev_yard.service import init_yard, repo_add, req_freeze, req_open, ticket_start
 
 
 def test_freeze_creates_worktree(tmp_path: Path, git_src: Path, monkeypatch):
@@ -25,6 +26,57 @@ def test_freeze_creates_worktree(tmp_path: Path, git_src: Path, monkeypatch):
     assert not (wts[0] / "docs" / "adr" / "0001-test.md").exists()
     assert (yard / "reqs" / "CONTEXT.md").read_text() == "# glossary\n"
     assert (adr / "0001-test.md").read_text() == "# adr\n"
+    assert st.load(yard, "AB-9")["branch"] == "req/AB-9"
+    listed = gitops.run(["git", "branch", "--list", "req/AB-9"], cwd=git_src)
+    assert "req/AB-9" in listed
+
+
+def test_freeze_uses_configured_branch_template(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    save_git_settings(yard, GitSettings(freeze_branch="feature/{jira}"))
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-91", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    wts = req_freeze(yard, "AB-91")
+    assert gitops.current_branch(wts[0]) == "feature/AB-91"
+    assert st.load(yard, "AB-91")["branch"] == "feature/AB-91"
+    child = ticket_start(yard, "AB-91", "T1")
+    assert gitops.current_branch(child) == "feature/AB-91-T1"
+    save_git_settings(yard, GitSettings(freeze_branch="feat/{jira}"))
+    req_freeze(yard, "AB-91", force=True)
+    assert gitops.current_branch(wts[0]) == "feature/AB-91"
+    assert st.load(yard, "AB-91")["branch"] == "feature/AB-91"
+
+
+def test_legacy_freeze_keeps_worktree_branch_after_template_change(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    from dev_yard.web.board import requirement_detail
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-92", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    wts = req_freeze(yard, "AB-92")
+    data = st.load(yard, "AB-92")
+    data.pop("branch", None)
+    st.save(yard, "AB-92", data)
+    save_git_settings(yard, GitSettings(freeze_branch="feature/{jira}"))
+    detail = requirement_detail(yard, "AB-92")
+    assert detail.branch == "req/AB-92"
+    child = ticket_start(yard, "AB-92", "T1")
+    assert gitops.current_branch(wts[0]) == "req/AB-92"
+    assert gitops.current_branch(child) == "req/AB-92-T1"
 
 
 def test_freeze_coerces_list_tickets_in_status(tmp_path: Path, git_src: Path, monkeypatch):

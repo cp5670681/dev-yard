@@ -224,6 +224,17 @@ def current_branch(worktree: Path) -> str:
     return run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=worktree)
 
 
+def assert_branch_name(branch: str) -> None:
+    """Raise ValueError unless `branch` is a legal local branch ref."""
+    name = (branch or "").strip()
+    if not name or name == "HEAD":
+        raise ValueError("invalid git branch name")
+    try:
+        run(["git", "check-ref-format", f"refs/heads/{name}"])
+    except GitError as e:
+        raise ValueError(f"invalid git branch name {name!r}") from e
+
+
 def push(
     worktree: Path,
     remote: str = "origin",

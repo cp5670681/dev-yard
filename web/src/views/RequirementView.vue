@@ -808,12 +808,13 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
   if (risky || freeze || push || sync || runTest) {
     confirm.action = action;
     confirm.ticketId = ticketId || "";
+    const branch = detail.value?.branch || `req/${jira.value}`;
     confirm.text = push
-      ? `将把各个仓库的 worktree 分支 (req/${jira.value}) 推送到远端。确认继续？`
+      ? `将把各个仓库的 worktree 分支 (${branch}) 推送到远端。确认继续？`
       : sync
       ? "将 fetch 远端，并把已冻结 worktree 更新到 origin/<default_base>（默认快进）。确认继续？"
       : freeze
-      ? "冻结后会切 worktree。确认继续？"
+      ? `冻结后会创建分支 ${branch} 并切 worktree。确认继续？`
       : runTest
       ? "将按 qa.yaml 设计并执行 UI 用例；失败会拆 B 票。确认继续？"
       : "强制重抽会重置阶段并删除截图。确认继续？";

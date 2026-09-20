@@ -176,7 +176,7 @@ const subtitle = computed(() => {
   if (pageJira.value) return pageJira.value;
   const name = String(route.name || "");
   if (name === "repos") return "仓库";
-  if (name === "settings") return "模型";
+  if (name === "settings") return "配置";
   return "平台";
 });
 

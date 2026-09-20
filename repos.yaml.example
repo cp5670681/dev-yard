@@ -2,6 +2,11 @@
 # path: optional existing clone. grill/spec/tickets will NOT checkout it;
 # it must already be on default_base.
 #
+# git.freeze_branch: freeze worktree branch template. Must contain {jira}.
+# Default req/{jira}. Ticket child branches are {freeze}-{ticket}.
+# git:
+#   freeze_branch: feature/{jira}
+#
 # pi: optional. Names must already exist in your pi config.
 # provider+model are a pair at each layer; incomplete pairs are skipped.
 # implement: repo pair → stages.implement → top-level pi → env.

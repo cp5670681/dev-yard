@@ -923,6 +923,33 @@ def test_pi_settings_api(tmp_path: Path, monkeypatch):
     assert plugin_put.status_code == 400
 
 
+def test_git_settings_api(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    client = _client(yard)
+    empty = client.get("/api/git").json()
+    assert empty["freeze_branch"] == "req/{jira}"
+    assert empty["preview"] == "req/PROJ-101"
+    assert empty["ticket_preview"] == "req/PROJ-101-T1"
+    saved = client.put("/api/git", json={"freeze_branch": "feature/{jira}"})
+    assert saved.status_code == 200
+    assert saved.json()["preview"] == "feature/PROJ-101"
+    assert saved.json()["ticket_preview"] == "feature/PROJ-101-T1"
+    again = client.get("/api/git").json()
+    assert again["freeze_branch"] == "feature/{jira}"
+    bad = client.put("/api/git", json={"freeze_branch": "no-placeholder"})
+    assert bad.status_code == 400
+    vue = (Path(__file__).resolve().parents[1] / "web" / "src" / "views" / "SettingsView.vue").read_text()
+    assert "freeze_branch" in vue
+    assert 'value="git"' in vue
+    assert 'value="pi"' in vue
+    assert "getGitSettings()" in vue
+    assert "getPiSettings()" in vue
+    assert "Promise.all([getGitSettings()" not in vue
+    nav = (Path(__file__).resolve().parents[1] / "web" / "src" / "App.vue").read_text()
+    assert 'title="配置"' in nav
+
+
 def test_qa_config_page_serves_spa(tmp_path: Path):
     yard = tmp_path / "yard"
     init_yard(yard)

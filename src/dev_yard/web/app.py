@@ -20,7 +20,17 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from dev_yard import __version__, gitops, paths, service as yard_service
 from dev_yard.gitops import GitError
 from dev_yard.service import extract_req_key
-from dev_yard.config import PI_STAGES, PiSettings, StageModel, load_pi_settings, save_pi_settings
+from dev_yard.config import (
+    PI_STAGES,
+    GitSettings,
+    PiSettings,
+    StageModel,
+    git_settings_out,
+    load_git_settings,
+    load_pi_settings,
+    save_git_settings,
+    save_pi_settings,
+)
 from dev_yard.pi_catalog import list_pi_catalog
 from dev_yard.qa_config import (
     QaConfigUnreadable,
@@ -194,6 +204,10 @@ class PiSettingsIn(BaseModel):
     provider: str = ""
     model: str = ""
     stages: dict[str, StageModelIn] = Field(default_factory=dict)
+
+
+class GitSettingsIn(BaseModel):
+    freeze_branch: str = ""
 
 
 def _bearer_ok(authorization: str | None, token: str) -> bool:
@@ -428,6 +442,7 @@ def create_app(
             ],
             "stage_runs": detail.stage_runs,
             "qa": detail.qa,
+            "branch": detail.branch,
         }
 
     def _doc_payload(detail, slug: str):
@@ -1056,6 +1071,24 @@ def create_app(
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         return _pi_settings_out()
+
+    def _git_settings_out():
+        return git_settings_out(load_git_settings(root))
+
+    @app.get("/api/git")
+    def api_git_get():
+        try:
+            return _git_settings_out()
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.put("/api/git")
+    def api_git_put(payload: GitSettingsIn):
+        try:
+            save_git_settings(root, GitSettings(freeze_branch=payload.freeze_branch))
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return _git_settings_out()
 
     def _qa_config_out():
         """Form state for qa.yaml.

@@ -14,7 +14,7 @@ from typing import Any, Callable
 import yaml
 
 from dev_yard import gitops, paths, status as st
-from dev_yard.config import load_repos
+from dev_yard.config import load_repos, resolve_freeze_branch
 from dev_yard.qa_config import (
     QaConfig,
     TestRejected,
@@ -59,6 +59,7 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
     qa.mkdir(parents=True, exist_ok=True)
     repos = load_repos(root)
     aliases = _involved_aliases(root, jira)
+    data = st.load(root, jira) if (req / "STATUS.yaml").is_file() else {}
     lines = [
         f"# yard-qa context — {jira}",
         "",
@@ -73,9 +74,10 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
         repo = repos.get(alias)
         base = repo.default_base if repo else "?"
         role = repo.role if repo else "?"
+        branch = resolve_freeze_branch(root, jira, data, wt)
         lines.append(
             f"- {alias}: {wt.resolve()}  "
-            f"(branch req/{jira}, base {base}, role {role})"
+            f"(branch {branch}, base {base}, role {role})"
         )
     env = cfg.env
     routes = _meta_routes(qa)

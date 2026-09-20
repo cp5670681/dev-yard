@@ -154,6 +154,7 @@ export interface ReqDetail {
   title: string | null;
   phase: string;
   next: string;
+  branch?: string;
   contract: string | null;
   contract_summary: string | null;
   contract_summary_html?: string;
@@ -321,6 +322,15 @@ export interface PiSettings {
   stages: Record<string, StageModelCfg>;
   stage_ids: string[];
   catalog: PiCatalog;
+}
+
+export interface GitSettings {
+  freeze_branch: string;
+  default_freeze_branch: string;
+  preview: string;
+  ticket_preview: string;
+  placeholders: string[];
+  examples: string[];
 }
 
 export interface QaAccountCfg {

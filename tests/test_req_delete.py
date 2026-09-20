@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from dev_yard import gitops, status as st
+from dev_yard.config import GitSettings, save_git_settings
 from dev_yard.service import init_yard, repo_add, req_delete, req_freeze, req_open, ticket_start
 from dev_yard.web.app import create_app
 
@@ -48,6 +49,32 @@ def test_req_delete_removes_worktrees_and_branches(tmp_path: Path, git_src: Path
     assert not child.exists()
     assert gitops.run(["git", "branch", "--list", "req/AB-71"], cwd=git_src) == ""
     assert gitops.run(["git", "branch", "--list", "req/AB-71-T1"], cwd=git_src) == ""
+
+
+def test_req_delete_legacy_branch_after_template_change(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-93", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    req_freeze(yard, "AB-93")
+    child = ticket_start(yard, "AB-93", "T1")
+    assert child.exists()
+    data = st.load(yard, "AB-93")
+    data.pop("branch", None)
+    st.save(yard, "AB-93", data)
+    save_git_settings(yard, GitSettings(freeze_branch="feature/{jira}"))
+    req_delete(yard, "AB-93")
+    assert not d.exists()
+    assert gitops.run(["git", "branch", "--list", "req/AB-93"], cwd=git_src) == ""
+    assert gitops.run(["git", "branch", "--list", "req/AB-93-T1"], cwd=git_src) == ""
+    assert gitops.run(["git", "branch", "--list", "feature/AB-93"], cwd=git_src) == ""
 
 
 def test_req_delete_missing(tmp_path: Path, monkeypatch):

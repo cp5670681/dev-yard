@@ -286,7 +286,7 @@ def req_push(
     remote: str = typer.Option("origin", "--remote", "-r", help="Git remote name (default: origin)"),
     force: bool = typer.Option(False, "--force", "-f", help="Force push (git push --force)"),
 ) -> None:
-    """Push frozen requirement worktree branches (req/<key>) to remote."""
+    """Push frozen requirement worktree branches to remote."""
     root = root_opt()
     try:
         results = service.req_push(
@@ -792,7 +792,7 @@ def push(
     remote: str = typer.Option("origin", "--remote", "-r", help="Git remote name (default: origin)"),
     force: bool = typer.Option(False, "--force", "-f", help="Force push (git push --force)"),
 ) -> None:
-    """Push frozen requirement worktree branches (req/<key>) to remote."""
+    """Push frozen requirement worktree branches to remote."""
     root = root_opt()
     try:
         results = service.req_push(

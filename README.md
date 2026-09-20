@@ -126,7 +126,7 @@ dev-yard spec PROJ-101
 # 4. 拆解跨仓 DAG 任务（产出 TICKETS.md）
 dev-yard tickets PROJ-101
 
-# 5. 冻结方案并创建隔离 Worktree（创建分支: req/PROJ-101）
+# 5. 冻结方案并创建隔离 Worktree（默认分支: req/PROJ-101，可在配置页改模板）
 dev-yard req freeze PROJ-101
 
 # 6. Agent 编码实现（按依赖顺序自动运行 ready 任务）
@@ -177,8 +177,10 @@ dev-yard push PROJ-101              # 或 dev-yard req push PROJ-101
 - `depends_on`：上游任务通过评审（`done`）后，下游任务才会变为 `ready`。
 - `parallel: true`：同仓并行开发时，会自动派生临时子分支与子 Worktree。
 
-### 仓库与模型配置（`repos.yaml`）
+### 仓库、模型与冻结分支（`repos.yaml`）
 ```yaml
+git:
+  freeze_branch: req/{jira}   # 缺省。也可 feature/{jira}、{jira} 等；必须含 {jira}
 pi:
   provider: anthropic
   model: claude-3-7-sonnet
@@ -196,17 +198,18 @@ repos:
     model: claude-3-7-sonnet # 仓级别模型覆盖
 ```
 - **模型回退机制**：`仓配置` → `pi.stages.<阶段>` → `全局 pi` → `环境变量(YARD_PI_*)` → `pi 默认`。
+- **冻结分支**：Web「配置 → 分支」写入 `git.freeze_branch`。并行票子分支是 `{冻结名}-{票号}`（git 不允许 `冻结名/票号` 这种嵌套 ref）。改模板只影响之后新冻结的需求。
 
 ### 目录与分支拓扑
 ```text
 my-workspace/
-├── repos.yaml                     # 仓库与模型配置（本机）
+├── repos.yaml                     # 仓库、模型、冻结分支（本机）
 ├── reqs/
 │   ├── CONTEXT.md                 # 跨需求通用术语表
 │   └── PROJ-101/                  # 需求产物 (REQUIREMENT/GRILL/SPEC/TICKETS.md)
-│       └── worktrees/<alias>/     # 各仓独立 Worktree（分支: req/PROJ-101）
+│       └── worktrees/<alias>/     # 各仓独立 Worktree（默认分支: req/PROJ-101）
 ├── .repos/                        # 托管克隆母仓
-└── .yard-worktrees/               # 并行子任务临时 Worktree (req/PROJ-101/T1)
+└── .yard-worktrees/               # 并行子任务临时 Worktree（默认: req/PROJ-101-T1）
 ```
 
 ---

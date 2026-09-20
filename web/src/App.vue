@@ -84,8 +84,8 @@
         />
         <v-list-item
           to="/settings"
-          title="模型"
-          subtitle="按阶段选 pi 模型"
+          title="配置"
+          subtitle="分支、模型"
           :prepend-icon="mdiTune"
           active-class="jira-nav-active"
         />
@@ -251,7 +251,7 @@ const barTitle = computed(() => {
   const name = String(route.name || "");
   if (name === "requirement" || name === "doc") return String(route.params.jira || "需求");
   if (name === "repos") return "仓库";
-  if (name === "settings") return "模型";
+  if (name === "settings") return "配置";
   if (name === "qa-config") return "测试配置";
   if (name === "open") return "打开需求";
   return "需求";

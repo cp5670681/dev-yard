@@ -4,6 +4,7 @@ import type {
   ContractReviewIn,
   ContractReviewOut,
   DocPayload,
+  GitSettings,
   JobsOut,
   JobSnapshot,
   Meta,
@@ -174,6 +175,17 @@ export function setRepoPi(alias: string, provider: string, model: string) {
   return api<Repo[]>(`/api/repos/${encodeURIComponent(alias)}`, {
     method: "PUT",
     body: JSON.stringify({ provider, model }),
+  });
+}
+
+export function getGitSettings() {
+  return api<GitSettings>("/api/git");
+}
+
+export function saveGitSettings(payload: { freeze_branch: string }) {
+  return api<GitSettings>("/api/git", {
+    method: "PUT",
+    body: JSON.stringify(payload),
   });
 }
 

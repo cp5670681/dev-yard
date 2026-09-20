@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from dev_yard import grill_round, paths, status as st
-from dev_yard.config import load_repos
+from dev_yard.config import load_repos, resolve_freeze_branch
 from dev_yard.service import GRILL_SKELETON, REQ_SKELETON, SPEC_SKELETON, TICKETS_SKELETON
 from dev_yard.tickets import load_tickets
 
@@ -129,6 +129,7 @@ class ReqDetail:
     repos: list[str] = field(default_factory=list)
     stage_runs: dict = field(default_factory=dict)
     qa: dict | None = None
+    branch: str = ""
 
 
 def parse_requirement_title(text: str, jira: str) -> str | None:
@@ -232,6 +233,7 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
     wt_root = req / "worktrees"
     if wt_root.is_dir():
         worktrees = sorted(str(p) for p in wt_root.iterdir() if p.is_dir())
+    sample_wt = next((Path(p) for p in worktrees if (Path(p) / ".git").exists()), None)
     assets = _list_assets(req)
     awaiting = _grill_awaiting(req)
     test = data.get("test") if isinstance(data.get("test"), dict) else None
@@ -265,6 +267,7 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
         repos=list(data.get("repos") or []),
         stage_runs=dict(data.get("stage_runs") or {}),
         qa=qa,
+        branch=resolve_freeze_branch(root, jira, data, sample_wt),
     )
     detail.actions = available_actions(detail, root)
     return detail

@@ -39,7 +39,7 @@
               placeholder="例如 PG-13068、GH-42、pay-v2"
               autocomplete="off"
               :rules="[rules.required, rules.key, rules.reserved]"
-              hint="工作区目录名与 Git 分支名（如 req/<Key>），可由 URL 自动提取或手动修改"
+              hint="工作区目录名（冻结分支模板在「配置」页），可由 URL 自动提取或手动修改"
               persistent-hint
               class="mb-4"
               @keydown.enter.prevent="submit"

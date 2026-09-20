@@ -8,7 +8,17 @@ from pathlib import Path
 from typing import Any
 
 from dev_yard import gitops, paths, status as st
-from dev_yard.config import Repo, git_project_name, load_repos, require_pair, save_repos
+from dev_yard.config import (
+    Repo,
+    git_project_name,
+    load_git_settings,
+    load_repos,
+    render_freeze_branch,
+    require_pair,
+    resolve_freeze_branch,
+    save_repos,
+    ticket_branch_name,
+)
 from dev_yard.atlassian import collect_requirement
 from dev_yard.env import load_env
 from dev_yard.runners import (
@@ -341,6 +351,9 @@ def req_freeze(root: Path, jira: str, force: bool = False) -> list[Path]:
         data = st.sync_tickets(data, tickets)
         created: list[Path] = []
         aliases = sorted({t.repo for t in tickets if t.repo})
+        branch = _existing_freeze_branch(root, jira, data, aliases, repos)
+        if not branch:
+            branch = render_freeze_branch(load_git_settings(root).freeze_branch, jira)
         for alias in aliases:
             repo = repos.get(alias)
             if not repo:
@@ -353,7 +366,7 @@ def req_freeze(root: Path, jira: str, force: bool = False) -> list[Path]:
             gitops.worktree_add(
                 source,
                 wt,
-                f"req/{jira}",
+                branch,
                 start,
                 reset_existing=bool(force and phase in {"testing", "done"}),
             )
@@ -361,6 +374,7 @@ def req_freeze(root: Path, jira: str, force: bool = False) -> list[Path]:
             for tid, slot in data["tickets"].items():
                 if slot.get("repo") == alias:
                     slot["worktree"] = str(wt)
+        data["branch"] = branch
         data["phase"] = "frozen"
         st.refresh_ready(data)
         st.save(root, jira, data)
@@ -381,13 +395,27 @@ def _req_delete_locked(root: Path, jira: str, d: Path) -> None:
     data = st.load(root, jira) if (d / "STATUS.yaml").is_file() else {"tickets": {}}
     tickets = st.tickets_map(data.get("tickets"))
 
+    aliases: set[str] = set()
+    wt_root = d / "worktrees"
+    if wt_root.is_dir():
+        aliases.update(p.name for p in wt_root.iterdir() if p.is_dir())
+    for slot in tickets.values():
+        if slot.get("repo"):
+            aliases.add(str(slot["repo"]))
+    freeze = _existing_freeze_branch(root, jira, data, sorted(aliases), repos)
+    if not freeze:
+        freeze = resolve_freeze_branch(root, jira, data)
+
     for tid, slot in tickets.items():
         child = slot.get("child_worktree")
         alias = slot.get("repo")
         repo = repos.get(alias) if alias else None
         if child and repo:
-            gitops.worktree_remove(repo.source_path(root), Path(child))
-            gitops.branch_delete(repo.source_path(root), _child_branch(jira, tid))
+            source = repo.source_path(root)
+            child_path = Path(child)
+            name = _checked_out_branch(child_path) or ticket_branch_name(freeze, tid)
+            gitops.worktree_remove(source, child_path)
+            gitops.branch_delete(source, name)
 
     child_root = root / ".yard-worktrees" / jira
     if child_root.is_dir():
@@ -398,26 +426,23 @@ def _req_delete_locked(root: Path, jira: str, d: Path) -> None:
             for ticket_dir in alias_dir.iterdir():
                 if not ticket_dir.is_dir() or not repo:
                     continue
-                gitops.worktree_remove(repo.source_path(root), ticket_dir)
-                gitops.branch_delete(
-                    repo.source_path(root), _child_branch(jira, ticket_dir.name)
+                source = repo.source_path(root)
+                name = _checked_out_branch(ticket_dir) or ticket_branch_name(
+                    freeze, ticket_dir.name
                 )
+                gitops.worktree_remove(source, ticket_dir)
+                gitops.branch_delete(source, name)
         shutil.rmtree(child_root, ignore_errors=True)
 
-    aliases: set[str] = set()
-    wt_root = d / "worktrees"
-    if wt_root.is_dir():
-        aliases.update(p.name for p in wt_root.iterdir() if p.is_dir())
-    for slot in tickets.values():
-        if slot.get("repo"):
-            aliases.add(str(slot["repo"]))
     for alias in aliases:
         repo = repos.get(alias)
         if not repo:
             continue
         source = repo.source_path(root)
-        gitops.worktree_remove(source, paths.req_worktree(root, jira, alias))
-        gitops.branch_delete(source, f"req/{jira}")
+        wt = paths.req_worktree(root, jira, alias)
+        name = _checked_out_branch(wt) or freeze
+        gitops.worktree_remove(source, wt)
+        gitops.branch_delete(source, name)
 
     shutil.rmtree(d)
 
@@ -436,11 +461,16 @@ def ticket_start(root: Path, jira: str, ticket_id: str) -> Path:
     parent = paths.req_worktree(root, jira, t.repo)
     if not parent.exists():
         raise ValueError(f"missing requirement worktree {parent}; freeze first")
+    freeze = resolve_freeze_branch(root, jira, st.load(root, jira), parent)
     if (parent / ".git").exists() and gitops.has_changes(parent):
         gitops.commit_all(parent, f"chore: sync uncommitted changes before {ticket_id}")
     child = paths.child_worktree(root, jira, t.repo, ticket_id)
     gitops.worktree_add(
-        source, child, _child_branch(jira, ticket_id), f"req/{jira}", reset_existing=True
+        source,
+        child,
+        ticket_branch_name(freeze, ticket_id),
+        freeze,
+        reset_existing=True,
     )
     with st.jira_lock(jira):
         data = st.load(root, jira)
@@ -479,14 +509,17 @@ def _ticket_done_locked(
     if not repo:
         raise ValueError(f"unknown repo alias {t.repo}")
     source = repo.source_path(root)
+    freeze = resolve_freeze_branch(
+        root, jira, data, Path(parent) if parent else None
+    )
     if child and parent:
         gitops.commit_all(Path(child), f"feat({ticket_id}): {t.title or ticket_id}")
-        gitops.merge_into(Path(parent), _child_branch(jira, ticket_id))
+        gitops.merge_into(Path(parent), ticket_branch_name(freeze, ticket_id))
         sha = gitops.commit_all(Path(parent), f"merge: {ticket_id}")
         if sha:
             slot["head_sha"] = sha
         gitops.worktree_remove(source, Path(child))
-        gitops.branch_delete(source, _child_branch(jira, ticket_id))
+        gitops.branch_delete(source, ticket_branch_name(freeze, ticket_id))
         slot["child_worktree"] = None
     elif parent:
         sha = gitops.commit_all(Path(parent), f"feat({ticket_id}): {t.title or ticket_id}")
@@ -499,9 +532,38 @@ def _ticket_done_locked(
     st.save(root, jira, data)
 
 
-def _child_branch(jira: str, ticket_id: str) -> str:
-    # Cannot be req/<jira>/<ticket>: git refuses a nested ref when req/<jira> exists.
-    return f"req/{jira}-{ticket_id}"
+def _checked_out_branch(worktree: Path | None) -> str | None:
+    if worktree is None:
+        return None
+    if not (worktree / ".git").exists():
+        return None
+    try:
+        name = gitops.current_branch(worktree)
+    except gitops.GitError:
+        return None
+    if name and name != "HEAD":
+        return name
+    return None
+
+
+def _existing_freeze_branch(
+    root: Path,
+    jira: str,
+    data: dict[str, Any],
+    aliases: list[str],
+    repos: dict[str, Repo],
+) -> str | None:
+    stored = data.get("branch")
+    if isinstance(stored, str) and stored.strip():
+        return stored.strip()
+    for alias in aliases:
+        repo = repos.get(alias)
+        if not repo:
+            continue
+        name = _checked_out_branch(paths.req_worktree(root, jira, alias))
+        if name:
+            return name
+    return None
 
 
 def _cwd_for_ticket(root: Path, jira: str, ticket: Ticket, slot: dict) -> Path:
@@ -1564,7 +1626,12 @@ def req_push(
     if not target_aliases:
         raise ValueError("no matching repositories to push")
 
-    branch = f"req/{jira}"
+    branch = resolve_freeze_branch(
+        root,
+        jira,
+        data,
+        paths.req_worktree(root, jira, target_aliases[0]),
+    )
     results: list[dict[str, Any]] = []
     for alias in target_aliases:
         wt = paths.req_worktree(root, jira, alias)
