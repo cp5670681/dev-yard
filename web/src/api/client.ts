@@ -124,6 +124,9 @@ export function runAction(
     strategy?: string;
     env?: string;
     resume?: boolean | null;
+    approve?: boolean;
+    redesign?: boolean;
+    feedback?: string;
   } = {},
 ) {
   return api<JobsOut>(

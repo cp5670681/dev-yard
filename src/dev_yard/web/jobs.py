@@ -488,6 +488,8 @@ def default_execute(root: Path, job: Job) -> None:
                 design_only=bool(extra.get("design_only")),
                 run_only=bool(extra.get("run_only")),
                 redesign=bool(extra.get("redesign")),
+                approve=bool(extra.get("approve")),
+                feedback=(extra.get("feedback") or "").strip() or None,
                 ingest=not bool(extra.get("no_ingest")),
                 resume=extra.get("resume"),
                 on_log=job.append,
@@ -495,6 +497,14 @@ def default_execute(root: Path, job: Job) -> None:
             )
         except TestRejected as e:
             raise RuntimeError(str(e)) from e
+        if result.get("awaiting_review"):
+            review = result.get("review") or {}
+            job.append(
+                f"{job.jira} 用例待审核 cases={result.get('cases')} "
+                f"review={review.get('status') or '?'} "
+                f"({result.get('reason') or ''})"
+            )
+            return
         summary = result.get("summary") or {}
         job.append(
             f"{job.jira} run={result.get('run_id')} "

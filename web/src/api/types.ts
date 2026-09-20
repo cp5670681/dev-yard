@@ -257,6 +257,15 @@ export interface QaCaseDetail {
   } | null;
 }
 
+export interface QaReview {
+  status: string;
+  approved: boolean;
+  stale: boolean;
+  feedback: string;
+  updated_at: string;
+  fingerprint: string;
+}
+
 export interface QaPage {
   meta: {
     status?: string;
@@ -264,6 +273,7 @@ export interface QaPage {
     [key: string]: unknown;
   } | null;
   cases: QaCase[];
+  review?: QaReview | null;
   runs: {
     run_id: string;
     env?: string;

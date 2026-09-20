@@ -282,6 +282,9 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
     from dev_yard.qa_board import qa_config_reason
 
     qa_reason = qa_config_reason(root)
+    qa_summary = detail.qa or {}
+    review = qa_summary.get("review") or {}
+    review_pending = bool(qa_summary.get("has_cases") and not review.get("approved"))
     can_run_test = (
         can_fill
         and has_worktrees
@@ -301,6 +304,10 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
         run_reason = "需要 freeze worktree"
     elif qa_reason:
         run_reason = qa_reason
+    elif not tickets_done:
+        run_reason = "还有未完成的票，先处理测试 bug"
+    elif review_pending:
+        run_reason = "用例待审核：去测试页通过，或 dev-yard req test --approve"
     else:
         run_reason = ""
     can_fix_contract = frozen and (

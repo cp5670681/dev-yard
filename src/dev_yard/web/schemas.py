@@ -59,6 +59,9 @@ class ActionIn(BaseModel):
     strategy: str = "ff-only"
     env: str = ""
     resume: bool | None = None
+    approve: bool = False
+    redesign: bool = False
+    feedback: str = ""
 
 
 class AssistantSessionIn(BaseModel):

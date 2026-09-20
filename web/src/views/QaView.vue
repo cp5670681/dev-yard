@@ -2,7 +2,9 @@
   <div>
     <v-breadcrumbs :items="crumbs" density="compact" class="px-0 mb-1" />
     <h1 class="text-h5 text-sm-h4 mb-1">测试</h1>
-    <p class="text-medium-emphasis mb-4">只读。改预期等于洗白失败。</p>
+    <p class="text-medium-emphasis mb-4">
+      用例正文只读。审核通过后才会开始执行；改预期等于洗白失败。
+    </p>
     <v-alert v-if="error" type="error" class="mb-4" closable @click:close="error = ''">
       {{ error }}
     </v-alert>
@@ -25,6 +27,54 @@
     </v-empty-state>
 
     <template v-if="payload">
+      <!-- Human review gate: cases must be approved before running -->
+      <v-card v-if="reviewPanel" variant="tonal" :color="reviewColor" class="mb-4">
+        <v-card-title class="d-flex align-center ga-2 py-2">
+          <v-icon :icon="mdiClipboardCheckOutline" size="20" />
+          用例审核
+          <v-chip size="small" variant="flat">{{ reviewLabel }}</v-chip>
+        </v-card-title>
+        <v-card-text>
+          <p v-if="review?.feedback" class="text-body-2 mb-2">
+            <strong>审核意见：</strong>{{ review.feedback }}
+          </p>
+          <p v-else-if="review?.stale" class="text-body-2 mb-2">
+            用例在通过之后又改动过，需要重新审核。
+          </p>
+          <p v-else class="text-body-2 mb-2 text-medium-emphasis">
+            用例已生成，通过后才会开始执行。
+          </p>
+          <v-textarea
+            v-model="feedbackText"
+            label="审核意见（打回时必填；会交给 qa-design 重做用例）"
+            rows="2"
+            auto-grow
+            density="compact"
+            variant="outlined"
+            hide-details
+          />
+        </v-card-text>
+        <v-card-actions>
+          <v-btn
+            color="warning"
+            variant="tonal"
+            :loading="acting === 'reject'"
+            :disabled="!feedbackText.trim()"
+            @click="rejectCases"
+          >
+            打回重做
+          </v-btn>
+          <v-spacer />
+          <v-btn
+            color="success"
+            :loading="acting === 'approve'"
+            @click="approveCases"
+          >
+            通过并开始测试
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+
       <!-- Run selector + summary chips -->
       <div v-if="runs.length" class="d-flex flex-wrap align-center ga-2 mb-3">
         <v-select
@@ -330,8 +380,8 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { mdiClipboardCheckOutline } from "@mdi/js";
-import { getQa, getRequirement } from "@/api/client";
-import type { DocMeta, QaPage, ShotItem } from "@/api/types";
+import { getQa, getRequirement, runAction } from "@/api/client";
+import type { DocMeta, QaPage, QaReview, ShotItem } from "@/api/types";
 import CaseDetailDialog from "@/components/CaseDetailDialog.vue";
 import ReqDocTabs from "@/components/ReqDocTabs.vue";
 import ScreenshotViewer from "@/components/ScreenshotViewer.vue";
@@ -346,6 +396,8 @@ const docs = ref<DocMeta[]>([]);
 const error = ref("");
 const selectedRunId = ref("");
 const newFailuresDismissed = ref(false);
+const acting = ref("");
+const feedbackText = ref("");
 const caseDialog = reactive({ open: false, caseId: "" });
 const caseFromQuery = ref(false);
 const viewer = reactive({ open: false, index: 0, images: [] as ShotItem[] });
@@ -367,6 +419,54 @@ const changes = computed(() => {
 });
 
 const runs = computed(() => payload.value?.runs || []);
+
+const review = computed<QaReview | null>(() => payload.value?.review || null);
+
+const reviewPanel = computed(
+  () =>
+    Boolean(payload.value?.cases.length) &&
+    Boolean(review.value) &&
+    !review.value?.approved,
+);
+
+const reviewLabel = computed(() => {
+  if (review.value?.stale) return "需重审";
+  if (review.value?.status === "rejected") return "已打回";
+  return "待审核";
+});
+
+const reviewColor = computed(() =>
+  review.value?.status === "rejected" || review.value?.stale ? "warning" : "info",
+);
+
+async function approveCases() {
+  acting.value = "approve";
+  error.value = "";
+  try {
+    await runAction(jira.value, "run-test", { approve: true });
+    await load();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    acting.value = "";
+  }
+}
+
+async function rejectCases() {
+  const feedback = feedbackText.value.trim();
+  if (!feedback) return;
+  acting.value = "reject";
+  error.value = "";
+  try {
+    await runAction(jira.value, "run-test", { redesign: true, feedback });
+    feedbackText.value = "";
+    await load();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    acting.value = "";
+  }
+}
 
 const selectedRun = computed(() => {
   const list = runs.value;

@@ -195,6 +195,7 @@ def test_design_skipped_when_cases_exist(tmp_path: Path, git_src: Path, monkeypa
         yard,
         "QA-4",
         print_mode=True,
+        approve=True,
         ingest=False,
         runner=design,
         case_runner=case_runner,
@@ -366,12 +367,13 @@ def test_mutation_gate_skips_ingest(tmp_path: Path, git_src: Path, monkeypatch):
         (wt / "hacked.py").write_text("x\n", encoding="utf-8")
         return {"status": "passed", "repo": "backend"}
 
+    req_test(yard, "QA-6", print_mode=True, design_only=True, runner=design)
     with pytest.raises(TestRejected, match="mutated"):
         req_test(
             yard,
             "QA-6",
             print_mode=True,
-            runner=design,
+            approve=True,
             case_runner=mutate,
         )
     assert called["accept"] == 0
@@ -387,7 +389,10 @@ def test_passed_ingests_and_sets_done(tmp_path: Path, git_src: Path, monkeypatch
     def ok(job, pool):
         return {"status": "passed", "repo": "backend", "model": pool.model}
 
-    result = req_test(yard, "QA-7", print_mode=True, runner=design, case_runner=ok)
+    req_test(yard, "QA-7", print_mode=True, design_only=True, runner=design)
+    result = req_test(
+        yard, "QA-7", print_mode=True, approve=True, case_runner=ok
+    )
     assert result["ingested"] is True
     data = st.load(yard, "QA-7")
     assert data["phase"] == "done"
@@ -447,12 +452,20 @@ def test_req_test_uses_the_selected_env(tmp_path: Path, git_src: Path, monkeypat
     def ok(job, slot):
         return {"status": "passed", "repo": job.repo}
 
+    req_test(
+        yard,
+        "QA-E2",
+        env="test",
+        print_mode=True,
+        design_only=True,
+        runner=_Design(yard, "QA-E2"),
+    )
     result = req_test(
         yard,
         "QA-E2",
         env="test",
         print_mode=True,
-        runner=_Design(yard, "QA-E2"),
+        approve=True,
         case_runner=ok,
     )
     assert result["ingested"] is True
@@ -688,8 +701,11 @@ def test_worktree_png_is_mutation(tmp_path: Path, git_src: Path, monkeypatch):
         (wt / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
         return {"status": "passed", "repo": "backend"}
 
+    req_test(yard, "QA-9", print_mode=True, design_only=True, runner=design)
     with pytest.raises(TestRejected, match="mutated"):
-        req_test(yard, "QA-9", print_mode=True, runner=design, case_runner=mutate)
+        req_test(
+            yard, "QA-9", print_mode=True, approve=True, case_runner=mutate
+        )
     assert called["accept"] == 0
 
 
@@ -705,7 +721,10 @@ def test_only_new_root_png_is_moved(tmp_path: Path, git_src: Path, monkeypatch):
         (yard / "tmp.png").write_bytes(b"\x89PNG\r\n\x1a\nnew")
         return {"status": "passed", "repo": "backend"}
 
-    result = req_test(yard, "QA-10", print_mode=True, runner=design, case_runner=drop)
+    req_test(yard, "QA-10", print_mode=True, design_only=True, runner=design)
+    result = req_test(
+        yard, "QA-10", print_mode=True, approve=True, case_runner=drop
+    )
     assert keep.is_file()
     assert keep.read_bytes().endswith(b"keep")
     assert not (yard / "tmp.png").is_file()
@@ -732,11 +751,12 @@ def test_preload_auth_runs_when_account_configured(tmp_path: Path, git_src: Path
 
     monkeypatch.setattr("dev_yard.qa._preload_auth", fake)
     design = _DesignRunner(yard, "QA-11")
+    req_test(yard, "QA-11", print_mode=True, design_only=True, runner=design)
     req_test(
         yard,
         "QA-11",
         print_mode=True,
-        runner=design,
+        approve=True,
         case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
         ingest=False,
     )
@@ -1377,5 +1397,225 @@ def test_req_test_default_case_runner_success(
     )
     assert result["summary"]["passed"] == 1
     assert result["summary"]["blocked"] == 0
+
+
+def test_req_test_holds_for_review_until_approved(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RV1")
+    design = _DesignRunner(yard, "QA-RV1")
+    ran: list[str] = []
+
+    def case_runner(job, pool):
+        ran.append(job.id)
+        return {"status": "passed", "repo": "backend"}
+
+    held = req_test(
+        yard,
+        "QA-RV1",
+        print_mode=True,
+        runner=design,
+        case_runner=case_runner,
+        ingest=False,
+    )
+    assert design.called == 1
+    assert held["awaiting_review"] is True
+    assert held["review"]["status"] == "awaiting"
+    assert ran == []
+    assert not (yard / "reqs" / "QA-RV1" / "qa" / "evidence").exists()
+
+    done = req_test(
+        yard,
+        "QA-RV1",
+        print_mode=True,
+        approve=True,
+        runner=design,
+        case_runner=case_runner,
+        ingest=False,
+    )
+    assert design.called == 1  # cases already exist; approval does not redesign
+    assert ran == ["case-01"]
+    assert done["summary"]["passed"] == 1
+
+
+def test_req_test_feedback_regenerates_and_awaits_review(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RV2")
+    _write_case(
+        yard,
+        "QA-RV2",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+    design = _DesignRunner(yard, "QA-RV2")
+    result = req_test(
+        yard,
+        "QA-RV2",
+        print_mode=True,
+        redesign=True,
+        feedback="补齐权限拦截用例",
+        runner=design,
+        case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
+        ingest=False,
+    )
+    assert design.called == 1
+    assert result["awaiting_review"] is True
+    assert result["review"]["status"] == "rejected"
+    assert "权限拦截" in result["review"]["feedback"]
+
+
+def test_review_approval_is_invalidated_by_case_change(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RV3")
+    _write_case(
+        yard,
+        "QA-RV3",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+    ran: list[str] = []
+
+    def case_runner(job, pool):
+        ran.append(job.id)
+        return {"status": "passed", "repo": "backend"}
+
+    req_test(
+        yard,
+        "QA-RV3",
+        print_mode=True,
+        approve=True,
+        case_runner=case_runner,
+        ingest=False,
+    )
+    assert ran == ["case-01"]
+
+    # Editing a case after approval must force a re-review.
+    _write_case(
+        yard,
+        "QA-RV3",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody changed\n",
+    )
+    held = req_test(
+        yard,
+        "QA-RV3",
+        print_mode=True,
+        case_runner=case_runner,
+        ingest=False,
+    )
+    assert held["awaiting_review"] is True
+    assert held["review"]["stale"] is True
+    assert ran == ["case-01"]
+
+
+def test_board_run_test_reason_when_cases_await_review(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RV4")
+    _write_case(
+        yard,
+        "QA-RV4",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+    detail = requirement_detail(yard, "QA-RV4")
+    ids = {a.id: a for a in detail.actions}
+    assert ids["run-test"].enabled
+    assert "待审核" in ids["run-test"].reason
+    assert detail.qa is not None
+    assert detail.qa["review"]["status"] == "awaiting"
+    assert detail.qa["review"]["approved"] is False
+
+
+def test_approve_requires_existing_cases(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RV5")
+    design = _DesignRunner(yard, "QA-RV5")
+    with pytest.raises(TestRejected, match="no cases to approve"):
+        req_test(yard, "QA-RV5", print_mode=True, approve=True, runner=design)
+    assert design.called == 0
+
+
+def test_approve_rejects_feedback_combination(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RV6")
+    _write_case(
+        yard,
+        "QA-RV6",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+    with pytest.raises(TestRejected, match="cannot be combined"):
+        req_test(
+            yard,
+            "QA-RV6",
+            print_mode=True,
+            approve=True,
+            redesign=True,
+            feedback="改一下",
+        )
+
+
+def test_review_approval_tracks_setup_files_but_not_replay(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RV7")
+    mod = yard / "reqs" / "QA-RV7" / "qa" / "cases" / "mod"
+    mod.mkdir(parents=True)
+    (mod / "case-01.md").write_text(
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    (mod / "setup.sql").write_text("select 1;\n", encoding="utf-8")
+    req_test(
+        yard,
+        "QA-RV7",
+        print_mode=True,
+        approve=True,
+        ingest=False,
+        case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
+    )
+
+    # qa-run's replay output is not a reviewed artifact: approval must survive it.
+    (mod / "case-01.replay.sh").write_text("playwright-cli ...\n", encoding="utf-8")
+    still = req_test(
+        yard,
+        "QA-RV7",
+        print_mode=True,
+        ingest=False,
+        case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
+    )
+    assert "awaiting_review" not in still
+
+    # Editing a setup script does change execution: approval must be invalidated.
+    (mod / "setup.sql").write_text("select 2;\n", encoding="utf-8")
+    held = req_test(
+        yard,
+        "QA-RV7",
+        print_mode=True,
+        ingest=False,
+        case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
+    )
+    assert held["awaiting_review"] is True
+    assert held["review"]["stale"] is True
+
+
+
 
 

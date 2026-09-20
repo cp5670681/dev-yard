@@ -14,8 +14,8 @@ CLI 入口为 **`dev-yard`**（或简写 **`devyard`**）。
 ## 核心流程
 
 ```text
-req open ──► grill ──► spec ──► tickets ──► req freeze ──► implement ──► review ──► submit-test ──► req test
-(拉需求)     (对齐)    (契约)    (拆票)      (建Worktree)   (编码实现)   (契约审查)  (提测)        (自动测)
+req open ──► grill ──► spec ──► tickets ──► req freeze ──► implement ──► review ──► submit-test ──► req test ──► [用例人工审核] ──► 执行
+(拉需求)     (对齐)    (契约)    (拆票)      (建Worktree)   (编码实现)   (契约审查)  (提测)        (设计用例)      (通过/打回重做)   (跑用例)
 ```
 
 ---
@@ -141,10 +141,13 @@ dev-yard review PROJ-101 --contract # 跨仓契约校验
 dev-yard req submit-test PROJ-101
 # 工作区根放 qa.yaml（envs.<环境>.base_url + auth.accounts 账号密码 + db.url，均明文直存、文件已 gitignore；测试模型也在这里：可选 design（qa-design）与 workers 模型池（qa-run））后：
 dev-yard req accounts PROJ-101 --env test   # 本需求要多账号时先配：写 .yard-qa/requirements/<JIRA>/accounts.yaml（随需求变，已 gitignore）
-dev-yard req test PROJ-101          # 设计用例并执行；失败拆 B 票，通过则 phase=done
+dev-yard req test PROJ-101          # 设计用例后暂停，等人工审核；通过后执行，失败拆 B 票，通过则 phase=done
 dev-yard req test PROJ-101 --env test   # 指定环境；缺省用 qa.yaml 的 active_env
+dev-yard req test PROJ-101 --approve    # 人工审核通过当前用例并开始执行
+dev-yard req test PROJ-101 --redesign --feedback "补齐权限拦截用例"   # 打回：带意见让 qa-design 重做用例
 # 用例 frontmatter 的 account: 选需求账号；不写用需求 default（需求无则回退全局默认）
-# 需求页「测试」Tab（/r/:key/qa）只读看用例、改动点、run 与截图
+# 需求页「测试」Tab（/r/:key/qa）可看用例、改动点、run 与截图，并通过/打回用例
+# --design-only / --run-only 仍可绕过审核门（CI 或已审过时）
 # 提 bug 后修就绪的 B 票：dev-yard implement PROJ-101 --from-test
 
 # 9. 一键推送远端分支（提 PR）
@@ -243,7 +246,7 @@ dev-yard web --host 0.0.0.0 --allow-remote
 | `dev-yard req delete <key>` | 删除需求产物与 Worktree | |
 | `dev-yard req push <key> [repos..]` | 推送各仓 Worktree 分支到远端 | `--remote`, `--force` |
 | `dev-yard req submit-test <key>` | 标记提测 | |
-| `dev-yard req test <key>` | 提测后自动测（qa-design + qa-run） | `--env`, `--print`, `--design-only`, `--run-only`, `--redesign`, `--no-ingest` |
+| `dev-yard req test <key>` | 提测后设计用例（暂停等人工审核）+ 执行 | `--env`, `--print`, `--design-only`, `--run-only`, `--redesign`, `--approve`, `--feedback`, `--feedback-file`, `--no-ingest` |
 | `dev-yard qa check-env` | 解析 exec 配方、ping、hello 回显 | `--env`, `--jira` |
 | `dev-yard req accept-test <key>` | 录入测试报告 | `--verdict`, `--body-file` |
 | `dev-yard grill <key>` | 需求答辩与对齐 | `--print`, `--dry-run` |

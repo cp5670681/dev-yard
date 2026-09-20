@@ -527,6 +527,15 @@ def req_test_cmd(
     design_only: bool = typer.Option(False, "--design-only"),
     run_only: bool = typer.Option(False, "--run-only"),
     redesign: bool = typer.Option(False, "--redesign"),
+    approve: bool = typer.Option(
+        False, "--approve", help="人工审核通过当前用例并开始执行"
+    ),
+    feedback: str = typer.Option(
+        "", "--feedback", help="审核意见；配合 --redesign 让 qa-design 重做用例"
+    ),
+    feedback_file: str = typer.Option(
+        "", "--feedback-file", help="从文件读取审核意见（与 --feedback 互斥）"
+    ),
     no_ingest: bool = typer.Option(False, "--no-ingest"),
     resume: bool = typer.Option(
         False, "--resume", help="Continue the latest incomplete run"
@@ -544,6 +553,16 @@ def req_test_cmd(
     if resume and fresh:
         _die(ValueError("--resume and --fresh are mutually exclusive"))
         return
+    if feedback and feedback_file:
+        _die(ValueError("--feedback and --feedback-file are mutually exclusive"))
+        return
+    text = feedback
+    if feedback_file:
+        try:
+            text = Path(feedback_file).read_text(encoding="utf-8")
+        except OSError as e:
+            _die(e)
+            return
     try:
         result = req_test(
             root,
@@ -553,14 +572,28 @@ def req_test_cmd(
             design_only=design_only,
             run_only=run_only,
             redesign=redesign,
+            approve=approve,
+            feedback=text or None,
             ingest=not no_ingest,
             resume=True if resume else False if fresh else None,
             on_log=lambda line: typer.echo(line.rstrip() if isinstance(line, str) else line),
         )
     except (ValueError, FileNotFoundError, TestRejected, ReportRejected, GitError) as e:
         _die(e)
+    if result.get("awaiting_review"):
+        typer.echo(
+            f"{jira} 用例待审核 cases={result.get('cases')}"
+            f"（{result.get('reason') or ''}）\n"
+            f"  通过：dev-yard req test {jira} --approve\n"
+            f"  打回重做：dev-yard req test {jira} --redesign --feedback-file <path>"
+        )
+        return
     if result.get("design_only"):
-        typer.echo(f"{jira} design-only cases={result.get('cases')}")
+        review = result.get("review") or {}
+        typer.echo(
+            f"{jira} design-only cases={result.get('cases')} "
+            f"review={review.get('status') or '?'}"
+        )
         return
     summary = result.get("summary") or {}
     extra = ""

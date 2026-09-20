@@ -9,6 +9,7 @@ from dev_yard import paths
 from dev_yard.parse import as_name_list
 from dev_yard.qa import discover_cases, incomplete_run_payload, split_frontmatter
 from dev_yard.qa_config import TestRejected, load_qa_config, qa_env_choices
+from dev_yard.qa_review import review_payload
 
 _IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _UNREADABLE = "unreadable"
@@ -162,6 +163,7 @@ def qa_detail_summary(root: Path, jira: str) -> dict[str, Any]:
         "progress": progress,
         "incomplete_run": incomplete,
         "cases": merged_cases,
+        "review": review_payload(qa) if qa.is_dir() else None,
     }
 
 
@@ -323,7 +325,7 @@ def _screenshots(case_dir: Path) -> list[str]:
 def qa_page_payload(root: Path, jira: str) -> dict[str, Any]:
     qa = paths.qa_dir(root, jira)
     if not qa.is_dir():
-        return {"meta": None, "cases": [], "runs": []}
+        return {"meta": None, "cases": [], "runs": [], "review": None}
     meta, bad_meta = _load_yaml(qa / "meta.yaml")
     if bad_meta:
         meta_out: Any = {"status": _UNREADABLE}
@@ -333,6 +335,7 @@ def qa_page_payload(root: Path, jira: str) -> dict[str, Any]:
         "meta": meta_out,
         "cases": list_case_payloads(qa),
         "runs": list_runs(qa),
+        "review": review_payload(qa),
     }
 
 

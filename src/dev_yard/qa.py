@@ -32,6 +32,12 @@ from dev_yard.qa_exec import (
     run_case_script,
 )
 from dev_yard.qa_report import map_qa_result
+from dev_yard.qa_review import (
+    approve_cases,
+    reject_cases,
+    review_gate,
+    review_payload,
+)
 from dev_yard.qa_schedule import (
     TERMINAL,
     CaseJob,
@@ -499,9 +505,19 @@ def _duties(kind: str, jira: str) -> str:
     )
 
 
-def _design_prompt(root: Path, jira: str, cfg: QaConfig) -> str:
+def _design_prompt(
+    root: Path, jira: str, cfg: QaConfig, feedback: str | None = None
+) -> str:
     spec = load_registry(root)["qa-design"]
     extra = _duties("design", jira) + "\n\n" + _context_block(root, jira, cfg)
+    if feedback and feedback.strip():
+        extra += (
+            "\n\n# 人工审核意见（必须据此修订用例）\n\n"
+            + feedback.strip()
+            + "\n\n在保留仍然成立的用例的前提下，按上述意见修改 qa/cases/ 下的用例："
+            "被指出缺失的覆盖补上，被指出错误或多余的改写或删除。"
+            "不要为迎合意见而放宽预期；实现与需求不符时仍按需求口径写并标注「需求偏差」。"
+        )
     return session_prompt_for(spec, root, jira, extra=extra)
 
 
@@ -870,6 +886,8 @@ def req_test(
     design_only: bool = False,
     run_only: bool = False,
     redesign: bool = False,
+    approve: bool = False,
+    feedback: str | None = None,
     ingest: bool = True,
     resume: bool | None = None,
     runner: Runner | None = None,
@@ -887,6 +905,8 @@ def req_test(
             design_only=design_only,
             run_only=run_only,
             redesign=redesign,
+            approve=approve,
+            feedback=feedback,
             ingest=ingest,
             resume=resume,
             runner=runner,
@@ -905,6 +925,8 @@ def _req_test(
     design_only: bool = False,
     run_only: bool = False,
     redesign: bool = False,
+    approve: bool = False,
+    feedback: str | None = None,
     ingest: bool = True,
     resume: bool | None = None,
     runner: Runner | None = None,
@@ -914,15 +936,37 @@ def _req_test(
 ) -> dict[str, Any]:
     if design_only and run_only:
         raise TestRejected("--design-only and --run-only are mutually exclusive")
+    if approve and (design_only or run_only):
+        raise TestRejected(
+            "--approve cannot be combined with --design-only or --run-only"
+        )
     _gate(root, jira)
     cfg = load_qa_config(root, env, jira)
     qa = paths.qa_dir(root, jira)
     qa.mkdir(parents=True, exist_ok=True)
     write_context_md(root, jira, cfg)
     cases = discover_cases(qa)
+    had_cases = bool(cases)
     if run_only and not cases:
         raise TestRejected(f"{jira} has no qa/cases; cannot --run-only")
+    feedback_text = feedback.strip() if feedback else ""
+    if approve and (redesign or feedback_text):
+        raise TestRejected(
+            "--approve cannot be combined with --redesign or --feedback"
+        )
+    if approve and not had_cases:
+        # Approval must be a human act on cases that were already shown; a
+        # design run in the same invocation would self-approve unseen cases.
+        raise TestRejected(
+            f"{jira} has no cases to approve; run `dev-yard req test {jira}` "
+            "first, review the cases, then --approve"
+        )
     need_design = (not run_only) and (redesign or not cases)
+    if feedback_text:
+        if run_only:
+            raise TestRejected("--feedback cannot be used with --run-only")
+        if not need_design:
+            raise TestRejected("--feedback requires --redesign")
     if need_design:
         spec = load_registry(root)["qa-design"]
         r = runner or get_runner(
@@ -933,17 +977,36 @@ def _req_test(
             provider=cfg.design_provider,
             model=cfg.design_model,
         )
-        prompt = _design_prompt(root, jira, cfg)
+        prompt = _design_prompt(root, jira, cfg, feedback=feedback_text or None)
         result = r.start(prompt, root, [qa, paths.req_dir(root, jira)])
         if not result.ok:
             raise TestRejected(
                 f"qa-design failed: {result.summary or result.exit_code}"
             )
         cases = discover_cases(qa)
+        if feedback_text:
+            reject_cases(qa, feedback_text)
     if design_only:
-        return {"jira": jira, "design_only": True, "cases": len(cases)}
+        return {
+            "jira": jira,
+            "design_only": True,
+            "cases": len(cases),
+            "review": review_payload(qa),
+        }
     if not cases:
         raise TestRejected(f"{jira} qa-design produced no cases")
+    if approve:
+        approve_cases(qa)
+    elif not run_only:
+        can_run, hold_reason = review_gate(qa)
+        if not can_run:
+            return {
+                "jira": jira,
+                "awaiting_review": True,
+                "cases": len(cases),
+                "reason": hold_reason,
+                "review": review_payload(qa),
+            }
 
     evidence = qa / "evidence"
     case_ids = {c.id for c in cases}
