@@ -205,8 +205,14 @@ def run_pi_print(
     try:
         try:
             proc.stdin.write(prompt)
+        except BrokenPipeError:
+            # The proc was killed right after spawn (cancel raced the write).
+            pass
         finally:
-            proc.stdin.close()
+            try:
+                proc.stdin.close()
+            except BrokenPipeError:
+                pass
         chunks: list[str] = []
         for line in proc.stdout:
             chunks.append(line)
@@ -221,6 +227,39 @@ def run_pi_print(
     return code, "".join(chunks)
 
 
+def run_pi_print_tracked(
+    argv: list[str],
+    cwd: Path,
+    prompt: str,
+    *,
+    on_line: Callable[[str], None] | None = None,
+    timeout: float | None = None,
+    on_spawn: Callable[[subprocess.Popen[str]], None] | None = None,
+    on_reap: Callable[[subprocess.Popen[str]], None] | None = None,
+) -> tuple[int, str]:
+    """`run_pi_print` plus spawn/reap callbacks around the live subprocess.
+
+    `on_spawn` fires with the proc so a caller can kill it on cancel; `on_reap`
+    fires for every proc once the run returns, so the caller can drop it and a
+    later cancel never targets a finished (possibly recycled) pid.
+    """
+    spawned: list[subprocess.Popen[str]] = []
+
+    def _spawn(proc: subprocess.Popen[str]) -> None:
+        spawned.append(proc)
+        if on_spawn is not None:
+            on_spawn(proc)
+
+    try:
+        return run_pi_print(
+            argv, cwd, prompt, on_line=on_line, timeout=timeout, on_spawn=_spawn
+        )
+    finally:
+        if on_reap is not None:
+            for proc in spawned:
+                on_reap(proc)
+
+
 class PiRunner(Runner):
     def __init__(
         self,
@@ -231,6 +270,8 @@ class PiRunner(Runner):
         spec: StageSpec | None = None,
         provider: str | None = None,
         model: str | None = None,
+        on_spawn: Callable[[subprocess.Popen], None] | None = None,
+        on_reap: Callable[[subprocess.Popen], None] | None = None,
     ) -> None:
         self.root = root
         self.bundle = bundle
@@ -240,6 +281,10 @@ class PiRunner(Runner):
         # An explicit pair (e.g. qa.yaml design) wins over resolve_pi_choice.
         self.provider = provider
         self.model = model
+        # Cancellation bridge: `on_spawn` fires with the live subprocess so the
+        # caller can kill it; `on_reap` drops it once the run returns.
+        self.on_spawn = on_spawn
+        self.on_reap = on_reap
 
     def start(
         self,
@@ -271,7 +316,14 @@ class PiRunner(Runner):
                 sys.stdout.write(line)
                 sys.stdout.flush()
 
-            code, raw = run_pi_print(argv, cwd, prompt, on_line=_echo)
+            code, raw = run_pi_print_tracked(
+                argv,
+                cwd,
+                prompt,
+                on_line=_echo,
+                on_spawn=self.on_spawn,
+                on_reap=self.on_reap,
+            )
             blocked = code != 0 or "REVIEW_FAILED" in raw
             summary = clip_summary(raw, self.bundle)
             return RunResult(
@@ -324,6 +376,8 @@ def get_runner(
     spec: StageSpec | None = None,
     provider: str | None = None,
     model: str | None = None,
+    on_spawn: Callable[[subprocess.Popen], None] | None = None,
+    on_reap: Callable[[subprocess.Popen], None] | None = None,
 ) -> Runner:
     if dry_run:
         return DryRunRunner(
@@ -344,4 +398,6 @@ def get_runner(
         spec=spec,
         provider=provider,
         model=model,
+        on_spawn=on_spawn,
+        on_reap=on_reap,
     )

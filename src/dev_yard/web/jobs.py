@@ -22,7 +22,7 @@ from dev_yard.runners import (
     clip_summary,
     kill_proc_group,
     pi_argv,
-    run_pi_print,
+    run_pi_print_tracked,
 )
 
 __all__ = [
@@ -70,7 +70,11 @@ class Job:
     _seq: int = field(default=0, repr=False, compare=False)
     _input: threading.Event = field(default_factory=threading.Event)
     _answers: list[dict[str, Any]] | None = None
-    _proc: subprocess.Popen[str] | None = field(default=None, repr=False, compare=False)
+    # Live pi subprocesses. One for serial stages, several for a parallel qa run;
+    # cancel() kills them all.
+    _procs: set[subprocess.Popen[str]] = field(
+        default_factory=set, repr=False, compare=False
+    )
     cancel_requested: threading.Event = field(default_factory=threading.Event)
     on_change: Callable[[], None] | None = field(default=None, repr=False, compare=False)
 
@@ -181,32 +185,32 @@ class Job:
             self.qa_progress = payload
             self._bump()
 
-    def register_proc(self, proc: subprocess.Popen[str]) -> None:
-        """Track the live pi subprocess so cancel() can kill it immediately."""
+    def track_proc(self, proc: subprocess.Popen[str]) -> None:
+        """Track a live pi subprocess so cancel() can kill it immediately."""
         with self._cv:
-            self._proc = proc
+            self._procs.add(proc)
             cancelled = self.cancel_requested.is_set()
         if cancelled:
             _kill_proc(proc)
 
-    def clear_proc(self) -> None:
-        """Drop the finished pi subprocess so a later cancel cannot target it."""
+    def untrack_proc(self, proc: subprocess.Popen[str]) -> None:
+        """Drop a finished subprocess so a later cancel cannot target its pid."""
         with self._cv:
-            self._proc = None
+            self._procs.discard(proc)
 
     def cancel(self) -> None:
-        """Idempotent cancel request: kill the live pi subprocess and interrupt waits.
+        """Idempotent cancel request: kill the live pi subprocesses and interrupt waits.
 
         The job thread does not stop here — it reacts by raising JobCancelled at the
-        next checkpoint (wait_answers, or JobLogRunner around each pi run).
+        next checkpoint (wait_answers, or a runner around each pi run).
         """
         self.cancel_requested.set()
         with self._cv:
-            proc = self._proc
+            procs = list(self._procs)
             if self.state == "waiting":
                 self._answers = None
                 self._input.set()
-        if proc is not None:
+        for proc in procs:
             _kill_proc(proc)
 
 
@@ -384,12 +388,14 @@ class JobLogRunner(Runner):
         def _log(line: str) -> None:
             self.job.append(line if line.endswith("\n") else line + "\n")
 
-        try:
-            code, raw = run_pi_print(
-                argv, cwd, prompt, on_line=_log, on_spawn=self.job.register_proc
-            )
-        finally:
-            self.job.clear_proc()
+        code, raw = run_pi_print_tracked(
+            argv,
+            cwd,
+            prompt,
+            on_line=_log,
+            on_spawn=self.job.track_proc,
+            on_reap=self.job.untrack_proc,
+        )
         if self.job.cancel_requested.is_set():
             raise JobCancelled(f"{self.bundle} cancelled (pi exit {code})")
         blocked = code != 0 or "REVIEW_FAILED" in raw
@@ -542,6 +548,9 @@ def default_execute(root: Path, job: Job) -> None:
                 resume=extra.get("resume"),
                 on_log=job.append,
                 on_progress=job.set_qa_progress,
+                cancel_check=job.cancel_requested.is_set,
+                on_spawn=job.track_proc,
+                on_reap=job.untrack_proc,
             )
         except TestRejected as e:
             raise RuntimeError(str(e)) from e

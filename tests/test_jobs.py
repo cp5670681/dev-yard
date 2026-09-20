@@ -681,6 +681,47 @@ def test_run_pi_print_calls_on_spawn_with_proc(tmp_path: Path, monkeypatch):
     assert isinstance(spawned[0], FakeProc)
 
 
+def test_run_pi_print_tracked_reaps_even_on_error(tmp_path: Path, monkeypatch):
+    from dev_yard.runners import run_pi_print_tracked
+
+    class FakeStdin:
+        def write(self, data):
+            return None
+
+        def close(self):
+            return None
+
+    class FakeProc:
+        stdout = iter(["line\n"])
+        stdin = FakeStdin()
+
+        def wait(self):
+            return 0
+
+    spawned: list = []
+    reaped: list = []
+    monkeypatch.setattr("dev_yard.runners.subprocess.Popen", lambda *a, **k: FakeProc())
+    code, raw = run_pi_print_tracked(
+        ["pi"], tmp_path, "p", on_spawn=spawned.append, on_reap=reaped.append
+    )
+    assert (code, raw) == (0, "line\n")
+    assert reaped == spawned
+
+    # A raising run_pi_print must still reap the proc it spawned.
+    def boom(argv, cwd, prompt, on_line=None, timeout=None, on_spawn=None):
+        if on_spawn is not None:
+            on_spawn(object())
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr("dev_yard.runners.run_pi_print", boom)
+    with pytest.raises(RuntimeError):
+        run_pi_print_tracked(
+            ["pi"], tmp_path, "p", on_spawn=spawned.append, on_reap=reaped.append
+        )
+    assert len(spawned) == 2
+    assert reaped == spawned
+
+
 def test_job_log_runner_registers_proc_on_job(tmp_path: Path, monkeypatch):
     job = Job(id="abc", jira="AB-1", action="open")
     cwd = tmp_path / "work"
@@ -706,19 +747,19 @@ def test_job_log_runner_registers_proc_on_job(tmp_path: Path, monkeypatch):
     from dev_yard.web.jobs import JobLogRunner
 
     registered: list[object] = []
-    original = job.register_proc
+    original = job.track_proc
 
     def spy(proc):
         registered.append(proc)
         original(proc)
 
-    job.register_proc = spy
+    job.track_proc = spy
     JobLogRunner(job, tmp_path, "open").start("p", cwd, [])
     assert len(registered) == 1
     assert isinstance(registered[0], FakeProc)
     # The finished proc must not linger for a later cancel to hit.
     with job._lock:
-        assert job._proc is None
+        assert job._procs == set()
 
 
 def test_job_log_runner_raises_when_cancelled_before_start(tmp_path: Path):
@@ -753,9 +794,9 @@ def test_job_log_runner_raises_jobcancelled_when_pi_killed(tmp_path: Path, monke
     t = threading.Thread(target=run_start, daemon=True)
     t.start()
     deadline = time.time() + 5
-    while job._proc is None and time.time() < deadline:
+    while not job._procs and time.time() < deadline:
         time.sleep(0.01)
-    assert job._proc is not None, "pi subprocess was never registered"
+    assert job._procs, "pi subprocess was never registered"
     job.cancel()
     t.join(timeout=5)
     assert not t.is_alive(), "start() did not return after the subprocess was killed"
@@ -973,3 +1014,58 @@ def test_default_execute_reset_phase(tmp_path: Path, monkeypatch):
     assert "AB-32 phase=open" in job.log
     reloaded = yaml.safe_load(status_file.read_text(encoding="utf-8"))
     assert reloaded["phase"] == "open"
+
+
+def test_job_cancel_kills_every_tracked_proc(monkeypatch):
+    job = Job(id="abc", jira="AB-1", action="run-test")
+    killed: list[object] = []
+    monkeypatch.setattr("dev_yard.web.jobs._kill_proc", killed.append)
+    first, second = object(), object()
+    job.track_proc(first)  # type: ignore[arg-type]
+    job.track_proc(second)  # type: ignore[arg-type]
+    job.untrack_proc(first)  # type: ignore[arg-type]
+    job.cancel()
+    assert killed == [second]
+    # A proc that spawns after cancel was requested is killed on registration.
+    late = object()
+    job.track_proc(late)  # type: ignore[arg-type]
+    assert killed == [second, late]
+
+
+def test_default_execute_run_test_passes_cancel_hooks(tmp_path: Path, monkeypatch):
+    seen: dict = {}
+
+    def fake_req_test(root, jira, **kwargs):
+        seen.update(kwargs)
+        return {"run_id": "r", "summary": {}, "cases": 0}
+
+    monkeypatch.setattr("dev_yard.qa.req_test", fake_req_test)
+    job = Job(id="abc", jira="AB-1", action="run-test")
+    default_execute(tmp_path, job)
+    assert seen["cancel_check"] == job.cancel_requested.is_set
+    assert seen["on_spawn"] == job.track_proc
+    assert seen["on_reap"] == job.untrack_proc
+
+
+def test_run_test_job_cancel_marks_cancelled(tmp_path: Path, monkeypatch):
+    import time
+
+    from dev_yard.runners import JobCancelled
+
+    def fake_req_test(root, jira, **kwargs):
+        while not kwargs["cancel_check"]():
+            time.sleep(0.01)
+        raise JobCancelled("qa-run cancelled")
+
+    monkeypatch.setattr("dev_yard.qa.req_test", fake_req_test)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    runner = JobRunner(yard, execute=default_execute, sync=False)
+    job = runner.submit("run-test", "AB-9")
+    deadline = time.time() + 2
+    while job.state != "running" and time.time() < deadline:
+        time.sleep(0.01)
+    assert runner.cancel(job.id) is job
+    assert job.done.wait(timeout=2)
+    assert job.state == "cancelled"
+    assert "cancelled" in job.log
