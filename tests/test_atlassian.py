@@ -1,5 +1,4 @@
 from dev_yard.atlassian import (
-    collect_requirement,
     extract_confluence_urls,
     html_to_markdown,
     page_id_from_url,

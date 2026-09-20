@@ -334,7 +334,6 @@ def test_plugin_action_enabled_when_phase_matches(tmp_path: Path, monkeypatch):
     yard = _yard(tmp_path)
     _plugin(yard, "deploy", requires_phase="frozen")
     d, _ = req_open(yard, "AB-41", source="none")
-    import yaml
 
     (d / "STATUS.yaml").write_text(
         "phase: frozen\ntickets: {}\n", encoding="utf-8"

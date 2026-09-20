@@ -10,11 +10,13 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 from urllib.parse import urlparse
+
 from dev_yard.exec_cfg import QaExec, default_exec, is_local_base_url
 from dev_yard.qa_config import QaEnv, TestRejected, redact_qa_yaml
 
@@ -198,7 +200,9 @@ def _subst_shell(text: str) -> tuple[str, list[str]]:
                 error_class=ExecErrorClass.CONFIG,
             )
         names.append(key)
-        return os.environ[key]
+        # Quote the substituted value: in a shell recipe it is a single word,
+        # never an injection point for `;`/`$(...)`/backticks.
+        return shlex.quote(os.environ[key])
 
     return _ENV_IN_STR.sub(repl, text), names
 

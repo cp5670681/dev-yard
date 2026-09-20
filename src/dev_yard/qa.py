@@ -1,20 +1,23 @@
 from __future__ import annotations
 
-import codecs
 import hashlib
 import json
 import os
 import re
-from contextlib import contextmanager, nullcontext as _nullcontext
+from collections.abc import Callable
+from contextlib import contextmanager
+from contextlib import nullcontext as _nullcontext
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
-from typing import Any, Callable
+from typing import Any
 
 import yaml
 
-from dev_yard import gitops, paths, status as st
+from dev_yard import gitops, paths
+from dev_yard import status as st
 from dev_yard.config import load_repos, resolve_freeze_branch
+from dev_yard.parse import as_name_list
 from dev_yard.qa_config import (
     QaConfig,
     TestRejected,
@@ -39,7 +42,7 @@ from dev_yard.qa_schedule import (
     progress_payload,
     run_schedule,
 )
-from dev_yard.runners import RunResult, Runner, get_runner, pi_argv, run_pi_print
+from dev_yard.runners import Runner, get_runner, pi_argv, run_pi_print
 from dev_yard.skillbind import session_prompt_for
 from dev_yard.stages import load_registry
 from dev_yard.test_report import ReportRejected, accept_test_report
@@ -49,7 +52,6 @@ LogFn = Callable[[str], None]
 ProgressFn = Callable[[dict[str, Any]], None]
 _CASE_NAME = re.compile(r"^case-.+\.md$")
 _CASE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_PORCELAIN_LINE = re.compile(r"^\s*([A-Z?!]{1,2})\s+(.+)$")
 _PNG = re.compile(r"\.png$", re.I)
 
 
@@ -209,16 +211,8 @@ def discover_cases(qa: Path) -> list[CaseJob]:
                 f"duplicate case id {cid!r}: {seen[cid]} and {path}"
             )
         seen[cid] = path
-        deps = meta.get("depends_on") or []
-        if isinstance(deps, str):
-            deps = [x.strip() for x in deps.replace(",", " ").split() if x.strip()]
-        elif not isinstance(deps, list):
-            deps = []
-        covers = meta.get("covers") or []
-        if isinstance(covers, str):
-            covers = [x.strip() for x in covers.replace(",", " ").split() if x.strip()]
-        elif not isinstance(covers, list):
-            covers = []
+        deps = as_name_list(meta.get("depends_on"))
+        covers = as_name_list(meta.get("covers"))
         module = path.parent.name
         data = meta.get("data") if isinstance(meta.get("data"), dict) else {}
         out.append(
@@ -344,31 +338,40 @@ def _run_lock(root: Path, jira: str):
     path = lock_dir / f"{jira}.run.lock"
     token = f"{os.getpid()}:{uuid.uuid4().hex}"
     for attempt in range(2):
+        # Hardlink a fully-written temp file into place: the lock is atomically
+        # created *with* its token, so a concurrent reader can never observe an
+        # empty holder and mistake a live lock for a stale one.
+        tmp = lock_dir / f".{jira}.{uuid.uuid4().hex}.tmp"
         try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            holder = ""
+            tmp.write_text(token, encoding="utf-8")
             try:
-                holder = path.read_text(encoding="utf-8").strip()
-            except OSError:
+                os.link(tmp, path)
+            except FileExistsError:
                 holder = ""
-            pid = int(holder.split(":", 1)[0]) if holder else 0
-            if not _pid_alive(pid) and attempt == 0:
-                # Atomic reclaim: the winner renames, losers get FileNotFound.
-                tmp = path.with_name(path.name + f".stale.{uuid.uuid4().hex}")
                 try:
-                    os.rename(path, tmp)
+                    holder = path.read_text(encoding="utf-8").strip()
                 except OSError:
-                    pass
-                else:
-                    tmp.unlink(missing_ok=True)
-                continue
-            raise TestRejected(
-                f"another run for {jira} is in progress; wait for it to finish "
-                f"(or delete {path} if it is stale)"
-            ) from None
-        os.write(fd, token.encode())
-        os.close(fd)
+                    holder = ""
+                head = holder.split(":", 1)[0] if holder else ""
+                pid = int(head) if head.isdigit() else None
+                # Unknown/empty holder means we cannot prove it is stale: treat
+                # it as live rather than stealing another run's lock.
+                if pid is not None and not _pid_alive(pid) and attempt == 0:
+                    # Atomic reclaim: the winner renames, losers get FileNotFound.
+                    stale = path.with_name(path.name + f".stale.{uuid.uuid4().hex}")
+                    try:
+                        os.rename(path, stale)
+                    except OSError:
+                        pass
+                    else:
+                        stale.unlink(missing_ok=True)
+                    continue
+                raise TestRejected(
+                    f"another run for {jira} is in progress; wait for it to finish "
+                    f"(or delete {path} if it is stale)"
+                ) from None
+        finally:
+            tmp.unlink(missing_ok=True)
         break
     try:
         yield
@@ -404,7 +407,7 @@ def _tree_state(worktree: Path) -> dict[str, str] | None:
         return None
     state: dict[str, str] = {}
     for ln in _porcelain_lines(text):
-        entry = _porcelain_entry(ln)
+        entry = gitops.parse_porcelain_line(ln)
         if entry is None:
             continue
         status, path = entry
@@ -467,29 +470,6 @@ def _preload_auth(
 ) -> dict[str, str]:
     """Ensure sessions exist; returns {account: error} for the ones that failed."""
     return ensure_auth(root, cfg, names, on_log)
-
-
-def _porcelain_entry(line: str) -> tuple[str, str] | None:
-    """`XY path` → (status, path). `gitops.run` strips the leading space of the
-    first line, so the status columns are matched by regex, not by offset."""
-    m = _PORCELAIN_LINE.match(line)
-    if not m:
-        return None
-    status = m.group(1).strip() or "??"
-    path = m.group(2)
-    if " -> " in path:
-        path = path.split(" -> ", 1)[1]
-    path = path.strip()
-    if path.startswith('"') and path.endswith('"') and len(path) >= 2:
-        # git C-quotes non-ASCII / special paths; decode so the file resolves.
-        try:
-            decoded, _ = codecs.escape_decode(path[1:-1].encode("utf-8"))
-            path = decoded.decode("utf-8", "surrogateescape")
-        except (ValueError, UnicodeDecodeError):
-            path = path[1:-1]
-    if not path:
-        return None
-    return status, path
 
 
 def _duties(kind: str, jira: str) -> str:
@@ -1040,8 +1020,8 @@ def _req_test(
     fuse_class: str | None = None
     fuse_streak = 0
     from dev_yard.script_exec import (
-        ExecUnreachable,
         FUSE_CLASSES,
+        ExecUnreachable,
         resolve_executor,
     )
 

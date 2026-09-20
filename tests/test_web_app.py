@@ -29,6 +29,21 @@ def _assert_spa_shell(resp) -> None:
     assert 'id="app"' in resp.text
 
 
+def _app_paths(app) -> set[str]:
+    """All route paths, descending into lazily-included routers."""
+    paths: set[str] = set()
+    stack = list(app.routes)
+    while stack:
+        route = stack.pop()
+        path = getattr(route, "path", None)
+        if path:
+            paths.add(path)
+        inner = getattr(route, "original_router", None)
+        if inner is not None:
+            stack.extend(inner.routes)
+    return paths
+
+
 def test_open_form_defaults_to_pi(tmp_path: Path):
     yard = tmp_path / "yard"
     init_yard(yard)
@@ -98,9 +113,9 @@ def test_dashboard_skips_shared_docs(tmp_path: Path, monkeypatch):
     assert [row["jira"] for row in listed] == ["AB-30"]
     assert client.get("/r/docs").status_code == 404
     assert client.get("/api/requirements/docs").status_code == 404
-    opened = client.post("/open", data={"jira": "docs", "source": "none"}, follow_redirects=False)
-    assert opened.status_code == 303
-    assert "reserved" in opened.headers["location"]
+    opened = client.post("/api/open", json={"jira": "docs", "source": "none"})
+    assert opened.status_code == 400
+    assert "reserved" in opened.json()["detail"]
 
 
 def test_board_reopen_has_no_hidden_force(tmp_path: Path, git_src: Path, monkeypatch):
@@ -119,10 +134,9 @@ def test_board_reopen_has_no_hidden_force(tmp_path: Path, git_src: Path, monkeyp
     client = _client(yard)
     page = client.get("/r/AB-36")
     _assert_spa_shell(page)
-    r = client.post("/r/AB-36/actions/open", follow_redirects=False)
-    assert r.status_code == 303
-    job_id = r.headers["location"].split("job=")[-1]
-    job = client.get(f"/api/jobs/{job_id}").json()
+    r = client.post("/api/requirements/AB-36/actions/open", json={})
+    assert r.status_code == 200
+    job = r.json()["jobs"][0]
     assert job["state"] == "error"
     assert "phase=frozen" in job["log"]
     from dev_yard import status as st
@@ -164,8 +178,8 @@ def test_freeze_from_web(tmp_path: Path, git_src: Path, monkeypatch):
         "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n"
     )
     client = _client(yard)
-    r = client.post("/r/AB-32/actions/freeze", follow_redirects=False)
-    assert r.status_code == 303
+    r = client.post("/api/requirements/AB-32/actions/freeze", json={})
+    assert r.status_code == 200
     assert (d / "worktrees" / "backend").exists()
     data = client.get("/api/requirements/AB-32").json()
     assert data["next"] == "implement"
@@ -194,27 +208,24 @@ def test_web_implement_runs_ready_tickets_in_parallel(tmp_path: Path, git_src: P
     runner = JobRunner(yard, execute=execute, sync=False)
     client = TestClient(create_app(yard, job_runner=runner))
     first = client.post(
-        "/r/AB-80/actions/implement",
-        data={"ticket_id": "T1"},
-        follow_redirects=False,
+        "/api/requirements/AB-80/actions/implement",
+        json={"ticket_id": "T1"},
     )
-    assert first.status_code == 303
+    assert first.status_code == 200
     second = client.post(
-        "/r/AB-80/actions/implement",
-        data={"ticket_id": "T2"},
-        follow_redirects=False,
+        "/api/requirements/AB-80/actions/implement",
+        json={"ticket_id": "T2"},
     )
-    assert second.status_code == 303
+    assert second.status_code == 200
     listed = client.get("/api/jobs").json()
     assert len(listed) == 2
     assert {tuple(row.get("ticket_ids") or []) for row in listed} == {("T1",), ("T2",)}
     again = client.post(
-        "/r/AB-80/actions/implement",
-        data={"ticket_id": "T1"},
-        follow_redirects=False,
+        "/api/requirements/AB-80/actions/implement",
+        json={"ticket_id": "T1"},
     )
-    assert again.status_code == 303
-    assert "already" in again.headers["location"]
+    assert again.status_code == 400
+    assert "already" in again.json()["detail"]
     from dev_yard import status as st
 
     assert st.load(yard, "AB-80")["tickets"]["T1"]["state"] == "implementing"
@@ -289,12 +300,11 @@ def test_web_implement_ready_fans_out_remaining_tickets(
     runner = JobRunner(yard, execute=execute, sync=False)
     client = TestClient(create_app(yard, job_runner=runner))
     client.post(
-        "/r/AB-81/actions/implement",
-        data={"ticket_id": "T1"},
-        follow_redirects=False,
+        "/api/requirements/AB-81/actions/implement",
+        json={"ticket_id": "T1"},
     )
-    bulk = client.post("/r/AB-81/actions/implement", follow_redirects=False)
-    assert bulk.status_code == 303
+    bulk = client.post("/api/requirements/AB-81/actions/implement", json={})
+    assert bulk.status_code == 200
     listed = client.get("/api/jobs").json()
     assert len(listed) == 2
     assert {tuple(row.get("ticket_ids") or []) for row in listed} == {("T1",), ("T2",)}
@@ -312,12 +322,11 @@ def test_save_doc_and_markdown_assets(tmp_path: Path, monkeypatch):
     (d / "assets").mkdir()
     (d / "assets" / "ui.png").write_bytes(b"\x89PNG\r\n")
     client = _client(yard)
-    r = client.post(
-        "/r/AB-33/docs/grill",
-        data={"body": "# Grill — AB-33\n\nSee assets/ui.png\n\n![ui](assets/ui.png)\n"},
-        follow_redirects=False,
+    r = client.put(
+        "/api/requirements/AB-33/docs/grill",
+        json={"body": "# Grill — AB-33\n\nSee assets/ui.png\n\n![ui](assets/ui.png)\n"},
     )
-    assert r.status_code == 303
+    assert r.status_code == 200
     page = client.get("/r/AB-33/docs/grill")
     _assert_spa_shell(page)
     doc = client.get("/api/requirements/AB-33/docs/grill").json()
@@ -359,12 +368,11 @@ def test_finished_job_does_not_poll_on_ok_page(tmp_path: Path, monkeypatch):
     init_yard(yard)
     client = _client(yard)
     r = client.post(
-        "/open",
-        data={"jira": "AB-40", "source": "none"},
-        follow_redirects=False,
+        "/api/open",
+        json={"jira": "AB-40", "source": "none"},
     )
-    assert r.status_code == 303
-    job_id = r.headers["location"].split("job=")[-1]
+    assert r.status_code == 200
+    job_id = r.json()["jobs"][0]["id"]
     ok_page = client.get("/r/AB-40?ok=1")
     _assert_spa_shell(ok_page)
     job = client.get(f"/api/jobs/{job_id}").json()
@@ -732,7 +740,7 @@ def test_api_jobs_lists_waiting_with_sidebar_dot(tmp_path: Path):
     _assert_spa_shell(home)
     shell = (Path(__file__).resolve().parents[1] / "web" / "src" / "App.vue").read_text()
     assert "job.state === 'waiting'" in shell
-    assert any(getattr(r, "path", None) == "/api/jobs/events" for r in client.app.routes)
+    assert "/api/jobs/events" in _app_paths(client.app)
     client.post(
         f"/api/jobs/{job.id}/answers",
         json={"answers": [{"id": "Q1", "option": "A", "text": ""}]},
@@ -761,10 +769,9 @@ def test_grill_action_uses_injected_execute(tmp_path: Path, monkeypatch):
 
     app = create_app(yard, job_runner=JobRunner(yard, execute=execute, sync=True))
     client = TestClient(app)
-    r = client.post("/r/AB-35/actions/grill", follow_redirects=False)
-    assert r.status_code == 303
-    job_id = r.headers["location"].split("job=")[-1]
-    job = client.get(f"/api/jobs/{job_id}").json()
+    r = client.post("/api/requirements/AB-35/actions/grill", json={})
+    assert r.status_code == 200
+    job = r.json()["jobs"][0]
     assert "web-grill" in job["log"]
 
 
@@ -864,7 +871,7 @@ def test_pi_settings_api(tmp_path: Path, monkeypatch):
     yard = tmp_path / "yard"
     init_yard(yard)
     monkeypatch.setattr(
-        "dev_yard.web.app.list_pi_catalog",
+        "dev_yard.web.context.list_pi_catalog",
         lambda: {
             "providers": [{"id": "rcc", "models": ["glm-5.3", "MiniMax-M3"]}],
             "error": None,
@@ -941,8 +948,10 @@ def test_git_settings_api(tmp_path: Path):
     assert bad.status_code == 400
     vue = (Path(__file__).resolve().parents[1] / "web" / "src" / "views" / "SettingsView.vue").read_text()
     assert "freeze_branch" in vue
+    assert 'value="dev"' in vue
     assert 'value="git"' in vue
     assert 'value="pi"' in vue
+    assert "getDevSettings()" in vue
     assert "getGitSettings()" in vue
     assert "getPiSettings()" in vue
     assert "Promise.all([getGitSettings()" not in vue
@@ -973,7 +982,7 @@ def test_qa_config_api(tmp_path: Path, monkeypatch):
     yard = tmp_path / "yard"
     init_yard(yard)
     monkeypatch.setattr(
-        "dev_yard.web.app.list_pi_catalog",
+        "dev_yard.web.context.list_pi_catalog",
         lambda: {
             "providers": [{"id": "rcc", "models": ["glm-5.3", "MiniMax-M3"]}],
             "error": None,
@@ -1064,7 +1073,7 @@ def test_qa_config_api_never_exposes_secrets(tmp_path: Path, monkeypatch):
     yard = tmp_path / "yard"
     init_yard(yard)
     monkeypatch.setattr(
-        "dev_yard.web.app.list_pi_catalog",
+        "dev_yard.web.context.list_pi_catalog",
         lambda: {"providers": [], "error": None},
     )
     client = _client(yard)
@@ -1153,17 +1162,16 @@ def test_repo_form_role_is_free_text(tmp_path: Path, git_src: Path):
     assert 'label="role' in vue
     assert 'v-text-field v-model="role"' in vue
     r = client.post(
-        "/repos",
-        data={
+        "/api/repos",
+        json={
             "alias": "app",
             "url": str(git_src),
             "default_base": "main",
             "role": "mobile",
             "path": str(git_src),
         },
-        follow_redirects=False,
     )
-    assert r.status_code == 303
+    assert r.status_code == 200
     listed = client.get("/api/repos").json()
     assert listed == [
         {
@@ -1185,17 +1193,16 @@ def test_repo_form_blank_alias_uses_git_project_name(tmp_path: Path, git_src: Pa
     page = client.get("/repos")
     assert 'name="alias" required' not in page.text
     r = client.post(
-        "/repos",
-        data={
+        "/api/repos",
+        json={
             "alias": "",
             "url": f"git@host:leads-in/{git_src.name}.git",
             "default_base": "main",
             "role": "svc",
             "path": str(git_src),
         },
-        follow_redirects=False,
     )
-    assert r.status_code == 303
+    assert r.status_code == 200
     listed = client.get("/api/repos").json()
     assert listed[0]["alias"] == git_src.name
 
@@ -1205,19 +1212,17 @@ def test_repo_add_job_shows_clone_progress(tmp_path: Path, git_src: Path):
     init_yard(yard)
     client = _client(yard)
     r = client.post(
-        "/repos",
-        data={
+        "/api/repos",
+        json={
             "alias": "backend",
             "url": str(git_src),
             "default_base": "main",
             "role": "svc",
             "path": "",
         },
-        follow_redirects=False,
     )
-    assert r.status_code == 303
-    assert "job=" in r.headers.get("location", "")
-    job_id = r.headers["location"].split("job=")[-1]
+    assert r.status_code == 200
+    job_id = r.json()["jobs"][0]["id"]
     job = client.get(f"/api/jobs/{job_id}").json()
     assert job["state"] == "ok"
     assert "clone" in job["log"].lower()

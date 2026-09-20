@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any
@@ -63,11 +65,22 @@ def tickets_map(raw: Any) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _empty(jira: str) -> dict[str, Any]:
+    return {"jira": jira, "phase": "open", "tickets": {}, "repos": []}
+
+
 def load(root: Path, jira: str) -> dict[str, Any]:
     p = status_path(root, jira)
     if not p.exists():
-        return {"jira": jira, "phase": "open", "tickets": {}, "repos": []}
-    data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        return _empty(jira)
+    try:
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        # A corrupt/partial STATUS.yaml must not break the whole board; fall
+        # back to a fresh state so the requirement can be re-run.
+        return _empty(jira)
+    if not isinstance(data, dict):
+        return _empty(jira)
     data["tickets"] = tickets_map(data.get("tickets"))
     return data
 
@@ -77,7 +90,19 @@ def save(root: Path, jira: str, data: dict[str, Any]) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     data = dict(data)
     data["tickets"] = tickets_map(data.get("tickets"))
-    p.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+    # Write-then-rename so a crash mid-write cannot truncate the live file.
+    fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=p.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, p)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def sync_tickets(data: dict[str, Any], tickets: list[Ticket]) -> dict[str, Any]:

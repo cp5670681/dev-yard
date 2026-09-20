@@ -4,10 +4,19 @@ import re
 import shutil
 import urllib.parse
 from collections.abc import Callable
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
-from dev_yard import gitops, paths, status as st
+from dev_yard import gitops, paths
+from dev_yard import status as st
+from dev_yard.atlassian import collect_requirement
+from dev_yard.bug_tickets import (
+    fix_ticket_ids,
+    parse_findings_from_summary,
+    spawn_fix_tickets,
+    spawn_fix_tickets_result,
+)
 from dev_yard.config import (
     Repo,
     git_project_name,
@@ -19,24 +28,17 @@ from dev_yard.config import (
     save_repos,
     ticket_branch_name,
 )
-from dev_yard.atlassian import collect_requirement
 from dev_yard.env import load_env
 from dev_yard.runners import (
     JobCancelled,
-    RunResult,
     Runner,
+    RunResult,
     agent_binary,
     get_runner,
     pi_argv,
 )
 from dev_yard.skillbind import session_prompt, session_prompt_for
 from dev_yard.stages import StageSpec, load_registry
-from dev_yard.bug_tickets import (
-    fix_ticket_ids,
-    parse_findings_from_summary,
-    spawn_fix_tickets,
-    spawn_fix_tickets_result,
-)
 from dev_yard.tickets import Ticket, load_tickets
 
 REQ_SKELETON = """# {key}
@@ -170,7 +172,7 @@ def extract_req_key(target: str) -> str:
     if not s:
         return ""
     # 1. Plain identifier (alphanumeric with underscores, hyphens, dots)
-    if not (s.startswith("http://") or s.startswith("https://") or "/" in s or "\\" in s):
+    if not (s.startswith(("http://", "https://")) or "/" in s or "\\" in s):
         return s
 
     # 2. Jira issue URL patterns (/browse/KEY-123, /issues/KEY-123, ?selectedIssue=KEY-123)
@@ -234,7 +236,7 @@ def req_open(
     actual_target = (target or jira).strip()
     req_key = (
         jira
-        if not (jira.startswith("http://") or jira.startswith("https://") or "/" in jira or "\\" in jira)
+        if not (jira.startswith(("http://", "https://")) or "/" in jira or "\\" in jira)
         else ""
     ) or extract_req_key(actual_target)
     if not req_key:
@@ -371,7 +373,7 @@ def req_freeze(root: Path, jira: str, force: bool = False) -> list[Path]:
                 reset_existing=bool(force and phase in {"testing", "done"}),
             )
             created.append(wt)
-            for tid, slot in data["tickets"].items():
+            for slot in data["tickets"].values():
                 if slot.get("repo") == alias:
                     slot["worktree"] = str(wt)
         data["branch"] = branch
@@ -675,7 +677,7 @@ def launch_skill(
 
 def run_stage(
     root: Path,
-    stage: "str | StageSpec",
+    stage: str | StageSpec,
     jira: str,
     dry_run: bool = False,
     print_mode: bool = False,
@@ -733,13 +735,13 @@ def run_stage(
         note = "restored (not this stage's job): " + ", ".join(restored)
         result = RunResult(ok=result.ok, summary=(result.summary + "\n" + note).strip(), exit_code=result.exit_code)
     if not dry_run:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         with st.jira_lock(jira):
             data = st.load(root, jira)
             runs = data.setdefault("stage_runs", {})
             runs[spec.name] = {
-                "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "at": datetime.now(UTC).isoformat(timespec="seconds"),
                 "ok": bool(result.ok),
                 "summary": (result.summary or "")[:4000],
             }

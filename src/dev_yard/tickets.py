@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from dev_yard.parse import as_bool
+
 
 @dataclass
 class Ticket:
@@ -41,7 +43,7 @@ def parse_tickets(text: str) -> list[Ticket]:
         elif key == "depends_on":
             current.depends_on = [x.strip() for x in val.replace(",", " ").split() if x.strip()]
         elif key == "parallel":
-            current.parallel = val.lower() in {"true", "yes", "1"}
+            current.parallel = bool(as_bool(val, default=False))
         elif key == "source":
             current.source = val
         elif key == "finding":
@@ -56,7 +58,3 @@ def load_tickets(req_path: Path) -> list[Ticket]:
     if not p.exists():
         return []
     return [t for t in parse_tickets(p.read_text(encoding="utf-8")) if t.repo]
-
-
-def by_id(tickets: list[Ticket]) -> dict[str, Ticket]:
-    return {t.id: t for t in tickets}

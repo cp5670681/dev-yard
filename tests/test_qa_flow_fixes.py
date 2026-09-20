@@ -266,9 +266,9 @@ def test_redact_masks_apikey_and_keeps_bare_ssh_url():
 
 
 def test_porcelain_entry_decodes_quoted_paths():
-    from dev_yard.qa import _porcelain_entry
+    from dev_yard.gitops import parse_porcelain_line
 
-    assert _porcelain_entry('M "a b.txt"') == ("M", "a b.txt")
+    assert parse_porcelain_line('M "a b.txt"') == ("M", "a b.txt")
 
 
 def test_context_md_masks_base_url_userinfo(tmp_path: Path):

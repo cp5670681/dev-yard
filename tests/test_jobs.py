@@ -96,7 +96,10 @@ def test_cancel_waiting_grill_job_interrupts_wait():
     while not errors and time.time() < deadline:
         time.sleep(0.01)
     assert len(errors) == 1
-    assert "grill interrupted" in str(errors[0])
+    from dev_yard.web.jobs import JobCancelled
+
+    assert isinstance(errors[0], JobCancelled)
+    assert "grill cancelled" in str(errors[0])
 
 
 def test_cancel_is_noop_on_terminal_job():
@@ -702,9 +705,20 @@ def test_job_log_runner_registers_proc_on_job(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("dev_yard.web.jobs.pi_argv", lambda **k: ["pi", "-p"])
     from dev_yard.web.jobs import JobLogRunner
 
+    registered: list[object] = []
+    original = job.register_proc
+
+    def spy(proc):
+        registered.append(proc)
+        original(proc)
+
+    job.register_proc = spy
     JobLogRunner(job, tmp_path, "open").start("p", cwd, [])
+    assert len(registered) == 1
+    assert isinstance(registered[0], FakeProc)
+    # The finished proc must not linger for a later cancel to hit.
     with job._lock:
-        assert isinstance(job._proc, FakeProc)
+        assert job._proc is None
 
 
 def test_job_log_runner_raises_when_cancelled_before_start(tmp_path: Path):

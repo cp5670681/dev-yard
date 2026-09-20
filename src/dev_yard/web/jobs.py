@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
 import threading
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from dev_yard import grill_round, paths, service
+from dev_yard.actions import HOST_JOB_ACTIONS, TICKET_ACTIONS
 from dev_yard.pi_session import load_conversation
 from dev_yard.runners import (
     JobCancelled,
-    RunResult,
     Runner,
+    RunResult,
     clip_summary,
     kill_proc_group,
     pi_argv,
@@ -35,29 +39,12 @@ __all__ = [
 
 Execute = Callable[[Path, "Job"], None]
 _TERMINAL = {"ok", "error", "cancelled"}
-_TICKET_ACTIONS = {"implement", "review", "fix-contract", "fix-test"}
-# Names with dedicated execute branches. Keep aligned with board.BUILTIN_ACTION_IDS
-# (plus repo_add). Overridden grill/spec/tickets still take those branches.
-_HOST_JOB_ACTIONS = frozenset(
-    {
-        "repo_add",
-        "open",
-        "grill",
-        "spec",
-        "tickets",
-        "freeze",
-        "implement",
-        "review",
-        "contract",
-        "fix-contract",
-        "submit-test",
-        "fill-test-report",
-        "fix-test",
-        "run-test",
-        "push",
-        "sync",
-    }
-)
+# Completed jobs keep their full log/pi_runs; cap how many we retain so a
+# long-lived console does not grow without bound.
+_MAX_JOBS = 200
+_TICKET_ACTIONS = TICKET_ACTIONS
+# Names with dedicated execute branches (kept aligned with actions.JOB_ACTIONS).
+_HOST_JOB_ACTIONS = HOST_JOB_ACTIONS
 
 
 def format_sse(event: str, data: Any) -> str:
@@ -83,7 +70,7 @@ class Job:
     _seq: int = field(default=0, repr=False, compare=False)
     _input: threading.Event = field(default_factory=threading.Event)
     _answers: list[dict[str, Any]] | None = None
-    _proc: "subprocess.Popen[str] | None" = field(default=None, repr=False, compare=False)
+    _proc: subprocess.Popen[str] | None = field(default=None, repr=False, compare=False)
     cancel_requested: threading.Event = field(default_factory=threading.Event)
     on_change: Callable[[], None] | None = field(default=None, repr=False, compare=False)
 
@@ -173,13 +160,13 @@ class Job:
             answers = self._answers
             self._answers = None
             if answers is None:
-                raise RuntimeError("grill interrupted")
+                raise JobCancelled("grill cancelled")
             return answers
 
     def record_pi_run(self, cwd: Path) -> dict[str, Any]:
         run = {
             "cwd": str(cwd.resolve()),
-            "started_at": datetime.now(timezone.utc)
+            "started_at": datetime.now(UTC)
             .isoformat(timespec="milliseconds")
             .replace("+00:00", "Z"),
         }
@@ -194,13 +181,18 @@ class Job:
             self.qa_progress = payload
             self._bump()
 
-    def register_proc(self, proc: "subprocess.Popen[str]") -> None:
+    def register_proc(self, proc: subprocess.Popen[str]) -> None:
         """Track the live pi subprocess so cancel() can kill it immediately."""
         with self._cv:
             self._proc = proc
             cancelled = self.cancel_requested.is_set()
         if cancelled:
             _kill_proc(proc)
+
+    def clear_proc(self) -> None:
+        """Drop the finished pi subprocess so a later cancel cannot target it."""
+        with self._cv:
+            self._proc = None
 
     def cancel(self) -> None:
         """Idempotent cancel request: kill the live pi subprocess and interrupt waits.
@@ -218,7 +210,7 @@ class Job:
             _kill_proc(proc)
 
 
-def _kill_proc(proc: "subprocess.Popen[str] | None") -> None:
+def _kill_proc(proc: subprocess.Popen[str] | None) -> None:
     if proc is not None:
         kill_proc_group(proc)
 
@@ -377,9 +369,12 @@ class JobLogRunner(Runner):
         def _log(line: str) -> None:
             self.job.append(line if line.endswith("\n") else line + "\n")
 
-        code, raw = run_pi_print(
-            argv, cwd, prompt, on_line=_log, on_spawn=self.job.register_proc
-        )
+        try:
+            code, raw = run_pi_print(
+                argv, cwd, prompt, on_line=_log, on_spawn=self.job.register_proc
+            )
+        finally:
+            self.job.clear_proc()
         if self.job.cancel_requested.is_set():
             raise JobCancelled(f"{self.bundle} cancelled (pi exit {code})")
         blocked = code != 0 or "REVIEW_FAILED" in raw
@@ -600,7 +595,7 @@ def _run_web_grill(root: Path, job: Job) -> None:
 
 
 class BoardSse:
-    def __init__(self, runner: "JobRunner") -> None:
+    def __init__(self, runner: JobRunner) -> None:
         self.runner = runner
         self._last: list[dict] | None = None
 
@@ -649,32 +644,20 @@ class JobRunner:
         return [j.brief() for j in self.running()]
 
     def get(self, job_id: str) -> Job | None:
-        return self._jobs.get(job_id)
+        with self._lock:
+            return self._jobs.get(job_id)
 
     def cancel(self, job_id: str) -> Job | None:
         """Signal a running job to stop; None when the job id is unknown."""
-        job = self._jobs.get(job_id)
+        job = self.get(job_id)
         if job is not None:
             job.cancel()
         return job
 
     def latest(self, jira: str) -> Job | None:
-        matches = [j for j in self._jobs.values() if j.jira == jira]
+        with self._lock:
+            matches = [j for j in self._jobs.values() if j.jira == jira]
         return matches[-1] if matches else None
-
-    def for_page(self, jira: str, job_id: str | None) -> Job | None:
-        jobs = self.page_jobs(jira, job_id)
-        return jobs[0] if jobs else None
-
-    def page_jobs(self, jira: str, job_id: str | None) -> list[Job]:
-        running = [j for j in self.running() if j.jira == jira]
-        if not job_id:
-            return running
-        picked = self.get(job_id)
-        if picked is None:
-            return running
-        rest = [j for j in running if j.id != picked.id]
-        return [picked] + rest
 
     def busy_tickets(self, jira: str, action: str) -> set[str] | None:
         """Ticket ids occupied by any running ticket job. None means the whole Jira is busy."""
@@ -691,7 +674,12 @@ class JobRunner:
         return occupied
 
     def running(self) -> list[Job]:
-        return [j for j in self._jobs.values() if j.state in {"queued", "running", "waiting"}]
+        with self._lock:
+            return [
+                j
+                for j in self._jobs.values()
+                if j.state in {"queued", "running", "waiting"}
+            ]
 
     def resume_pending_grills(self) -> list[Job]:
         if self.sync:
@@ -732,12 +720,33 @@ class JobRunner:
                 on_change=self._bump_board,
             )
             self._jobs[job.id] = job
+            self._prune_locked()
         self._bump_board()
         if self.sync:
             self._run(job)
         else:
             threading.Thread(target=self._run, args=(job,), daemon=True).start()
         return job
+
+    def _prune_locked(self) -> None:
+        """Drop the oldest finished jobs once the cap is exceeded.
+
+        Callers hold `self._lock`. Insertion order is oldest-first, so pruning
+        the first terminal jobs keeps the most recent history for the UI.
+        """
+        try:
+            cap = int(os.environ.get("YARD_JOBS_MAX", "") or _MAX_JOBS)
+        except ValueError:
+            cap = _MAX_JOBS
+        overflow = len(self._jobs) - cap
+        if overflow <= 0:
+            return
+        for job in list(self._jobs.values()):
+            if overflow <= 0:
+                break
+            if job.state in _TERMINAL:
+                self._jobs.pop(job.id, None)
+                overflow -= 1
 
     def _run(self, job: Job) -> None:
         job.set_state("running")

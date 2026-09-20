@@ -6,6 +6,7 @@ from typing import Any
 import yaml
 
 from dev_yard import paths
+from dev_yard.parse import as_name_list
 from dev_yard.qa import discover_cases, incomplete_run_payload, split_frontmatter
 from dev_yard.qa_config import TestRejected, load_qa_config, qa_env_choices
 
@@ -186,16 +187,8 @@ def list_case_payloads(qa: Path) -> list[dict[str, Any]]:
                 }
             )
             continue
-        deps = meta.get("depends_on") or []
-        if isinstance(deps, str):
-            deps = [x.strip() for x in deps.replace(",", " ").split() if x.strip()]
-        elif not isinstance(deps, list):
-            deps = []
-        covers = meta.get("covers") or []
-        if isinstance(covers, str):
-            covers = [x.strip() for x in covers.replace(",", " ").split() if x.strip()]
-        elif not isinstance(covers, list):
-            covers = []
+        deps = as_name_list(meta.get("depends_on"))
+        covers = as_name_list(meta.get("covers"))
         out.append(
             {
                 "id": str(meta.get("id") or path.stem),

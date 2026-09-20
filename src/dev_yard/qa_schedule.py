@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Callable
+from datetime import UTC, datetime
+from typing import Any
 
 from dev_yard.qa_config import QaWorker, TestRejected
 
@@ -28,7 +29,7 @@ class PoolSlot:
     inflight: int = 0
 
     @classmethod
-    def from_worker(cls, w: QaWorker) -> "PoolSlot":
+    def from_worker(cls, w: QaWorker) -> PoolSlot:
         return cls(
             id=w.id,
             provider=w.provider,
@@ -68,7 +69,7 @@ ProgressCb = Callable[[], None]
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def case_rank(priority: str) -> int:
@@ -107,7 +108,7 @@ def env_block_class(reason: str) -> str | None:
     r = (reason or "").lower()
     # Host-side setup fuse already skipped remaining setup cases; do not
     # also trip the schedule breaker (that would block no-setup cases).
-    if r.startswith("env fault:") or r.startswith("setup failed:"):
+    if r.startswith(("env fault:", "setup failed:")):
         return None
     if "login" in r or "auth" in r:
         return "login"

@@ -15,7 +15,7 @@ from dev_yard.qa import req_test
 from dev_yard.qa_config import TestRejected, load_qa_config
 from dev_yard.qa_report import map_qa_result
 from dev_yard.qa_schedule import CaseJob, PoolSlot, normalize_status, run_schedule
-from dev_yard.runners import DryRunRunner, RunResult, Runner
+from dev_yard.runners import DryRunRunner, Runner, RunResult
 from dev_yard.service import implement, init_yard, repo_add, req_freeze, req_open, review
 from dev_yard.test_report import ReportRejected, submit_test
 from dev_yard.web.board import PIPELINE, requirement_detail
@@ -162,7 +162,6 @@ def test_design_skipped_when_cases_exist(tmp_path: Path, git_src: Path, monkeypa
 
     def case_runner(job, pool):
         ran.append(job.id)
-        dest = yard / "reqs" / "QA-4" / "qa" / "evidence"
         # host creates run dir after design; write after schedule starts via path in job
         return {
             "status": "passed",

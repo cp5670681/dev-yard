@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import yaml as _yaml
 
 from dev_yard import stages
 from dev_yard.runners import pi_argv
@@ -86,8 +87,6 @@ def test_argv_equivalence_builtin(tmp_path, name):
 
 
 # ---- plugin loading ----
-
-import yaml as _yaml
 
 
 def _plugin(root: Path, name: str = "deploy", **over) -> Path:

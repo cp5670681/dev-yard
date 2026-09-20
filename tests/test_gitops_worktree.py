@@ -150,7 +150,7 @@ def test_run_disables_git_terminal_prompt(monkeypatch):
 
     captured: dict = {}
 
-    def fake_run(args, cwd=None, capture_output=None, text=None, env=None):
+    def fake_run(args, cwd=None, capture_output=None, text=None, env=None, timeout=None):
         captured["env"] = env
         captured["args"] = args
 

@@ -2,7 +2,6 @@ from pathlib import Path
 
 from dev_yard.pi_catalog import list_pi_catalog, parse_list_models_table
 
-
 SAMPLE = """
 provider   model                              context  max-out  thinking  images
 anthropic  claude-sonnet-4-5                  1M       64K      yes       yes

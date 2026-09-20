@@ -1,11 +1,12 @@
 from pathlib import Path
+
+from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from dev_yard import __version__
 from dev_yard.cli import app
 from dev_yard.service import init_yard
 from dev_yard.web.app import create_app
-from fastapi.testclient import TestClient
 
 runner = CliRunner()
 

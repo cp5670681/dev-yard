@@ -23,14 +23,6 @@ def map_qa_result(run: dict[str, Any], cases: list[dict[str, Any]]) -> InboundRe
     if failed == 0 and passed == 0:
         return None
 
-    by_id = {}
-    for item in cases:
-        if not isinstance(item, dict):
-            continue
-        cid = str(item.get("case") or item.get("id") or "").strip()
-        if cid:
-            by_id[cid] = item
-
     if failed > 0:
         findings: list[Finding] = []
         for item in cases:

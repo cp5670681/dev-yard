@@ -24,10 +24,15 @@ jobs:
           cache: "pnpm"
           cache-dependency-path: "web/pnpm-lock.yaml"
 
-      - name: Install frontend dependencies and build SPA
+      - name: Install frontend dependencies and typecheck
         run: |
           cd web
           pnpm install --frozen-lockfile
+          pnpm run typecheck
+
+      - name: Build SPA
+        run: |
+          cd web
           pnpm run build
 
       - name: Install uv
@@ -39,6 +44,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Lint (ruff)
+        run: uvx ruff check src tests
 
       - name: Configure Git user
         run: |

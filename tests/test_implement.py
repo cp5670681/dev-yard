@@ -394,7 +394,6 @@ def test_review_diff_is_since_previous_same_repo_ticket(
         "## T2: y\n- repo: backend\n- depends_on: T1\n- parallel: false\n"
     )
     req_freeze(yard, "AB-27")
-    wt = d / "worktrees" / "backend"
 
     class Committer:
         def __init__(self, filename: str) -> None:
@@ -499,7 +498,7 @@ def test_ticket_done_conflict_aborts_merge_and_raises(
 ):
     import subprocess
 
-    from dev_yard.service import ticket_done, ticket_start
+    from dev_yard.service import ticket_done
 
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)

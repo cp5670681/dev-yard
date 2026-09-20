@@ -220,19 +220,19 @@ def parse_exec(env_name: str, raw_env: dict[str, Any], *, script_runner: str) ->
     sql_runner = _blank(with_raw.get("sql_runner"))
     workdir = _blank(with_raw.get("workdir"))
     site = "local" if use == "local" else "remote"
-    kw: dict[str, Any] = dict(
-        use=use,
-        site=site,
-        payload=payload,
-        parallel=_bool(raw.get("parallel"), False),
-        allow_cross_site=_bool(raw.get("allow_cross_site"), False),
-        timeout=timeout,
-        ping_timeout=ping_timeout,
-        db_exec=db_exec,
-        runner=runner,
-        workdir=workdir,
-        sql_runner=sql_runner,
-    )
+    kw: dict[str, Any] = {
+        "use": use,
+        "site": site,
+        "payload": payload,
+        "parallel": _bool(raw.get("parallel"), False),
+        "allow_cross_site": _bool(raw.get("allow_cross_site"), False),
+        "timeout": timeout,
+        "ping_timeout": ping_timeout,
+        "db_exec": db_exec,
+        "runner": runner,
+        "workdir": workdir,
+        "sql_runner": sql_runner,
+    }
     if use == "ssh":
         target = _blank(with_raw.get("target"))
         host = _blank(with_raw.get("host"))
@@ -351,7 +351,7 @@ def _reject_raw_argv(argv: tuple[str, ...], field: str) -> None:
     for item in argv:
         if "{script}" in item:
             _fail(f"qa.yaml {field} 不得包含 {{script}}，stdin 由宿主提供")
-        if item in {"<", ">", ">>"} or item.startswith("<") or item.startswith(">"):
+        if item in {"<", ">", ">>"} or item.startswith(("<", ">")):
             _fail(f"qa.yaml {field} 不得含重定向，stdin 由宿主提供")
 
 
@@ -360,72 +360,6 @@ def _reject_raw_text(text: str, field: str) -> None:
         _fail(f"qa.yaml {field} 不得包含 {{script}}，stdin 由宿主提供")
     if "<" in text or ">" in text:
         _fail(f"qa.yaml {field} 不得含重定向符号，stdin 由宿主提供")
-
-
-def exec_to_raw(ex: QaExec, *, include_runner_sugar: bool = False) -> dict[str, Any] | None:
-    """YAML mapping for `exec:`. local+defaults can be omitted."""
-    if ex.use == "local" and not ex.allow_cross_site and ex.payload == "file" and not ex.parallel:
-        if include_runner_sugar:
-            return None
-        return {"use": "local", **({"with": {"runner": ex.runner}} if ex.runner else {})}
-    out: dict[str, Any] = {"use": ex.use}
-    if ex.payload != "file":
-        out["payload"] = ex.payload
-    if ex.parallel:
-        out["parallel"] = True
-    if ex.allow_cross_site:
-        out["allow_cross_site"] = True
-    if ex.timeout != 300:
-        out["timeout"] = ex.timeout
-    if ex.ping_timeout != 30:
-        out["ping_timeout"] = ex.ping_timeout
-    with_out: dict[str, Any] = {}
-    if ex.use in {"local", "ssh", "docker", "jms-k8s"} and ex.runner:
-        with_out["runner"] = ex.runner
-    if ex.workdir:
-        with_out["workdir"] = ex.workdir
-    if ex.sql_runner:
-        with_out["sql_runner"] = ex.sql_runner
-    if ex.use == "ssh":
-        with_out["target"] = ex.ssh_target
-        if ex.ssh_port != 22:
-            with_out["port"] = ex.ssh_port
-    elif ex.use == "docker":
-        with_out["container"] = ex.container
-    elif ex.use == "jms-k8s":
-        with_out["jms"] = {
-            "host": ex.jms_host,
-            "port": ex.jms_port,
-            "user": ex.jms_user,
-        }
-        with_out["default_node"] = ex.default_node
-        with_out["nodes"] = {k: v for k, v in ex.nodes}
-        with_out["namespace"] = ex.namespace
-        with_out["container"] = ex.k8s_container
-        pod: dict[str, str] = {}
-        if ex.pod_selector:
-            pod["selector"] = ex.pod_selector
-        if ex.pod_pattern:
-            pod["pattern"] = ex.pod_pattern
-        if pod:
-            with_out["pod"] = pod
-    if with_out:
-        out["with"] = with_out
-    if ex.use == "raw":
-        if ex.shell:
-            out["shell"] = True
-            out["run"] = ex.raw_run_shell
-            out["ping"] = ex.raw_ping_shell
-        else:
-            out["run"] = list(ex.raw_run)
-            out["ping"] = list(ex.raw_ping)
-    if ex.use == "delegate":
-        if ex.command:
-            out["command"] = list(ex.command)
-            out["ping"] = list(ex.ping_command)
-        if ex.skill:
-            out["skill"] = ex.skill
-    return out
 
 
 def exec_payload(raw_env: Any) -> dict[str, Any]:

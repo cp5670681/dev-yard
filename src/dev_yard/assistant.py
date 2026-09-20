@@ -4,33 +4,18 @@ import json
 import re
 import threading
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from dev_yard import paths
+from dev_yard.actions import JOB_ACTIONS
 from dev_yard.config import load_repos
-from dev_yard.web.board import list_requirements, requirement_detail
+from dev_yard.reqboard import list_requirements, requirement_detail
 
-HOST_ACTIONS = frozenset(
-    {
-        "open",
-        "grill",
-        "spec",
-        "tickets",
-        "freeze",
-        "implement",
-        "review",
-        "contract",
-        "fix-contract",
-        "submit-test",
-        "run-test",
-        "fix-test",
-        "push",
-        "sync",
-    }
-)
+HOST_ACTIONS = JOB_ACTIONS
 _FENCE = re.compile(r"```suggested-actions\s*(\[.*?\])\s*```", re.S | re.I)
 _MD_ROLES = frozenset({"assistant", "user"})
 
@@ -45,7 +30,7 @@ def pi_sessions_dir(root: Path) -> Path:
 
 def now_iso() -> str:
     return (
-        datetime.now(timezone.utc)
+        datetime.now(UTC)
         .isoformat(timespec="milliseconds")
         .replace("+00:00", "Z")
     )
@@ -185,10 +170,9 @@ def parse_suggested_actions(text: str) -> tuple[str, list[dict[str, Any]]]:
 
 
 def _entry_from_rpc_message(msg: dict[str, Any]) -> dict[str, Any] | None:
-    from dev_yard.pi_session import _entry_from_message
+    from dev_yard.pi_session import entry_from_message
 
-    wrapped = {"message": msg}
-    return _entry_from_message(wrapped)
+    return entry_from_message(msg)
 
 
 RpcFactory = Callable[[Path, "AssistantSession"], Any]
@@ -521,7 +505,7 @@ def _public_entry(entry: dict[str, Any], jira: str) -> dict[str, Any]:
         and out.get("role") in _MD_ROLES
         and not out.get("is_error")
     ):
-        from dev_yard.web.app import render_markdown
+        from dev_yard.web.context import render_markdown
 
         out["html"] = render_markdown(text, jira or "")
     return out

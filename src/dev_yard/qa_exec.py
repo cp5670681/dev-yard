@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 import shutil
 import subprocess
@@ -10,7 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from dev_yard import gitops, paths
-from dev_yard.qa_config import QaAccount, QaConfig, TestRejected, default_state_file
+from dev_yard.qa_config import (
+    QaAccount,
+    QaConfig,
+    TestRejected,
+    default_state_file,
+    redact_qa_yaml,
+)
 from dev_yard.qa_schedule import CaseJob, normalize_status
 
 _ASSERT_TYPES = {"ui", "net", "db"}
@@ -216,7 +223,17 @@ def run_case_script(
     case_dir = Path(job.path).parent if job.path else None
     if case_dir is None:
         raise TestRejected(f"{job.id} has {kind} {name!r} but no case path")
+    # Frontmatter is AI-authored; a bare filename only, and it must resolve
+    # inside the case dir (no absolute path, no `../` escape).
+    if Path(name).name != name or name in {".", ".."}:
+        raise TestRejected(
+            f"{job.id} {kind} {name!r} must be a bare filename inside the case dir"
+        )
     script = case_dir / name
+    try:
+        script.resolve().relative_to(case_dir.resolve())
+    except ValueError as e:
+        raise TestRejected(f"{job.id} {kind} escapes the case dir: {name!r}") from e
     if not script.is_file():
         raise TestRejected(f"{job.id} {kind} file missing: {script}")
     wt = paths.req_worktree(root, jira, job.repo) if job.repo else None
@@ -224,16 +241,17 @@ def run_case_script(
     if script.suffix.lower() == ".sql" and not inherit:
         return _run_sql(cfg, script, on_log)
     started = time.time()
-    local = executor is None or getattr(executor, "site", "local") == "local"
     if executor is None:
         executor = resolve_executor(
             cfg.env, base_url=cfg.env.base_url, worktree=wt, root=root
         )
-        local = executor.site == "local"
     else:
+        # Never mutate a caller-shared executor: parallel cases in different
+        # repos would race on `worktree`.
+        executor = copy.copy(executor)
         executor.worktree = wt
-        local = executor.site == "local"
-    before = _porcelain_paths(wt) if local and wt and wt.is_dir() else set()
+    local = executor.site == "local"
+    before = gitops.porcelain_paths(wt) if local and wt and wt.is_dir() else set()
     try:
         result = executor.run(
             script,
@@ -246,12 +264,15 @@ def run_case_script(
             },
         )
         if result.code != 0:
-            err = (result.stderr or result.stdout or "").strip() or str(result.code)
+            err = (
+                redact_qa_yaml((result.stderr or result.stdout or "").strip())
+                or str(result.code)
+            )
             raise TestRejected(
                 f"{executor.label} {script.name} failed: {err}",
                 error_class=str(result.error_class or ExecErrorClass.SCRIPT),
             )
-        return (result.stdout or "").strip()
+        return redact_qa_yaml((result.stdout or "").strip())
     finally:
         if local and wt and wt.is_dir():
             _revert_new_paths(wt, before, window=(started, time.time()))
@@ -268,31 +289,15 @@ def _run_sql(cfg: QaConfig, script: Path, on_log: Any | None) -> str:
         on_log(f"$ usql <db.url> -f {script}")
     r = _run(cmd, timeout=300, label=f"usql {script.name}")
     if r.returncode != 0:
-        err = (r.stderr or r.stdout or "").strip() or str(r.returncode)
+        err = redact_qa_yaml((r.stderr or r.stdout or "").strip()) or str(r.returncode)
         raise TestRejected(f"usql {script.name} failed: {err}")
-    return (r.stdout or "").strip()
-
-
-def _porcelain_paths(worktree: Path) -> set[str]:
-    try:
-        text = gitops.run(["git", "status", "--porcelain", "-uall"], cwd=worktree)
-    except gitops.GitError:
-        return set()
-    out: set[str] = set()
-    for ln in text.splitlines():
-        path = ln[3:] if len(ln) > 3 else ""
-        if " -> " in path:
-            path = path.split(" -> ", 1)[1]
-        path = path.strip().strip('"')
-        if path:
-            out.add(path)
-    return out
+    return redact_qa_yaml((r.stdout or "").strip())
 
 
 def _revert_new_paths(
     worktree: Path, before: set[str], *, window: tuple[float, float] | None = None
 ) -> None:
-    after = _porcelain_paths(worktree)
+    after = gitops.porcelain_paths(worktree)
     for rel in sorted(after - before):
         target = worktree / rel
         if window is not None and not _created_in_window(target, window):

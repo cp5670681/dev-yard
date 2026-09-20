@@ -1,6 +1,7 @@
 from pathlib import Path
 
-from dev_yard import gitops, status as st
+from dev_yard import gitops
+from dev_yard import status as st
 from dev_yard.config import GitSettings, save_git_settings
 from dev_yard.service import init_yard, repo_add, req_freeze, req_open, ticket_start
 

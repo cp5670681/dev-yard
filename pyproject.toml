@@ -33,8 +33,11 @@ packages = ["src/dev_yard"]
 [tool.hatch.build.targets.wheel.force-include]
 ".pi/skills" = "dev_yard/skills"
 
+# Keep the skills at their original path in the sdist: the wheel target above
+# force-includes `.pi/skills`, so building a wheel *from the sdist* needs it to
+# exist there (remapping it to dev_yard/skills broke `uv build`).
 [tool.hatch.build.targets.sdist.force-include]
-".pi/skills" = "dev_yard/skills"
+".pi/skills" = ".pi/skills"
 
 [tool.hatch.build.targets.wheel.hooks.custom]
 path = "hatch_build.py"
@@ -54,3 +57,17 @@ pythonpath = ["src"]
 markers = [
     "spa: mark test as requiring built SPA",
 ]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "C4", "PIE", "UP"]
+ignore = [
+    "B008",  # typer.Option()/Field() in defaults is idiomatic here
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B"]
+

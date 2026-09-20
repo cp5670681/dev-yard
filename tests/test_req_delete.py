@@ -3,7 +3,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from dev_yard import gitops, status as st
+from dev_yard import gitops
+from dev_yard import status as st
 from dev_yard.config import GitSettings, save_git_settings
 from dev_yard.service import init_yard, repo_add, req_delete, req_freeze, req_open, ticket_start
 from dev_yard.web.app import create_app

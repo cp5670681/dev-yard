@@ -64,7 +64,7 @@ def pi_argv(
     print_mode: bool = False,
     binary: str | None = None,
     repo: str | None = None,
-    spec: "StageSpec | None" = None,
+    spec: StageSpec | None = None,
     provider: str | None = None,
     model: str | None = None,
 ) -> list[str]:
@@ -228,7 +228,7 @@ class PiRunner(Runner):
         bundle: str,
         print_mode: bool = False,
         binary: str | None = None,
-        spec: "StageSpec | None" = None,
+        spec: StageSpec | None = None,
     ) -> None:
         self.root = root
         self.bundle = bundle
@@ -312,7 +312,7 @@ def get_runner(
     bundle: str,
     dry_run: bool = False,
     print_mode: bool = False,
-    spec: "StageSpec | None" = None,
+    spec: StageSpec | None = None,
 ) -> Runner:
     if dry_run:
         return DryRunRunner(

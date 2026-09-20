@@ -4,7 +4,7 @@ import pytest
 import yaml
 
 from dev_yard import service, stages
-from dev_yard.runners import RunResult, Runner
+from dev_yard.runners import Runner, RunResult
 
 
 class FakeRunner(Runner):

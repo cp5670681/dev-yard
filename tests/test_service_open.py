@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from dev_yard import status as st
-from dev_yard.runners import RunResult, Runner
+from dev_yard.runners import Runner, RunResult
 from dev_yard.service import REQ_SKELETON, extract_req_key, init_yard, req_open, status_text
 
 

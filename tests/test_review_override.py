@@ -13,7 +13,6 @@ from dev_yard.service import (
     repo_add,
     req_freeze,
     req_open,
-    review,
     ticket_review_override,
 )
 

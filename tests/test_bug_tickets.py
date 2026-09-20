@@ -6,14 +6,14 @@ from dev_yard import status as st
 from dev_yard.bug_tickets import parse_findings_from_summary, spawn_fix_tickets
 from dev_yard.runners import DryRunRunner
 from dev_yard.service import implement, init_yard, repo_add, req_freeze, req_open, review
-from dev_yard.tickets import parse_tickets
 from dev_yard.test_report import (
-    InboundReport,
     Finding,
+    InboundReport,
     accept_test_report,
     parse_inbound,
     submit_test,
 )
+from dev_yard.tickets import parse_tickets
 
 
 def test_parse_bug_headings():

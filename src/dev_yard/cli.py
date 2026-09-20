@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Optional
 
 import typer
+
 from dev_yard import __version__, paths, service
 from dev_yard.config import load_repos
 from dev_yard.env import load_env
 from dev_yard.gitops import GitError
-
 
 app = typer.Typer(help="dev-yard: multi-repo requirement worktrees")
 repo_app = typer.Typer(help="Register source repos")
@@ -30,7 +29,7 @@ def version_callback(value: bool) -> None:
 
 @app.callback()
 def main(
-    version: Optional[bool] = typer.Option(
+    version: bool | None = typer.Option(
         None,
         "--version",
         "-V",
@@ -40,7 +39,6 @@ def main(
     ),
 ) -> None:
     """dev-yard: multi-repo requirement worktrees."""
-    pass
 
 
 def root_opt() -> Path:
@@ -48,7 +46,7 @@ def root_opt() -> Path:
         root = paths.find_root()
     except FileNotFoundError as e:
         typer.echo(str(e), err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     load_env(root)
     return root
 
@@ -124,9 +122,9 @@ def repo_add(
     url: str,
     default_base: str = "main",
     role: str = "svc",
-    path: Optional[str] = None,
-    provider: Optional[str] = typer.Option(None, "--provider"),
-    model: Optional[str] = typer.Option(None, "--model"),
+    path: str | None = None,
+    provider: str | None = typer.Option(None, "--provider"),
+    model: str | None = typer.Option(None, "--model"),
 ) -> None:
     root = root_opt()
     try:
@@ -161,8 +159,8 @@ def repo_list() -> None:
 @repo_app.command("set-model")
 def repo_set_model(
     alias: str,
-    provider: Optional[str] = typer.Option(None, "--provider"),
-    model: Optional[str] = typer.Option(None, "--model"),
+    provider: str | None = typer.Option(None, "--provider"),
+    model: str | None = typer.Option(None, "--model"),
 ) -> None:
     """Set implement provider/model for a repo. Omit both to clear."""
     root = root_opt()
@@ -179,9 +177,9 @@ def repo_set_model(
 @req_app.command("open")
 def req_open(
     target: str = typer.Argument(..., help="Requirement key (e.g. PG-13068, GH-42), URL, or description"),
-    key: Optional[str] = typer.Option(None, "--key", "-k", help="Custom requirement key/ID (overrides auto-extraction)"),
-    text: Optional[str] = typer.Option(None, "--text", "-t", help="Raw requirement text to write directly"),
-    file: Optional[Path] = typer.Option(None, "--file", "-f", help="Local Markdown or text file to import"),
+    key: str | None = typer.Option(None, "--key", "-k", help="Custom requirement key/ID (overrides auto-extraction)"),
+    text: str | None = typer.Option(None, "--text", "-t", help="Raw requirement text to write directly"),
+    file: Path | None = typer.Option(None, "--file", "-f", help="Local Markdown or text file to import"),
     none: bool = typer.Option(False, "--none", help="Create empty skeleton only (skip remote fetching)"),
     http: bool = typer.Option(False, "--http", help="Crawl Jira/Confluence over HTTP (downloads extra history)"),
     dry_run: bool = False,
@@ -252,7 +250,7 @@ def req_freeze(
 @req_app.command("sync")
 def req_sync(
     jira: str = typer.Argument(..., help="Requirement key (e.g. PROJ-101)"),
-    repos: Optional[list[str]] = typer.Argument(
+    repos: list[str] | None = typer.Argument(
         None, help="Optional repo aliases (default: all registered)"
     ),
     strategy: str = typer.Option(
@@ -282,7 +280,7 @@ def req_sync(
 @req_app.command("push")
 def req_push(
     jira: str = typer.Argument(..., help="Requirement key (e.g. PROJ-101)"),
-    repos: Optional[list[str]] = typer.Argument(None, help="Optional repo aliases to push (default: all)"),
+    repos: list[str] | None = typer.Argument(None, help="Optional repo aliases to push (default: all)"),
     remote: str = typer.Option("origin", "--remote", "-r", help="Git remote name (default: origin)"),
     force: bool = typer.Option(False, "--force", "-f", help="Force push (git push --force)"),
 ) -> None:
@@ -321,8 +319,8 @@ def req_submit_test(jira: str) -> None:
 def req_accept_test(
     jira: str,
     verdict: str = typer.Option(..., "--verdict", help="passed | failed | blocked"),
-    body_file: Optional[Path] = typer.Option(None, "--body-file", help="Optional notes (Markdown)"),
-    findings_file: Optional[Path] = typer.Option(
+    body_file: Path | None = typer.Option(None, "--body-file", help="Optional notes (Markdown)"),
+    findings_file: Path | None = typer.Option(
         None, "--findings-file", help="JSON list of bugs (required when failed)"
     ),
     summary: str = typer.Option("", "--summary"),
@@ -682,7 +680,7 @@ def stages_cmd() -> None:
 @app.command()
 def implement(
     jira: str,
-    ticket_ids: Optional[list[str]] = typer.Argument(None),
+    ticket_ids: list[str] | None = typer.Argument(None),
     dry_run: bool = False,
     print_mode: bool = typer.Option(False, "--print", help="pi -p one-shot instead of TUI"),
     from_contract: bool = typer.Option(
@@ -721,7 +719,7 @@ def implement(
 @app.command()
 def review(
     jira: str,
-    ticket_ids: Optional[list[str]] = typer.Argument(None),
+    ticket_ids: list[str] | None = typer.Argument(None),
     contract: bool = False,
     dry_run: bool = False,
     print_mode: bool = typer.Option(False, "--print", help="pi -p one-shot instead of TUI"),
@@ -739,10 +737,10 @@ def review(
 @app.command(name="review-override")
 def review_override(
     jira: str,
-    ticket_id: Optional[str] = typer.Argument(None, help="Ticket ID (e.g. T1). Omit when overriding contract review."),
+    ticket_id: str | None = typer.Argument(None, help="Ticket ID (e.g. T1). Omit when overriding contract review."),
     contract: bool = typer.Option(False, "--contract", help="Override contract review instead of a ticket"),
     verdict: str = typer.Option(..., "--verdict", "-v", help="Verdict: 'passed' or 'failed'"),
-    summary: Optional[str] = typer.Option(None, "--summary", "-m", help="Review comments / feedback"),
+    summary: str | None = typer.Option(None, "--summary", "-m", help="Review comments / feedback"),
 ) -> None:
     """Manually override a ticket's or contract review verdict and feedback."""
     root = root_opt()
@@ -771,7 +769,7 @@ def review_override(
 @app.command()
 def sync(
     jira: str = typer.Argument(..., help="Requirement key (e.g. PROJ-101)"),
-    repos: Optional[list[str]] = typer.Argument(
+    repos: list[str] | None = typer.Argument(
         None, help="Optional repo aliases (default: all registered)"
     ),
     strategy: str = typer.Option(
@@ -788,7 +786,7 @@ def sync(
 @app.command()
 def push(
     jira: str = typer.Argument(..., help="Requirement key (e.g. PROJ-101)"),
-    repos: Optional[list[str]] = typer.Argument(None, help="Optional repo aliases to push (default: all)"),
+    repos: list[str] | None = typer.Argument(None, help="Optional repo aliases to push (default: all)"),
     remote: str = typer.Option("origin", "--remote", "-r", help="Git remote name (default: origin)"),
     force: bool = typer.Option(False, "--force", "-f", help="Force push (git push --force)"),
 ) -> None:
@@ -810,19 +808,19 @@ def push(
 
 
 @app.command()
-def status(jira: Optional[str] = typer.Argument(None)) -> None:
+def status(jira: str | None = typer.Argument(None)) -> None:
     root = root_opt()
     typer.echo(service.status_text(root, jira))
 
 
 @app.command(name="tdd")
 def tdd_cmd(
-    mode: Optional[str] = typer.Argument(
+    mode: str | None = typer.Argument(
         None, help="'on' | 'off' | 'status'. Omit to view current status."
     ),
 ) -> None:
     """Get or set workspace TDD development and review mode (default: on)."""
-    from dev_yard.config import DevSettings, load_dev_settings, save_dev_settings
+    from dev_yard.config import load_dev_settings, save_dev_settings
 
     root = root_opt()
     settings = load_dev_settings(root)

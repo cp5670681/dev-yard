@@ -7,7 +7,9 @@ from typing import Any
 
 import yaml
 
-from dev_yard import paths, status as st
+from dev_yard import paths
+from dev_yard import status as st
+from dev_yard.parse import as_bool, as_list
 from dev_yard.tickets import load_tickets
 
 VERDICTS = ("passed", "failed", "blocked")
@@ -49,10 +51,6 @@ def report_dir(root: Path, jira: str) -> Path:
     return paths.req_dir(root, jira) / "test-reports"
 
 
-def latest_report_path(root: Path, jira: str) -> Path:
-    return paths.req_dir(root, jira) / "TEST-REPORT.md"
-
-
 def _now() -> datetime:
     return datetime.now().astimezone()
 
@@ -91,7 +89,8 @@ def submit_test(root: Path, jira: str) -> dict[str, Any]:
 
 
 def namespace_findings(batch_id: str, findings: list[Finding]) -> list[dict[str, Any]]:
-    raw_ids = {f.id for f in findings if f.id}
+    ids = [f.id or f"F{i + 1}" for i, f in enumerate(findings)]
+    raw_ids = set(ids)
 
     def ns(dep: str) -> str:
         if dep in raw_ids:
@@ -99,8 +98,7 @@ def namespace_findings(batch_id: str, findings: list[Finding]) -> list[dict[str,
         return dep
 
     out: list[dict[str, Any]] = []
-    for f in findings:
-        fid = f.id or "F1"
+    for f, fid in zip(findings, ids, strict=True):
         item: dict[str, Any] = {
             "id": f"{batch_id}:{fid}",
             "title": f.title or fid,
@@ -130,13 +128,11 @@ def parse_inbound(payload: dict[str, Any], default_source: str) -> InboundReport
         if not isinstance(item, dict):
             raise ReportRejected(f"findings[{i}] must be an object")
         deps = item.get("depends_on") or []
-        if isinstance(deps, str):
-            deps = [x.strip() for x in deps.replace(",", " ").split() if x.strip()]
-        elif not isinstance(deps, list):
+        if not isinstance(deps, (str, list, tuple)):
             raise ReportRejected(f"findings[{i}].depends_on must be a list or string")
-        parallel = item.get("parallel")
-        if isinstance(parallel, str):
-            parallel = parallel.lower() in {"true", "yes", "1"}
+        parallel_raw = item.get("parallel")
+        # Absent → None; present but unrecognised → False (unchanged semantics).
+        parallel = as_bool(parallel_raw, default=False) if parallel_raw is not None else None
         repo = str(item.get("repo") or "").strip()
         if verdict in {"failed", "blocked"} and not repo:
             raise ReportRejected(f"findings[{i}].repo is required")
@@ -146,8 +142,8 @@ def parse_inbound(payload: dict[str, Any], default_source: str) -> InboundReport
                 title=str(item.get("title") or ""),
                 detail=str(item.get("detail") or ""),
                 repo=repo,
-                depends_on=[str(x).strip() for x in deps if str(x).strip()],
-                parallel=None if parallel is None else bool(parallel),
+                depends_on=as_list(deps),
+                parallel=parallel,
             )
         )
     if verdict in {"failed", "blocked"} and not findings:

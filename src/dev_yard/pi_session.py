@@ -162,6 +162,11 @@ def _tools(content: Any) -> list[dict[str, Any]]:
     return tools
 
 
+def entry_from_message(message: dict[str, Any]) -> dict[str, Any] | None:
+    """Public wrapper: normalize a raw `{role, content}` pi message."""
+    return _entry_from_message({"message": message})
+
+
 def _entry_from_message(rec: dict[str, Any]) -> dict[str, Any] | None:
     msg = rec.get("message")
     if not isinstance(msg, dict):

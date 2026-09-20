@@ -171,6 +171,7 @@ def test_repo_incomplete_pair_rejected(tmp_path: Path, git_src: Path):
 
 def test_cli_repo_set_model(tmp_path: Path, git_src: Path, monkeypatch):
     from typer.testing import CliRunner
+
     from dev_yard.cli import app
 
     yard = tmp_path / "yard"
@@ -291,6 +292,7 @@ def test_dev_settings_save_and_reload(tmp_path: Path):
 
 def test_cli_tdd_command(tmp_path: Path, monkeypatch):
     from typer.testing import CliRunner
+
     from dev_yard.cli import app
 
     yard = tmp_path / "yard"

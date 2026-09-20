@@ -6,7 +6,9 @@ from typing import Any
 
 import yaml
 
-from dev_yard import paths, status as st
+from dev_yard import paths
+from dev_yard import status as st
+from dev_yard.parse import as_bool, as_list
 from dev_yard.tickets import Ticket, load_tickets
 
 KINDS = ("contract", "test")
@@ -18,35 +20,24 @@ class SpawnResult:
     tickets: list[Ticket] = field(default_factory=list)
 
 
-def _as_list(val: Any) -> list[str]:
-    if val is None or val is False:
-        return []
-    if isinstance(val, str):
-        return [x.strip() for x in val.replace(",", " ").split() if x.strip()]
-    if isinstance(val, (list, tuple)):
-        out: list[str] = []
-        for x in val:
-            out.extend(_as_list(x))
-        return out
-    return [str(val)]
-
-
 def normalize_findings(raw: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for i, item in enumerate(raw or []):
         if not isinstance(item, dict):
             continue
         fid = str(item.get("id") or f"F{i + 1}")
-        parallel = item.get("parallel")
-        if isinstance(parallel, str):
-            parallel = parallel.lower() in {"true", "yes", "1"}
+        raw_parallel = item.get("parallel")
+        # Absent → None (auto-derive); present but unrecognised → False, as before.
+        parallel = (
+            as_bool(raw_parallel, default=False) if raw_parallel is not None else None
+        )
         out.append(
             {
                 "id": fid,
                 "title": str(item.get("title") or fid).strip() or fid,
                 "detail": str(item.get("detail") or "").strip(),
                 "repo": str(item.get("repo") or "").strip(),
-                "depends_on": _as_list(item.get("depends_on")),
+                "depends_on": as_list(item.get("depends_on")),
                 "parallel": parallel,
             }
         )
@@ -164,7 +155,7 @@ def _findings_for_kind(
     else:
         findings = normalize_findings(data.get("contract_findings") or [])
         if not findings:
-            findings = parse_findings_from_summary((data.get("contract_summary") or ""))
+            findings = parse_findings_from_summary(data.get("contract_summary") or "")
     findings = expand_findings_repos(findings, repos)
     if findings:
         return findings
@@ -252,14 +243,14 @@ def spawn_fix_tickets_result(
 
         new_ids = _next_ids([t.id for t in existing], len(pending))
         assigned: dict[str, str] = {}
-        for f, tid in zip(pending, new_ids):
+        for f, tid in zip(pending, new_ids, strict=True):
             assigned[f["id"]] = tid
             known[(kind, f["id"])] = tid
 
         blocks: list[str] = []
         created: list[Ticket] = []
         snapshot = list(existing)
-        for f, tid in zip(pending, new_ids):
+        for f, tid in zip(pending, new_ids, strict=True):
             deps: list[str] = []
             for dep in f["depends_on"]:
                 if dep in assigned:
