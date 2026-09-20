@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -18,6 +19,31 @@ from dev_yard.reqboard import list_requirements, requirement_detail
 HOST_ACTIONS = JOB_ACTIONS
 _FENCE = re.compile(r"```suggested-actions\s*(\[.*?\])\s*```", re.S | re.I)
 _MD_ROLES = frozenset({"assistant", "user"})
+_SUMMARY_LIMIT = 160
+
+# Which tool argument best describes the call, per read-only assistant tool.
+_SUMMARY_KEYS: dict[str, tuple[str, ...]] = {
+    "read": ("path", "file_path", "file"),
+    "ls": ("path", "dir", "directory"),
+    "find": ("pattern", "glob", "path"),
+    "grep": ("pattern", "query", "path"),
+}
+
+
+def summarize_tool(name: str, args: str) -> str:
+    """One-line, human-friendly hint for a tool call (path/pattern/command)."""
+    data: Any = None
+    if args:
+        try:
+            data = json.loads(args)
+        except (json.JSONDecodeError, TypeError):
+            data = None
+    if isinstance(data, dict):
+        for key in _SUMMARY_KEYS.get(name, ()):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return " ".join(value.split())[:_SUMMARY_LIMIT]
+    return " ".join((args or "").split())[:_SUMMARY_LIMIT]
 
 
 def assistant_dir(root: Path) -> Path:
@@ -194,10 +220,16 @@ class AssistantSession:
     _gen: int = 0
     _thread: threading.Thread | None = field(default=None, repr=False)
     _start_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _turn_seq: int = 0
     dropped: bool = False
 
     def __post_init__(self) -> None:
         self._cv = threading.Condition(self._lock)
+
+    def turn_id(self) -> str:
+        """Caller must hold ``_cv`` (or be the sole writer)."""
+        self._turn_seq += 1
+        return f"t{self._turn_seq}"
 
     def snapshot(self) -> dict[str, Any]:
         with self._cv:
@@ -229,55 +261,56 @@ class AssistantSession:
         self._seq += 1
         self._cv.notify_all()
 
-    def append_entry(self, entry: dict[str, Any]) -> None:
-        with self._cv:
-            self.entries.append(entry)
-            self.bump()
 
-    def set_state(self, state: str, error: str | None = None) -> None:
-        with self._cv:
-            self.state = state
-            if error is not None:
-                self.error = error
-            self.bump()
+def _turn_fingerprint(turn: dict[str, Any]) -> str:
+    """Serialized turn used to detect which turns need re-streaming."""
+    return json.dumps(turn, sort_keys=True, ensure_ascii=False)
 
 
 class AssistantSse:
+    """Streams whole turns: a snapshot on connect, then one `turn` frame per change.
+
+    Tool calls and their results are folded into the owning assistant turn by the
+    hub, so the client never sees raw `toolResult` rows as standalone messages.
+    """
+
     def __init__(self, session: AssistantSession) -> None:
         self.session = session
         self._sent = False
-        self._n = 0
         self._last_state: str | None = None
-        self._stream_text: str | None = None
+        self._fingerprints: dict[str, str] = {}
 
     def poll(self) -> tuple[list[str], bool, int]:
         from dev_yard.web.jobs import format_sse
 
         snap, seq = self.session.capture()
+        entries = snap["entries"]
         frames: list[str] = []
         if not self._sent:
             frames.append(format_sse("snapshot", snap))
             self._sent = True
-            self._n = len(snap["entries"])
-            self._last_state = snap["state"]
+            self._fingerprints = {
+                e["id"]: _turn_fingerprint(e) for e in entries if e.get("id")
+            }
         else:
-            for entry in snap["entries"][self._n :]:
-                frames.append(format_sse("entry", entry))
-            self._n = len(snap["entries"])
-            if snap["entries"]:
-                last = snap["entries"][-1]
-                text = last.get("text") if last.get("streaming") else None
-                if isinstance(text, str) and text != self._stream_text:
-                    frames.append(format_sse("delta", last))
-                    self._stream_text = text
-            if snap["state"] != self._last_state:
-                frames.append(
-                    format_sse(
-                        "state",
-                        {"id": snap["id"], "state": snap["state"], "error": snap["error"]},
-                    )
+            # Resend any turn whose content changed, not just the latest one, so
+            # a late mutation to an earlier turn is never dropped.
+            for entry in entries:
+                turn_id = entry.get("id")
+                if not turn_id:
+                    continue
+                fingerprint = _turn_fingerprint(entry)
+                if self._fingerprints.get(turn_id) != fingerprint:
+                    self._fingerprints[turn_id] = fingerprint
+                    frames.append(format_sse("turn", entry))
+        if snap["state"] != self._last_state:
+            frames.append(
+                format_sse(
+                    "state",
+                    {"id": snap["id"], "state": snap["state"], "error": snap["error"]},
                 )
-                self._last_state = snap["state"]
+            )
+            self._last_state = snap["state"]
         done = snap["state"] == "idle" and self._sent
         if done:
             frames.append(format_sse("done", snap))
@@ -347,7 +380,9 @@ class AssistantHub:
                 session._gen += 1
                 gen = session._gen
                 session.state = "streaming"
-                session.entries.append({"role": "user", "text": body})
+                session.entries.append(
+                    {"id": session.turn_id(), "role": "user", "text": body}
+                )
                 session.bump()
             if self.sync:
                 self._run(session, body, gen)
@@ -421,9 +456,7 @@ class AssistantHub:
                 session._rpc = rpc
             if hasattr(rpc, "prompt"):
                 rpc.prompt(prompt)
-            assistant_text = ""
-            tools: list[dict[str, Any]] = []
-            thinking = ""
+            run = _RunState(started=time.monotonic())
             iterator = rpc.iter_until_settled() if hasattr(rpc, "iter_until_settled") else []
             for event in iterator:
                 if not self._current(session, gen):
@@ -434,66 +467,229 @@ class AssistantHub:
                 if kind == "message_end" and isinstance(event.get("message"), dict):
                     entry = _entry_from_rpc_message(event["message"])
                     if entry and entry.get("role") == "assistant":
-                        assistant_text = entry.get("text") or assistant_text
-                        thinking = entry.get("thinking") or thinking
-                        tools = entry.get("tools") or tools
+                        self._absorb_assistant(session, run, entry, gen)
                     elif entry and entry.get("role") == "toolResult":
-                        session.append_entry(entry)
+                        self._absorb_tool_result(session, run, entry, gen)
                 elif kind == "message_update":
                     delta = _delta_text(event)
                     if delta:
-                        assistant_text += delta
-                        with session._cv:
-                            if session._gen != gen:
-                                return
-                            if (
-                                session.entries
-                                and session.entries[-1].get("role") == "assistant"
-                                and session.entries[-1].get("streaming")
-                            ):
-                                session.entries[-1]["text"] = assistant_text
-                            else:
-                                session.entries.append(
-                                    {
-                                        "role": "assistant",
-                                        "text": assistant_text,
-                                        "streaming": True,
-                                    }
-                                )
-                            session.bump()
+                        self._stream_delta(session, run, delta, gen)
             if not self._current(session, gen):
                 return
-            display, actions = parse_suggested_actions(assistant_text)
-            final = {
-                "role": "assistant",
-                "text": display or assistant_text,
-            }
-            if thinking:
-                final["thinking"] = thinking
-            if tools:
-                final["tools"] = tools
-            if actions:
-                final["suggested_actions"] = actions
-            with session._cv:
-                if session._gen != gen:
-                    return
-                if (
-                    session.entries
-                    and session.entries[-1].get("role") == "assistant"
-                    and session.entries[-1].get("streaming")
-                ):
-                    session.entries[-1] = final
-                else:
-                    session.entries.append(final)
-                session.state = "idle"
-                session.bump()
+            self._finalize_turn(session, run, gen)
         except Exception as e:
             if not self._current(session, gen):
                 return
-            session.append_entry(
-                {"role": "assistant", "text": str(e), "is_error": True}
-            )
-            session.set_state("idle", error=str(e))
+            self._fail_turn(session, str(e), gen)
+
+    def _ensure_turn(
+        self, session: AssistantSession, run: _RunState, gen: int
+    ) -> dict[str, Any] | None:
+        if run.turn is not None:
+            return run.turn
+        with session._cv:
+            if session._gen != gen:
+                return None
+            turn: dict[str, Any] = {
+                "id": session.turn_id(),
+                "role": "assistant",
+                "text": "",
+                "streaming": True,
+            }
+            session.entries.append(turn)
+            run.turn = turn
+            session.bump()
+        return turn
+
+    def _mutate_turn(
+        self,
+        session: AssistantSession,
+        run: _RunState,
+        gen: int,
+        mutate: Callable[[dict[str, Any]], None],
+    ) -> None:
+        """Apply ``mutate`` to this run's turn, skipping stale generations."""
+        turn = self._ensure_turn(session, run, gen)
+        if turn is None:
+            return
+        with session._cv:
+            if session._gen != gen:
+                return
+            mutate(turn)
+            session.bump()
+
+    def _absorb_assistant(
+        self,
+        session: AssistantSession,
+        run: _RunState,
+        entry: dict[str, Any],
+        gen: int,
+    ) -> None:
+        text = entry.get("text") or ""
+        thinking = entry.get("thinking") or ""
+        tools = entry.get("tools") or []
+        if not (text or thinking or tools):
+            return
+
+        def apply(turn: dict[str, Any]) -> None:
+            if run.answered is None:
+                run.answered = time.monotonic()
+            if text:
+                run.text = text
+                turn["text"] = text
+            if thinking:
+                run.thinking = (
+                    f"{run.thinking}\n{thinking}" if run.thinking else thinking
+                )
+                turn["thinking"] = run.thinking
+            for tool in tools:
+                self._add_step(run, tool)
+            if run.steps:
+                turn["steps"] = run.steps
+
+        self._mutate_turn(session, run, gen, apply)
+
+    def _add_step(self, run: _RunState, tool: Any) -> None:
+        if not isinstance(tool, dict):
+            return
+        call_id = str(tool.get("id") or "")
+        if call_id and any(s["id"] == call_id for s in run.steps):
+            return
+        name = str(tool.get("name") or "tool")
+        args = str(tool.get("args") or "")
+        run.steps.append(
+            {
+                "id": call_id or f"call{len(run.steps) + 1}",
+                "name": name,
+                "args": args,
+                "summary": summarize_tool(name, args),
+                "status": "running",
+                "result": None,
+            }
+        )
+
+    def _absorb_tool_result(
+        self,
+        session: AssistantSession,
+        run: _RunState,
+        entry: dict[str, Any],
+        gen: int,
+    ) -> None:
+        call_id = str(entry.get("tool_call_id") or "")
+        name = str(entry.get("tool_name") or "tool")
+
+        def apply(turn: dict[str, Any]) -> None:
+            step = self._match_step(run, call_id, name)
+            if step is None:
+                step = {
+                    "id": call_id or f"call{len(run.steps) + 1}",
+                    "name": name,
+                    "args": "",
+                    "summary": "",
+                    "status": "running",
+                    "result": None,
+                }
+                run.steps.append(step)
+            step["result"] = entry.get("text") or ""
+            step["status"] = "error" if entry.get("is_error") else "ok"
+            turn["steps"] = run.steps
+
+        self._mutate_turn(session, run, gen, apply)
+
+    @staticmethod
+    def _match_step(run: _RunState, call_id: str, name: str) -> dict[str, Any] | None:
+        if call_id:
+            found = next((s for s in run.steps if s["id"] == call_id), None)
+            if found is not None:
+                return found
+        # No/unknown id: fall back to the oldest unfinished step of the same tool.
+        return next(
+            (
+                s
+                for s in run.steps
+                if s["status"] == "running"
+                and s["result"] is None
+                and (not name or s["name"] == name)
+            ),
+            None,
+        )
+
+    def _stream_delta(
+        self,
+        session: AssistantSession,
+        run: _RunState,
+        delta: str,
+        gen: int,
+    ) -> None:
+        def apply(turn: dict[str, Any]) -> None:
+            run.text += delta
+            if run.answered is None:
+                run.answered = time.monotonic()
+            turn["text"] = run.text
+            turn["streaming"] = True
+
+        self._mutate_turn(session, run, gen, apply)
+
+    def _finalize_turn(
+        self, session: AssistantSession, run: _RunState, gen: int
+    ) -> None:
+        display, actions = parse_suggested_actions(run.text)
+        if run.turn is None and not (run.text or run.thinking or run.steps):
+            with session._cv:
+                if session._gen != gen:
+                    return
+                session.state = "idle"
+                session.bump()
+            return
+        turn = self._ensure_turn(session, run, gen)
+        if turn is None:
+            return
+        end = time.monotonic()
+        with session._cv:
+            if session._gen != gen:
+                return
+            turn["text"] = display or run.text
+            turn["streaming"] = False
+            for step in run.steps:
+                if step["status"] == "running":
+                    step["status"] = "ok"
+            if run.thinking:
+                turn["thinking"] = run.thinking
+                answered = run.answered if run.answered is not None else end
+                turn["thinking_ms"] = max(0, int((answered - run.started) * 1000))
+            if run.steps:
+                turn["steps"] = run.steps
+            if actions:
+                turn["suggested_actions"] = actions
+            session.state = "idle"
+            session.bump()
+
+    def _fail_turn(self, session: AssistantSession, message: str, gen: int) -> None:
+        with session._cv:
+            if session._gen != gen:
+                return
+            last = session.entries[-1] if session.entries else None
+            if last is not None and last.get("role") == "assistant" and last.get("streaming"):
+                turn = last
+            else:
+                turn = {"id": session.turn_id(), "role": "assistant"}
+                session.entries.append(turn)
+            turn["text"] = message
+            turn["streaming"] = False
+            turn["is_error"] = True
+            session.state = "idle"
+            session.error = message
+            session.bump()
+
+
+@dataclass
+class _RunState:
+    text: str = ""
+    thinking: str = ""
+    steps: list[dict[str, Any]] = field(default_factory=list)
+    started: float = 0.0
+    answered: float | None = None
+    turn: dict[str, Any] | None = None
 
 
 def _public_entry(entry: dict[str, Any], jira: str) -> dict[str, Any]:

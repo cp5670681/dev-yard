@@ -412,11 +412,26 @@ export interface QaConfigState {
   catalog: PiCatalog;
 }
 
+export interface ToolStep {
+  id: string;
+  name: string;
+  args: string;
+  summary: string;
+  status: "running" | "ok" | "error" | string;
+  result: string | null;
+}
+
 export interface PiEntry {
+  /** Stable turn id assigned by the hub (assistant sessions). */
+  id?: string;
   role?: string;
   text?: string;
   html?: string;
   thinking?: string;
+  /** Milliseconds spent before the answer started (assistant turns). */
+  thinking_ms?: number;
+  /** Tool calls folded into this assistant turn, with their results. */
+  steps?: ToolStep[];
   tool_name?: string;
   is_error?: boolean;
   streaming?: boolean;

@@ -128,6 +128,186 @@ class FakeRpc:
         return None
 
 
+class ToolRpc:
+    """Assistant that thinks, calls `read`, then answers."""
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    def prompt(self, message: str) -> None:
+        self.prompts.append(message)
+
+    def iter_until_settled(self):
+        yield {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "need the context file"},
+                    {
+                        "type": "toolCall",
+                        "id": "c1",
+                        "name": "read",
+                        "arguments": {"path": "reqs/CONTEXT.md"},
+                    },
+                ],
+            },
+        }
+        yield {
+            "type": "message_end",
+            "message": {
+                "role": "toolResult",
+                "toolCallId": "c1",
+                "toolName": "read",
+                "isError": False,
+                "content": [{"type": "text", "text": "# context body"}],
+            },
+        }
+        yield {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "看完了，下一步写 SPEC。"}],
+            },
+        }
+        yield {"type": "agent_settled"}
+
+    def abort(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+def test_assistant_folds_tools_into_owner_turn(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    hub = AssistantHub(yard, rpc_factory=lambda root, session: ToolRpc(), sync=True)
+    session = hub.create(route="/", jira="")
+    hub.send(session.id, "看一下")
+    entries = session.snapshot()["entries"]
+    assert [e["role"] for e in entries] == ["user", "assistant"]
+    turn = entries[1]
+    assert turn["text"] == "看完了，下一步写 SPEC。"
+    assert turn["thinking"] == "need the context file"
+    assert turn["streaming"] is False
+    assert "thinking_ms" in turn
+    assert len(turn["steps"]) == 1
+    step = turn["steps"][0]
+    assert step["name"] == "read"
+    assert "CONTEXT.md" in step["summary"]
+    assert step["status"] == "ok"
+    assert step["result"] == "# context body"
+    assert not any(e["role"] == "toolResult" for e in entries)
+
+
+class ResultlessRpc:
+    """Calls a tool but the agent settles without a toolResult."""
+
+    def prompt(self, message: str) -> None:
+        return None
+
+    def iter_until_settled(self):
+        yield {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "toolCall",
+                        "id": "c9",
+                        "name": "grep",
+                        "arguments": {"pattern": "TODO"},
+                    }
+                ],
+            },
+        }
+        yield {"type": "agent_settled"}
+
+    def abort(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+class UnkeyedResultRpc:
+    """toolResult arrives without a toolCallId — must pair by tool name."""
+
+    def prompt(self, message: str) -> None:
+        return None
+
+    def iter_until_settled(self):
+        yield {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "toolCall",
+                        "id": "c1",
+                        "name": "read",
+                        "arguments": {"path": "a.md"},
+                    }
+                ],
+            },
+        }
+        yield {
+            "type": "message_end",
+            "message": {
+                "role": "toolResult",
+                "toolName": "read",
+                "isError": False,
+                "content": [{"type": "text", "text": "body"}],
+            },
+        }
+        yield {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "done"}],
+            },
+        }
+        yield {"type": "agent_settled"}
+
+    def abort(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+def test_assistant_settles_unfinished_step(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    hub = AssistantHub(yard, rpc_factory=lambda root, session: ResultlessRpc(), sync=True)
+    session = hub.create(route="/", jira="")
+    hub.send(session.id, "查一下")
+    turn = session.snapshot()["entries"][-1]
+    assert turn["streaming"] is False
+    assert turn["steps"][0]["status"] == "ok"
+    assert turn["steps"][0]["result"] is None
+
+
+def test_assistant_pairs_unkeyed_result_by_name(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    hub = AssistantHub(yard, rpc_factory=lambda root, session: UnkeyedResultRpc(), sync=True)
+    session = hub.create(route="/", jira="")
+    hub.send(session.id, "读一下")
+    turn = session.snapshot()["entries"][-1]
+    assert len(turn["steps"]) == 1
+    assert turn["steps"][0]["result"] == "body"
+    assert turn["steps"][0]["status"] == "ok"
+    assert turn["text"] == "done"
+
+
 class BlockingRpc:
     def __init__(self) -> None:
         self.gate = threading.Event()

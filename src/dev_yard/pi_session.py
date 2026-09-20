@@ -132,6 +132,12 @@ def _thinking(content: Any) -> str:
 def _clip(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
+    return text[:limit] + "\n…(truncated)"
+
+
+def _clip_inline(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
     return text[:limit] + "…"
 
 
@@ -142,7 +148,7 @@ def _args_preview(value: Any) -> str:
         raw = json.dumps(value, ensure_ascii=False)
     except TypeError:
         raw = str(value)
-    return _clip(raw, _ARGS_LIMIT)
+    return _clip_inline(raw, _ARGS_LIMIT)
 
 
 def _tools(content: Any) -> list[dict[str, Any]]:

@@ -36,65 +36,137 @@
     <v-divider />
     <div ref="chatEl" class="asst-chat pa-4" @scroll="onScroll">
       <v-empty-state
-        v-if="!entries.length"
+        v-if="!messages.length"
         title="问问平台或当前需求"
         text="例如：下一步做什么、为什么不能实现、把前后端从远端拉最新。"
       />
+      <div v-if="hiddenCount" class="d-flex justify-center mb-2">
+        <v-btn size="small" variant="text" @click="loadOlder">
+          载入更早的 {{ Math.min(WINDOW, hiddenCount) }} 条
+        </v-btn>
+      </div>
       <v-card
-        v-for="(entry, i) in entries"
-        :key="i"
+        v-for="(entry, i) in visible"
+        :key="entry.id || i"
         class="mb-3"
         :variant="entry.role === 'user' ? 'tonal' : 'outlined'"
       >
         <v-card-text>
-          <div class="text-caption text-medium-emphasis mb-2">{{ roleLabel(entry.role) }}</div>
-          <div
-            v-if="entry.html"
-            class="markdown asst-md"
-            v-html="entry.html"
-          />
-          <div v-else-if="entry.text" class="asst-text">{{ entry.text }}</div>
-          <v-expansion-panels
-            v-if="entry.thinking"
-            variant="accordion"
-            class="mt-2"
-          >
-            <v-expansion-panel title="思考">
-              <v-expansion-panel-text>
-                <pre class="asst-pre">{{ entry.thinking }}</pre>
-              </v-expansion-panel-text>
-            </v-expansion-panel>
-          </v-expansion-panels>
-          <div
-            v-if="entry.suggested_actions?.length"
-            class="mt-3 d-flex flex-column ga-2"
-          >
-            <v-card
-              v-for="(act, ai) in entry.suggested_actions"
-              :key="ai"
-              variant="tonal"
-              color="primary"
-            >
-              <v-card-text class="pb-0">
-                <div class="font-weight-medium">
-                  {{ ACTION_LABELS[act.action] || act.action }}
-                  <span v-if="act.jira" class="text-caption"> · {{ act.jira }}</span>
-                </div>
-                <div v-if="act.reason" class="text-caption mt-1">{{ act.reason }}</div>
-              </v-card-text>
-              <v-card-actions>
-                <v-spacer />
-                <v-btn
-                  size="small"
-                  color="primary"
-                  :loading="running === keyOf(act)"
-                  @click="runSuggested(act)"
-                >
-                  确认执行
-                </v-btn>
-              </v-card-actions>
-            </v-card>
+          <div class="d-flex align-center ga-2 mb-2">
+            <span class="text-caption text-medium-emphasis">{{
+              roleLabel(entry.role)
+            }}</span>
+            <v-progress-circular
+              v-if="entry.streaming"
+              indeterminate
+              size="11"
+              width="2"
+            />
           </div>
+
+          <template v-if="entry.role === 'user'">
+            <div v-if="entry.text" class="asst-text">{{ entry.text }}</div>
+          </template>
+
+          <template v-else>
+            <div v-if="entry.thinking" class="asst-section">
+              <button
+                class="asst-toggle"
+                type="button"
+                @click="togglePanel('think', entry, i)"
+              >
+                <v-icon :icon="mdiLightbulbOnOutline" size="15" />
+                <span>思考</span>
+                <span v-if="entry.thinking_ms" class="text-medium-emphasis">
+                  · {{ formatMs(entry.thinking_ms) }} 秒
+                </span>
+                <span class="flex-grow-1" />
+                <v-icon
+                  :icon="
+                    isPanelOpen('think', entry, i) ? mdiChevronUp : mdiChevronDown
+                  "
+                  size="16"
+                />
+              </button>
+              <v-expand-transition>
+                <pre
+                  v-if="isPanelOpen('think', entry, i)"
+                  class="asst-pre asst-pre-clamp"
+                >{{ entry.thinking }}</pre>
+              </v-expand-transition>
+            </div>
+
+            <div v-if="entry.steps?.length" class="asst-section">
+              <button
+                class="asst-toggle"
+                type="button"
+                @click="togglePanel('proc', entry, i)"
+              >
+                <v-icon
+                  :icon="stepsRunning(entry) ? mdiProgressClock : mdiCheckAll"
+                  size="15"
+                  :color="stepsRunning(entry) ? undefined : 'success'"
+                />
+                <span>{{ stepsTitle(entry) }}</span>
+                <span class="flex-grow-1" />
+                <v-icon
+                  :icon="
+                    isPanelOpen('proc', entry, i) ? mdiChevronUp : mdiChevronDown
+                  "
+                  size="16"
+                />
+              </button>
+              <v-expand-transition>
+                <div v-if="isPanelOpen('proc', entry, i)" class="asst-process">
+                  <ToolStep
+                    v-for="step in entry.steps"
+                    :key="step.id"
+                    :step="step"
+                  />
+                </div>
+              </v-expand-transition>
+            </div>
+
+            <div v-if="entry.html" class="markdown asst-md" v-html="entry.html" />
+            <div v-else-if="entry.text" class="asst-text">{{ entry.text }}</div>
+            <div
+              v-else-if="entry.streaming && !entry.steps?.length"
+              class="asst-typing"
+            >
+              正在思考…
+            </div>
+
+            <div
+              v-if="entry.suggested_actions?.length"
+              class="mt-3 d-flex flex-column ga-2"
+            >
+              <v-card
+                v-for="(act, ai) in entry.suggested_actions"
+                :key="ai"
+                variant="tonal"
+                color="primary"
+              >
+                <v-card-text class="pb-0">
+                  <div class="font-weight-medium">
+                    {{ ACTION_LABELS[act.action] || act.action }}
+                    <span v-if="act.jira" class="text-caption"> · {{ act.jira }}</span>
+                  </div>
+                  <div v-if="act.reason" class="text-caption mt-1">{{ act.reason }}</div>
+                </v-card-text>
+                <v-card-actions>
+                  <v-spacer />
+                  <v-btn
+                    size="small"
+                    color="primary"
+                    :loading="running === keyOf(act)"
+                    @click="runSuggested(act)"
+                  >
+                    确认执行
+                  </v-btn>
+                </v-card-actions>
+              </v-card>
+            </div>
+          </template>
         </v-card-text>
       </v-card>
     </div>
@@ -132,6 +204,13 @@ import { computed, nextTick, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useDisplay } from "vuetify";
 import {
+  mdiCheckAll,
+  mdiChevronDown,
+  mdiChevronUp,
+  mdiLightbulbOnOutline,
+  mdiProgressClock,
+} from "@mdi/js";
+import {
   ApiError,
   createAssistantSession,
   dropAssistant,
@@ -141,9 +220,13 @@ import {
 } from "@/api/client";
 import type { AssistantSession, PiEntry, SuggestedAction } from "@/api/types";
 import { ACTION_LABELS } from "@/composables/labels";
+import { formatMs, stepsRunning, stepsTitle } from "@/composables/tools";
 import { useSnack } from "@/composables/snack";
 import { assistantOpen, closeAssistant } from "@/state/assistant";
 import { closePi } from "@/state/pi";
+import ToolStep from "@/components/ToolStep.vue";
+
+const WINDOW = 40;
 
 const { smAndDown } = useDisplay();
 const route = useRoute();
@@ -155,10 +238,25 @@ const draft = ref("");
 const running = ref("");
 const resetting = ref(false);
 const chatEl = ref<HTMLElement | null>(null);
+const windowSize = ref(WINDOW);
+const openPanels = ref<Record<string, boolean>>({});
+const prevStreaming = new Map<string, boolean>();
 let follow = true;
 let es: EventSource | null = null;
 let epoch = 0;
+
 const entries = computed(() => session.value?.entries || []);
+// Tool results are folded into their owning turn by the hub; drop any stray
+// `toolResult` rows so they can never render as standalone cards.
+const messages = computed(() =>
+  entries.value.filter((entry) => entry.role !== "toolResult"),
+);
+const hiddenCount = computed(() =>
+  Math.max(0, messages.value.length - windowSize.value),
+);
+const visible = computed(() =>
+  hiddenCount.value ? messages.value.slice(hiddenCount.value) : messages.value,
+);
 const composeLocked = computed(
   () => resetting.value || session.value?.state === "streaming",
 );
@@ -185,6 +283,23 @@ function roleLabel(role?: string) {
   if (role === "assistant") return "助手";
   if (role === "toolResult") return "工具";
   return role || "";
+}
+
+function panelKey(kind: string, entry: PiEntry, i: number) {
+  return `${kind}:${entry.id || `idx-${i}`}`;
+}
+
+function isPanelOpen(kind: string, entry: PiEntry, i: number) {
+  return Boolean(openPanels.value[panelKey(kind, entry, i)]);
+}
+
+function togglePanel(kind: string, entry: PiEntry, i: number) {
+  const key = panelKey(kind, entry, i);
+  openPanels.value = { ...openPanels.value, [key]: !openPanels.value[key] };
+}
+
+function loadOlder() {
+  windowSize.value += WINDOW;
 }
 
 function onToggle(open: boolean) {
@@ -223,6 +338,47 @@ function still(id: string, mine: number) {
   return mine === epoch && session.value?.id === id;
 }
 
+function upsertTurn(entry: PiEntry) {
+  if (!session.value) return;
+  const cur = session.value.entries;
+  if (entry.id) {
+    const idx = cur.findIndex((e) => e.id === entry.id);
+    if (idx >= 0) {
+      const next = cur.slice();
+      next[idx] = { ...next[idx], ...entry };
+      session.value = { ...session.value, entries: next };
+      scrollFollow();
+      return;
+    }
+  }
+  session.value = { ...session.value, entries: [...cur, entry] };
+  scrollFollow();
+}
+
+// Open the process/thinking panels while a turn is streaming, then collapse
+// them when it settles — only the final answer stays in view.
+watch(messages, (list) => {
+  for (const entry of list) {
+    if (entry.role !== "assistant" || !entry.id) continue;
+    const now = Boolean(entry.streaming);
+    if (prevStreaming.get(entry.id) === now) continue;
+    prevStreaming.set(entry.id, now);
+    const next = { ...openPanels.value };
+    next[`think:${entry.id}`] = now;
+    next[`proc:${entry.id}`] = now;
+    openPanels.value = next;
+  }
+});
+
+watch(
+  () => session.value?.id,
+  () => {
+    windowSize.value = WINDOW;
+    openPanels.value = {};
+    prevStreaming.clear();
+  },
+);
+
 function listen(id: string, mine: number) {
   stopEs();
   es = new EventSource(`/api/assistant/sessions/${encodeURIComponent(id)}/events`);
@@ -231,26 +387,9 @@ function listen(id: string, mine: number) {
     session.value = JSON.parse((e as MessageEvent).data) as AssistantSession;
     scrollFollow();
   });
-  es.addEventListener("entry", (e) => {
-    const entry = JSON.parse((e as MessageEvent).data) as PiEntry;
-    if (!still(id, mine) || !session.value) return;
-    session.value = {
-      ...session.value,
-      entries: [...session.value.entries, entry],
-    };
-    scrollFollow();
-  });
-  es.addEventListener("delta", (e) => {
-    const entry = JSON.parse((e as MessageEvent).data) as PiEntry;
-    if (!still(id, mine) || !session.value) return;
-    const cur = session.value.entries;
-    const last = cur[cur.length - 1];
-    const next =
-      last && last.role === "assistant" && last.streaming
-        ? [...cur.slice(0, -1), entry]
-        : [...cur, entry];
-    session.value = { ...session.value, entries: next };
-    scrollFollow();
+  es.addEventListener("turn", (e) => {
+    if (!still(id, mine)) return;
+    upsertTurn(JSON.parse((e as MessageEvent).data) as PiEntry);
   });
   es.addEventListener("state", (e) => {
     const data = JSON.parse((e as MessageEvent).data) as {
@@ -396,6 +535,38 @@ watch(assistantOpen, async (open) => {
   margin: 0;
   white-space: pre-wrap;
   font-size: 0.75rem;
+}
+.asst-pre-clamp {
+  max-height: 16rem;
+  overflow: auto;
+}
+.asst-typing {
+  font-size: 0.82rem;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.asst-section {
+  margin-bottom: 0.4rem;
+}
+.asst-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  font-size: 0.78rem;
+  color: rgba(var(--v-theme-on-surface), 0.68);
+}
+.asst-toggle:hover {
+  color: rgb(var(--v-theme-on-surface));
+}
+.asst-process {
+  margin-top: 0.2rem;
+  padding: 0.1rem 0.6rem 0.3rem;
+  border-left: 2px solid rgba(var(--v-border-color), var(--v-border-opacity));
 }
 .asst-md {
   line-height: 1.55;
