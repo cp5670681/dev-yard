@@ -147,14 +147,6 @@
             </v-list-item>
           </v-list>
         </v-menu>
-        <v-switch
-          v-if="detail.phase !== 'open'"
-          v-model="forceOpen"
-          hide-details
-          density="compact"
-          color="warning"
-          label="重置阶段（会删截图）"
-        />
       </div>
 
       <!-- 契约审查状态显式横幅 -->
@@ -574,7 +566,6 @@ const router = useRouter();
 const jira = computed(() => String(route.params.jira || ""));
 const detail = ref<ReqDetail | null>(null);
 const error = ref("");
-const forceOpen = ref(false);
 const acting = ref("");
 const viewer = reactive({ open: false, index: 0, images: [] as ShotItem[] });
 const runEndBanner = reactive({
@@ -825,12 +816,12 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
     reportForm.open = true;
     return;
   }
-  const risky = action === "open" && forceOpen.value;
+  const resetPhase = action === "reset-phase";
   const freeze = action === "freeze";
   const push = action === "push";
   const sync = action === "sync";
   const runTest = action === "run-test";
-  if (risky || freeze || push || sync || runTest) {
+  if (resetPhase || freeze || push || sync || runTest) {
     confirm.action = action;
     confirm.ticketId = ticketId || "";
     const branch = detail.value?.branch || `req/${jira.value}`;
@@ -842,7 +833,7 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
       ? `冻结后会创建分支 ${branch} 并切 worktree。确认继续？`
       : runTest
       ? "将按 qa.yaml 设计并执行 UI 用例；失败会拆 B 票。确认继续？"
-      : "强制重抽会重置阶段并删除截图。确认继续？";
+      : "将把需求重置回 open 阶段：拆掉 worktree 和本地分支，清空票/契约/测试状态。文档与截图保留。确认继续？";
     if (runTest) {
       const envs = qaEnvs.value;
       const preferred = detail.value?.qa?.active_env || "";
@@ -953,7 +944,6 @@ async function onAction(action: string, ticketId?: string, env?: string, resume?
   try {
     const out = await runAction(jira.value, action, {
       ticket_id: ticketId,
-      force: action === "open" ? forceOpen.value : false,
       env: env || undefined,
       resume: action === "run-test" ? Boolean(resume) : undefined,
     });

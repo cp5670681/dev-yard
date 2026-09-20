@@ -951,3 +951,25 @@ def test_overridden_grill_still_uses_web_grill_job(tmp_path: Path, monkeypatch):
     assert job.state == "ok"
     assert called == ["grill"]
     assert "web-grill" in job.log
+
+
+def test_default_execute_reset_phase(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    d, _ = req_open(yard, "AB-32", source="none")
+    import yaml
+
+    status_file = d / "STATUS.yaml"
+    data = yaml.safe_load(status_file.read_text(encoding="utf-8"))
+    data["phase"] = "testing"
+    status_file.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    job = JobRunner(yard, execute=default_execute, sync=True).submit(
+        "reset-phase", "AB-32"
+    )
+    assert job.state == "ok"
+    assert "AB-32 phase=open" in job.log
+    reloaded = yaml.safe_load(status_file.read_text(encoding="utf-8"))
+    assert reloaded["phase"] == "open"

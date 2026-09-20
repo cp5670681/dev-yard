@@ -258,7 +258,9 @@ def req_open(
     if d.exists() and (d / "STATUS.yaml").exists() and not force:
         phase = st.load(root, req_key).get("phase") or "open"
         if phase != "open":
-            raise ValueError(f"{req_key} is already phase={phase}; pass --force to re-open")
+            raise ValueError(
+                f"{req_key} is already phase={phase}; run 'dev-yard req reset-phase {req_key}' or pass --force to re-open"
+            )
     d.mkdir(parents=True, exist_ok=True)
     warning = ""
     if source == "pi":
@@ -399,9 +401,9 @@ def req_delete(root: Path, jira: str) -> None:
         _req_delete_locked(root, jira, d)
 
 
-def _req_delete_locked(root: Path, jira: str, d: Path) -> None:
+def _teardown_worktrees(root: Path, jira: str, d: Path, data: dict[str, Any]) -> None:
+    """Remove a requirement's ticket/freeze worktrees and their local branches."""
     repos = load_repos(root)
-    data = st.load(root, jira) if (d / "STATUS.yaml").is_file() else {"tickets": {}}
     tickets = st.tickets_map(data.get("tickets"))
 
     aliases: set[str] = set()
@@ -453,7 +455,51 @@ def _req_delete_locked(root: Path, jira: str, d: Path) -> None:
         gitops.worktree_remove(source, wt)
         gitops.branch_delete(source, name)
 
+
+def _req_delete_locked(root: Path, jira: str, d: Path) -> None:
+    data = st.load(root, jira) if (d / "STATUS.yaml").is_file() else {"tickets": {}}
+    _teardown_worktrees(root, jira, d, data)
     shutil.rmtree(d)
+
+
+def req_reset_phase(root: Path, jira: str) -> dict[str, Any]:
+    """Rewind a requirement to phase=open and drop what the pipeline built.
+
+    Tears down freeze/ticket worktrees and their local branches, resets ticket
+    states, and clears contract/test/stage bookkeeping so the requirement can
+    walk the pipeline again. Docs and assets under `reqs/<jira>/` are kept.
+    """
+    d = paths.req_dir(root, jira)
+    if not d.exists() or not paths.is_req_dir(d):
+        raise FileNotFoundError(f"no requirement {jira}")
+    with st.jira_lock(jira):
+        data = st.load(root, jira)
+        phase = data.get("phase") or "open"
+        if phase == "open":
+            raise ValueError(f"{jira} is already phase=open; nothing to reset")
+        _teardown_worktrees(root, jira, d, data)
+        tickets = st.tickets_map(data.get("tickets"))
+        for slot in tickets.values():
+            slot.pop("worktree", None)
+            slot.pop("child_worktree", None)
+            slot.pop("head_sha", None)
+            slot.pop("last_summary", None)
+            slot["state"] = "pending"
+        data["tickets"] = tickets
+        for key in (
+            "branch",
+            "base_shas",
+            "contract_review",
+            "contract_summary",
+            "contract_findings",
+            "test",
+            "stage_runs",
+        ):
+            data.pop(key, None)
+        data["phase"] = "open"
+        st.refresh_ready(data)
+        st.save(root, jira, data)
+    return data
 
 
 def ticket_start(root: Path, jira: str, ticket_id: str) -> Path:

@@ -46,6 +46,7 @@ export const STEP_LABELS: Record<string, string> = {
 
 export const ACTION_LABELS: Record<string, string> = {
   ...STEP_LABELS,
+  open: "重新抽取",
   spec: "写规约",
   freeze: "冻结 worktree",
   contract: "契约审查",
@@ -56,6 +57,7 @@ export const ACTION_LABELS: Record<string, string> = {
   "fix-test": "修 bug",
   push: "推送到远端",
   sync: "同步远端",
+  "reset-phase": "重置阶段",
   repo_add: "仓库 · clone",
 };
 

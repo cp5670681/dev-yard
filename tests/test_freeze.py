@@ -1,9 +1,20 @@
 from pathlib import Path
 
+import pytest
+from typer.testing import CliRunner
+
 from dev_yard import gitops
 from dev_yard import status as st
+from dev_yard.cli import app
 from dev_yard.config import GitSettings, save_git_settings
-from dev_yard.service import init_yard, repo_add, req_freeze, req_open, ticket_start
+from dev_yard.service import (
+    init_yard,
+    repo_add,
+    req_freeze,
+    req_open,
+    req_reset_phase,
+    ticket_start,
+)
 
 
 def test_freeze_creates_worktree(tmp_path: Path, git_src: Path, monkeypatch):
@@ -149,6 +160,64 @@ def test_force_freeze_resets_existing_worktree(tmp_path: Path, git_src: Path, mo
     assert not (wt / "OLD").exists()
 
 
+def test_reset_phase_tears_down_worktrees_and_state(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-62", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    (d / "REQUIREMENT.md").write_text("# keep me\n")
+    wts = req_freeze(yard, "AB-62")
+    child = ticket_start(yard, "AB-62", "T1")
+    data = st.load(yard, "AB-62")
+    data["tickets"]["T1"]["state"] = "done"
+    data["tickets"]["T1"]["head_sha"] = "abcdef123456"
+    data["tickets"]["T1"]["last_summary"] = "implemented feature"
+    data["contract_review"] = "passed"
+    data["contract_summary"] = "all contracts aligned"
+    data["contract_findings"] = [{"id": "F1", "title": "test"}]
+    data["test"] = {"status": "awaiting", "latest_verdict": None}
+    data["phase"] = "testing"
+    st.save(yard, "AB-62", data)
+
+    out = req_reset_phase(yard, "AB-62")
+
+    assert out["phase"] == "open"
+    assert out["tickets"]["T1"]["state"] == "ready"
+    assert "worktree" not in out["tickets"]["T1"]
+    assert "child_worktree" not in out["tickets"]["T1"]
+    assert "head_sha" not in out["tickets"]["T1"]
+    assert "last_summary" not in out["tickets"]["T1"]
+    assert "branch" not in out
+    assert "base_shas" not in out
+    assert "contract_review" not in out
+    assert "contract_summary" not in out
+    assert "contract_findings" not in out
+    assert "test" not in out
+    assert not wts[0].exists()
+    assert not child.exists()
+    assert not (yard / ".yard-worktrees" / "AB-62").exists()
+    assert (d / "REQUIREMENT.md").read_text() == "# keep me\n"
+    listed = gitops.run(["git", "branch", "--list", "req/AB-62"], cwd=git_src)
+    assert "req/AB-62" not in listed
+
+
+def test_reset_phase_rejects_already_open(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    req_open(yard, "AB-63", source="none")
+    with pytest.raises(ValueError, match="already phase=open"):
+        req_reset_phase(yard, "AB-63")
+
+
 def test_status_save_preserves_unicode(tmp_path: Path):
     yard = tmp_path / "yard"
     init_yard(yard)
@@ -166,4 +235,23 @@ def test_status_save_preserves_unicode(tmp_path: Path):
     content = (yard / "reqs" / "AB-11" / "STATUS.yaml").read_text(encoding="utf-8")
     assert "代码评审完成，测试通过" in content
     assert "\\u" not in content
+
+
+def test_cli_reset_phase(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-64", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    req_freeze(yard, "AB-64")
+    monkeypatch.chdir(yard)
+    runner = CliRunner()
+    res = runner.invoke(app, ["req", "reset-phase", "AB-64", "-y"])
+    assert res.exit_code == 0
+    assert "AB-64 phase=open" in res.stdout
+    assert st.load(yard, "AB-64")["phase"] == "open"
 

@@ -419,6 +419,10 @@ def default_execute(root: Path, job: Job) -> None:
         if warning:
             job.append(warning)
         return
+    if job.action == "reset-phase":
+        data = service.req_reset_phase(root, job.jira)
+        job.append(f"{job.jira} phase={data.get('phase')}")
+        return
     if job.action == "freeze":
         created = service.req_freeze(
             root, job.jira, force=bool((job.extra or {}).get("force"))

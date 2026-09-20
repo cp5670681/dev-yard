@@ -68,6 +68,8 @@ def test_list_and_detail_after_open(tmp_path: Path, monkeypatch):
     assert not ids["review"].enabled
     assert not ids["contract"].enabled
     assert not ids["fix-contract"].enabled
+    assert ids["open"].enabled
+    assert not ids["reset-phase"].enabled
 
 
 def test_tickets_enable_freeze(tmp_path: Path, monkeypatch):
@@ -112,6 +114,9 @@ def test_frozen_ready_implement(tmp_path: Path, git_src: Path, monkeypatch):
     assert ids["contract"].enabled
     assert not ids["fix-contract"].enabled
     assert detail.worktrees
+    assert not ids["open"].enabled
+    assert "重置阶段" in ids["open"].reason
+    assert ids["reset-phase"].enabled
 
 
 def test_ready_for_submit_test_marks_testing_current(tmp_path: Path, git_src: Path, monkeypatch):

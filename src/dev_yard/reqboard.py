@@ -319,8 +319,18 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
         Action(
             "open",
             ACTION_LABELS["open"],
-            True,
-            "phase 已过 open 时需勾选重置，否则拒绝；重置会删 assets/",
+            detail.phase == "open",
+            ""
+            if detail.phase == "open"
+            else f"当前 phase={detail.phase}，请先「重置阶段」",
+        ),
+        Action(
+            "reset-phase",
+            ACTION_LABELS["reset-phase"],
+            detail.phase != "open",
+            ""
+            if detail.phase != "open"
+            else "已在 open 阶段，无需重置",
         ),
         Action("grill", ACTION_LABELS["grill"], True),
         Action("spec", ACTION_LABELS["spec"], True),

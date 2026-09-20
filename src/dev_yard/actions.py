@@ -35,6 +35,7 @@ BOARD_ACTIONS: tuple[ActionSpec, ...] = (
     ActionSpec("fix-test", "修 bug"),
     ActionSpec("push", "推送到远端"),
     ActionSpec("sync", "同步远端"),
+    ActionSpec("reset-phase", "重置阶段"),
 )
 
 BOARD_ACTION_IDS: frozenset[str] = frozenset(a.id for a in BOARD_ACTIONS)

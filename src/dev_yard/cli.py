@@ -220,6 +220,28 @@ def req_open(
         typer.echo(warning, err=True)
 
 
+@req_app.command("reset-phase")
+def req_reset_phase(
+    jira: str = typer.Argument(..., help="Requirement key (e.g. PROJ-101)"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt"),
+) -> None:
+    """Rewind a requirement to phase=open and tear down its worktrees/branches.
+
+    Docs and assets under reqs/<jira>/ are kept.
+    """
+    root = root_opt()
+    if not yes:
+        typer.confirm(
+            f"Reset {jira} to phase=open and remove its worktrees/branches?",
+            abort=True,
+        )
+    try:
+        data = service.req_reset_phase(root, jira)
+    except (ValueError, FileNotFoundError, GitError) as e:
+        _die(e)
+    typer.echo(f"{jira} phase={data.get('phase')}")
+
+
 @req_app.command("delete")
 def req_delete(jira: str) -> None:
     """Remove this requirement's docs and worktrees. Does not touch Jira or shared glossary/ADR."""
