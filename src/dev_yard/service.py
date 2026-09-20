@@ -575,20 +575,52 @@ def _cwd_for_ticket(root: Path, jira: str, ticket: Ticket, slot: dict) -> Path:
     return Path(parent)
 
 
-_IDLE_SIBLING = frozenset({"pending", "ready", "done"})
+def _sync_child_with_parent(
+    root: Path, jira: str, slot: dict, *, leave_conflict: bool
+) -> str | None:
+    """Bring a ticket's child worktree up to date with the parent branch.
 
+    The parent branch advances whenever a sibling ticket is merged, so a child
+    forked earlier must merge it back in before it is reviewed/merged again.
+    Returns None when already up to date or merged cleanly, else a conflict
+    report. With `leave_conflict=False` the conflicted merge is aborted so the
+    child is left untouched and the caller can route the ticket to implement/fix;
+    with `leave_conflict=True` the conflict stays in the worktree for the agent.
+    """
+    child = slot.get("child_worktree")
+    parent = slot.get("worktree")
+    if not child or not parent:
+        return None
+    child_path, parent_path = Path(child), Path(parent)
+    if not ((child_path / ".git").exists() and (parent_path / ".git").exists()):
+        return None
+    data = st.load(root, jira)
+    freeze = resolve_freeze_branch(root, jira, data, parent_path)
 
-def _needs_child(data: dict, ticket: Ticket) -> bool:
-    for tid, slot in (data.get("tickets") or {}).items():
-        if tid == ticket.id:
-            continue
-        if slot.get("repo") != ticket.repo:
-            continue
-        if slot.get("child_worktree"):
-            return True
-        if slot.get("state") not in _IDLE_SIBLING:
-            return True
-    return False
+    def report(files: list[str], detail: str) -> str:
+        listed = "\n".join(f"- {f}" for f in files) or "(git 未报告冲突文件)"
+        return (
+            f"SYNC_CONFLICT: 与父分支 `{freeze}` 合并存在冲突，需先解决再审查。\n"
+            f"冲突文件：\n{listed}\n{detail}\n"
+            "在子 worktree 内解决冲突（保留兄弟票已合并的改动），`git add` 提交后再走实现/审查。"
+        )
+
+    # A prior run may have died mid-merge; never commit those markers blindly.
+    pending = gitops.unmerged_files(child_path)
+    if pending:
+        if not leave_conflict:
+            gitops.merge_abort(child_path)
+        return report(pending, "(上一次合并冲突未解决)")
+    if gitops.has_changes(child_path):
+        gitops.commit_all(child_path, "chore: wip before syncing parent")
+    try:
+        gitops.merge_into(child_path, freeze)
+    except gitops.GitError as e:
+        msg = report(gitops.unmerged_files(child_path), str(e))
+        if not leave_conflict:
+            gitops.merge_abort(child_path)
+        return msg
+    return None
 
 
 def ensure_on_default_base(root: Path) -> dict[str, Path]:
@@ -771,14 +803,18 @@ def _previous_head_sha(data: dict, parsed: list, tid: str, repo: str) -> str | N
     return prev
 
 
-def _ticket_base_sha(data: dict, parsed: list, tid: str, repo: str, slot: dict) -> str | None:
+def _ticket_base_sha(
+    data: dict, parsed: list, tid: str, repo: str, slot: dict, cwd: Path
+) -> str | None:
     """Diff base for a ticket's own work.
 
     A ticket that ran in an isolated child worktree branched from the freeze
     point, not from a sibling's head. Diffing it against the sibling head (the
     sequential shortcut in `_previous_head_sha`) makes the sibling's already
     merged work look deleted by this ticket. Use the child/parent merge-base
-    instead, which is exactly where the child branched off.
+    instead, which is exactly where the child branched off. A finished ticket's
+    branch is gone; its merge landed on top of the then-current parent, i.e. the
+    first parent of `head_sha`.
     """
     child = slot.get("child_worktree")
     parent = slot.get("worktree")
@@ -791,6 +827,11 @@ def _ticket_base_sha(data: dict, parsed: list, tid: str, repo: str, slot: dict) 
                 base = None
             if base:
                 return base
+    head = slot.get("head_sha")
+    if slot.get("state") == "done" and isinstance(head, str) and head:
+        base = gitops.first_parent(cwd, head)
+        if base:
+            return base
     return _previous_head_sha(data, parsed, tid, repo)
 
 
@@ -831,8 +872,15 @@ def _implement_prompt_extra(
     contract_summary: str | None = None,
     test_report: str | None = None,
     finding: str = "",
+    sync_conflict: str | None = None,
 ) -> str:
     extra = f"Ticket: {tid} — {title}\nRepo alias: {repo}\nStay in this worktree."
+    if sync_conflict:
+        extra += (
+            "\n\n与父分支同步时发生合并冲突，当前 worktree 处于冲突状态。"
+            "先解决所有冲突并保留兄弟票已合并的改动，再完成本票改动；"
+            f"完成后一并提交。\n{sync_conflict}"
+        )
     if contract_summary or test_report:
         scope = f"finding {finding}" if finding else f"ticket {tid}"
         extra += (
@@ -1031,13 +1079,18 @@ def implement(
                 ts["status"] = "fixing"
                 data["test"] = ts
             st.save(root, jira, data)
-            if _needs_child(data, t) and not slot.get("child_worktree"):
+            # Every ticket works in its own child worktree; the parent branch is
+            # integration-only, so sibling tickets never share a checkout.
+            if not slot.get("child_worktree"):
                 ticket_start(root, jira, tid)
                 data = st.load(root, jira)
                 slot = data["tickets"][tid]
             cwd = _cwd_for_ticket(root, jira, t, slot)
             if not (cwd / ".git").exists():
                 raise ValueError(f"missing worktree {cwd}; freeze first")
+        # Pick up siblings merged into the parent since this child forked. Leave
+        # any conflict in the worktree so the agent resolves it in context.
+        sync_conflict = _sync_child_with_parent(root, jira, slot, leave_conflict=True)
         prompt = session_prompt(
             root,
             "implement",
@@ -1048,8 +1101,9 @@ def implement(
                 t.repo,
                 last_summary,
                 contract_summary if from_contract else None,
-                test_body if from_test else None,
+                test_report=test_body if from_test else None,
                 finding=t.finding,
+                sync_conflict=sync_conflict,
             ),
         )
         try:
@@ -1060,9 +1114,20 @@ def implement(
             # "implementing". (A hard process kill is recovered at web startup.)
             _reset_stuck_slot(root, jira, tid, "implementing", "ready")
             raise
+        pending_merge = gitops.unmerged_files(cwd)
         with st.jira_lock(jira):
             data = st.load(root, jira)
             slot = data["tickets"][tid]
+            if result.ok and pending_merge:
+                slot["state"] = "blocked"
+                slot["last_summary"] = (
+                    (result.summary or "").rstrip()
+                    + "\n\nSYNC_CONFLICT: 合并父分支的冲突尚未解决：\n"
+                    + "\n".join(f"- {f}" for f in pending_merge)
+                ).strip()
+                st.save(root, jira, data)
+                ran.append(tid)
+                continue
             if result.ok:
                 slot["last_summary"] = result.summary
                 is_fix = (
@@ -1259,8 +1324,26 @@ def review(
             cwd = _cwd_for_ticket(root, jira, t, slot)
             if not (cwd / ".git").exists():
                 raise ValueError(f"missing worktree {cwd}; freeze first")
-            since = _ticket_base_sha(data, parsed, tid, t.repo, slot)
             slot["state"] = "reviewing"
+            st.save(root, jira, data)
+        # Merge the parent branch into the child before reviewing. Sibling merges
+        # advance the parent; a stale child would otherwise be reviewed/merged
+        # against the wrong base. A conflict blocks the ticket for implement/fix.
+        sync_conflict = _sync_child_with_parent(root, jira, slot, leave_conflict=False)
+        if sync_conflict:
+            with st.jira_lock(jira):
+                data = st.load(root, jira)
+                slot = data["tickets"].get(tid)
+                if slot:
+                    slot["state"] = "blocked"
+                    slot["last_summary"] = sync_conflict
+                    st.save(root, jira, data)
+            ran.append(tid)
+            continue
+        with st.jira_lock(jira):
+            data = st.load(root, jira)
+            slot = data["tickets"][tid]
+            since = _ticket_base_sha(data, parsed, tid, t.repo, slot, cwd)
             st.save(root, jira, data)
         base = repos[t.repo].default_base if t.repo in repos else "main"
         label = since or base
@@ -1480,7 +1563,6 @@ def ticket_diff(root: Path, jira: str, ticket_id: str) -> dict[str, Any]:
     repo_obj = repos.get(repo_alias)
     default_base = repo_obj.default_base if repo_obj else "main"
     parsed = list(tickets.values())
-    since = _ticket_base_sha(data, parsed, ticket_id, repo_alias, slot)
 
     cwd = _cwd_for_ticket(root, jira, t, slot)
     if not cwd.exists() or not (cwd / ".git").exists():
@@ -1503,6 +1585,7 @@ def ticket_diff(root: Path, jira: str, ticket_id: str) -> dict[str, Any]:
                 "message": f"工作区不存在 ({cwd})，可能尚未冻结或已清理",
             }
 
+    since = _ticket_base_sha(data, parsed, ticket_id, repo_alias, slot, cwd)
     base = since or gitops.start_point(cwd, default_base)
     head_sha = slot.get("head_sha")
 

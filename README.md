@@ -175,7 +175,8 @@ dev-yard push PROJ-101              # 或 dev-yard req push PROJ-101
 ```
 - `repo`：必须与 `repo add` 登记的别名一致。
 - `depends_on`：上游任务通过评审（`done`）后，下游任务才会变为 `ready`。
-- `parallel: true`：同仓并行开发时，会自动派生临时子分支与子 Worktree。
+- 每张票都在自己的子分支/子 Worktree 里实现；父 Worktree 只做整合（合并通过的票），不直接写代码。
+- `parallel: true`：同仓多票可并行实现；各自从同一冻结点派生。审查前会先把父分支并入子分支，冲突在实现阶段交给 Agent 就地解决。
 
 ### 仓库、模型与冻结分支（`repos.yaml`）
 ```yaml
@@ -207,9 +208,9 @@ my-workspace/
 ├── reqs/
 │   ├── CONTEXT.md                 # 跨需求通用术语表
 │   └── PROJ-101/                  # 需求产物 (REQUIREMENT/GRILL/SPEC/TICKETS.md)
-│       └── worktrees/<alias>/     # 各仓独立 Worktree（默认分支: req/PROJ-101）
+│       └── worktrees/<alias>/     # 各仓整合 Worktree（默认分支: req/PROJ-101）
 ├── .repos/                        # 托管克隆母仓
-└── .yard-worktrees/               # 并行子任务临时 Worktree（默认: req/PROJ-101-T1）
+└── .yard-worktrees/               # 每张票的子 Worktree（默认: req/PROJ-101-T1）
 ```
 
 ---

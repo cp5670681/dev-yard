@@ -261,6 +261,23 @@ def merge_base(worktree: Path, ref: str) -> str | None:
         return None
 
 
+def first_parent(worktree: Path, sha: str) -> str | None:
+    """The commit a merge/fast-forward landed on top of; None for root/unknown."""
+    try:
+        return run(["git", "rev-parse", "--verify", f"{sha}^"], cwd=worktree)
+    except GitError:
+        return None
+
+
+def unmerged_files(worktree: Path) -> list[str]:
+    """Paths left in a conflicted merge/rebase state; empty when clean."""
+    try:
+        out = run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=worktree)
+    except GitError:
+        return []
+    return [ln.strip() for ln in out.splitlines() if ln.strip()]
+
+
 def integrate_onto(worktree: Path, ref: str, strategy: str = "ff-only") -> str:
     """Fast-forward, merge, or rebase `worktree` onto `ref`. Returns new HEAD."""
     if strategy not in SYNC_STRATEGIES:

@@ -424,7 +424,8 @@ def test_review_diff_includes_uncommitted_work(
     monkeypatch.delenv("JIRA_URL", raising=False)
     yard = _ready_req(tmp_path, git_src, "AB-28")
     implement(yard, "AB-28", None, runner=DryRunRunner())
-    wt = yard / "reqs" / "AB-28" / "worktrees" / "backend"
+    # Every ticket now works in its own child worktree.
+    wt = Path(st.load(yard, "AB-28")["tickets"]["T1"]["child_worktree"])
     (wt / "wip.txt").write_text("uncommitted t5")
     cap = _Capture()
     review(yard, "AB-28", ["T1"], runner=cap)
@@ -474,24 +475,28 @@ def test_review_merge_conflict_keeps_ticket_reviewable(
     implement(yard, "AB-31", ["T1"], runner=c)
     implement(yard, "AB-31", ["T2"], runner=c)
     parent = yard / "reqs" / "AB-31" / "worktrees" / "backend"
-    child2 = Path(st.load(yard, "AB-31")["tickets"]["T2"]["child_worktree"])
-    assert child2.exists()
-    # parent advances after the child branched off -> merge will conflict
+    children = [
+        Path(st.load(yard, "AB-31")["tickets"][tid]["child_worktree"]) for tid in ("T1", "T2")
+    ]
+    assert all(child.exists() for child in children)
+    # parent advances after the children branched off -> syncing will conflict
     (parent / "shared.txt").write_text("parent later\n")
-    subprocess.check_call(["git", "commit", "-am", "parent later"], cwd=parent)
+    subprocess.check_call(["git", "add", "shared.txt"], cwd=parent)
+    subprocess.check_call(["git", "commit", "-m", "parent later"], cwd=parent)
 
     ran = review(yard, "AB-31", None, runner=DryRunRunner())
     assert ran == ["T1", "T2"]
     data = st.load(yard, "AB-31")
-    assert data["tickets"]["T1"]["state"] == "done"
-    # T2's merge conflicted: it must stay reviewable, not be marked done
-    assert data["tickets"]["T2"]["state"] == "reviewing"
-    assert "merge" in (data["tickets"]["T2"]["last_summary"] or "").lower()
+    # Both children now fork from the pre-merge freeze point, so both must sync
+    # and hit the same conflict before review; neither is marked done.
+    for tid in ("T1", "T2"):
+        assert data["tickets"][tid]["state"] == "blocked"
+        assert "SYNC_CONFLICT" in (data["tickets"][tid]["last_summary"] or "")
     # parent worktree must not be left in a conflicted merge state
     status = subprocess.check_output(["git", "status", "--porcelain"], cwd=parent)
     assert b"UU" not in status
-    # child worktree/branch kept so the merge can be retried
-    assert child2.exists()
+    # child worktrees/branches kept so the sync can be retried
+    assert all(child.exists() for child in children)
 
 
 def test_ticket_done_conflict_aborts_merge_and_raises(
@@ -530,11 +535,10 @@ def test_ticket_done_conflict_aborts_merge_and_raises(
     # parent advances after the child branched off -> ticket_done merge conflicts
     parent = yard / "reqs" / "AB-32" / "worktrees" / "backend"
     (parent / "shared.txt").write_text("parent later\n")
-    subprocess.check_call(["git", "commit", "-am", "parent later"], cwd=parent)
-    # mark T1 reviewed-done via review
-    review(yard, "AB-32", ["T1"], runner=DryRunRunner())
+    subprocess.check_call(["git", "add", "shared.txt"], cwd=parent)
+    subprocess.check_call(["git", "commit", "-m", "parent later"], cwd=parent)
     with pytest.raises(GitError):
-        ticket_done(yard, "AB-32", "T2")
+        ticket_done(yard, "AB-32", "T1")
     status = subprocess.check_output(["git", "status", "--porcelain"], cwd=parent)
     assert b"UU" not in status
 
@@ -643,6 +647,84 @@ def test_sequential_tickets_auto_commit_and_diff_isolation(
     t2_diff = ticket_diff(yard, "AB-99", "T2")
     assert any(f["path"] == "file2.txt" for f in t2_diff["files"])
     assert not any(f["path"] == "file1.txt" for f in t2_diff["files"])
+
+
+def test_first_ticket_gets_own_child_worktree(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-81")
+    implement(yard, "AB-81", None, runner=DryRunRunner())
+    slot = st.load(yard, "AB-81")["tickets"]["T1"]
+    parent = yard / "reqs" / "AB-81" / "worktrees" / "backend"
+    assert slot["child_worktree"]
+    assert slot["child_worktree"] != str(parent)
+    assert Path(slot["child_worktree"]).exists()
+
+
+def test_parallel_sync_conflict_recovered_by_implement(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    import subprocess
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-82", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: true\n\n"
+        "## T2: y\n- repo: backend\n- depends_on:\n- parallel: true\n"
+    )
+    req_freeze(yard, "AB-82")
+
+    class Conflicter:
+        def __init__(self) -> None:
+            self.n = 0
+
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            self.n += 1
+            (cwd / "shared.txt").write_text(f"side {self.n}\n")
+            subprocess.check_call(["git", "add", "shared.txt"], cwd=cwd)
+            subprocess.check_call(["git", "commit", "-m", f"c{self.n}"], cwd=cwd)
+            return RunResult(ok=True, summary="ok")
+
+    c = Conflicter()
+    implement(yard, "AB-82", ["T1"], runner=c)
+    implement(yard, "AB-82", ["T2"], runner=c)
+    parent = yard / "reqs" / "AB-82" / "worktrees" / "backend"
+
+    # T1 merges into the parent first, leaving T2 forked from the freeze point.
+    review(yard, "AB-82", ["T1"], runner=DryRunRunner())
+    assert st.load(yard, "AB-82")["tickets"]["T1"]["state"] == "done"
+
+    # T2's review now syncs the parent and surfaces the real conflict.
+    review(yard, "AB-82", ["T2"], runner=DryRunRunner())
+    t2 = st.load(yard, "AB-82")["tickets"]["T2"]
+    assert t2["state"] == "blocked"
+    assert "SYNC_CONFLICT" in (t2["last_summary"] or "")
+
+    class Resolver:
+        """Resolves the sync conflict implement leaves in the child worktree."""
+
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            conflicts = subprocess.check_output(
+                ["git", "diff", "--name-only", "--diff-filter=U"], cwd=cwd, text=True
+            ).split()
+            assert conflicts, "implement must leave the sync conflict in place"
+            for rel in conflicts:
+                (cwd / rel).write_text("resolved\n")
+                subprocess.check_call(["git", "add", rel], cwd=cwd)
+            return RunResult(ok=True, summary="resolved")
+
+    implement(yard, "AB-82", ["T2"], runner=Resolver())
+    assert st.load(yard, "AB-82")["tickets"]["T2"]["state"] == "implemented"
+
+    review(yard, "AB-82", ["T2"], runner=DryRunRunner())
+    data = st.load(yard, "AB-82")
+    assert data["tickets"]["T2"]["state"] == "done"
+    assert data["tickets"]["T2"]["child_worktree"] is None
+    assert (parent / "shared.txt").read_text() == "resolved\n"
 
 
 def test_parallel_child_review_diff_excludes_sibling_work(
