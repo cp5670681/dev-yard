@@ -340,9 +340,10 @@ import { qaScreenshotUrl } from "@/composables/qa";
 import { runningJobs } from "@/state/jobs";
 
 const route = useRoute();
-const jira = computed(() => String(route.params.jira || ""));
+const currentJira = computed(() => props.jira || String(route.params.jira || ""));
 const props = defineProps<{
   ticket: Ticket;
+  jira?: string;
   showState?: boolean;
   caseInfo?: QaCaseItem | null;
 }>();
@@ -370,7 +371,7 @@ const bugShotUrl = computed(() => {
   const info = props.caseInfo;
   const first = info?.screenshots?.[0];
   if (!info?.run_id || !first) return "";
-  return qaScreenshotUrl(jira.value, info.run_id, info.id, first);
+  return qaScreenshotUrl(currentJira.value, info.run_id, info.id, first);
 });
 
 const dotColor = computed(() => ticketColor(props.ticket.state));
@@ -379,8 +380,10 @@ const isRunning = computed(() => {
   if (props.ticket.state === "implementing" || props.ticket.state === "reviewing") {
     return true;
   }
+  const curJira = currentJira.value;
   return runningJobs.value.some(
     (j) =>
+      (!curJira || !j.jira || j.jira === curJira) &&
       (j.state === "running" || j.state === "queued" || j.state === "waiting") &&
       j.ticket_ids?.includes(props.ticket.id),
   );
