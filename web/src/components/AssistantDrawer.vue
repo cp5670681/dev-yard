@@ -514,7 +514,15 @@ watch(assistantOpen, async (open) => {
   closePi();
   follow = true;
   try {
-    await ensureSession();
+    const mine = epoch;
+    const cur = await ensureSession();
+    if (mine !== epoch || session.value?.id !== cur.id) return;
+    // Hiding the drawer stops the EventSource, so reopening it mid-turn must
+    // reattach the stream; otherwise turns that arrived while hidden never show
+    // and the session looks stuck until an abort forces a fresh snapshot.
+    if (cur.state === "streaming" && (!es || es.readyState === EventSource.CLOSED)) {
+      listen(cur.id, mine);
+    }
   } catch (e) {
     snack.notify(e instanceof Error ? e.message : String(e), "error");
   }

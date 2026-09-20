@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from dev_yard.assistant import (
+    _PROVIDER_ERROR,
     AssistantHub,
     compose_prompt,
     page_context,
@@ -526,3 +527,175 @@ def test_pi_rpc_command_timeout_clears_pending(tmp_path: Path):
         assert rpc._pending == {}
     finally:
         rpc.close()
+
+
+class _ScriptedRpc:
+    """Replays a fixed RPC event script; subclasses set ``script``."""
+
+    script: list[dict] = []
+
+    def prompt(self, message: str) -> None:
+        return None
+
+    def iter_until_settled(self):
+        yield from self.script
+
+    def abort(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+class ErrorRpc(_ScriptedRpc):
+    """Provider fails without producing content (`stopReason: error`)."""
+
+    script = [
+        {
+            "type": "message_end",
+            "message": {"role": "assistant", "content": [], "stopReason": "error"},
+        },
+        {"type": "agent_settled"},
+    ]
+
+
+class RetryThenOkRpc(_ScriptedRpc):
+    """First attempt errors, the retry answers; only the answer should show."""
+
+    script = [
+        {
+            "type": "message_end",
+            "message": {"role": "assistant", "content": [], "stopReason": "error"},
+        },
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "重试成功"}],
+                "stopReason": "stop",
+            },
+        },
+        {"type": "agent_settled"},
+    ]
+
+
+class StreamRecoversRpc(_ScriptedRpc):
+    """A streamed delta clears an earlier error even if message_end is empty."""
+
+    script = [
+        {
+            "type": "message_end",
+            "message": {"role": "assistant", "content": [], "stopReason": "error"},
+        },
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": "恢复"},
+        },
+        {
+            "type": "message_end",
+            "message": {"role": "assistant", "content": [], "stopReason": "stop"},
+        },
+        {"type": "agent_settled"},
+    ]
+
+
+class PartialThenErrorRpc(_ScriptedRpc):
+    """Streams some text, then the provider dies mid-answer."""
+
+    script = [
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": "半截话"},
+        },
+        {
+            "type": "message_end",
+            "message": {"role": "assistant", "content": [], "stopReason": "error"},
+        },
+        {"type": "agent_settled"},
+    ]
+
+
+class RetryExhaustedRpc(_ScriptedRpc):
+    """Auto-retry gives up; the final provider error must be surfaced."""
+
+    script = [
+        {"type": "auto_retry_start", "errorMessage": "529 overloaded"},
+        {
+            "type": "auto_retry_end",
+            "success": False,
+            "finalError": "529 overloaded_error: Overloaded",
+        },
+        {"type": "agent_settled"},
+    ]
+
+
+class RetrySucceedsRpc(_ScriptedRpc):
+    """Auto-retry succeeds with no content; it must not be flagged."""
+
+    script = [
+        {"type": "auto_retry_start", "errorMessage": "terminated"},
+        {"type": "auto_retry_end", "success": True, "attempt": 1},
+        {"type": "agent_settled"},
+    ]
+
+
+def _run_with(tmp_path: Path, monkeypatch, rpc: object):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    hub = AssistantHub(yard, rpc_factory=lambda root, session: rpc, sync=True)
+    session = hub.create(route="/", jira="")
+    hub.send(session.id, "在吗")
+    return session.snapshot()
+
+
+def test_assistant_surfaces_provider_error(tmp_path: Path, monkeypatch):
+    snap = _run_with(tmp_path, monkeypatch, ErrorRpc())
+    assert snap["state"] == "idle"
+    assert snap["error"] == _PROVIDER_ERROR
+    turn = snap["entries"][-1]
+    assert turn["role"] == "assistant"
+    assert turn["is_error"] is True
+    assert turn["streaming"] is False
+    assert turn["text"] == _PROVIDER_ERROR
+
+
+def test_assistant_clears_transient_error_after_retry(tmp_path: Path, monkeypatch):
+    snap = _run_with(tmp_path, monkeypatch, RetryThenOkRpc())
+    assert snap["error"] is None
+    turn = snap["entries"][-1]
+    assert turn["text"] == "重试成功"
+    assert not turn.get("is_error")
+
+
+def test_assistant_flags_partial_answer_after_error(tmp_path: Path, monkeypatch):
+    snap = _run_with(tmp_path, monkeypatch, PartialThenErrorRpc())
+    assert snap["state"] == "idle"
+    assert snap["error"] == _PROVIDER_ERROR
+    turn = snap["entries"][-1]
+    assert turn["text"] == "半截话"
+    assert turn["streaming"] is False
+    assert turn["is_error"] is True
+
+
+def test_assistant_surfaces_exhausted_retry(tmp_path: Path, monkeypatch):
+    snap = _run_with(tmp_path, monkeypatch, RetryExhaustedRpc())
+    turn = snap["entries"][-1]
+    assert turn["is_error"] is True
+    assert turn["text"] == "529 overloaded_error: Overloaded"
+    assert snap["error"] == "529 overloaded_error: Overloaded"
+
+
+def test_assistant_clears_error_when_retry_streams(tmp_path: Path, monkeypatch):
+    snap = _run_with(tmp_path, monkeypatch, StreamRecoversRpc())
+    assert snap["error"] is None
+    turn = snap["entries"][-1]
+    assert turn["text"] == "恢复"
+    assert not turn.get("is_error")
+
+
+def test_assistant_clears_error_on_successful_retry(tmp_path: Path, monkeypatch):
+    snap = _run_with(tmp_path, monkeypatch, RetrySucceedsRpc())
+    assert snap["error"] is None
+    assert not any(e.get("is_error") for e in snap["entries"])

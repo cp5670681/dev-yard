@@ -30,6 +30,22 @@ _SUMMARY_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 
+# Surfaced when the provider errors out without producing any content. pi hands
+# back an assistant message with `stopReason: "error"` and empty content, which
+# the hub would otherwise drop, leaving the turn silently stuck.
+_PROVIDER_ERROR = "模型调用失败，未返回内容。请重试。"
+
+
+def _remember_error(run: _RunState, event: dict[str, Any], *keys: str) -> None:
+    """Record the first provider error detail on the run, else a generic notice."""
+    for key in keys:
+        value = event.get(key)
+        if isinstance(value, str) and value.strip():
+            run.error = value.strip()
+            return
+    run.error = run.error or _PROVIDER_ERROR
+
+
 def summarize_tool(name: str, args: str) -> str:
     """One-line, human-friendly hint for a tool call (path/pattern/command)."""
     data: Any = None
@@ -465,15 +481,31 @@ class AssistantHub:
                     continue
                 kind = event.get("type")
                 if kind == "message_end" and isinstance(event.get("message"), dict):
-                    entry = _entry_from_rpc_message(event["message"])
+                    message = event["message"]
+                    entry = _entry_from_rpc_message(message)
                     if entry and entry.get("role") == "assistant":
+                        if message.get("stopReason") == "error":
+                            _remember_error(run, message, "error", "errorMessage")
+                        elif entry.get("text") or entry.get("thinking") or entry.get("tools"):
+                            # A real answer landed; earlier transient errors are moot.
+                            run.error = None
                         self._absorb_assistant(session, run, entry, gen)
                     elif entry and entry.get("role") == "toolResult":
                         self._absorb_tool_result(session, run, entry, gen)
                 elif kind == "message_update":
                     delta = _delta_text(event)
                     if delta:
+                        # Streamed content is an answer too: a recovered retry
+                        # must not stay flagged as an error.
+                        run.error = None
                         self._stream_delta(session, run, delta, gen)
+                elif kind == "auto_retry_start":
+                    _remember_error(run, event, "errorMessage")
+                elif kind == "auto_retry_end":
+                    if event.get("success"):
+                        run.error = None
+                    else:
+                        _remember_error(run, event, "finalError")
             if not self._current(session, gen):
                 return
             self._finalize_turn(session, run, gen)
@@ -638,6 +670,17 @@ class AssistantHub:
             with session._cv:
                 if session._gen != gen:
                     return
+                if run.error:
+                    session.entries.append(
+                        {
+                            "id": session.turn_id(),
+                            "role": "assistant",
+                            "text": run.error,
+                            "streaming": False,
+                            "is_error": True,
+                        }
+                    )
+                    session.error = run.error
                 session.state = "idle"
                 session.bump()
             return
@@ -650,6 +693,11 @@ class AssistantHub:
                 return
             turn["text"] = display or run.text
             turn["streaming"] = False
+            if run.error:
+                # Partial answer, then the provider died: keep the text but flag
+                # it so a truncated reply is not mistaken for a finished one.
+                turn["is_error"] = True
+                session.error = run.error
             for step in run.steps:
                 if step["status"] == "running":
                     step["status"] = "ok"
@@ -690,6 +738,7 @@ class _RunState:
     started: float = 0.0
     answered: float | None = None
     turn: dict[str, Any] | None = None
+    error: str | None = None
 
 
 def _public_entry(entry: dict[str, Any], jira: str) -> dict[str, Any]:
