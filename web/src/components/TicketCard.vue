@@ -15,7 +15,10 @@
         class="ticket-card-progress"
       />
       <v-card-text class="pa-2">
-        <div class="d-flex align-center ga-1 mb-1">
+        <div
+          class="d-flex align-center ga-1 mb-1 ticket-card-head"
+          :class="{ 'ticket-card-head--del': canDelete }"
+        >
           <v-progress-circular
             v-if="isRunning"
             indeterminate
@@ -50,6 +53,7 @@
           <span v-if="ticket.repo" class="jira-repo-tag text-truncate">{{ ticket.repo }}</span>
           <v-btn
             v-if="canDelete"
+            class="ticket-card-del"
             icon
             size="x-small"
             variant="text"
@@ -497,7 +501,24 @@ watch(
   right: 0;
   z-index: 1;
 }
+.ticket-card-head {
+  position: relative;
+  min-width: 0;
+}
+/* Reserve room for the delete button so the header content never runs under it. */
+.ticket-card-head--del {
+  padding-right: 26px;
+}
+/* Pin the delete button to the card's top-right corner so narrow (desktop kanban)
+   columns can never clip it out of view. */
+.ticket-card-del {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  z-index: 2;
+}
 .jira-ticket-key {
+  min-width: 0;
   color: #5e6c84;
   font-size: 12px;
   font-weight: 600;
@@ -523,7 +544,9 @@ watch(
   border-radius: 3px;
   padding: 0 5px;
   line-height: 18px;
-  flex-shrink: 0;
+  /* Let the repo tag shrink/truncate instead of pushing the delete button out. */
+  flex: 0 1 auto;
+  min-width: 0;
 }
 :global(.v-theme--dark) .jira-repo-tag {
   color: rgb(var(--v-theme-on-surface-variant));
