@@ -310,6 +310,53 @@ findings:
     assert got[1]["depends_on"] == ["F1"]
 
 
+def test_parse_findings_from_summary_handles_yaml_fence():
+    text = """REVIEW_FAILED
+
+Gaps found.
+
+```yaml
+findings:
+  - id: F1
+    title: inner mount
+    repo: backend
+    detail: mount leaked
+    files:
+      - app/api/application_inner_api.rb
+    depends_on: []
+  - id: F2
+    title: display threshold
+    repo: frontend
+    detail: false positive
+    files:
+      - src/view/list.vue
+    depends_on: []
+```
+
+**Spec 轴：2 处缺口，最严重为 F1。**
+"""
+    got = parse_findings_from_summary(text)
+    assert [f["id"] for f in got] == ["F1", "F2"]
+    assert got[0]["repo"] == "backend"
+    assert got[0]["files"] == ["app/api/application_inner_api.rb"]
+    assert got[1]["detail"] == "false positive"
+
+
+def test_parse_findings_tolerates_nested_fence_and_trailing_prose():
+    fence = "```"
+    nested = (
+        f"{fence}markdown\n{fence}yaml\nfindings:\n  - id: F1\n    repo: backend\n"
+        f"{fence}\nprose after the block\n{fence}\n"
+    )
+    assert [f["id"] for f in parse_findings_from_summary(nested)] == ["F1"]
+
+    no_fence = "gaps\n\nfindings:\n  - id: F2\n    repo: frontend\n\n**Spec 轴**\n"
+    assert [f["id"] for f in parse_findings_from_summary(no_fence)] == ["F2"]
+
+    assert parse_findings_from_summary("notfindings: x\n") == []
+    assert parse_findings_from_summary("no findings here\n") == []
+
+
 def test_spawn_from_contract_summary_findings(tmp_path: Path, git_src: Path, monkeypatch):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)

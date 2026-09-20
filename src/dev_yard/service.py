@@ -1322,6 +1322,10 @@ def review(
     extra = [req / "SPEC.md", req / "TICKETS.md"]
     ran: list[str] = []
     if contract:
+        # REQUIREMENT.md is the product source of truth; without it the reviewer
+        # flags code that faithfully implements an explicit product rule (e.g. a
+        # display threshold) as a contract gap.
+        extra = [req / "REQUIREMENT.md", *extra]
         aliases = list(data.get("repos") or [])
         if not aliases:
             raise ValueError("no repos in STATUS.yaml; freeze first")
@@ -1351,6 +1355,14 @@ def review(
             jira,
             extra=(
                 "Mode: --contract. Review every requirement worktree against SPEC.md contracts.\n"
+                "REQUIREMENT.md is the product source of truth for behavior and UI rules; "
+                "SPEC.md is the implementation contract. Read REQUIREMENT.md before "
+                "reporting any behavior/display gap: if the code implements a rule stated "
+                "explicitly in REQUIREMENT.md (e.g. a field is shown only when a count "
+                "reaches a threshold), that is NOT a gap even when SPEC.md merely lists the "
+                "underlying data field. Report a gap only when the code contradicts "
+                "REQUIREMENT.md or omits something SPEC.md requires that REQUIREMENT.md does "
+                "not explicitly rule out.\n"
                 "Do not spawn sub-agents; pi has none. Do not git-diff the yard repo.\n"
                 "The inlined diff is taken at this requirement's freeze point, so it "
                 "contains only this requirement's own work. Before blaming a hunk on "

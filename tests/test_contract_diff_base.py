@@ -71,6 +71,25 @@ def test_contract_diff_ignores_upstream_drift(tmp_path: Path, git_src: Path, mon
     assert "UPSTREAM" not in r2.calls[0][0]
 
 
+def test_contract_prompt_reads_requirement_as_source_of_truth(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _freeze_one_repo(tmp_path, git_src, "AB-73")
+
+    r = CapturingRunner()
+    review(yard, "AB-73", None, contract=True, runner=r)
+    prompt, _cwd, extra = r.calls[0]
+    req = yard / "reqs" / "AB-73"
+    assert req / "REQUIREMENT.md" in extra
+    # PiRunner ignores extra_read_paths, so the prompt text is what actually
+    # makes a real run read REQUIREMENT.md.
+    assert "product source of truth" in prompt
+    assert "REQUIREMENT.md" in prompt
+    assert "NOT a gap" in prompt
+
+
 def test_spawn_drops_findings_not_on_requirement(tmp_path: Path, git_src: Path, monkeypatch):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)

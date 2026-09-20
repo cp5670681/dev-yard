@@ -40,7 +40,13 @@ def session_prompt_for(
             f"Read files with the read tool as needed, starting with `{req / 'SPEC.md'}` and `{req / 'TICKETS.md'}`. "
             f"Shared glossary: `{ctx}`. ADRs: `{adr}`."
         )
-    elif spec.name in {"review", "contract", "tickets"}:
+    elif spec.name == "contract":
+        start = (
+            f"Read files with the read tool as needed, starting with {req / 'REQUIREMENT.md'} "
+            f"(product source of truth) and {req / 'SPEC.md'} (implementation contract). "
+            f"Shared glossary: `{ctx}`. ADRs: `{adr}`."
+        )
+    elif spec.name in {"review", "tickets"}:
         start_file = req / "SPEC.md"
         start = (
             f"Read files with the read tool as needed, starting with {start_file}. "

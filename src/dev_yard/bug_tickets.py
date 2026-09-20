@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -76,25 +77,50 @@ def _next_ids(existing: list[str], n: int) -> list[str]:
     return out
 
 
+_FINDINGS_LINE_RE = re.compile(r"(?m)^[ \t]*findings:")
+_CLOSE_FENCE_RE = re.compile(r"\n[ \t]*`{3,}[ \t]*(?:\n|$)")
+
+
+def _findings_blob(text: str) -> str | None:
+    """Slice the YAML `findings:` document out of a Markdown summary.
+
+    Agents routinely wrap the block in a ```yaml fence and keep writing prose
+    after it, so the closing fence and any trailing Markdown section must be
+    trimmed before the YAML loader sees the text. Anchoring on the `findings:`
+    line also skips any surrounding (even nested) code fence.
+    """
+    match = _FINDINGS_LINE_RE.search(text)
+    if match is None:
+        return None
+    blob = text[match.start() :].lstrip()
+    closing = _CLOSE_FENCE_RE.search(blob)
+    if closing:
+        blob = blob[: closing.start()]
+    cut = blob.find("\n## ")
+    if cut > 0:
+        blob = blob[:cut]
+    return blob
+
+
+def _load_yaml_loose(blob: str) -> Any:
+    """Parse YAML, dropping trailing non-YAML lines (unescaped prose)."""
+    lines = blob.splitlines()
+    while lines:
+        try:
+            return yaml.safe_load("\n".join(lines))
+        except yaml.YAMLError:
+            lines.pop()
+    return None
+
+
 def parse_findings_from_summary(text: str) -> list[dict[str, Any]]:
     """Pull a YAML `findings:` list out of a contract/test agent summary."""
     if not (text or "").strip():
         return []
-    idx = text.find("\nfindings:")
-    if idx < 0:
-        idx = 0 if text.lstrip().startswith("findings:") else text.find("findings:")
-        if idx < 0:
-            return []
-        if idx > 0 and text[idx - 1] not in "\n":
-            return []
-    blob = text[idx:].lstrip()
-    cut = blob.find("\n## ")
-    if cut > 0:
-        blob = blob[:cut]
-    try:
-        loaded = yaml.safe_load(blob)
-    except yaml.YAMLError:
+    blob = _findings_blob(text)
+    if blob is None:
         return []
+    loaded = _load_yaml_loose(blob)
     if isinstance(loaded, dict) and loaded.get("findings") is not None:
         raw = loaded["findings"]
     elif isinstance(loaded, list):

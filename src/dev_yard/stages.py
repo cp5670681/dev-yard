@@ -80,7 +80,11 @@ _GUIDANCE = {
         "Do not add CONTEXT.md or docs/adr to the business repo."
     ),
     "review": "Do not implement; report Standards and Spec axes.",
-    "contract": "Do not implement; report Spec contract gaps across worktrees.",
+    "contract": (
+        "Do not implement; report Spec contract gaps across worktrees. "
+        "Treat REQUIREMENT.md as the product source of truth for behavior and "
+        "display rules, and SPEC.md as the implementation contract."
+    ),
     "qa-design": (
         "Write only reqs/<REQ>/qa/** (meta.yaml and cases/). "
         "Read REQUIREMENT.md, SPEC.md, TICKETS.md. Do not fetch Jira. "
