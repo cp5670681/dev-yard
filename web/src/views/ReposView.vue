@@ -45,10 +45,11 @@
                 </v-btn>
               </div>
               <div class="text-caption text-medium-emphasis mt-1">base {{ r.default_base }}</div>
+              <div class="text-caption text-medium-emphasis">测试分支 {{ r.test_branch || "（未配）" }}</div>
               <div class="text-caption text-medium-emphasis">实现 {{ repoPiLabel(r) }}</div>
               <div class="text-caption text-break mt-1">{{ r.url }}</div>
               <div class="text-caption text-break">{{ r.path || "（托管 clone）" }}</div>
-              <v-btn size="small" variant="text" class="mt-2 px-0" @click="openEdit(r)">改模型</v-btn>
+              <v-btn size="small" variant="text" class="mt-2 px-0" @click="openEdit(r)">设置</v-btn>
             </v-card-text>
           </v-card>
         </div>
@@ -60,6 +61,7 @@
               <th>base</th>
               <th>url</th>
               <th>path</th>
+              <th>测试分支</th>
               <th>实现模型</th>
               <th></th>
             </tr>
@@ -86,6 +88,7 @@
               <td class="text-truncate" style="max-width: 22rem">
                 {{ r.path || "（托管 clone）" }}
               </td>
+              <td class="text-caption">{{ r.test_branch || "（未配）" }}</td>
               <td class="text-caption">{{ repoPiLabel(r) }}</td>
               <td>
                 <v-btn size="small" variant="text" @click="openEdit(r)">改</v-btn>
@@ -116,6 +119,13 @@
               </v-col>
               <v-col cols="12">
                 <v-text-field v-model="path" label="本地 path（可选，已有工作副本时填写）" />
+              </v-col>
+              <v-col cols="12">
+                <v-text-field
+                  v-model="addTestBranch"
+                  label="测试分支（可选，提测时冻结分支 merge 到这里）"
+                  placeholder="如 PG-test；留空则本仓不提测"
+                />
               </v-col>
               <v-col cols="12" md="6">
                 <v-select
@@ -153,10 +163,10 @@
 
     <v-dialog v-model="editDialog" max-width="520">
       <v-card>
-        <v-card-title>实现模型 · {{ editAlias }}</v-card-title>
+        <v-card-title>仓库设置 · {{ editAlias }}</v-card-title>
         <v-card-text>
           <p class="text-caption text-medium-emphasis mb-4">
-            成对配置。留空则实现回退到阶段 implement → 全局。审查不读这项。
+            模型成对配置。留空则实现回退到阶段 implement → 全局。审查不读这项。
           </p>
           <v-select
             v-model="editProvider"
@@ -173,6 +183,16 @@
             v-model="editModel"
             :items="modelItems(editProvider)"
             label="model"
+            variant="outlined"
+            density="comfortable"
+            class="mb-3"
+            hide-details
+            clearable
+          />
+          <v-text-field
+            v-model="editTestBranch"
+            label="测试分支"
+            placeholder="留空则本仓不提测"
             variant="outlined"
             density="comfortable"
             hide-details
@@ -214,11 +234,13 @@ const role = ref("svc");
 const path = ref("");
 const addProvider = ref("");
 const addModel = ref("");
+const addTestBranch = ref("");
 const editDialog = ref(false);
 const editBusy = ref(false);
 const editAlias = ref("");
 const editProvider = ref("");
 const editModel = ref("");
+const editTestBranch = ref("");
 const catalog = ref<PiCatalogProvider[]>([]);
 const jobId = ref(typeof route.query.job === "string" ? route.query.job : "");
 const urlRule = (v: string) => !!v.trim() || "需要 git url";
@@ -314,6 +336,7 @@ async function submit() {
       path: path.value,
       provider: addProvider.value,
       model: addModel.value,
+      test_branch: addTestBranch.value,
     });
     jobId.value = out.jobs[0]?.id || "";
     dialog.value = false;
@@ -337,6 +360,7 @@ function openEdit(r: Repo) {
   editAlias.value = r.alias;
   editProvider.value = r.provider || "";
   editModel.value = r.model || "";
+  editTestBranch.value = r.test_branch || "";
   ensureSaved(r.provider, r.model);
   editDialog.value = true;
 }
@@ -346,9 +370,14 @@ async function saveEdit() {
   editBusy.value = true;
   error.value = "";
   try {
-    repos.value = await setRepoPi(editAlias.value, editProvider.value, editModel.value);
+    repos.value = await setRepoPi(
+      editAlias.value,
+      editProvider.value,
+      editModel.value,
+      editTestBranch.value,
+    );
     editDialog.value = false;
-    snack.notify("已写入仓库模型", "success");
+    snack.notify("已写入仓库设置", "success");
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {

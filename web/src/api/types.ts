@@ -304,6 +304,7 @@ export interface Repo {
   path: string;
   provider: string;
   model: string;
+  test_branch: string;
 }
 
 export interface Meta {
