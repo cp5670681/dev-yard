@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from dev_yard import __version__
+from dev_yard import __version__, service
 from dev_yard.actions import ACTION_LABELS
 from dev_yard.assistant import AssistantHub
 from dev_yard.web.board import DOC_FILES, PIPELINE
@@ -82,6 +82,7 @@ def create_app(
     assistants = assistant_hub or AssistantHub(root, sync=sync_jobs)
     if not jobs.sync:
         jobs.resume_pending_grills()
+        service.recover_stale_tickets(root)
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     templates.env.globals["step_labels"] = STEP_LABELS
     templates.env.globals["doc_files"] = DOC_FILES

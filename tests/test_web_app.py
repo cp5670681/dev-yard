@@ -1575,4 +1575,31 @@ def test_contract_review_api(tmp_path: Path, git_src: Path, monkeypatch):
     assert "Contracts approved" in detail_data["contract_summary_html"]
 
 
+def test_create_app_recovers_stale_reviewing(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard import status as st
+    from dev_yard.service import req_freeze
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "REC-01", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    req_freeze(yard, "REC-01")
+    data = st.load(yard, "REC-01")
+    data["tickets"]["T1"]["state"] = "reviewing"
+    st.save(yard, "REC-01", data)
+
+    # A fresh console process has no job yet, so the slot is stale and must be
+    # recovered at startup instead of spinning as "审查中".
+    client = TestClient(create_app(yard, job_runner=JobRunner(yard, sync=False)))
+    detail = client.get("/api/requirements/REC-01").json()
+    t1 = next(t for t in detail["tickets"] if t["id"] == "T1")
+    assert t1["state"] == "implemented"
+    assert t1["can_review"] is True
+
+
 

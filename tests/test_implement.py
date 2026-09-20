@@ -9,6 +9,7 @@ from dev_yard.service import (
     from_contract_ids,
     implement,
     init_yard,
+    recover_stale_tickets,
     repo_add,
     req_freeze,
     req_open,
@@ -727,3 +728,41 @@ def test_review_cancel_resets_reviewing_to_implemented(tmp_path, git_src, monkey
     with pytest.raises(Exception, match="cancelled"):
         review(yard, "AB-61", None, runner=_CancelRunner())
     assert st.load(yard, "AB-61")["tickets"]["T1"]["state"] == "implemented"
+
+
+class _BoomRunner(DryRunRunner):
+    def start(self, prompt, cwd, extra_read_paths, repo=None):
+        raise RuntimeError("pi crashed")
+
+
+def test_review_crash_resets_reviewing_to_implemented(tmp_path, git_src, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-62")
+    implement(yard, "AB-62", None, runner=DryRunRunner())
+    with pytest.raises(RuntimeError, match="pi crashed"):
+        review(yard, "AB-62", None, runner=_BoomRunner())
+    assert st.load(yard, "AB-62")["tickets"]["T1"]["state"] == "implemented"
+
+
+def test_recover_stale_tickets_resets_leftovers(tmp_path, git_src, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-63")
+    data = st.load(yard, "AB-63")
+    data["tickets"]["T1"]["state"] = "reviewing"
+    data["tickets"]["T1"]["last_summary"] = "merge conflict guidance"
+    st.save(yard, "AB-63", data)
+
+    assert recover_stale_tickets(yard) == ["AB-63"]
+    slot = st.load(yard, "AB-63")["tickets"]["T1"]
+    assert slot["state"] == "implemented"
+    assert slot["last_summary"] == "merge conflict guidance"
+
+    data = st.load(yard, "AB-63")
+    data["tickets"]["T1"]["state"] = "implementing"
+    st.save(yard, "AB-63", data)
+    assert recover_stale_tickets(yard) == ["AB-63"]
+    assert st.load(yard, "AB-63")["tickets"]["T1"]["state"] == "ready"
+
+    assert recover_stale_tickets(yard) == []

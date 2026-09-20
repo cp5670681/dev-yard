@@ -30,7 +30,6 @@ from dev_yard.config import (
 )
 from dev_yard.env import load_env
 from dev_yard.runners import (
-    JobCancelled,
     Runner,
     RunResult,
     agent_binary,
@@ -1055,15 +1054,11 @@ def implement(
         )
         try:
             result = runner.start(prompt, cwd, extra, repo=t.repo)
-        except JobCancelled:
-            # A cancelled run leaves nobody working on the ticket; fall the slot
-            # back to ready so the board does not spin on a stale "implementing".
-            with st.jira_lock(jira):
-                data = st.load(root, jira)
-                slot = data["tickets"].get(tid)
-                if slot and slot.get("state") == "implementing":
-                    slot["state"] = "ready"
-                    st.save(root, jira, data)
+        except Exception:
+            # A cancelled/crashed run leaves nobody working on the ticket; fall
+            # the slot back to ready so the board does not spin on a stale
+            # "implementing". (A hard process kill is recovered at web startup.)
+            _reset_stuck_slot(root, jira, tid, "implementing", "ready")
             raise
         with st.jira_lock(jira):
             data = st.load(root, jira)
@@ -1101,6 +1096,18 @@ def implement(
     return ran
 
 
+def _reset_stuck_slot(
+    root: Path, jira: str, tid: str, from_state: str, to_state: str
+) -> None:
+    """Fall a ticket slot back when its run aborts, so the board cannot spin."""
+    with st.jira_lock(jira):
+        data = st.load(root, jira)
+        slot = (data.get("tickets") or {}).get(tid)
+        if slot and slot.get("state") == from_state:
+            slot["state"] = to_state
+            st.save(root, jira, data)
+
+
 def _run_review_or_cancel(
     root: Path,
     jira: str,
@@ -1112,16 +1119,45 @@ def _run_review_or_cancel(
 ) -> RunResult:
     try:
         return runner.start(prompt, cwd, extra)
-    except JobCancelled:
-        # A cancelled review leaves nobody working on the ticket; fall the slot
-        # back to implemented so the board does not spin on a stale "reviewing".
+    except Exception:
+        # A cancelled/crashed review leaves nobody working on the ticket; fall
+        # the slot back to implemented so the board does not spin on a stale
+        # "reviewing". (A hard process kill is recovered at web startup.)
+        _reset_stuck_slot(root, jira, tid, "reviewing", "implemented")
+        raise
+
+
+def recover_stale_tickets(root: Path) -> list[str]:
+    """Recover tickets left mid-flight by a previous, now-dead console process.
+
+    A killed process never reaches the in-process abort reset, so its
+    `implementing`/`reviewing` slots would otherwise make the board show a
+    perpetual spinner with no way to re-trigger. Called at web startup, when no
+    job from this process can yet be running. `reviewing` keeps its
+    `last_summary` (merge-conflict guidance) but becomes re-reviewable.
+    """
+    touched: list[str] = []
+    for req in paths.iter_req_dirs(root):
+        jira = req.name
+        if paths.is_reserved_req_name(jira):
+            continue
         with st.jira_lock(jira):
             data = st.load(root, jira)
-            slot = data["tickets"].get(tid)
-            if slot and slot.get("state") == "reviewing":
-                slot["state"] = "implemented"
-                st.save(root, jira, data)
-        raise
+            changed = False
+            for slot in (data.get("tickets") or {}).values():
+                state = slot.get("state")
+                if state == "reviewing":
+                    slot["state"] = "implemented"
+                    changed = True
+                elif state == "implementing":
+                    slot["state"] = "ready"
+                    changed = True
+            if not changed:
+                continue
+            st.refresh_ready(data)
+            st.save(root, jira, data)
+            touched.append(jira)
+    return touched
 
 
 def review(
