@@ -86,6 +86,24 @@ def test_argv_equivalence_builtin(tmp_path, name):
     assert [Path(p).name for p in skill_args] == EXPECTED_SKILLS[name]
 
 
+def test_get_runner_forwards_explicit_pair(tmp_path):
+    """An explicit pair (qa.yaml design) must land in the dry-run argv."""
+    from dev_yard.runners import get_runner
+
+    root = _workspace(tmp_path)
+    _make_skills(root, EXPECTED_SKILLS["qa-design"])
+    runner = get_runner(
+        root,
+        "qa-design",
+        dry_run=True,
+        print_mode=True,
+        provider="rcc",
+        model="glm-5.3",
+    )
+    assert runner.argv[runner.argv.index("--provider") + 1] == "rcc"
+    assert runner.argv[runner.argv.index("--model") + 1] == "glm-5.3"
+
+
 # ---- plugin loading ----
 
 

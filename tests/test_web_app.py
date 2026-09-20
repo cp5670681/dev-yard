@@ -889,8 +889,6 @@ def test_pi_settings_api(tmp_path: Path, monkeypatch):
         "implement",
         "review",
         "contract",
-        "qa-design",
-        "qa-run",
         "assistant",
     ]
     assert empty["catalog"]["providers"][0]["id"] == "rcc"

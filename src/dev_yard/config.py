@@ -10,6 +10,9 @@ import yaml
 
 from dev_yard import gitops, paths
 
+# Stages whose model pair may be overridden under repos.yaml `pi.stages`.
+# Test stages (qa-design, qa-run) are deliberately absent: their models live in
+# qa.yaml (`design`, `workers`) so all test model config sits in one file.
 PI_STAGES = (
     "open",
     "grill",
@@ -18,8 +21,6 @@ PI_STAGES = (
     "implement",
     "review",
     "contract",
-    "qa-design",
-    "qa-run",
     "assistant",
 )
 

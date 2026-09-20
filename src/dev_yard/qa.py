@@ -926,7 +926,12 @@ def _req_test(
     if need_design:
         spec = load_registry(root)["qa-design"]
         r = runner or get_runner(
-            root, "qa-design", print_mode=print_mode, spec=spec
+            root,
+            "qa-design",
+            print_mode=print_mode,
+            spec=spec,
+            provider=cfg.design_provider,
+            model=cfg.design_model,
         )
         prompt = _design_prompt(root, jira, cfg)
         result = r.start(prompt, root, [qa, paths.req_dir(root, jira)])

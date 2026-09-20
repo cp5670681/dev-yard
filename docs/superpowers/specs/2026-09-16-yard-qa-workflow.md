@@ -111,7 +111,10 @@ active_env: local
 browser:
   channel: chrome          # playwright-cli --browser
   headed: false            # 总并发 > 1 时宿主强制无头（有头窗口会抢资源）
-workers:                   # 模型池；省略则 1 并发，模型走 resolve_pi_choice(qa-run)
+design:                    # qa-design 的 agent 模型；省略则回退工作区 pi 全局 pair
+  provider: rcc
+  model: glm-5.3
+workers:                   # 模型池；省略则 1 并发，模型回退工作区 pi 全局 pair
   - id: a                  # 看板展示名；缺省用 model
     provider: rcc          # 与 repos.yaml pi 相同：成对出现；可省略则回退工作区 pi
     model: grok-4
@@ -151,7 +154,7 @@ envs:
 
 - 至少 1 条（省略整段 = 一条默认池 `concurrency: 1`）
 - `concurrency` 为正整数；单池 ≤ 8；**各池之和 ≤ 8**（再高拒配，避免本机浏览器/API 打满）
-- `provider`/`model` 必须成对；都不写则该池用 `resolve_pi_choice(root, "qa-run")`，解析结果仍空则该池无法派发、命令失败
+- `provider`/`model` 必须成对；都不写则该池用工作区 pi 全局 pair（`resolve_pi_choice(root, "qa-run")`，qa-run 阶段覆盖已移到 qa.yaml），解析结果仍空则该池无法派发、命令失败
 - `id` 在列表内唯一；缺省为 `model` 或 `w1`/`w2`
 - `priority` 为整数，缺省 `100`；**数值越小越优先**（1 先于 2）。允许相同，同优先再按 `id` 字典序
 - 语义是 **一个队列、多种 worker**：case 不绑模型。不是每个模型各跑一遍全集。优先级只决定「下一空槽用哪个池」，不把 case 钉死在某个模型上
@@ -340,7 +343,7 @@ dev-yard req test <JIRA>
 - `testing` 阶段 `next`：尚无自动测证据且无测试 B 票 → `run-test`；有就绪测试 B 票 → 仍 `fix-test`；否则保持 `fill-test-report`
 - `jobs._HOST_JOB_ACTIONS`、`board.BUILTIN_ACTION_IDS`、SPA `ACTION_LABELS` 补上
 - job 执行：`service.req_test(...)`；不要落到插件 `run_stage` 分支
-- `PI_STAGES` 增加 `qa-design`、`qa-run`。**跑测时的模型以 `qa.yaml` `workers` 为准**，不走设置页里单一的 `qa-run` pair（那只给「workers 省略」时的默认池用）
+- `PI_STAGES` **不**包含 `qa-design`、`qa-run`：测试阶段的模型配置统一放 `qa.yaml`（`design` 给 qa-design，`workers` 给 qa-run），设置页不再出现这两行；两个专用阶段经 `get_runner(..., provider, model)` 显式传 pair，pair 为空才回退全局 pi
 - 父 job 带 `qa_progress`（形状同 `progress.yaml`），SSE `state` 事件要带上，供看板直播；**不要**为每条 case 再占一个 `JobRunner` 线程（父 job 等子 job 会死锁）。case 的 pi 由 `req_test` **自建线程池**跑，池大小 = 总并发
 
 `PIPELINE` / 步骤条「提测」语义不变。

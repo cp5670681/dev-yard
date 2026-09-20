@@ -427,6 +427,51 @@
     </v-row>
 
     <v-row v-if="form && currentEnv" class="mt-1">
+      <v-col cols="12">
+        <v-card variant="outlined">
+          <v-card-item>
+            <template #prepend>
+              <v-avatar color="primary" variant="tonal" size="36" rounded="sm">
+                <v-icon :icon="mdiFileDocumentOutline" size="20" />
+              </v-avatar>
+            </template>
+            <template #title>用例设计模型</template>
+            <template #subtitle>
+              qa-design · 生成/重设计用例时用的 agent 模型；留空回退到工作区 pi 全局
+            </template>
+          </v-card-item>
+          <v-card-text>
+            <v-row dense>
+              <v-col cols="12" sm="6">
+                <v-select
+                  v-model="form.design.provider"
+                  :items="providerItems"
+                  label="provider"
+                  variant="outlined"
+                  density="comfortable"
+                  hide-details
+                  clearable
+                  @update:model-value="onDesignProviderChange($event)"
+                />
+              </v-col>
+              <v-col cols="12" sm="6">
+                <v-select
+                  v-model="form.design.model"
+                  :items="modelItems(form.design.provider)"
+                  label="model"
+                  variant="outlined"
+                  density="comfortable"
+                  hide-details
+                  clearable
+                />
+              </v-col>
+            </v-row>
+          </v-card-text>
+        </v-card>
+      </v-col>
+    </v-row>
+
+    <v-row v-if="form && currentEnv" class="mt-1">
       <v-col cols="12" md="6">
         <v-card variant="outlined">
           <v-card-item>
@@ -496,7 +541,7 @@
               rounded="lg"
               class="pa-4 text-center text-body-2 text-medium-emphasis mb-3"
             >
-              没配模型池：跑测回退到工作区 pi 的 qa-run 模型，1 并发。
+              没配模型池：跑测回退到工作区 pi 全局模型，1 并发。
             </v-sheet>
             <v-sheet v-for="(w, i) in form.workers" :key="i" border rounded="lg" class="pa-3 mb-3">
               <div class="d-flex align-center ga-2 mb-2">
@@ -635,6 +680,7 @@ import {
   mdiEyeOffOutline,
   mdiEyeOutline,
   mdiFileCodeOutline,
+  mdiFileDocumentOutline,
   mdiLanCheck,
   mdiLinkVariant,
   mdiMonitor,
@@ -756,17 +802,24 @@ function ensureSaved(pid: string | null, mid: string | null) {
   if (mid && !known.models.includes(mid)) known.models = [mid, ...known.models];
 }
 
-function onProviderChange(index: number, next: string | null) {
-  const row = form.value?.workers[index];
+/** Keep a provider/model pair consistent for any row (worker or design).
+ *  Clearing the provider clears the model too, or the server rejects the pair. */
+function syncProviderModel(row: { provider: string | null; model: string | null } | null | undefined, next: string | null) {
   if (!row) return;
   const pid = next || "";
-  // Clearing the provider must clear the model too, or the server rejects the
-  // pair with "provider and model must be set together".
   if (!pid) {
     row.model = "";
     return;
   }
   if (row.model && !modelItems(pid).includes(row.model)) row.model = "";
+}
+
+function onProviderChange(index: number, next: string | null) {
+  syncProviderModel(form.value?.workers[index], next);
+}
+
+function onDesignProviderChange(next: string | null) {
+  syncProviderModel(form.value?.design, next);
 }
 
 /** A blank field means "use the default"; 0 is a real priority (runs first). */
@@ -1014,6 +1067,8 @@ async function load() {
       : names[0] ?? "";
     nameDraft.value = editing.value;
     tab.value = "conn";
+    if (!form.value.design) form.value.design = { provider: null, model: null };
+    ensureSaved(form.value.design.provider, form.value.design.model);
     for (const w of res.payload.workers) ensureSaved(w.provider, w.model);
     if (!res.payload.workers.length) addWorker();
   } catch (e) {
@@ -1105,6 +1160,10 @@ async function save() {
     const saved = await saveQaConfig({
       active_env: form.value.active_env,
       browser: { ...form.value.browser },
+      design: {
+        provider: form.value.design?.provider ?? "",
+        model: form.value.design?.model ?? "",
+      },
       workers: form.value.workers.map((w) => ({
         ...w,
         concurrency: intOr(w.concurrency, 1),

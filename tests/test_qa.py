@@ -151,6 +151,27 @@ def test_design_called_when_no_cases(tmp_path: Path, git_src: Path, monkeypatch)
     assert result["cases"] == 1
 
 
+def test_design_runner_uses_qa_yaml_design_model(tmp_path: Path, git_src: Path, monkeypatch):
+    """qa-design must run with qa.yaml `design`, not the workspace pi fallback."""
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-DM")
+    _write_qa_yaml(yard, "design:\n  provider: rcc\n  model: glm-5.3\n")
+    design = _DesignRunner(yard, "QA-DM")
+    captured: dict = {}
+
+    def fake_get_runner(root, bundle, **kwargs):
+        captured["bundle"] = bundle
+        captured.update(kwargs)
+        return design
+
+    monkeypatch.setattr("dev_yard.qa.get_runner", fake_get_runner)
+    req_test(yard, "QA-DM", print_mode=True, design_only=True)
+    assert captured["bundle"] == "qa-design"
+    assert captured["provider"] == "rcc"
+    assert captured["model"] == "glm-5.3"
+
+
 def test_design_skipped_when_cases_exist(tmp_path: Path, git_src: Path, monkeypatch):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)

@@ -38,6 +38,7 @@ class RepoPiIn(BaseModel):
 class QaConfigIn(BaseModel):
     active_env: str = "local"
     browser: dict[str, Any] = Field(default_factory=dict)
+    design: dict[str, Any] = Field(default_factory=dict)
     workers: list[dict[str, Any]] = Field(default_factory=list)
     envs: dict[str, Any] = Field(default_factory=dict)
     renamed: dict[str, str] = Field(default_factory=dict)

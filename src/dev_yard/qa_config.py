@@ -29,9 +29,10 @@ class QaConfigUnreadable(TestRejected):
 # env keys the form owns; anything else in that env is carried through a save
 _MANAGED_ENV_KEYS = frozenset({"base_url", "auth", "db", "script", "notes", "exec"})
 _MANAGED_TOP_KEYS = frozenset(
-    {"active_env", "browser", "workers", "envs", "serialize_accounts"}
+    {"active_env", "browser", "workers", "design", "envs", "serialize_accounts"}
 )
 _MANAGED_BROWSER_KEYS = frozenset({"channel", "headed"})
+_MANAGED_DESIGN_KEYS = frozenset({"provider", "model"})
 _MANAGED_WORKER_KEYS = frozenset(
     {"id", "provider", "model", "concurrency", "priority"}
 )
@@ -118,6 +119,8 @@ class QaConfig:
     workers: tuple[QaWorker, ...]
     env_names: tuple[str, ...] = ()
     serialize_accounts: bool = False
+    design_provider: str | None = None
+    design_model: str | None = None
 
     @property
     def total_concurrency(self) -> int:
@@ -242,6 +245,25 @@ def _parse_env(name: str, raw: Any) -> QaEnv:
     )
 
 
+def _pair_or_none(provider: Any, model: Any, field: str) -> tuple[str | None, str | None]:
+    """A provider/model pair, both or neither; a half pair is a config error."""
+    p = _blank(provider) or None
+    m = _blank(model) or None
+    if (p and not m) or (m and not p):
+        raise TestRejected(f"{field}: provider and model must be set together")
+    return p, m
+
+
+def _parse_design(raw: Any) -> tuple[str | None, str | None]:
+    """qa.yaml `design`: the model qa-design runs with. Empty pair is allowed
+    (falls back to the workspace pi pair); a half pair is a config error."""
+    if raw is None:
+        return None, None
+    if not isinstance(raw, dict):
+        raise TestRejected("qa.yaml design must be a mapping")
+    return _pair_or_none(raw.get("provider"), raw.get("model"), "qa.yaml design")
+
+
 def _parse_workers(root: Path, raw: Any) -> tuple[QaWorker, ...]:
     if raw is None:
         raw = [{}]
@@ -265,7 +287,7 @@ def _parse_workers(root: Path, raw: Any) -> tuple[QaWorker, ...]:
             if not provider or not model:
                 raise TestRejected(
                     "qa.yaml worker has no provider/model and "
-                    "resolve_pi_choice(qa-run) is empty"
+                    "the workspace pi pair is empty"
                 )
         wid = _blank(item.get("id")) or (model or f"w{auto_n}")
         auto_n += 1
@@ -343,6 +365,7 @@ def _parse_config(root: Path, data: dict[str, Any], env: str | None = None) -> Q
         headed=bool(headed),
     )
     workers = _parse_workers(root, data.get("workers"))
+    design_provider, design_model = _parse_design(data.get("design"))
     return QaConfig(
         active_env=env_name,
         env=env,
@@ -350,6 +373,8 @@ def _parse_config(root: Path, data: dict[str, Any], env: str | None = None) -> Q
         workers=workers,
         env_names=tuple(_env_names(envs)) or (env_name,),
         serialize_accounts=_as_bool(data.get("serialize_accounts"), False),
+        design_provider=design_provider,
+        design_model=design_model,
     )
 
 
@@ -652,8 +677,8 @@ def _int_or(value: Any, default: int) -> int:
 def _workers_payload(root: Path, raw: Any) -> list[dict[str, Any]]:
     """Project the workers key onto form rows without validating it.
 
-    Missing provider/model is shown as the qa-run fallback it will resolve to,
-    so the form previews what would actually run.
+    Missing provider/model is shown as the workspace pi pair it will resolve
+    to, so the form previews what would actually run.
     """
     rows = raw if isinstance(raw, list) and raw else [None]
     fallback = resolve_pi_choice(root, "qa-run")
@@ -674,6 +699,33 @@ def _workers_payload(root: Path, raw: Any) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _design_payload(raw: Any) -> dict[str, str]:
+    """Project qa.yaml `design` onto form fields; empty reads as unset."""
+    row = raw if isinstance(raw, dict) else {}
+    return {
+        "provider": _blank(row.get("provider")) or "",
+        "model": _blank(row.get("model")) or "",
+    }
+
+
+def _design_to_raw(raw: Any, previous: Any = None) -> dict[str, str] | None:
+    """Form payload for `design` → the qa.yaml mapping, or None to drop it.
+
+    Keys the form does not own are carried over from `previous`, so a save
+    never drops hand-written design config.
+    """
+    row = raw if isinstance(raw, dict) else {}
+    prev = previous if isinstance(previous, dict) else {}
+    out = {k: v for k, v in prev.items() if k not in _MANAGED_DESIGN_KEYS}
+    provider, model = _pair_or_none(
+        row.get("provider"), row.get("model"), "qa.yaml design"
+    )
+    if provider and model:
+        out["provider"] = provider
+        out["model"] = model
+    return out or None
 
 
 def _env_payload(raw: Any) -> dict[str, Any]:
@@ -723,12 +775,13 @@ def _browser_payload(raw: Any) -> dict[str, Any]:
 def default_qa_payload(root: Path) -> dict[str, Any]:
     """What the form opens with when qa.yaml is absent or has no envs yet.
 
-    The worker row is pre-filled from the qa-run fallback so that a bare
+    The worker row is pre-filled from the workspace pi pair so that a bare
     workspace can be saved straight from the form.
     """
     return {
         "active_env": "local",
         "browser": _browser_payload(None),
+        "design": _design_payload(None),
         "workers": _workers_payload(root, None),
         "envs": {"local": _env_payload(None)},
         "env_names": ["local"],
@@ -747,11 +800,13 @@ def qa_payload(root: Path) -> dict[str, Any]:
     data = _read_data(root)
     envs = data.get("envs") if isinstance(data.get("envs"), dict) else {}
     browser = _browser_payload(data.get("browser"))
+    design = _design_payload(data.get("design"))
     workers = _workers_payload(root, data.get("workers"))
     if not envs:
         return {
             "active_env": "local",
             "browser": browser,
+            "design": design,
             "workers": workers,
             "envs": {"local": _env_payload(None)},
             "env_names": ["local"],
@@ -762,6 +817,7 @@ def qa_payload(root: Path) -> dict[str, Any]:
     return {
         "active_env": active,
         "browser": browser,
+        "design": design,
         "workers": workers,
         "envs": {name: _env_payload(envs.get(name)) for name in names},
         "env_names": names,
@@ -840,6 +896,9 @@ def save_qa_config(root: Path, payload: Any) -> None:
     browser_out["channel"] = _blank(browser_raw.get("channel")) or "chrome"
     browser_out["headed"] = bool(headed)
     out["browser"] = browser_out
+    design_out = _design_to_raw(payload.get("design"), data.get("design"))
+    if design_out:
+        out["design"] = design_out
     workers = _workers_to_raw(payload.get("workers"), data.get("workers"))
     if workers:
         out["workers"] = workers

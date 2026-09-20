@@ -389,9 +389,17 @@ export interface QaWorkerCfg {
   priority: number;
 }
 
+export interface QaModelCfg {
+  /** null once the select is cleared — the server reads it as "". */
+  provider: string | null;
+  model: string | null;
+}
+
 export interface QaConfigPayload {
   active_env: string;
   browser: { channel: string; headed: boolean };
+  /** qa-design agent model; empty falls back to the workspace pi pair. */
+  design: QaModelCfg;
   workers: QaWorkerCfg[];
   envs: Record<string, QaEnvCfg>;
   env_names: string[];

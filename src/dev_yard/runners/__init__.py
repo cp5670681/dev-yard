@@ -229,12 +229,17 @@ class PiRunner(Runner):
         print_mode: bool = False,
         binary: str | None = None,
         spec: StageSpec | None = None,
+        provider: str | None = None,
+        model: str | None = None,
     ) -> None:
         self.root = root
         self.bundle = bundle
         self.print_mode = print_mode
         self.binary = binary or agent_binary()
         self.spec = spec
+        # An explicit pair (e.g. qa.yaml design) wins over resolve_pi_choice.
+        self.provider = provider
+        self.model = model
 
     def start(
         self,
@@ -258,6 +263,8 @@ class PiRunner(Runner):
                 binary=self.binary,
                 repo=repo,
                 spec=self.spec,
+                provider=self.provider,
+                model=self.model,
             )
 
             def _echo(line: str) -> None:
@@ -280,6 +287,8 @@ class PiRunner(Runner):
             binary=self.binary,
             repo=repo,
             spec=self.spec,
+            provider=self.provider,
+            model=self.model,
         )
         r = subprocess.run(argv, cwd=cwd)
         return RunResult(
@@ -313,6 +322,8 @@ def get_runner(
     dry_run: bool = False,
     print_mode: bool = False,
     spec: StageSpec | None = None,
+    provider: str | None = None,
+    model: str | None = None,
 ) -> Runner:
     if dry_run:
         return DryRunRunner(
@@ -322,6 +333,15 @@ def get_runner(
                 prompt="(dry-run)",
                 print_mode=print_mode,
                 spec=spec,
+                provider=provider,
+                model=model,
             )
         )
-    return PiRunner(root, bundle, print_mode=print_mode, spec=spec)
+    return PiRunner(
+        root,
+        bundle,
+        print_mode=print_mode,
+        spec=spec,
+        provider=provider,
+        model=model,
+    )

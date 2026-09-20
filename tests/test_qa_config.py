@@ -24,7 +24,7 @@ def _yard(tmp_path: Path) -> Path:
 
 
 def _configure_pi(root: Path, provider: str = "rcc", model: str = "grok-4") -> None:
-    """A workspace whose qa-run fallback resolves — required to omit workers."""
+    """A workspace whose global pi pair resolves — required to omit workers."""
     (root / "repos.yaml").write_text(
         f"repos: {{}}\npi:\n  provider: {provider}\n  model: {model}\n",
         encoding="utf-8",
@@ -35,6 +35,7 @@ def _payload(root: Path) -> dict:
     return {
         "active_env": "local",
         "browser": {"channel": "chrome", "headed": False},
+        "design": {"provider": "rcc", "model": "glm-5.3"},
         "workers": [
             {
                 "id": "a",
@@ -70,12 +71,13 @@ def test_default_payload_is_a_minimal_editable_form(tmp_path: Path):
     payload = default_qa_payload(root)
     assert payload["active_env"] == "local"
     assert payload["browser"] == {"channel": "chrome", "headed": False}
+    assert payload["design"] == {"provider": "", "model": ""}
     assert len(payload["workers"]) == 1
     assert payload["envs"]["local"]["base_url"] == ""
     assert payload["envs"]["local"]["notes"] == []
 
 
-def test_payload_prefills_missing_worker_from_qa_run_fallback(tmp_path: Path):
+def test_payload_prefills_missing_worker_from_pi_global(tmp_path: Path):
     """A worker row with no model shows the pair it would fall back to."""
     root = _yard(tmp_path)
     _configure_pi(root, "rcc", "MiniMax-M3")
@@ -102,6 +104,7 @@ def test_save_then_load_roundtrip(tmp_path: Path):
     assert cfg.env.script_runner == "bin/rails runner"
     assert cfg.env.notes == ("先起前端", "别用生产库")
     assert cfg.browser.channel == "chrome"
+    assert (cfg.design_provider, cfg.design_model) == ("rcc", "glm-5.3")
     assert [(w.id, w.provider, w.model, w.concurrency, w.priority) for w in cfg.workers] == [
         ("a", "rcc", "grok-4", 2, 1)
     ]
@@ -454,6 +457,37 @@ def test_save_rejects_unpaired_worker_model(tmp_path: Path):
     payload["workers"][0]["model"] = ""
     with pytest.raises(TestRejected, match="provider and model"):
         save_qa_config(root, payload)
+
+
+def test_save_rejects_unpaired_design_model(tmp_path: Path):
+    root = _yard(tmp_path)
+    payload = _payload(root)
+    payload["design"]["model"] = ""
+    with pytest.raises(TestRejected, match="design"):
+        save_qa_config(root, payload)
+
+
+def test_clearing_design_drops_it_from_qa_yaml(tmp_path: Path):
+    root = _yard(tmp_path)
+    save_qa_config(root, _payload(root))
+    payload = qa_payload(root)
+    payload["design"] = {"provider": "", "model": ""}
+    save_qa_config(root, payload)
+    data = yaml.safe_load((root / "qa.yaml").read_text(encoding="utf-8"))
+    assert "design" not in data
+    assert load_qa_config(root).design_provider is None
+
+
+def test_payload_projects_design_from_disk(tmp_path: Path):
+    root = _yard(tmp_path)
+    (root / "qa.yaml").write_text(
+        "design:\n  provider: rcc\n  model: glm-5.3\n"
+        "envs:\n  local:\n    base_url: http://127.0.0.1:8080\n"
+        "workers:\n  - id: a\n    provider: rcc\n    model: grok-4\n",
+        encoding="utf-8",
+    )
+    payload = qa_payload(root)
+    assert payload["design"] == {"provider": "rcc", "model": "glm-5.3"}
 
 
 def test_save_rejects_worker_concurrency_over_eight(tmp_path: Path):
