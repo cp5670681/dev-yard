@@ -195,7 +195,7 @@ import { useRoute, useRouter } from "vue-router";
 import { useDisplay } from "vuetify";
 import { mdiContentCopy, mdiSourceRepository } from "@mdi/js";
 import { addRepo, getPiSettings, listRepos, setRepoPi } from "@/api/client";
-import type { PiCatalogProvider, Repo } from "@/api/types";
+import type { JobSnapshot, PiCatalogProvider, Repo } from "@/api/types";
 import { useSnack } from "@/composables/snack";
 import JobPanel from "@/components/JobPanel.vue";
 
@@ -326,9 +326,11 @@ async function submit() {
   }
 }
 
-async function onJobDone() {
+async function onJobDone(job?: JobSnapshot) {
   await reload();
-  snack.notify("仓库任务完成", "success");
+  if (job?.state === "ok") {
+    snack.notify("仓库任务完成", "success");
+  }
 }
 
 function openEdit(r: Repo) {

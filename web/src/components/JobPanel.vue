@@ -54,7 +54,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { mdiStopCircleOutline } from "@mdi/js";
-import { cancelJob, getJob } from "@/api/client";
+import { ApiError, cancelJob, getJob } from "@/api/client";
 import type { JobSnapshot } from "@/api/types";
 import { openPi } from "@/state/pi";
 import { ACTION_LABELS } from "@/composables/labels";
@@ -72,8 +72,17 @@ const emit = defineEmits<{ done: [job: JobSnapshot]; update: [job: JobSnapshot] 
 const snack = useSnack();
 
 function isMissingJob(e: unknown): boolean {
+  if (e instanceof ApiError && e.status === 404) return true;
+  if (
+    typeof e === "object" &&
+    e !== null &&
+    "status" in e &&
+    (e as { status: unknown }).status === 404
+  ) {
+    return true;
+  }
   const msg = e instanceof Error ? e.message : String(e);
-  return /\b404\b|not found/i.test(msg);
+  return /\b404\b|not found|unknown job/i.test(msg);
 }
 
 const job = ref<JobSnapshot>(
@@ -129,11 +138,20 @@ const hint = computed(() => {
 });
 
 let es: EventSource | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearReconnect() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+}
 
 function apply(next: JobSnapshot) {
   job.value = next;
   emit("update", next);
   if (isTerminal(next.state)) {
+    clearReconnect();
     es?.close();
     es = null;
     emit("done", next);
@@ -146,10 +164,13 @@ function refresh() {
     .catch((e) => {
       const msg = e instanceof Error ? e.message : String(e);
       if (isMissingJob(e)) {
+        clearReconnect();
+        es?.close();
+        es = null;
         apply({
           ...job.value,
           state: "error",
-          log: (job.value.log || "") + `\n${msg}\n`,
+          log: (job.value.log || "") + (job.value.log ? "\n" : "") + (msg === "unknown job" ? "任务不存在或已结束" : msg),
         });
         return;
       }
@@ -158,6 +179,7 @@ function refresh() {
 }
 
 function bind() {
+  clearReconnect();
   es?.close();
   es = new EventSource(`/api/jobs/${encodeURIComponent(props.jobId)}/events`);
   es.addEventListener("snapshot", (e) => {
@@ -181,28 +203,36 @@ function bind() {
     getJob(props.jobId)
       .then((next) => {
         apply(next);
-        if (closed && !isTerminal(next.state)) bind();
+        if (closed && !isTerminal(next.state)) {
+          clearReconnect();
+          reconnectTimer = setTimeout(bind, 1500);
+        }
       })
       .catch((e) => {
         const msg = e instanceof Error ? e.message : String(e);
         if (isMissingJob(e)) {
+          clearReconnect();
           es?.close();
           es = null;
           apply({
             ...job.value,
             state: "error",
-            log: (job.value.log || "") + `\n${msg}\n`,
+            log: (job.value.log || "") + (job.value.log ? "\n" : "") + (msg === "unknown job" ? "任务不存在或已结束" : msg),
           });
           return;
         }
         snack.notify(msg, "error");
-        if (closed) bind();
+        if (closed) {
+          clearReconnect();
+          reconnectTimer = setTimeout(bind, 3000);
+        }
       });
   };
 }
 
 onMounted(bind);
 onUnmounted(() => {
+  clearReconnect();
   es?.close();
   es = null;
 });
