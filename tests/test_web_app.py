@@ -1180,6 +1180,7 @@ def test_repo_form_role_is_free_text(tmp_path: Path, git_src: Path):
             "path": str(git_src),
             "provider": "",
             "model": "",
+            "test_branch": "",
         }
     ]
 

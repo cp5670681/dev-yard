@@ -28,6 +28,16 @@ def session_prompt_for(
                 "TDD mode is OFF (dev.tdd=false). Do NOT require test files or test execution in review; "
                 "missing tests is NOT a defect or violation unless SPEC.md explicitly demands testing."
             )
+        elif spec.name == "resolve-merge":
+            tdd_extra = (
+                "TDD mode is OFF (dev.tdd=false). After resolving conflicts, do NOT add test files and do "
+                "NOT run test suites; only do a static check (syntax / obvious broken references) and stop."
+            )
+    elif spec.name == "resolve-merge":
+        tdd_extra = (
+            "TDD mode is ON (dev.tdd=true). After resolving conflicts, run the affected test suites using "
+            "the repo's existing conventions and keep them green before you finish."
+        )
 
     if spec.name == "open":
         start = (
@@ -44,6 +54,13 @@ def session_prompt_for(
         start = (
             f"Read files with the read tool as needed, starting with {req / 'REQUIREMENT.md'} "
             f"(product source of truth) and {req / 'SPEC.md'} (implementation contract). "
+            f"Shared glossary: `{ctx}`. ADRs: `{adr}`."
+        )
+    elif spec.name == "resolve-merge":
+        start = (
+            f"Resolve the git merge conflict in the current worktree only. "
+            f"Read {req / 'REQUIREMENT.md'} (product source of truth), "
+            f"{req / 'SPEC.md'} (implementation contract), and {req / 'TICKETS.md'} as needed. "
             f"Shared glossary: `{ctx}`. ADRs: `{adr}`."
         )
     elif spec.name in {"review", "tickets"}:

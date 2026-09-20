@@ -219,6 +219,34 @@ def worktree_remove(source: Path, path: Path) -> None:
             pass
 
 
+def worktree_prune(source: Path) -> None:
+    try:
+        run(["git", "worktree", "prune"], cwd=source)
+    except GitError:
+        pass
+
+
+def detached_worktree(source: Path, path: Path, ref: str) -> None:
+    """Recreate `path` as a clean detached worktree at `ref`.
+
+    Any leftover worktree/dir from a previous failed integration is removed
+    first, so `git worktree add` cannot fail with "already exists".
+    """
+    if path.exists():
+        if _is_git_worktree(path):
+            worktree_remove(source, path)
+        else:
+            try:
+                next(path.iterdir())
+            except StopIteration:
+                path.rmdir()
+            else:
+                raise GitError(f"{path} exists and is not a git worktree")
+    worktree_prune(source)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    run(["git", "worktree", "add", "--detach", str(path), ref], cwd=source)
+
+
 def branch_delete(source: Path, branch: str) -> None:
     try:
         run(["git", "branch", "-D", branch], cwd=source)
@@ -378,6 +406,99 @@ def push(
     on_progress(f"git push {remote} {target_branch} (cwd={worktree})")
     _run_progress(argv, on_progress, cwd=worktree)
     return f"pushed {target_branch} to {remote}"
+
+
+def fetch_branch(
+    source: Path, remote: str, branch: str, on_progress: Progress | None = None
+) -> None:
+    """Fetch one remote branch, updating `refs/remotes/<remote>/<branch>`."""
+    argv = ["git", "fetch", "--prune"]
+    if on_progress is not None:
+        argv.append("--progress")
+    argv.extend([remote, branch])
+    if on_progress is None:
+        run(argv, cwd=source)
+        return
+    on_progress(f"git fetch {remote} {branch}")
+    _run_progress(argv, on_progress, cwd=source)
+
+
+def push_ref(
+    worktree: Path,
+    remote: str,
+    src: str,
+    dst: str,
+    on_progress: Progress | None = None,
+) -> None:
+    """Push `<src>:<dst>` (e.g. detached `HEAD:refs/heads/<branch>`), non-force."""
+    argv = ["git", "push"]
+    if on_progress is not None:
+        argv.append("--progress")
+    argv.extend([remote, f"{src}:{dst}"])
+    if on_progress is None:
+        run(argv, cwd=worktree)
+        return
+    on_progress(f"git push {remote} {src}:{dst} (cwd={worktree})")
+    _run_progress(argv, on_progress, cwd=worktree)
+
+
+def add_all(worktree: Path) -> None:
+    run(["git", "add", "-A"], cwd=worktree)
+
+
+def has_merge_head(worktree: Path) -> bool:
+    return rev_parse(worktree, "MERGE_HEAD") is not None
+
+
+# `<<<<<<<` / `>>>>>>>` are unambiguous; `=======` alone is a setext underline.
+_MARKER_BEGIN_RE = re.compile(r"^(?:<{7}|>{7})(?:\s|$)")
+_MARKER_MID_PREFIX = "======="
+
+
+def _scan_text_conflict_markers(text: str) -> list[str]:
+    lines = text.splitlines()
+    strong = [ln for ln in lines if _MARKER_BEGIN_RE.match(ln)]
+    if not strong:
+        return []
+    return strong + [ln for ln in lines if ln.startswith(_MARKER_MID_PREFIX)]
+
+
+def _changed_files(argv: list[str], worktree: Path) -> list[str]:
+    try:
+        out = run(argv, cwd=worktree)
+    except GitError:
+        return []
+    return [ln.strip() for ln in out.splitlines() if ln.strip()]
+
+
+def _scan_worktree_files(worktree: Path, files: list[str]) -> list[str]:
+    out: list[str] = []
+    for rel in files:
+        try:
+            text = (worktree / rel).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        out.extend(f"{rel}: {marker}" for marker in _scan_text_conflict_markers(text))
+    return out
+
+
+def check_conflict_markers(worktree: Path) -> list[str]:
+    """Leftover conflict markers in the *staged* changes.
+
+    Deliberately does not trust `git diff --check`: git flags any added line
+    whose first 7 chars are `<`/`=`/`>` followed by EOL/space, which
+    false-positives on Markdown/RST setext underlines (`=======`). We require an
+    unambiguous `<<<<<<<`/`>>>>>>>` line before treating a file as conflicted;
+    a lone `=======` (setext) is ignored.
+    """
+    files = _changed_files(["git", "diff", "--cached", "--name-only"], worktree)
+    return _scan_worktree_files(worktree, files)
+
+
+def check_commit_conflict_markers(worktree: Path, rev: str = "HEAD") -> list[str]:
+    """Leftover conflict markers introduced by commit `rev` (setext-safe)."""
+    files = _changed_files(["git", "diff", "--name-only", f"{rev}^", rev], worktree)
+    return _scan_worktree_files(worktree, files)
 
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -65,27 +66,90 @@ def _report_id(when: datetime, archive: Path | None = None) -> str:
     return f"{base}-{n}"
 
 
-def submit_test(root: Path, jira: str) -> dict[str, Any]:
+def _assert_submittable(data: dict[str, Any], jira: str, *, recheck: bool = False) -> None:
+    """Pre/post-integration gate. `recheck=True` is the TOCTOU pass on latest STATUS."""
+    if not st.all_done(data):
+        raise ReportRejected(
+            f"{jira} tickets changed during submit-test; re-run"
+            if recheck
+            else f"{jira} tickets are not all done; cannot submit for test"
+        )
+    if data.get("contract_review") != "passed":
+        raise ReportRejected(
+            f"{jira} contract_review changed during submit-test; re-run"
+            if recheck
+            else (
+                f"{jira} contract_review is {data.get('contract_review')!r}; "
+                "must be passed before submit-test"
+            )
+        )
+    if st.test_passed(data):
+        raise ReportRejected(f"{jira} already has a passed test report")
+
+
+def submit_test(
+    root: Path,
+    jira: str,
+    *,
+    remote: str = "origin",
+    ai_resolve: bool | None = None,
+    force_all: bool = False,
+    on_progress: Callable[[str], None] | None = None,
+    runner_factory: Any = None,
+) -> dict[str, Any]:
+    """Submit for testing: merge each repo's freeze branch into its test branch.
+
+    Validates under `jira_lock`, then runs the (long, possibly AI-backed) git
+    integration *outside* the lock so the board stays responsive. STATUS is
+    reloaded and re-validated before the phase flip, so concurrent edits made
+    during the run are never clobbered.
+    """
+    from dev_yard import test_integrate
+
     parsed = load_tickets(paths.req_dir(root, jira))
     with st.jira_lock(jira):
         data = st.sync_tickets(st.load(root, jira), parsed)
         st.refresh_ready(data)
-        if not st.all_done(data):
-            raise ReportRejected(f"{jira} tickets are not all done; cannot submit for test")
-        if data.get("contract_review") != "passed":
-            raise ReportRejected(
-                f"{jira} contract_review is {data.get('contract_review')!r}; "
-                "must be passed before submit-test"
-            )
-        if st.test_passed(data):
-            raise ReportRejected(f"{jira} already has a passed test report")
+        _assert_submittable(data, jira)
+        eligible = test_integrate.eligible_repos(root, data)
         if data.get("phase") == "testing":
-            raise ReportRejected(f"{jira} is already in testing")
-        data["phase"] = "testing"
-        slot = _test_slot(data)
+            if not eligible:
+                raise ReportRejected(f"{jira} is already in testing")
+            if not force_all and not test_integrate.has_new_changes(root, jira, data):
+                return dict(data)
+
+    outcome = test_integrate.integrate_test_branches(
+        root,
+        jira,
+        remote=remote,
+        ai_resolve=ai_resolve,
+        force_all=force_all,
+        on_progress=on_progress,
+        runner_factory=runner_factory,
+    )
+
+    with st.jira_lock(jira):
+        latest = st.load(root, jira)
+        latest = st.sync_tickets(latest, load_tickets(paths.req_dir(root, jira)))
+        st.refresh_ready(latest)
+        _assert_submittable(latest, jira, recheck=True)
+        if latest.get("phase") not in {"frozen", "testing"}:
+            raise ReportRejected(
+                f"{jira} phase changed to {latest.get('phase')!r} during submit-test; aborting"
+            )
+        slot = _test_slot(latest)
+        integration = slot.get("integration")
+        if not isinstance(integration, dict):
+            integration = {}
+        integration.update(outcome.status_map())
+        slot["integration"] = integration
+        if not outcome.ok:
+            st.save(root, jira, latest)
+            raise ReportRejected(outcome.error or "submit-test integration failed")
         slot["status"] = "awaiting"
-        st.save(root, jira, data)
-        return dict(data)
+        latest["phase"] = "testing"
+        st.save(root, jira, latest)
+        return dict(latest)
 
 
 def namespace_findings(batch_id: str, findings: list[Finding]) -> list[dict[str, Any]]:

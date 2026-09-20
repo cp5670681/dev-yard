@@ -28,11 +28,13 @@ class RepoAddIn(BaseModel):
     path: str = ""
     provider: str = ""
     model: str = ""
+    test_branch: str = ""
 
 
 class RepoPiIn(BaseModel):
     provider: str = ""
     model: str = ""
+    test_branch: str | None = None
 
 
 class QaConfigIn(BaseModel):
@@ -62,6 +64,7 @@ class ActionIn(BaseModel):
     approve: bool = False
     redesign: bool = False
     feedback: str = ""
+    resolve: bool | None = None
 
 
 class AssistantSessionIn(BaseModel):

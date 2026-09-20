@@ -258,3 +258,16 @@ def test_review_prompt_tdd_disabled(tmp_path: Path):
     assert "TDD mode is OFF (dev.tdd=false)" in p
     assert "Do NOT require test files" in p
 
+
+
+def test_resolve_merge_prompt_follows_tdd(tmp_path: Path):
+    from dev_yard.skillbind import session_prompt_for
+    from dev_yard.stages import RESOLVE_MERGE_SPEC
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    prompt = session_prompt_for(RESOLVE_MERGE_SPEC, yard, "AB-1")
+    assert "TDD mode is ON" in prompt
+    save_dev_settings(yard, DevSettings(tdd=False))
+    prompt = session_prompt_for(RESOLVE_MERGE_SPEC, yard, "AB-1")
+    assert "TDD mode is OFF" in prompt

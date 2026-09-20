@@ -378,6 +378,7 @@ class AppContext:
                 "path": payload.path.strip() or None,
                 "provider": payload.provider.strip() or None,
                 "model": payload.model.strip() or None,
+                "test_branch": payload.test_branch.strip() or None,
             },
         )
 

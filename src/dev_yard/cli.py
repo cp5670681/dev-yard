@@ -125,6 +125,9 @@ def repo_add(
     path: str | None = None,
     provider: str | None = typer.Option(None, "--provider"),
     model: str | None = typer.Option(None, "--model"),
+    test_branch: str | None = typer.Option(
+        None, "--test-branch", help="共享测试分支（提测时 merge 冻结分支到这里）"
+    ),
 ) -> None:
     root = root_opt()
     try:
@@ -138,6 +141,7 @@ def repo_add(
             on_progress=lambda line: typer.echo(line, err=True),
             provider=provider,
             model=model,
+            test_branch=test_branch,
         )
     except (ValueError, GitError) as e:
         _die(e)
@@ -325,15 +329,38 @@ def req_push(
 
 
 @req_app.command("submit-test")
-def req_submit_test(jira: str) -> None:
-    """Mark the requirement as submitted for third-party testing."""
+def req_submit_test(
+    jira: str,
+    remote: str = typer.Option("origin", "--remote", "-r", help="Git remote name"),
+    no_resolve: bool = typer.Option(
+        False, "--no-resolve", help="Close AI merge-conflict resolution (default: on)"
+    ),
+    force_all: bool = typer.Option(
+        False,
+        "--all",
+        "--force-resubmit",
+        help="Ignore incremental/unchanged checks; integrate every eligible repo",
+    ),
+) -> None:
+    """Merge each repo's freeze branch into its test branch and push, then mark testing."""
+    from dev_yard import test_integrate
     from dev_yard.test_report import ReportRejected, submit_test
 
     root = root_opt()
+    ai_resolve = False if no_resolve else None
     try:
-        data = submit_test(root, jira)
+        data = submit_test(
+            root,
+            jira,
+            remote=remote,
+            ai_resolve=ai_resolve,
+            force_all=force_all,
+            on_progress=lambda line: typer.echo(line, err=True),
+        )
     except (ValueError, FileNotFoundError, ReportRejected) as e:
         _die(e)
+    for line in test_integrate.integration_report(data):
+        typer.echo(line)
     typer.echo(f"{jira} phase={data.get('phase')} test={data.get('test', {}).get('status')}")
 
 

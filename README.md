@@ -185,6 +185,7 @@ dev-yard push PROJ-101              # 或 dev-yard req push PROJ-101
 ```yaml
 git:
   freeze_branch: req/{jira}   # 缺省。也可 feature/{jira}、{jira} 等；必须含 {jira}
+  ai_resolve_conflicts: true  # 提测 merge 冲突时让 implement 模型自动消解（默认 true）
 pi:
   provider: anthropic
   model: claude-3-7-sonnet
@@ -198,11 +199,14 @@ repos:
     url: git@github.com:my-org/core-api.git
     default_base: main
     role: be
+    test_branch: PG-test      # 提测时把冻结分支 merge 到此共享测试分支；缺省=该仓不提测
     provider: anthropic
     model: claude-3-7-sonnet # 仓级别模型覆盖
 ```
 - **模型回退机制**：`仓配置` → `pi.stages.<阶段>` → `全局 pi` → `环境变量(YARD_PI_*)` → `pi 默认`。
 - **冻结分支**：Web「配置 → 分支」写入 `git.freeze_branch`。并行票子分支是 `{冻结名}-{票号}`（git 不允许 `冻结名/票号` 这种嵌套 ref）。改模板只影响之后新冻结的需求。
+- **测试分支（`test_branch`）**：每仓可选。提测（`dev-yard req submit-test`）时，对配了该字段的仓，把冻结分支 merge 进 `test_branch` 并 push；没配的仓跳过。测试分支是长命共享分支（同一仓对所有需求同一个），别并行提测多个需求，否则一个需求会把另一个需求的改动带进测试环境。另注意：若测试分支落后于 `default_base`，合并冻结分支会把它之后基线的大量无关提交一并带入，冲突面也会变大——提测前建议先把测试分支同步到基线。
+- **提测可重入**：`submit-test` 幂等。修完测试 bug（冻结分支前进）后再跑一次，只重推 `freeze_sha` 变化或未推的仓；`--all` 强制全量，`--no-resolve` 关闭 AI 解冲突。
 
 ### 目录与分支拓扑
 ```text

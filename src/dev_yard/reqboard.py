@@ -264,11 +264,27 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
     any_review = any(t.can_review for t in detail.tickets)
     tickets_done = bool(detail.tickets) and all(t.state == "done" for t in detail.tickets)
     contract_ok = detail.contract == "passed"
+    passed = st.test_passed({"test": detail.test, "phase": detail.phase})
+    in_testing = detail.phase == "testing"
+    resubmit_ok = False
+    has_eligible = False
+    if in_testing and not passed:
+        from dev_yard import test_integrate
+
+        proxy = {
+            "branch": detail.branch,
+            "test": detail.test,
+            "tickets": {t.id: {"repo": t.repo} for t in detail.tickets},
+        }
+        has_eligible = bool(test_integrate.eligible_repos(root, proxy))
+        resubmit_ok = has_eligible and test_integrate.has_new_changes(
+            root, detail.jira, proxy
+        )
     can_submit = (
         tickets_done
         and contract_ok
-        and detail.phase != "testing"
-        and not st.test_passed({"test": detail.test, "phase": detail.phase})
+        and not passed
+        and (not in_testing or resubmit_ok)
     )
     can_fill = (
         contract_ok
@@ -382,15 +398,17 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
         ),
         Action(
             "submit-test",
-            ACTION_LABELS["submit-test"],
+            "重新提测" if in_testing and can_submit else ACTION_LABELS["submit-test"],
             can_submit,
             ""
             if can_submit
             else (
-                "已在提测阶段"
-                if detail.phase == "testing"
+                "没有新的改动"
+                if in_testing and has_eligible
+                else "已在提测阶段"
+                if in_testing
                 else "测试报告已通过"
-                if st.test_passed({"test": detail.test})
+                if passed
                 else "需要全部票 done 且契约审查 passed"
             ),
         ),
@@ -486,6 +504,7 @@ def list_repos(root: Path) -> list[dict[str, str]]:
                 "path": str(repo.path) if repo.path else "",
                 "provider": repo.provider or "",
                 "model": repo.model or "",
+                "test_branch": repo.test_branch or "",
             }
         )
     return out

@@ -337,10 +337,22 @@ class PiChatSse:
 
 
 class JobLogRunner(Runner):
-    def __init__(self, job: Job, root: Path, bundle: str) -> None:
+    def __init__(
+        self,
+        job: Job,
+        root: Path,
+        bundle: str,
+        *,
+        spec: Any = None,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> None:
         self.job = job
         self.root = root
         self.bundle = bundle
+        self.spec = spec
+        self.provider = provider
+        self.model = model
 
     def start(
         self,
@@ -357,6 +369,9 @@ class JobLogRunner(Runner):
             prompt=None,
             print_mode=True,
             repo=repo,
+            spec=self.spec,
+            provider=self.provider,
+            model=self.model,
         )
         binary = argv[0]
         if not shutil.which(binary) and not Path(binary).exists():
@@ -399,6 +414,7 @@ def default_execute(root: Path, job: Job) -> None:
             on_progress=job.append,
             provider=extra.get("provider") or None,
             model=extra.get("model") or None,
+            test_branch=extra.get("test_branch") or None,
         )
         job.append(f"added {repo.alias} -> {repo.source_path(root)}")
         return
@@ -469,9 +485,41 @@ def default_execute(root: Path, job: Job) -> None:
         job.append(f"synced {job.jira}: {summary}")
         return
     if job.action == "submit-test":
-        from dev_yard.test_report import submit_test
+        from dev_yard import test_integrate
+        from dev_yard.config import resolve_pi_choice
+        from dev_yard.stages import RESOLVE_MERGE_SPEC
+        from dev_yard.test_report import ReportRejected, submit_test
 
-        data = submit_test(root, job.jira)
+        extra = job.extra or {}
+        resolve = extra.get("resolve")
+        ai_resolve = None if resolve is None else bool(resolve)
+        force_all = bool(extra.get("force_all") or extra.get("force"))
+
+        def _runner_factory(root: Path, jira: str, alias: str) -> JobLogRunner:
+            provider, model = resolve_pi_choice(root, "implement", repo=alias)
+            return JobLogRunner(
+                job,
+                root,
+                "resolve-merge",
+                spec=RESOLVE_MERGE_SPEC,
+                provider=provider,
+                model=model,
+            )
+
+        try:
+            data = submit_test(
+                root,
+                job.jira,
+                remote=str(extra.get("remote") or "origin"),
+                ai_resolve=ai_resolve,
+                force_all=force_all,
+                on_progress=job.append,
+                runner_factory=_runner_factory,
+            )
+        except ReportRejected as e:
+            raise RuntimeError(str(e)) from e
+        for line in test_integrate.integration_report(data):
+            job.append(line)
         job.append(f"{job.jira} phase={data.get('phase')}")
         return
     if job.action == "run-test":

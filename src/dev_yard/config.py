@@ -49,6 +49,7 @@ class Repo:
     path: Path | None = None
     provider: str | None = None
     model: str | None = None
+    test_branch: str | None = None
 
     def source_path(self, root: Path) -> Path:
         if self.path:
@@ -210,6 +211,7 @@ def load_repos(root: Path) -> dict[str, Repo]:
             path=Path(raw["path"]) if raw.get("path") else None,
             provider=_blank(raw.get("provider")),
             model=_blank(raw.get("model")),
+            test_branch=_blank(raw.get("test_branch")),
         )
     return out
 
@@ -223,6 +225,7 @@ _SAMPLE_TICKET = "T1"
 @dataclass
 class GitSettings:
     freeze_branch: str = DEFAULT_FREEZE_BRANCH
+    ai_resolve_conflicts: bool = True
 
 
 def normalize_freeze_template(template: Any) -> str:
@@ -268,7 +271,13 @@ def load_git_settings(root: Path) -> GitSettings:
     if not isinstance(raw, dict):
         raise ValueError("repos.yaml git must be a mapping")
     template = raw.get("freeze_branch", DEFAULT_FREEZE_BRANCH)
-    return GitSettings(freeze_branch=normalize_freeze_template(template))
+    resolve = raw.get("ai_resolve_conflicts", True)
+    if not isinstance(resolve, bool):
+        raise ValueError("repos.yaml git.ai_resolve_conflicts must be a boolean")
+    return GitSettings(
+        freeze_branch=normalize_freeze_template(template),
+        ai_resolve_conflicts=resolve,
+    )
 
 
 def _load_mutable_section(root: Path, section: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -294,6 +303,10 @@ def save_git_settings(root: Path, settings: GitSettings) -> None:
         git.pop("freeze_branch", None)
     else:
         git["freeze_branch"] = template
+    if settings.ai_resolve_conflicts:
+        git.pop("ai_resolve_conflicts", None)
+    else:
+        git["ai_resolve_conflicts"] = False
     _store_section(root, data, "git", git)
 
 
@@ -323,6 +336,7 @@ def git_settings_out(settings: GitSettings) -> dict[str, Any]:
     return {
         "freeze_branch": settings.freeze_branch,
         "default_freeze_branch": DEFAULT_FREEZE_BRANCH,
+        "ai_resolve_conflicts": settings.ai_resolve_conflicts,
         "preview": freeze,
         "ticket_preview": ticket_branch_name(freeze, _SAMPLE_TICKET),
         "placeholders": ["{jira}"],
@@ -369,6 +383,10 @@ def save_repos(root: Path, repos: dict[str, Repo]) -> None:
         }
         if r.path:
             entry["path"] = str(r.path)
+        test_branch = _blank(r.test_branch)
+        if test_branch:
+            gitops.assert_branch_name(test_branch)
+            entry["test_branch"] = test_branch
         pair = _pair(r.provider, r.model)
         if pair:
             entry["provider"], entry["model"] = pair

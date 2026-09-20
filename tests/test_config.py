@@ -20,7 +20,7 @@ from dev_yard.config import (
     save_pi_settings,
     ticket_branch_name,
 )
-from dev_yard.service import init_yard, repo_add
+from dev_yard.service import init_yard, repo_add, repo_set_pi
 
 
 def test_relative_path_resolves_against_yard_root(tmp_path: Path, git_src: Path):
@@ -325,3 +325,53 @@ def test_cli_tdd_command(tmp_path: Path, monkeypatch):
     # Bad argument
     res = runner.invoke(app, ["tdd", "invalid"])
     assert res.exit_code != 0
+
+
+def test_repo_test_branch_roundtrip(tmp_path: Path, git_src: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    repo_set_pi(yard, "backend", None, None, test_branch="PG-test")
+    assert load_repos(yard)["backend"].test_branch == "PG-test"
+    repo_set_pi(yard, "backend", None, None, test_branch="")
+    assert load_repos(yard)["backend"].test_branch is None
+
+
+def test_save_repos_rejects_invalid_test_branch(tmp_path: Path, git_src: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    with pytest.raises(ValueError, match="invalid git branch name"):
+        repo_set_pi(yard, "backend", None, None, test_branch="bad..name")
+
+
+def test_load_repos_tolerates_bad_test_branch(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    (yard / "repos.yaml").write_text(
+        "repos:\n  backend:\n    url: git@x:y.git\n    default_base: main\n"
+        "    test_branch: 'bad name'\n"
+    )
+    assert load_repos(yard)["backend"].test_branch == "bad name"
+
+
+def test_git_settings_ai_resolve_conflicts(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    assert load_git_settings(yard).ai_resolve_conflicts is True
+    save_git_settings(yard, GitSettings(ai_resolve_conflicts=False))
+    assert load_git_settings(yard).ai_resolve_conflicts is False
+    text = (yard / "repos.yaml").read_text(encoding="utf-8")
+    assert "ai_resolve_conflicts: false" in text
+    save_git_settings(yard, GitSettings(ai_resolve_conflicts=True))
+    assert "ai_resolve_conflicts" not in (yard / "repos.yaml").read_text(encoding="utf-8")
+
+
+def test_git_settings_rejects_non_bool_ai_resolve(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    (yard / "repos.yaml").write_text(
+        "repos: {}\ngit:\n  ai_resolve_conflicts: nope\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="ai_resolve_conflicts"):
+        load_git_settings(yard)

@@ -73,6 +73,16 @@ def child_worktree(root: Path, jira: str, alias: str, ticket_id: str) -> Path:
     return root / ".yard-worktrees" / _seg(jira) / _seg(alias) / _seg(ticket_id)
 
 
+def test_merge_worktree(root: Path, jira: str, alias: str) -> Path:
+    """Scratch detached worktree used to merge a freeze branch into a test branch.
+
+    Lives under `.yard-worktrees/` (like ticket worktrees) so it never shows up
+    as a repo alias under `reqs/<jira>/worktrees/`. The leading underscore keeps
+    it out of ticket-worktree teardown bookkeeping.
+    """
+    return root / ".yard-worktrees" / _seg(jira) / _seg(alias) / "_test-merge"
+
+
 def status_path(root: Path, jira: str) -> Path:
     return req_dir(root, jira) / "STATUS.yaml"
 

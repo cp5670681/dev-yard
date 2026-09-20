@@ -117,6 +117,7 @@ def repo_add(
     on_progress: gitops.Progress | None = None,
     provider: str | None = None,
     model: str | None = None,
+    test_branch: str | None = None,
 ) -> Repo:
     repos = load_repos(root)
     alias = (alias or "").strip() or git_project_name(url)
@@ -129,6 +130,7 @@ def repo_add(
         path=Path(path) if path else None,
         provider=pair[0] if pair else None,
         model=pair[1] if pair else None,
+        test_branch=(test_branch or "").strip() or None,
     )
     source = repo.source_path(root)
     if repo.path and not (source / ".git").exists():
@@ -154,6 +156,7 @@ def repo_set_pi(
     alias: str,
     provider: str | None,
     model: str | None,
+    test_branch: str | None = None,
 ) -> Repo:
     repos = load_repos(root)
     repo = repos.get(alias)
@@ -162,6 +165,9 @@ def repo_set_pi(
     pair = require_pair(provider, model)
     repo.provider = pair[0] if pair else None
     repo.model = pair[1] if pair else None
+    if test_branch is not None:
+        # None = not provided (leave as-is); "" = clear.
+        repo.test_branch = test_branch.strip() or None
     save_repos(root, repos)
     return repo
 
@@ -437,12 +443,24 @@ def _teardown_worktrees(root: Path, jira: str, d: Path, data: dict[str, Any]) ->
             for ticket_dir in alias_dir.iterdir():
                 if not ticket_dir.is_dir() or not repo:
                     continue
+                if ticket_dir.name.startswith("_"):
+                    # Scratch dirs (e.g. _test-merge) are not ticket worktrees.
+                    continue
                 source = repo.source_path(root)
                 name = _checked_out_branch(ticket_dir) or ticket_branch_name(
                     freeze, ticket_dir.name
                 )
                 gitops.worktree_remove(source, ticket_dir)
                 gitops.branch_delete(source, name)
+        for alias_dir in child_root.iterdir():
+            if not alias_dir.is_dir():
+                continue
+            repo = repos.get(alias_dir.name)
+            if repo:
+                gitops.worktree_remove(
+                    repo.source_path(root),
+                    paths.test_merge_worktree(root, jira, alias_dir.name),
+                )
         shutil.rmtree(child_root, ignore_errors=True)
 
     for alias in aliases:

@@ -201,6 +201,26 @@ BUILTIN_STAGES: dict[str, StageSpec] = {
 }
 
 
+# Internal stage used by test_integrate for AI merge-conflict resolution.
+# Deliberately NOT registered in BUILTIN_STAGES: `dev-yard stages` and
+# `dev-yard run <stage>` read the registry, so keeping it out makes it
+# invisible to users and avoids run_stage's snapshot/stage_runs bookkeeping.
+# test_integrate passes it to the runner explicitly via `spec=`.
+RESOLVE_MERGE_SPEC = StageSpec(
+    name="resolve-merge",
+    skill="resolve-merge",
+    bundles=("resolve-merge",),
+    tools=("read", "bash", "grep", "find", "ls", "edit", "write"),
+    order=59,
+    builtin=False,
+    guidance=(
+        "Resolve the git merge conflict in the current worktree only. "
+        "Preserve unrelated fixes already on the test branch; do not delete "
+        "existing behavior or tests, and do not add unrelated features."
+    ),
+)
+
+
 def _is_under(root: Path, path: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())

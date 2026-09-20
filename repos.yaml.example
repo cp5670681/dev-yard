@@ -10,8 +10,12 @@
 #
 # git.freeze_branch: freeze worktree branch template. Must contain {jira}.
 # Default req/{jira}. Ticket child branches are {freeze}-{ticket}.
+# git.ai_resolve_conflicts: during `dev-yard req submit-test`, let the implement
+# model auto-resolve merge conflicts while merging the freeze branch into each
+# repo's test_branch. Default true; set false to stop on conflict for manual work.
 # git:
 #   freeze_branch: feature/{jira}
+#   ai_resolve_conflicts: true
 #
 # pi: optional. Names must already exist in your pi config.
 # provider+model are a pair at each layer; incomplete pairs are skipped.
@@ -32,6 +36,7 @@ repos:
     url: git@host:team/backend.git
     default_base: main
     role: be
+    # test_branch: PG-test   # 提测时把冻结分支 merge 到此共享测试分支；缺省=该仓不提测
     # provider: rcc
     # model: glm-5.3
     # path: /home/you/src/backend
@@ -39,5 +44,6 @@ repos:
     url: git@host:team/frontend.git
     default_base: main
     role: fe
+    # test_branch: tina/test
     # provider: omniroute
     # model: gc/grok-4.6
