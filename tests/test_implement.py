@@ -644,6 +644,64 @@ def test_sequential_tickets_auto_commit_and_diff_isolation(
     assert not any(f["path"] == "file1.txt" for f in t2_diff["files"])
 
 
+def test_parallel_child_review_diff_excludes_sibling_work(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    import subprocess
+
+    from dev_yard.service import ticket_diff
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-80", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: true\n\n"
+        "## T2: y\n- repo: backend\n- depends_on:\n- parallel: true\n"
+    )
+    req_freeze(yard, "AB-80")
+
+    class Committer:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            (cwd / f"{self.name}.txt").write_text(self.name)
+            subprocess.check_call(["git", "add", f"{self.name}.txt"], cwd=cwd)
+            subprocess.check_call(["git", "commit", "-m", self.name], cwd=cwd)
+            return RunResult(ok=True, summary="ok")
+
+    # Both tickets are claimed before either runs, so each gets an isolated child
+    # worktree forked from the same freeze point (the real parallel dispatch).
+    data = st.load(yard, "AB-80")
+    data["tickets"]["T1"]["state"] = "implementing"
+    data["tickets"]["T2"]["state"] = "implementing"
+    st.save(yard, "AB-80", data)
+
+    implement(yard, "AB-80", ["T1"], runner=Committer("t1"))
+    implement(yard, "AB-80", ["T2"], runner=Committer("t2"))
+
+    data = st.load(yard, "AB-80")
+    assert data["tickets"]["T1"]["child_worktree"]
+    assert data["tickets"]["T2"]["child_worktree"]
+
+    # T1 merges into the parent first; T2 forked from the pre-merge freeze point
+    # and must not be diffed against T1's head (that shows T1 as deleted).
+    assert review(yard, "AB-80", ["T1"], runner=DryRunRunner()) == ["T1"]
+    assert st.load(yard, "AB-80")["tickets"]["T1"]["state"] == "done"
+
+    t2_diff = ticket_diff(yard, "AB-80", "T2")
+    paths = {f["path"] for f in t2_diff["files"]}
+    assert "t2.txt" in paths
+    assert "t1.txt" not in paths
+
+    cap = _Capture()
+    review(yard, "AB-80", ["T2"], runner=cap)
+    assert "t2.txt" in cap.prompts[0]
+    assert "t1.txt" not in cap.prompts[0]
+
 
 class _CancelRunner(DryRunRunner):
     def start(self, prompt, cwd, extra_read_paths, repo=None):

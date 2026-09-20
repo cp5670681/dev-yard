@@ -253,6 +253,14 @@ def head_sha(worktree: Path) -> str:
     return run(["git", "rev-parse", "HEAD"], cwd=worktree)
 
 
+def merge_base(worktree: Path, ref: str) -> str | None:
+    """Divergence point of `worktree` HEAD and `ref`; None if unrelated/unknown."""
+    try:
+        return run(["git", "merge-base", "HEAD", ref], cwd=worktree)
+    except GitError:
+        return None
+
+
 def integrate_onto(worktree: Path, ref: str, strategy: str = "ff-only") -> str:
     """Fast-forward, merge, or rebase `worktree` onto `ref`. Returns new HEAD."""
     if strategy not in SYNC_STRATEGIES:

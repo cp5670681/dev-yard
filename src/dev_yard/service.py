@@ -772,6 +772,29 @@ def _previous_head_sha(data: dict, parsed: list, tid: str, repo: str) -> str | N
     return prev
 
 
+def _ticket_base_sha(data: dict, parsed: list, tid: str, repo: str, slot: dict) -> str | None:
+    """Diff base for a ticket's own work.
+
+    A ticket that ran in an isolated child worktree branched from the freeze
+    point, not from a sibling's head. Diffing it against the sibling head (the
+    sequential shortcut in `_previous_head_sha`) makes the sibling's already
+    merged work look deleted by this ticket. Use the child/parent merge-base
+    instead, which is exactly where the child branched off.
+    """
+    child = slot.get("child_worktree")
+    parent = slot.get("worktree")
+    if child and parent:
+        child_path, parent_path = Path(child), Path(parent)
+        if (child_path / ".git").exists() and (parent_path / ".git").exists():
+            try:
+                base = gitops.merge_base(child_path, gitops.head_sha(parent_path))
+            except gitops.GitError:
+                base = None
+            if base:
+                return base
+    return _previous_head_sha(data, parsed, tid, repo)
+
+
 def _review_blocked(result: RunResult) -> bool:
     if not result.ok:
         return True
@@ -1200,7 +1223,7 @@ def review(
             cwd = _cwd_for_ticket(root, jira, t, slot)
             if not (cwd / ".git").exists():
                 raise ValueError(f"missing worktree {cwd}; freeze first")
-            since = _previous_head_sha(data, parsed, tid, t.repo)
+            since = _ticket_base_sha(data, parsed, tid, t.repo, slot)
             slot["state"] = "reviewing"
             st.save(root, jira, data)
         base = repos[t.repo].default_base if t.repo in repos else "main"
@@ -1421,7 +1444,7 @@ def ticket_diff(root: Path, jira: str, ticket_id: str) -> dict[str, Any]:
     repo_obj = repos.get(repo_alias)
     default_base = repo_obj.default_base if repo_obj else "main"
     parsed = list(tickets.values())
-    since = _previous_head_sha(data, parsed, ticket_id, repo_alias)
+    since = _ticket_base_sha(data, parsed, ticket_id, repo_alias, slot)
 
     cwd = _cwd_for_ticket(root, jira, t, slot)
     if not cwd.exists() or not (cwd / ".git").exists():
