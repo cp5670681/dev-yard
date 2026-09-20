@@ -195,6 +195,7 @@ export interface ReqDetail {
     progress: QaProgress | null;
     incomplete_run?: { run_id?: string; pending?: number } | null;
     cases?: QaCaseItem[];
+    review?: QaReview | null;
   } | null;
 }
 

@@ -30,6 +30,7 @@ BOARD_ACTIONS: tuple[ActionSpec, ...] = (
     ActionSpec("contract", "契约审查"),
     ActionSpec("fix-contract", "按契约修"),
     ActionSpec("submit-test", "提测"),
+    ActionSpec("qa-review", "审核用例"),
     ActionSpec("run-test", "自动测"),
     ActionSpec("fill-test-report", "提 bug"),
     ActionSpec("fix-test", "修 bug"),

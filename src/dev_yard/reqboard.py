@@ -301,6 +301,36 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
     qa_summary = detail.qa or {}
     review = qa_summary.get("review") or {}
     review_pending = bool(qa_summary.get("has_cases") and not review.get("approved"))
+    # Same gates as run-test minus the review gate itself: the review action is
+    # exactly what clears `review_pending`, so it must not require it.
+    can_review_qa = (
+        can_fill
+        and has_worktrees
+        and not qa_reason
+        and detail.phase == "testing"
+        and tickets_done
+        and review_pending
+    )
+    if not can_fill:
+        review_qa_reason = (
+            "测试已通过"
+            if st.test_passed({"test": detail.test})
+            else "需要契约审查 passed，且已 freeze 或提测"
+        )
+    elif detail.phase != "testing":
+        review_qa_reason = "先提测（dev-yard req submit-test）"
+    elif not has_worktrees:
+        review_qa_reason = "需要 freeze worktree"
+    elif qa_reason:
+        review_qa_reason = qa_reason
+    elif not tickets_done:
+        review_qa_reason = "还有未完成的票，先处理测试 bug"
+    elif not qa_summary.get("has_cases"):
+        review_qa_reason = "还没有用例，先点「自动测」设计"
+    elif not review_pending:
+        review_qa_reason = "用例已审核通过，可直接「自动测」"
+    else:
+        review_qa_reason = ""
     can_run_test = (
         can_fill
         and has_worktrees
@@ -417,6 +447,12 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
             ACTION_LABELS["run-test"],
             can_run_test,
             run_reason,
+        ),
+        Action(
+            "qa-review",
+            ACTION_LABELS["qa-review"],
+            can_review_qa,
+            review_qa_reason,
         ),
         Action(
             "fill-test-report",

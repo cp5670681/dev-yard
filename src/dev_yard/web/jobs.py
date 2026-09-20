@@ -528,7 +528,7 @@ def default_execute(root: Path, job: Job) -> None:
             job.append(line)
         job.append(f"{job.jira} phase={data.get('phase')}")
         return
-    if job.action == "run-test":
+    if job.action in {"run-test", "qa-review"}:
         from dev_yard.qa import req_test
         from dev_yard.qa_config import TestRejected
 

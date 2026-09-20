@@ -230,6 +230,48 @@
       </v-alert>
       <ReqDocTabs :jira="jira" :docs="detail.docs" current="board" />
 
+      <!-- 用例审核门：通过后「自动测」才会真正执行 -->
+      <v-alert
+        v-if="qaReviewPending"
+        :type="qaReview?.stale || qaReview?.status === 'rejected' ? 'warning' : 'info'"
+        variant="tonal"
+        border="start"
+        class="mb-4"
+        :icon="mdiClipboardCheckOutline"
+      >
+        <div class="d-flex flex-column flex-sm-row justify-space-between align-sm-center ga-3">
+          <div>
+            <div class="text-subtitle-1 font-weight-bold">
+              测试用例待审核（{{ qaReviewLabel }}）
+            </div>
+            <div class="text-body-2 text-medium-emphasis mt-0.5">
+              <template v-if="qaReview?.feedback">审核意见：{{ qaReview.feedback }}</template>
+              <template v-else-if="qaReview?.stale">用例在通过之后又改动过，需要重新审核。</template>
+              <template v-else>通过后「自动测」才会开始执行；改预期等于洗白失败。</template>
+            </div>
+          </div>
+          <div class="d-flex flex-wrap align-center ga-2 flex-shrink-0">
+            <v-btn
+              size="small"
+              variant="outlined"
+              :to="`/r/${jira}/qa`"
+            >
+              查看用例
+            </v-btn>
+            <v-btn
+              size="small"
+              color="success"
+              variant="flat"
+              :prepend-icon="mdiClipboardCheckOutline"
+              :loading="acting === 'qa-review'"
+              @click="openQaReview"
+            >
+              审核用例
+            </v-btn>
+          </div>
+        </div>
+      </v-alert>
+
       <v-card
         v-if="liveProgress && liveHasActive"
         class="mb-4"
@@ -503,6 +545,50 @@
       @reviewed="onContractReviewed"
     />
 
+    <v-dialog v-model="qaReviewOpen" max-width="560">
+      <v-card>
+        <v-card-title class="d-flex align-center ga-2">
+          <v-icon :icon="mdiClipboardCheckOutline" size="20" />
+          测试用例审核
+          <v-chip size="small" variant="tonal">{{ qaReviewLabel }}</v-chip>
+        </v-card-title>
+        <v-card-text>
+          <p class="text-body-2 mb-2">
+            <template v-if="qaReview?.feedback">
+              <strong>上一轮审核意见：</strong>{{ qaReview.feedback }}
+            </template>
+            <template v-else-if="qaReview?.stale">用例在通过之后又改动过，需要重新审核。</template>
+            <template v-else>通过后「自动测」才会开始执行；改预期等于洗白失败。</template>
+          </p>
+          <v-textarea
+            v-model="qaReviewFeedback"
+            label="打回意见（打回时必填；会交给 qa-design 重做用例）"
+            rows="3"
+            auto-grow
+            density="compact"
+            variant="outlined"
+            hide-details
+          />
+          <p class="text-caption text-medium-emphasis mt-2 mb-0">
+            想先看用例内容？<router-link :to="`/r/${jira}/qa`">打开测试页</router-link>
+          </p>
+        </v-card-text>
+        <v-card-actions>
+          <v-btn
+            color="warning"
+            variant="tonal"
+            :disabled="!qaReviewFeedback.trim()"
+            @click="rejectQa"
+          >
+            打回重做
+          </v-btn>
+          <v-spacer />
+          <v-btn variant="text" @click="qaReviewOpen = false">取消</v-btn>
+          <v-btn color="success" @click="approveQa">通过</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <ScreenshotViewer
       v-model="viewer.open"
       v-model:index="viewer.index"
@@ -535,6 +621,7 @@ import { useDisplay } from "vuetify";
 import {
   mdiAlertCircleOutline,
   mdiCheckCircleOutline,
+  mdiClipboardCheckOutline,
   mdiCloudUploadOutline,
   mdiContentCopy,
   mdiDeleteOutline,
@@ -583,6 +670,17 @@ const confirm = reactive({
 });
 const qaEnvs = computed(() => detail.value?.qa?.envs ?? []);
 const incompleteRun = computed(() => detail.value?.qa?.incomplete_run || null);
+const qaReview = computed(() => detail.value?.qa?.review || null);
+const qaReviewPending = computed(
+  () => Boolean(detail.value?.qa?.has_cases) && !qaReview.value?.approved,
+);
+const qaReviewLabel = computed(() => {
+  if (qaReview.value?.stale) return "需重审";
+  if (qaReview.value?.status === "rejected") return "已打回";
+  return "待审核";
+});
+const qaReviewOpen = ref(false);
+const qaReviewFeedback = ref("");
 const deleteOpen = ref(false);
 const ticketDelete = reactive({ open: false, ticket: null as Ticket | null });
 const diffDialog = reactive({ open: false, ticketId: "" });
@@ -729,8 +827,10 @@ const liveReady = computed(
   () => liveProgress.value?.cases?.filter((c) => c.state === "ready") || [],
 );
 
+const RUN_TEST_ACTIONS = new Set(["run-test", "qa-review"]);
+
 function onJobUpdate(job: JobSnapshot) {
-  if (job.action !== "run-test") return;
+  if (!RUN_TEST_ACTIONS.has(job.action)) return;
   if (job.state === "ok" || job.state === "error" || job.state === "cancelled") {
     // Drop the last progress snapshot on terminal states — it can still show
     // active cases, which would pin liveHasActive (and the poll loop) forever.
@@ -853,6 +953,26 @@ function runConfirmed() {
   void onAction(confirm.action, confirm.ticketId || undefined, env, resume);
 }
 
+function openQaReview() {
+  qaReviewFeedback.value = "";
+  qaReviewOpen.value = true;
+}
+
+async function approveQa() {
+  qaReviewOpen.value = false;
+  await onAction("qa-review", undefined, undefined, undefined, { approve: true });
+}
+
+async function rejectQa() {
+  const feedback = qaReviewFeedback.value.trim();
+  if (!feedback) return;
+  qaReviewOpen.value = false;
+  await onAction("qa-review", undefined, undefined, undefined, {
+    redesign: true,
+    feedback,
+  });
+}
+
 async function doDelete() {
   error.value = "";
   acting.value = "delete";
@@ -938,7 +1058,13 @@ async function submitReport() {
   }
 }
 
-async function onAction(action: string, ticketId?: string, env?: string, resume?: boolean) {
+async function onAction(
+  action: string,
+  ticketId?: string,
+  env?: string,
+  resume?: boolean,
+  extra?: { approve?: boolean; redesign?: boolean; feedback?: string },
+) {
   error.value = "";
   acting.value = action;
   try {
@@ -946,6 +1072,9 @@ async function onAction(action: string, ticketId?: string, env?: string, resume?
       ticket_id: ticketId,
       env: env || undefined,
       resume: action === "run-test" ? Boolean(resume) : undefined,
+      approve: extra?.approve,
+      redesign: extra?.redesign,
+      feedback: extra?.feedback,
     });
     const job = out.jobs[0]?.id;
     if (job) {
@@ -961,8 +1090,9 @@ async function onAction(action: string, ticketId?: string, env?: string, resume?
 }
 
 function onJobDone(job?: JobSnapshot) {
-  if (job?.action === "run-test") jobProgress.value = null;
+  if (job && RUN_TEST_ACTIONS.has(job.action)) jobProgress.value = null;
   void load().then(() => {
+    // `qa-review` never executes cases, so it must not surface a run banner.
     if (job?.action === "run-test") showRunEndBanner();
   });
 }
@@ -974,6 +1104,10 @@ function showRunEndBanner() {
   if (!run?.run_id || run.run_id === lastBannerRunId) return;
   lastBannerRunId = run.run_id;
   const s = run.summary || {};
+  // No summary means no run actually produced results (e.g. the review gate
+  // stopped it, or the run is still incomplete). Reporting "0 通过 / 0 失败 /
+  // 0 阻塞" here reads as a clean pass when nothing was tested.
+  if (!run.summary || typeof s.total !== "number") return;
   const failed = s.failed || 0;
   const blocked = s.blocked || 0;
   const bugs = detail.value?.tickets.filter((t) => t.source === "test").length || 0;
