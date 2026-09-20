@@ -19,10 +19,19 @@ def session_prompt_for(
             f"Autonomously inspect available tools/MCPs/fetchers to retrieve requirement details for `{target_str}`. "
             f"Write `{req / 'REQUIREMENT.md'}` and optional `{req / 'assets'}`."
         )
-    else:
-        start_file = req / (
-            "SPEC.md" if spec.name in {"review", "contract"} else "REQUIREMENT.md"
+    elif spec.name == "implement":
+        start = (
+            f"Read files with the read tool as needed, starting with `{req / 'SPEC.md'}` and `{req / 'TICKETS.md'}`. "
+            f"Shared glossary: `{ctx}`. ADRs: `{adr}`."
         )
+    elif spec.name in {"review", "contract", "tickets"}:
+        start_file = req / "SPEC.md"
+        start = (
+            f"Read files with the read tool as needed, starting with {start_file}. "
+            f"Shared glossary: `{ctx}`. ADRs: `{adr}`."
+        )
+    else:
+        start_file = req / "REQUIREMENT.md"
         start = (
             f"Read files with the read tool as needed, starting with {start_file}. "
             f"Shared glossary: `{ctx}`. ADRs: `{adr}`."

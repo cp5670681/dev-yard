@@ -224,3 +224,13 @@ def test_pi_argv_contract_bundle(monkeypatch):
 def test_implement_prompt_keeps_context_out_of_worktree():
     p = session_prompt(Path("/tmp"), "implement", "AB-1")
     assert "Do not add CONTEXT.md or docs/adr to the business repo" in p
+    assert "SPEC.md" in p
+    assert "TICKETS.md" in p
+
+
+def test_tickets_prompt_starts_at_spec():
+    p = session_prompt(Path("/tmp"), "tickets", "AB-1")
+    spec = Path("/tmp") / "reqs" / "AB-1" / "SPEC.md"
+    assert f"starting with {spec}" in p
+    assert "REQUIREMENT.md" not in p
+
