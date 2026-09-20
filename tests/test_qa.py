@@ -1128,7 +1128,7 @@ def test_req_test_stale_result_is_not_accepted_on_resume(
         "assertions:\n  - {type: ui, expected: a, actual: a, status: passed}\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr("dev_yard.qa.run_pi_print", lambda *a, **k: (1, "boom"))
+    monkeypatch.setattr("dev_yard.qa.run_pi_print_tracked", lambda *a, **k: (1, "boom"))
     monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: {})
     result = req_test(
         yard, "QA-STALE", print_mode=True, run_only=True, ingest=False, resume=True
@@ -1313,7 +1313,7 @@ def test_req_test_setup_fuse_spares_no_setup_cases(
     monkeypatch.setattr("dev_yard.qa.run_case_script", fake_script)
     monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: {})
 
-    def fake_pi(argv, root, prompt, on_line=None):
+    def fake_pi(argv, root, prompt, on_line=None, on_spawn=None, on_reap=None):
         evidence = yard / "reqs" / "QA-FUSE" / "qa" / "evidence"
         run_dir = next(p for p in evidence.iterdir() if p.is_dir())
         for child in run_dir.iterdir():
@@ -1341,7 +1341,7 @@ def test_req_test_setup_fuse_spares_no_setup_cases(
             )
         return 0, ""
 
-    monkeypatch.setattr("dev_yard.qa.run_pi_print", fake_pi)
+    monkeypatch.setattr("dev_yard.qa.run_pi_print_tracked", fake_pi)
     result = req_test(
         yard,
         "QA-FUSE",
@@ -1368,7 +1368,7 @@ def test_req_test_default_case_runner_success(
         "---\nid: case-01\ntitle: test case 1\nrepo: backend\n---\n\nbody\n",
     )
 
-    def fake_run_pi_print(argv, root, prompt, on_line=None):
+    def fake_run_pi_print(argv, root, prompt, on_line=None, on_spawn=None, on_reap=None):
         # Locate the evidence dir from prompt or find it under yard/reqs/QA-DEF/qa/evidence
         ev_dirs = list((yard / "reqs" / "QA-DEF" / "qa" / "evidence").iterdir())
         assert ev_dirs
@@ -1390,7 +1390,7 @@ def test_req_test_default_case_runner_success(
         )
         return 0, "ok"
 
-    monkeypatch.setattr("dev_yard.qa.run_pi_print", fake_run_pi_print)
+    monkeypatch.setattr("dev_yard.qa.run_pi_print_tracked", fake_run_pi_print)
     monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: {})
     result = req_test(
         yard, "QA-DEF", print_mode=True, run_only=True, ingest=False
@@ -1616,6 +1616,117 @@ def test_review_approval_tracks_setup_files_but_not_replay(
     assert held["review"]["stale"] is True
 
 
+def test_run_schedule_stops_dispatching_after_cancel():
+    cases = [
+        CaseJob(id="c1", title="t", repo="backend", priority="P1"),
+        CaseJob(id="c2", title="t", repo="backend", priority="P1"),
+        CaseJob(id="c3", title="t", repo="backend", priority="P1"),
+    ]
+    pools = [PoolSlot(id="a", provider=None, model=None, concurrency=1, priority=1)]
+    cancel = threading.Event()
+    ran: list[str] = []
+
+    def run(job: CaseJob, slot: PoolSlot) -> dict:
+        ran.append(job.id)
+        cancel.set()
+        return {"status": "passed", "repo": job.repo}
+
+    run_schedule(cases, pools, run, cancel_check=cancel.is_set)
+    # Only the first dispatched case runs; the rest are never scheduled.
+    assert ran == ["c1"]
+    assert sum(1 for c in cases if c.state == "passed") == 1
 
 
+def test_run_schedule_inner_dispatch_loop_honours_cancel():
+    # concurrency=2 would normally dispatch two ready cases in one pass; the
+    # inner-loop check must stop after the first once cancel flips.
+    cases = [
+        CaseJob(id="c1", title="t", repo="backend", priority="P1"),
+        CaseJob(id="c2", title="t", repo="backend", priority="P1"),
+    ]
+    pools = [PoolSlot(id="a", provider=None, model=None, concurrency=2, priority=1)]
+    calls = {"n": 0}
 
+    def cancel_check() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 2
+
+    ran: list[str] = []
+
+    def run(job: CaseJob, slot: PoolSlot) -> dict:
+        ran.append(job.id)
+        return {"status": "passed", "repo": job.repo}
+
+    run_schedule(cases, pools, run, cancel_check=cancel_check)
+    assert ran == ["c1"]
+
+
+def test_req_test_cancel_raises_and_reaps_proc(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard.runners import JobCancelled
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-CANCEL")
+    _write_case(
+        yard,
+        "QA-CANCEL",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+    cancel = threading.Event()
+    spawned: list[object] = []
+    reaped: list[object] = []
+
+    def fake_pi(argv, cwd, prompt, on_line=None, timeout=None, on_spawn=None):
+        proc = object()
+        if on_spawn is not None:
+            on_spawn(proc)
+        cancel.set()
+        return 1, ""
+
+    # Patch the low-level runner so the real tracked wrapper runs and reaps.
+    monkeypatch.setattr("dev_yard.runners.run_pi_print", fake_pi)
+    monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: {})
+
+    with pytest.raises(JobCancelled):
+        req_test(
+            yard,
+            "QA-CANCEL",
+            print_mode=True,
+            run_only=True,
+            ingest=False,
+            cancel_check=cancel.is_set,
+            on_spawn=spawned.append,
+            on_reap=reaped.append,
+        )
+    assert len(spawned) == 1
+    assert reaped == spawned
+    # The interrupted run must not be recorded as a completed result.
+    evidence = yard / "reqs" / "QA-CANCEL" / "qa" / "evidence"
+    run_dir = next(p for p in evidence.iterdir() if p.is_dir())
+    assert not (run_dir / "result.yaml").is_file()
+
+
+def test_req_test_cancel_before_design_raises(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.runners import JobCancelled
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-CANCEL-D")
+    cancel = threading.Event()
+    cancel.set()
+
+    def boom(*a, **k):
+        raise AssertionError("design runner must not start when cancelled")
+
+    monkeypatch.setattr("dev_yard.qa.get_runner", boom)
+    with pytest.raises(JobCancelled):
+        req_test(
+            yard,
+            "QA-CANCEL-D",
+            print_mode=True,
+            design_only=True,
+            cancel_check=cancel.is_set,
+        )

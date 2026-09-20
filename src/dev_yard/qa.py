@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 from collections.abc import Callable
 from contextlib import contextmanager
 from contextlib import nullcontext as _nullcontext
@@ -48,7 +49,13 @@ from dev_yard.qa_schedule import (
     progress_payload,
     run_schedule,
 )
-from dev_yard.runners import Runner, get_runner, pi_argv, run_pi_print
+from dev_yard.runners import (
+    JobCancelled,
+    Runner,
+    get_runner,
+    pi_argv,
+    run_pi_print_tracked,
+)
 from dev_yard.skillbind import session_prompt_for
 from dev_yard.stages import load_registry
 from dev_yard.test_report import ReportRejected, accept_test_report
@@ -56,6 +63,9 @@ from dev_yard.tickets import load_tickets
 
 LogFn = Callable[[str], None]
 ProgressFn = Callable[[dict[str, Any]], None]
+CancelCheck = Callable[[], bool]
+SpawnFn = Callable[[subprocess.Popen[str]], None]
+ReapFn = Callable[[subprocess.Popen[str]], None]
 _CASE_NAME = re.compile(r"^case-.+\.md$")
 _CASE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _PNG = re.compile(r"\.png$", re.I)
@@ -894,6 +904,9 @@ def req_test(
     case_runner: Callable[[CaseJob, PoolSlot], dict[str, Any]] | None = None,
     on_progress: ProgressFn | None = None,
     on_log: LogFn | None = None,
+    cancel_check: CancelCheck | None = None,
+    on_spawn: SpawnFn | None = None,
+    on_reap: ReapFn | None = None,
 ) -> dict[str, Any]:
     """One run per requirement at a time; the lock guards evidence and skills."""
     with _run_lock(root, jira):
@@ -913,7 +926,15 @@ def req_test(
             case_runner=case_runner,
             on_progress=on_progress,
             on_log=on_log,
+            cancel_check=cancel_check,
+            on_spawn=on_spawn,
+            on_reap=on_reap,
         )
+
+
+def _raise_if_cancelled(cancel_check: CancelCheck | None, what: str) -> None:
+    if cancel_check is not None and cancel_check():
+        raise JobCancelled(f"{what} cancelled")
 
 
 def _req_test(
@@ -933,6 +954,9 @@ def _req_test(
     case_runner: Callable[[CaseJob, PoolSlot], dict[str, Any]] | None = None,
     on_progress: ProgressFn | None = None,
     on_log: LogFn | None = None,
+    cancel_check: CancelCheck | None = None,
+    on_spawn: SpawnFn | None = None,
+    on_reap: ReapFn | None = None,
 ) -> dict[str, Any]:
     if design_only and run_only:
         raise TestRejected("--design-only and --run-only are mutually exclusive")
@@ -968,6 +992,7 @@ def _req_test(
         if not need_design:
             raise TestRejected("--feedback requires --redesign")
     if need_design:
+        _raise_if_cancelled(cancel_check, "qa-design")
         spec = load_registry(root)["qa-design"]
         r = runner or get_runner(
             root,
@@ -976,9 +1001,12 @@ def _req_test(
             spec=spec,
             provider=cfg.design_provider,
             model=cfg.design_model,
+            on_spawn=on_spawn,
+            on_reap=on_reap,
         )
         prompt = _design_prompt(root, jira, cfg, feedback=feedback_text or None)
         result = r.start(prompt, root, [qa, paths.req_dir(root, jira)])
+        _raise_if_cancelled(cancel_check, "qa-design")
         if not result.ok:
             raise TestRejected(
                 f"qa-design failed: {result.summary or result.exit_code}"
@@ -1217,7 +1245,16 @@ def _req_test(
             # A resumed case dir may hold the interrupted attempt's result;
             # never let a stale file stand in for this run's outcome.
             result_path.unlink(missing_ok=True)
-            code, raw = run_pi_print(argv, root, prompt, on_line=_echo)
+            _raise_if_cancelled(cancel_check, f"qa-run {job.id}")
+            code, raw = run_pi_print_tracked(
+                argv,
+                root,
+                prompt,
+                on_line=_echo,
+                on_spawn=on_spawn,
+                on_reap=on_reap,
+            )
+            _raise_if_cancelled(cancel_check, f"qa-run {job.id}")
             if code != 0 and not result_path.is_file():
                 got = {
                     "status": "blocked",
@@ -1265,9 +1302,14 @@ def _req_test(
             runner_fn,
             on_progress=ping,
             serialize_accounts=cfg.serialize_accounts,
+            cancel_check=cancel_check,
         )
     finally:
         executor.close()
+
+    # Cancelled mid-run: bail before writing result.yaml / ingesting, so the
+    # partial run is left resumable instead of recorded as a real outcome.
+    _raise_if_cancelled(cancel_check, "qa-run")
 
     for job in cases:
         if job.state in {"skipped", "blocked"} and job.ended_at:

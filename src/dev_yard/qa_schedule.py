@@ -240,6 +240,7 @@ def run_schedule(
     run_case: RunCase,
     on_progress: ProgressCb | None = None,
     serialize_accounts: bool = False,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> None:
     validate_dag(cases)
     refresh_ready(cases)
@@ -247,6 +248,7 @@ def run_schedule(
     breaker = False
     breaker_reason = ""
     last_block_class: str | None = None
+    cancelled = False
 
     def ping() -> None:
         if on_progress is not None:
@@ -256,9 +258,17 @@ def run_schedule(
         inflight: dict[Any, tuple[CaseJob, PoolSlot]] = {}
         inflight_accounts: set[str] = set()
         while True:
+            if cancel_check is not None and cancel_check():
+                # Stop dispatching new cases. In-flight pi workers are killed by
+                # their spawn hook; a setup/cleanup script already running is not,
+                # so draining can still take as long as that script.
+                cancelled = True
             refresh_ready(cases)
-            if not breaker:
+            if not breaker and not cancelled:
                 while True:
+                    if cancel_check is not None and cancel_check():
+                        cancelled = True
+                        break
                     slot = pick_pool(pools)
                     job = pick_case(
                         cases, inflight_accounts if serialize_accounts else None
