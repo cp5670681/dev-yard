@@ -192,3 +192,35 @@ def test_qa_case_endpoint(tmp_path: Path, git_src: Path, monkeypatch):
     assert client.get("/api/requirements/QA-W1/qa/cases/..%2F..%2FSTATUS.yaml").status_code == 404
     assert client.get("/api/requirements/QA-W1/qa/cases/../meta").status_code == 404
     assert client.get("/api/requirements/NOPE-9/qa/cases/case-01").status_code == 404
+
+
+def test_qa_rerun_requires_case_ids(tmp_path: Path, git_src: Path, monkeypatch):
+    yard = _req(tmp_path, git_src, monkeypatch)
+    _seed_qa(yard)
+    r = _client(yard).post("/api/requirements/QA-W1/qa/rerun", json={"case_ids": []})
+    assert r.status_code == 400
+    assert "case_ids" in r.json()["detail"]
+
+
+def test_qa_rerun_unknown_jira_404(tmp_path: Path, git_src: Path, monkeypatch):
+    yard = _req(tmp_path, git_src, monkeypatch)
+    r = _client(yard).post(
+        "/api/requirements/NOPE-1/qa/rerun", json={"case_ids": ["case-01"]}
+    )
+    assert r.status_code in {400, 404}
+
+
+def test_qa_rerun_submits_job(tmp_path: Path, git_src: Path, monkeypatch):
+    """The endpoint fans out into a run-test job."""
+    yard = _req(tmp_path, git_src, monkeypatch)
+    _seed_qa(yard)
+    client = _client(yard)
+    r = client.post(
+        "/api/requirements/QA-W1/qa/rerun",
+        json={"case_ids": ["case-01"], "env": "local"},
+    )
+    assert r.status_code == 200
+    jobs = r.json()["jobs"]
+    assert len(jobs) == 1
+    assert jobs[0]["action"] == "run-test"
+    assert jobs[0]["jira"] == "QA-W1"

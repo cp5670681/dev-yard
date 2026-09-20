@@ -546,6 +546,7 @@ def default_execute(root: Path, job: Job) -> None:
                 feedback=(extra.get("feedback") or "").strip() or None,
                 ingest=not bool(extra.get("no_ingest")),
                 resume=extra.get("resume"),
+                rerun_cases=extra.get("rerun_cases"),
                 on_log=job.append,
                 on_progress=job.set_qa_progress,
                 cancel_check=job.cancel_requested.is_set,
@@ -775,12 +776,29 @@ class JobRunner:
         extra: dict | None = None,
     ) -> Job:
         with self._lock:
-            for job in self._jobs.values():
-                if job.state not in {"queued", "running", "waiting"}:
-                    continue
-                if _jobs_conflict(job, jira, action, ticket_ids):
-                    raise ValueError(_conflict_message(job, action, ticket_ids))
             extra = extra or {}
+            # A re-run may queue behind an active run: `req_test` serialises on
+            # its own run lock, so the second one simply waits its turn instead
+            # of being rejected. Identical re-runs are deduped so a double click
+            # cannot stack two jobs that would each reset and run the same case.
+            if action == "run-test":
+                wanted = {c for c in extra.get("rerun_cases") or [] if c}
+                if wanted:
+                    for existing in self._jobs.values():
+                        if existing.state not in {"queued", "running", "waiting"}:
+                            continue
+                        if existing.jira != jira or existing.action != "run-test":
+                            continue
+                        pending = {
+                            c for c in (existing.extra or {}).get("rerun_cases") or [] if c
+                        }
+                        if pending == wanted:
+                            raise ValueError("同一批用例已有重测在排队")
+            for existing in self._jobs.values():
+                if existing.state not in {"queued", "running", "waiting"}:
+                    continue
+                if _jobs_conflict(existing, jira, action, ticket_ids, extra):
+                    raise ValueError(_conflict_message(existing, action, ticket_ids))
             job = Job(
                 id=uuid.uuid4().hex[:10],
                 jira=jira,
@@ -843,10 +861,19 @@ def _ticket_scope(job: Job) -> set[str] | None:
 
 
 def _jobs_conflict(
-    running: Job, jira: str, action: str, ticket_ids: list[str] | None
+    running: Job,
+    jira: str,
+    action: str,
+    ticket_ids: list[str] | None,
+    extra: dict | None = None,
 ) -> bool:
     if running.jira != jira:
         return False
+    # A re-run never serialises at the job layer: `req_test` holds a run lock, so
+    # the job just queues behind whatever run is active.
+    if action == "run-test" and extra is not None and extra.get("rerun_cases"):
+        if running.action == "run-test":
+            return False
     running_scope = _ticket_scope(running)
     incoming_scope = (
         None

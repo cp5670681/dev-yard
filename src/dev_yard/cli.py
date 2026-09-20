@@ -570,6 +570,11 @@ def req_test_cmd(
     fresh: bool = typer.Option(
         False, "--fresh", help="Ignore an incomplete run and start a new one"
     ),
+    rerun_case: list[str] = typer.Option(
+        [],
+        "--rerun-case",
+        help="Re-run only these case ids (repeatable); amends the run they belong to",
+    ),
 ) -> None:
     """Design and run UI cases after submit-test. Ingests into the test slot."""
     from dev_yard.qa import req_test
@@ -579,6 +584,23 @@ def req_test_cmd(
     root = root_opt()
     if resume and fresh:
         _die(ValueError("--resume and --fresh are mutually exclusive"))
+        return
+    if rerun_case and (
+        resume
+        or fresh
+        or design_only
+        or run_only
+        or redesign
+        or approve
+        or feedback
+        or feedback_file
+    ):
+        _die(
+            ValueError(
+                "--rerun-case cannot be combined with "
+                "--resume/--fresh/--design-only/--run-only/--redesign/--approve/--feedback"
+            )
+        )
         return
     if feedback and feedback_file:
         _die(ValueError("--feedback and --feedback-file are mutually exclusive"))
@@ -603,6 +625,7 @@ def req_test_cmd(
             feedback=text or None,
             ingest=not no_ingest,
             resume=True if resume else False if fresh else None,
+            rerun_cases=rerun_case or None,
             on_log=lambda line: typer.echo(line.rstrip() if isinstance(line, str) else line),
         )
     except (ValueError, FileNotFoundError, TestRejected, ReportRejected, GitError) as e:

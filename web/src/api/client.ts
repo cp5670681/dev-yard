@@ -81,6 +81,13 @@ export function getQaCase(jira: string, caseId: string) {
   );
 }
 
+export function rerunQaCases(jira: string, caseIds: string[], env = "") {
+  return api<JobsOut>(
+    `/api/requirements/${encodeURIComponent(jira)}/qa/rerun`,
+    { method: "POST", body: JSON.stringify({ case_ids: caseIds, env }) },
+  );
+}
+
 export function getDoc(jira: string, slug: string) {
   return api<DocPayload>(
     `/api/requirements/${encodeURIComponent(jira)}/docs/${encodeURIComponent(slug)}`,

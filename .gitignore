@@ -16,6 +16,8 @@ uv.lock
 .omc
 reqs
 .playwright-cli/
+after.yml
+before.yml
 desktop-home.yaml
 desktop-*.yaml
 node_modules/

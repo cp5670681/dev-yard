@@ -184,6 +184,21 @@
             用例详情
           </v-btn>
           <v-btn
+            v-if="canRerun"
+            size="small"
+            density="compact"
+            variant="outlined"
+            color="warning"
+            class="px-2"
+            :loading="rerunning"
+            :disabled="disabled"
+            title="重新执行这一条用例（不改动本轮其它用例；有测试在跑时会排队）"
+            @click.stop="emit('rerun-case', testCase.id)"
+          >
+            <v-icon :icon="mdiRefresh" size="16" class="mr-1" />
+            重测
+          </v-btn>
+          <v-btn
             v-if="hasScreenshots"
             size="small"
             density="compact"
@@ -205,6 +220,7 @@ import { computed } from "vue";
 import {
   mdiRobotOutline,
   mdiAlertCircleOutline,
+  mdiRefresh,
 } from "@mdi/js";
 import type { QaCaseItem } from "@/api/types";
 import { QA_STATE_LABELS, QA_STATE_COLOR } from "@/composables/labels";
@@ -215,15 +231,20 @@ const props = withDefaults(
     testCase: QaCaseItem;
     jira: string;
     showState?: boolean;
+    rerunning?: boolean;
+    disabled?: boolean;
   }>(),
   {
     showState: false,
+    rerunning: false,
+    disabled: false,
   }
 );
 
 const emit = defineEmits<{
   "preview-screenshot": [url: string];
   "open-case": [caseId: string];
+  "rerun-case": [caseId: string];
 }>();
 
 const isRunning = computed(() => props.testCase.state === "running");
@@ -231,6 +252,8 @@ const isFailed = computed(
   () => props.testCase.state === "failed" || props.testCase.state === "blocked"
 );
 const isPassed = computed(() => props.testCase.state === "passed");
+
+const canRerun = computed(() => isFailed.value || props.testCase.state === "passed");
 
 const stateLabel = computed(() => {
   return QA_STATE_LABELS[props.testCase.state] || props.testCase.state;

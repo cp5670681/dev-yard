@@ -204,8 +204,11 @@
                       class="ghx-card-gap"
                       :test-case="c"
                       :jira="jira"
+                      :rerunning="rerunningCase === c.id"
+                      :disabled="rerunningCase !== ''"
                       @preview-screenshot="$emit('preview-screenshot', $event)"
                       @open-case="$emit('open-case', $event)"
+                      @rerun-case="$emit('rerun-case', $event)"
                     />
                   </div>
                 </div>
@@ -237,8 +240,11 @@
                 :test-case="c"
                 :jira="jira"
                 show-state
+                :rerunning="rerunningCase === c.id"
+                :disabled="rerunningCase !== ''"
                 @preview-screenshot="$emit('preview-screenshot', $event)"
                 @open-case="$emit('open-case', $event)"
+                @rerun-case="$emit('rerun-case', $event)"
               />
               <div v-if="!filteredQaCases.length" class="text-center text-medium-emphasis py-6 text-caption">
                 这一栏没有测试用例
@@ -417,11 +423,13 @@ const props = withDefaults(
     qaProgress?: QaProgress | null;
     jira: string;
     phase?: string;
+    rerunningCase?: string;
   }>(),
   {
     qaCases: () => [],
     qaProgress: null,
     phase: "open",
+    rerunningCase: "",
   }
 );
 
@@ -434,6 +442,7 @@ defineEmits<{
   "preview-screenshot": [url: string];
   "fill-bug": [];
   "open-case": [caseId: string];
+  "rerun-case": [caseId: string];
 }>();
 
 const { mdAndUp } = useDisplay();

@@ -17,6 +17,7 @@ from dev_yard.web.schemas import (
     ContractReviewIn,
     DocSaveIn,
     OpenIn,
+    QaRerunIn,
     TestReportIn,
     TicketReviewIn,
 )
@@ -139,6 +140,23 @@ def build(ctx: AppContext) -> APIRouter:
         data["jira"] = jira
         data["html"] = render_markdown(body, jira) if body else ""
         return data
+
+    @router.post("/api/requirements/{jira}/qa/rerun")
+    def api_qa_rerun(jira: str, payload: QaRerunIn):
+        ids = [c.strip() for c in payload.case_ids if c.strip()]
+        if not ids:
+            raise HTTPException(400, "case_ids is required")
+        ctx.detail_or_404(jira)
+        try:
+            submitted = ctx.submit_action(
+                "run-test",
+                jira,
+                None,
+                {"rerun_cases": ids, "env": payload.env},
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return ctx.jobs_out(submitted)
 
     @router.get("/api/requirements/{jira}/tickets/{ticket_id}/diff")
     def api_ticket_diff(jira: str, ticket_id: str):

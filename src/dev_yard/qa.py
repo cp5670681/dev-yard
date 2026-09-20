@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -846,6 +847,40 @@ def incomplete_run_payload(
     return {"run_id": run_id, "pending": _pending_in(run_dir)}
 
 
+def find_run_for_rerun(
+    qa: Path, target_ids: set[str]
+) -> tuple[str, Path, str] | None:
+    """Newest run that contains every id in `target_ids`: `(run_id, dir, env)`.
+
+    Unlike `find_incomplete_run` this ignores env and completeness: re-running a
+    case is valid even for a finished run, and the run's own env is the one the
+    case was tested against, so it becomes the default for the re-run.
+    """
+    evidence = qa / "evidence"
+    if not evidence.is_dir():
+        return None
+    wanted = {t for t in target_ids if t}
+    if not wanted:
+        return None
+    for run_dir in sorted((p for p in evidence.iterdir() if p.is_dir()), reverse=True):
+        doc = _progress_doc(run_dir)
+        present = {
+            str(c.get("id"))
+            for c in (doc or {}).get("cases") or []
+            if isinstance(c, dict) and c.get("id")
+        }
+        if not present:
+            present = {
+                p.name
+                for p in run_dir.iterdir()
+                if p.is_dir() and p.name not in {"repo-baseline", "_root_png"}
+            }
+        if wanted <= present:
+            env = str((doc or {}).get("env") or "")
+            return run_dir.name, run_dir, env
+    return None
+
+
 def _apply_resume(cases: list[CaseJob], run_dir: Path) -> int:
     """Mark finished cases so the scheduler will not dispatch them. Returns skip count.
 
@@ -887,6 +922,59 @@ def _apply_resume(cases: list[CaseJob], run_dir: Path) -> int:
     return skipped
 
 
+def reset_cases_in_run(
+    run_dir: Path, case_ids: set[str], known_ids: set[str] | None = None
+) -> list[str]:
+    """Reset cases in a run to `ready` and drop their case-level artifacts.
+
+    Returns the ids actually reset. A case whose state is already non-terminal
+    is left alone (it is queued/running, not a stale outcome), so re-resetting a
+    run never disturbs work already in flight.
+    """
+    doc = _progress_doc(run_dir)
+    if doc is None:
+        return []
+    known = known_ids if known_ids is not None else set()
+    if known:
+        unknown = sorted(c for c in case_ids if c not in known)
+        if unknown:
+            raise TestRejected(f"unknown case(s): {', '.join(unknown)}")
+    reset: list[str] = []
+    for item in doc.get("cases") or []:
+        if not isinstance(item, dict) or item.get("id") not in case_ids:
+            continue
+        cid = str(item["id"])
+        # Only a finished case is a stale outcome worth resetting; a pending/
+        # ready/running one is already queued, so leave it be.
+        if str(item.get("state") or "") not in TERMINAL:
+            continue
+        reset.append(cid)
+        item["state"] = "ready"
+        item["pool"] = None
+        item["model"] = None
+        item["started_at"] = None
+        item["ended_at"] = None
+        item["reason"] = ""
+    if not reset:
+        return []
+    # Drop the case's own result + screenshots so the old outcome cannot be read
+    # as this attempt's; the root result.yaml is regenerated when the run ends.
+    for cid in reset:
+        case_dir = run_dir / cid
+        (case_dir / "result.yaml").unlink(missing_ok=True)
+        shots = case_dir / "screenshots"
+        if shots.is_dir():
+            shutil.rmtree(shots, ignore_errors=True)
+    # The run's aggregate summary still counts the reset case as its old outcome
+    # until the re-run finishes, so drop it to keep the page honest ("执行中").
+    (run_dir / "result.yaml").unlink(missing_ok=True)
+    (run_dir / "progress.yaml").write_text(
+        yaml.safe_dump(doc, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    return reset
+
+
 def req_test(
     root: Path,
     jira: str,
@@ -900,6 +988,7 @@ def req_test(
     feedback: str | None = None,
     ingest: bool = True,
     resume: bool | None = None,
+    rerun_cases: list[str] | None = None,
     runner: Runner | None = None,
     case_runner: Callable[[CaseJob, PoolSlot], dict[str, Any]] | None = None,
     on_progress: ProgressFn | None = None,
@@ -922,6 +1011,7 @@ def req_test(
             feedback=feedback,
             ingest=ingest,
             resume=resume,
+            rerun_cases=rerun_cases,
             runner=runner,
             case_runner=case_runner,
             on_progress=on_progress,
@@ -950,6 +1040,7 @@ def _req_test(
     feedback: str | None = None,
     ingest: bool = True,
     resume: bool | None = None,
+    rerun_cases: list[str] | None = None,
     runner: Runner | None = None,
     case_runner: Callable[[CaseJob, PoolSlot], dict[str, Any]] | None = None,
     on_progress: ProgressFn | None = None,
@@ -964,13 +1055,36 @@ def _req_test(
         raise TestRejected(
             "--approve cannot be combined with --design-only or --run-only"
         )
+    rerun_ids = {str(c).strip() for c in (rerun_cases or []) if str(c).strip()}
+    if rerun_ids and (design_only or run_only or redesign or approve or feedback):
+        raise TestRejected(
+            "rerun_cases cannot be combined with design/run-only/redesign/approve/feedback"
+        )
     _gate(root, jira)
-    cfg = load_qa_config(root, env, jira)
     qa = paths.qa_dir(root, jira)
     qa.mkdir(parents=True, exist_ok=True)
-    write_context_md(root, jira, cfg)
     cases = discover_cases(qa)
     had_cases = bool(cases)
+    # Resolve the run to amend before loading config so the env can default to
+    # the one that run actually used.
+    rerun_run: tuple[str, Path, str] | None = None
+    if rerun_ids:
+        known = {c.id for c in cases}
+        unknown = sorted(rerun_ids - known)
+        if unknown:
+            raise TestRejected(
+                f"unknown case(s): {', '.join(unknown)}; "
+                f"known: {', '.join(sorted(known)) or '(none)'}"
+            )
+        rerun_run = find_run_for_rerun(qa, rerun_ids)
+        if rerun_run is None:
+            raise TestRejected(
+                f"no run contains {', '.join(sorted(rerun_ids))}; run `自动测` first"
+            )
+        if not env and rerun_run[2]:
+            env = rerun_run[2]
+    cfg = load_qa_config(root, env, jira)
+    write_context_md(root, jira, cfg)
     if run_only and not cases:
         raise TestRejected(f"{jira} has no qa/cases; cannot --run-only")
     feedback_text = feedback.strip() if feedback else ""
@@ -1025,7 +1139,7 @@ def _req_test(
         raise TestRejected(f"{jira} qa-design produced no cases")
     if approve:
         approve_cases(qa)
-    elif not run_only:
+    elif not run_only and not rerun_ids:
         can_run, hold_reason = review_gate(qa)
         if not can_run:
             return {
@@ -1039,21 +1153,34 @@ def _req_test(
     evidence = qa / "evidence"
     case_ids = {c.id for c in cases}
     incomplete = find_incomplete_run(qa, case_ids, cfg.active_env)
-    if resume is True and incomplete is None:
+    if resume is True and incomplete is None and rerun_run is None:
         raise TestRejected(
             f"--resume: no incomplete run for {jira} in env {cfg.active_env}; "
             "use --fresh to start a new run"
         )
-    resuming = incomplete is not None and (
-        resume is True or (resume is None and not redesign)
-    )
-    if resuming:
+    if rerun_run is not None:
+        run_id, run_dir, _ = rerun_run
+        reset = reset_cases_in_run(run_dir, rerun_ids, case_ids)
+        if not reset:
+            raise TestRejected(
+                f"nothing to re-run in run {run_id} for "
+                f"{', '.join(sorted(rerun_ids))}; already queued or running"
+            )
+        if on_log is not None:
+            on_log(
+                f"reset {', '.join(sorted(reset))} for re-run in run {run_id}"
+            )
+        _apply_resume(cases, run_dir)
+        resuming = True
+    elif incomplete is not None and (resume is True or (resume is None and not redesign)):
         run_id, run_dir = incomplete
         if on_log is not None:
             on_log(f"resuming run {run_id}")
         _apply_resume(cases, run_dir)
+        resuming = True
     else:
         run_id, run_dir = _claim_run_dir(evidence)
+        resuming = False
     aliases = _involved_aliases(root, jira)
     tree_before: dict[str, dict[str, str]] = {}
     baseline_dir = run_dir / "repo-baseline"
@@ -1461,6 +1588,7 @@ def _req_test(
     return {
         "jira": jira,
         "run_id": run_id,
+        "env": cfg.active_env,
         "summary": summary,
         "ingested": ingested,
         "ingest_skipped": ingest_skipped,

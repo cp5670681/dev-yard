@@ -914,6 +914,37 @@ def test_cli_req_test_passes_env(tmp_path: Path, monkeypatch):
     assert seen["env"] == "test"
 
 
+def test_cli_req_test_passes_rerun_cases(tmp_path: Path, monkeypatch):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    monkeypatch.chdir(yard)
+    seen: dict = {}
+
+    def fake(root, jira, **kwargs):
+        seen["jira"] = jira
+        seen.update(kwargs)
+        return {"run_id": "r", "summary": {}, "cases": 0}
+
+    monkeypatch.setattr("dev_yard.qa.req_test", fake)
+    out = cli.invoke(
+        app,
+        ["req", "test", "QA-1", "--rerun-case", "case-01", "--rerun-case", "case-02"],
+    )
+    assert out.exit_code == 0, out.output
+    assert seen["rerun_cases"] == ["case-01", "case-02"]
+
+
+def test_cli_req_test_rejects_rerun_with_conflicting_flags(tmp_path: Path, monkeypatch):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    monkeypatch.chdir(yard)
+    out = cli.invoke(
+        app, ["req", "test", "QA-1", "--rerun-case", "case-01", "--resume"]
+    )
+    assert out.exit_code != 0
+    assert "cannot be combined" in out.output
+
+
 def test_malformed_assertions_are_rejected():
     from dev_yard.qa_exec import normalize_case_result
     from dev_yard.qa_schedule import CaseJob
@@ -1730,3 +1761,302 @@ def test_req_test_cancel_before_design_raises(tmp_path: Path, git_src: Path, mon
             design_only=True,
             cancel_check=cancel.is_set,
         )
+
+
+# ---------------------------------------------------------------- rerun cases
+
+
+def _seed_run_with_cases(
+    yard: Path,
+    key: str,
+    *,
+    case_states: dict[str, str],
+    design: "_DesignRunner",
+) -> Path:
+    """Design two cases and record a run whose progress holds the given states."""
+    qa = yard / "reqs" / key / "qa"
+    mod = qa / "cases" / "mod"
+    mod.mkdir(parents=True, exist_ok=True)
+    for cid, title in (("case-01", "first"), ("case-02", "second")):
+        (mod / f"{cid}.md").write_text(
+            "---\n"
+            f"id: {cid}\ntitle: {title}\npriority: P0\n"
+            f"requirement: {key}\nrepo: backend\ncovers: [D1]\n"
+            "---\n\n# body\n",
+            encoding="utf-8",
+        )
+    run_id = "2020-01-01-000000"
+    run_dir = qa / "evidence" / run_id
+    (run_dir / "repo-baseline").mkdir(parents=True, exist_ok=True)
+    doc = {
+        "run_id": run_id,
+        "env": "local",
+        "pools": [],
+        "cases": [
+            {
+                "id": cid,
+                "title": cid,
+                "state": case_states[cid],
+                "repo": "backend",
+                "depends_on": [],
+                "pool": "a",
+                "model": "grok-4",
+                "started_at": "2020-01-01T00:00:00Z",
+                "ended_at": "2020-01-01T00:01:00Z",
+                "reason": "old",
+            }
+            for cid in ("case-01", "case-02")
+        ],
+    }
+    (run_dir / "progress.yaml").write_text(
+        yaml.safe_dump(doc, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    for cid, state in case_states.items():
+        cdir = run_dir / cid
+        cdir.mkdir(parents=True, exist_ok=True)
+        (cdir / "result.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "case": cid,
+                    "title": cid,
+                    "repo": "backend",
+                    "status": state,
+                    "reason": "old",
+                    "assertions": [
+                        {"type": "ui", "expected": "e", "actual": "a", "status": "passed"}
+                    ],
+                },
+                sort_keys=False,
+                allow_unicode=True,
+            ),
+            encoding="utf-8",
+        )
+    return run_dir
+
+
+def test_rerun_case_only_reruns_target(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RR")
+    run_dir = _seed_run_with_cases(
+        yard,
+        "QA-RR",
+        case_states={"case-01": "failed", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-RR"),
+    )
+    ran: list[str] = []
+
+    def case_runner(job, pool):
+        ran.append(job.id)
+        return {"status": "passed", "repo": "backend"}
+
+    result = req_test(
+        yard,
+        "QA-RR",
+        print_mode=True,
+        ingest=False,
+        rerun_cases=["case-01"],
+        case_runner=case_runner,
+    )
+    # Only the failed case is dispatched; the passed one keeps its result.
+    assert ran == ["case-01"]
+    assert result["run_id"] == "2020-01-01-000000"
+    assert result["summary"] == {"passed": 2, "failed": 0, "blocked": 0, "skipped": 0, "total": 2}
+    # Same run dir: the rerun amends the existing run, not a new one.
+    assert sorted(p.name for p in (run_dir.parent).iterdir() if p.is_dir()) == [
+        "2020-01-01-000000"
+    ]
+
+
+def test_rerun_case_rejects_unknown_id(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RR2")
+    _seed_run_with_cases(
+        yard,
+        "QA-RR2",
+        case_states={"case-01": "failed", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-RR2"),
+    )
+    with pytest.raises(TestRejected, match="unknown case"):
+        req_test(yard, "QA-RR2", print_mode=True, rerun_cases=["case-99"])
+
+
+def test_rerun_case_requires_existing_run(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RR3")
+    design = _DesignRunner(yard, "QA-RR3")
+    design.start("", yard, [])  # creates case-01, but no run yet
+    with pytest.raises(TestRejected, match="no run contains"):
+        req_test(yard, "QA-RR3", print_mode=True, rerun_cases=["case-01"])
+
+
+def test_rerun_case_rejects_conflicting_flags(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RR4")
+    _seed_run_with_cases(
+        yard,
+        "QA-RR4",
+        case_states={"case-01": "failed", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-RR4"),
+    )
+    with pytest.raises(TestRejected, match="cannot be combined"):
+        req_test(yard, "QA-RR4", print_mode=True, rerun_cases=["case-01"], redesign=True)
+
+
+def test_rerun_case_adopts_run_env(tmp_path: Path, git_src: Path, monkeypatch):
+    """The rerun defaults to the env recorded on the run it amends."""
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RR5")
+    run_dir = _seed_run_with_cases(
+        yard,
+        "QA-RR5",
+        case_states={"case-01": "failed", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-RR5"),
+    )
+    # Point the run at a non-active env to prove it is adopted.
+    doc = yaml.safe_load((run_dir / "progress.yaml").read_text(encoding="utf-8"))
+    doc["env"] = "staging"
+    (run_dir / "progress.yaml").write_text(
+        yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    )
+    _write_qa_yaml(
+        yard,
+        "  staging:\n    base_url: http://127.0.0.1:9090\n",
+    )
+    seen: dict = {}
+
+    def case_runner(job, pool):
+        seen["env"] = job.id
+        return {"status": "passed", "repo": "backend"}
+
+    result = req_test(
+        yard,
+        "QA-RR5",
+        print_mode=True,
+        ingest=False,
+        rerun_cases=["case-01"],
+        case_runner=case_runner,
+    )
+    assert seen["env"] == "case-01"
+    assert result.get("env") == "staging"
+
+
+def test_reset_cases_drops_artifacts_and_marks_ready(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.qa import reset_cases_in_run
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RST")
+    run_dir = _seed_run_with_cases(
+        yard,
+        "QA-RST",
+        case_states={"case-01": "failed", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-RST"),
+    )
+    # A stale aggregate summary + a screenshot that must go with the reset case.
+    (run_dir / "result.yaml").write_text("run_id: r\nsummary: {total: 2}\n", encoding="utf-8")
+    shots = run_dir / "case-01" / "screenshots"
+    shots.mkdir(parents=True, exist_ok=True)
+    (shots / "step-01.png").write_bytes(b"\x89PNG")
+
+    reset = reset_cases_in_run(run_dir, {"case-01"}, {"case-01", "case-02"})
+    assert reset == ["case-01"]
+
+    doc = yaml.safe_load((run_dir / "progress.yaml").read_text(encoding="utf-8"))
+    by_id = {c["id"]: c for c in doc["cases"]}
+    assert by_id["case-01"]["state"] == "ready"
+    assert by_id["case-01"]["reason"] == ""
+    # The other case keeps its terminal result.
+    assert by_id["case-02"]["state"] == "passed"
+    assert not (run_dir / "case-01" / "result.yaml").is_file()
+    assert not shots.is_dir()
+    assert (run_dir / "case-02" / "result.yaml").is_file()
+    # Stale aggregate summary is dropped so the page reads it as in-progress.
+    assert not (run_dir / "result.yaml").is_file()
+
+
+def test_reset_cases_leaves_active_case_alone(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.qa import reset_cases_in_run
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RST2")
+    run_dir = _seed_run_with_cases(
+        yard,
+        "QA-RST2",
+        case_states={"case-01": "running", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-RST2"),
+    )
+    reset = reset_cases_in_run(run_dir, {"case-01"}, {"case-01", "case-02"})
+    assert reset == []
+    doc = yaml.safe_load((run_dir / "progress.yaml").read_text(encoding="utf-8"))
+    by_id = {c["id"]: c for c in doc["cases"]}
+    assert by_id["case-01"]["state"] == "running"
+
+
+def test_reset_cases_rejects_unknown_id(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.qa import reset_cases_in_run
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RST3")
+    run_dir = _seed_run_with_cases(
+        yard,
+        "QA-RST3",
+        case_states={"case-01": "failed", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-RST3"),
+    )
+    with pytest.raises(TestRejected, match="unknown case"):
+        reset_cases_in_run(run_dir, {"case-99"}, {"case-01", "case-02"})
+
+
+def test_rerun_queues_behind_active_run(tmp_path: Path, git_src: Path, monkeypatch):
+    """A re-run job does not conflict with an active run-test; full runs do."""
+    from dev_yard.web.jobs import Job, _jobs_conflict
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    active = Job(id="a", jira="QA-Q", action="run-test")
+
+    # A plain run-test still conflicts (one full run at a time).
+    assert _jobs_conflict(active, "QA-Q", "run-test", None, {"label": "自动测"}) is True
+    # A re-run is allowed to queue behind it (req_test serialises on the lock).
+    assert (
+        _jobs_conflict(active, "QA-Q", "run-test", None, {"rerun_cases": ["case-01"]})
+        is False
+    )
+    # Re-runs for a different requirement never conflict.
+    assert (
+        _jobs_conflict(active, "QA-OTHER", "run-test", None, {"rerun_cases": ["case-01"]})
+        is False
+    )
+
+
+def test_rerun_dedupes_identical_jobs(tmp_path: Path, git_src: Path, monkeypatch):
+    """A double click must not stack two identical re-run jobs."""
+    from dev_yard.web.jobs import JobRunner
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-Q2")
+    _seed_run_with_cases(
+        yard,
+        "QA-Q2",
+        case_states={"case-01": "failed", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-Q2"),
+    )
+    runner = JobRunner(yard, sync=False)
+    try:
+        runner.submit("run-test", "QA-Q2", extra={"rerun_cases": ["case-01"]})
+        with pytest.raises(ValueError, match="已有重测在排队"):
+            runner.submit("run-test", "QA-Q2", extra={"rerun_cases": ["case-01"]})
+    finally:
+        for job in runner.running():
+            job.cancel()
+        for job in list(runner._jobs.values()):
+            job.done.wait(timeout=10)

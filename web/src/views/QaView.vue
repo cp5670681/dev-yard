@@ -181,6 +181,7 @@
               <th style="width: 72px">断言</th>
               <th style="width: 26%">失败原因</th>
               <th style="width: 130px">截图</th>
+              <th style="width: 84px"></th>
             </tr>
           </thead>
           <tbody>
@@ -263,6 +264,20 @@
                   </span>
                 </div>
                 <span v-else class="text-caption text-disabled">-</span>
+              </td>
+              <td @click.stop>
+                <v-btn
+                  v-if="canRerun(c)"
+                  size="x-small"
+                  variant="tonal"
+                  color="warning"
+                  :loading="rerunningCase === c.case"
+                  :disabled="rerunningCase !== ''"
+                  :title="`重新执行 ${c.case}（不改动本轮其它用例）`"
+                  @click="rerunCase(c.case)"
+                >
+                  重测
+                </v-btn>
               </td>
             </tr>
           </tbody>
@@ -380,16 +395,18 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { mdiClipboardCheckOutline } from "@mdi/js";
-import { getQa, getRequirement, runAction } from "@/api/client";
+import { getQa, getRequirement, rerunQaCases, runAction } from "@/api/client";
 import type { DocMeta, QaPage, QaReview, ShotItem } from "@/api/types";
 import CaseDetailDialog from "@/components/CaseDetailDialog.vue";
 import ReqDocTabs from "@/components/ReqDocTabs.vue";
 import ScreenshotViewer from "@/components/ScreenshotViewer.vue";
 import { assertionPassCount, caseShotItems } from "@/composables/qa";
+import { useSnack } from "@/composables/snack";
 import { runningJobs, watchJobs } from "@/state/jobs";
 
 const route = useRoute();
 const router = useRouter();
+const snack = useSnack();
 const jira = computed(() => String(route.params.jira || ""));
 const payload = ref<QaPage | null>(null);
 const docs = ref<DocMeta[]>([]);
@@ -398,6 +415,7 @@ const selectedRunId = ref("");
 const newFailuresDismissed = ref(false);
 const acting = ref("");
 const feedbackText = ref("");
+const rerunningCase = ref("");
 const caseDialog = reactive({ open: false, caseId: "" });
 const caseFromQuery = ref(false);
 const viewer = reactive({ open: false, index: 0, images: [] as ShotItem[] });
@@ -576,6 +594,29 @@ function statusColor(status: string) {
   if (status === "blocked") return "warning";
   if (status === "skipped") return "grey";
   return "info";
+}
+
+function canRerun(c: { status?: string }) {
+  return c.status === "failed" || c.status === "blocked" || c.status === "passed";
+}
+
+async function rerunCase(caseId: string) {
+  if (!caseId || rerunningCase.value) return;
+  error.value = "";
+  rerunningCase.value = caseId;
+  try {
+    const out = await rerunQaCases(jira.value, [caseId]);
+    const queued = out.jobs[0]?.state === "queued";
+    snack.notify(
+      queued ? `${caseId} 已提交重测，将排队执行` : `已重测 ${caseId}`,
+      "success",
+    );
+    await load();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    rerunningCase.value = "";
+  }
 }
 
 function latestStatus(id: string) {

@@ -311,6 +311,7 @@
         :qa-progress="liveProgress"
         :jira="jira"
         :phase="detail.phase"
+        :rerunning-case="rerunningCase"
         @implement="(id) => confirmAction('implement', id)"
         @review="(id) => confirmAction('review', id)"
         @diff="(id) => openDiff(id)"
@@ -319,6 +320,7 @@
         @preview-screenshot="openPreview"
         @fill-bug="confirmAction('fill-test-report')"
         @open-case="openCaseDetail"
+        @rerun-case="rerunCase"
       />
       <v-expansion-panels
         v-if="detail.worktrees.length || detail.contract_summary || detail.test"
@@ -631,7 +633,14 @@ import {
   mdiRefresh,
   mdiWrench,
 } from "@mdi/js";
-import { deleteRequirement, deleteTicket, getRequirement, runAction, submitTestReport } from "@/api/client";
+import {
+  deleteRequirement,
+  deleteTicket,
+  getRequirement,
+  rerunQaCases,
+  runAction,
+  submitTestReport,
+} from "@/api/client";
 import type { Action, JobSnapshot, QaProgress, ReqDetail, ShotItem, Ticket } from "@/api/types";
 import ContractReviewDialog from "@/components/ContractReviewDialog.vue";
 import JobPanel from "@/components/JobPanel.vue";
@@ -681,6 +690,7 @@ const qaReviewLabel = computed(() => {
 });
 const qaReviewOpen = ref(false);
 const qaReviewFeedback = ref("");
+const rerunningCase = ref("");
 const deleteOpen = ref(false);
 const ticketDelete = reactive({ open: false, ticket: null as Ticket | null });
 const diffDialog = reactive({ open: false, ticketId: "" });
@@ -971,6 +981,27 @@ async function rejectQa() {
     redesign: true,
     feedback,
   });
+}
+
+async function rerunCase(caseId: string) {
+  if (!caseId || rerunningCase.value) return;
+  error.value = "";
+  rerunningCase.value = caseId;
+  try {
+    const out = await rerunQaCases(jira.value, [caseId]);
+    const job = out.jobs[0]?.id;
+    if (job) await router.replace({ query: { ...route.query, job } });
+    const queued = out.jobs[0]?.state === "queued";
+    snack.notify(
+      queued ? `${caseId} 已提交重测，将排队执行` : `已重测 ${caseId}`,
+      "success",
+    );
+    await load();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    rerunningCase.value = "";
+  }
 }
 
 async function doDelete() {

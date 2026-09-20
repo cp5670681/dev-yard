@@ -67,6 +67,11 @@ class ActionIn(BaseModel):
     resolve: bool | None = None
 
 
+class QaRerunIn(BaseModel):
+    case_ids: list[str] = Field(default_factory=list)
+    env: str = ""
+
+
 class AssistantSessionIn(BaseModel):
     route: str = "/"
     jira: str = ""
