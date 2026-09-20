@@ -48,6 +48,17 @@
           <v-chip v-if="ticket.parallel" size="x-small" color="info" variant="text" class="px-0.5 font-weight-bold text-caption">para</v-chip>
           <v-spacer />
           <span v-if="ticket.repo" class="jira-repo-tag text-truncate">{{ ticket.repo }}</span>
+          <v-btn
+            v-if="canDelete"
+            icon
+            size="x-small"
+            variant="text"
+            color="error"
+            :title="`删除 ${ticket.id}`"
+            @click.stop="$emit('delete', ticket)"
+          >
+            <v-icon :icon="mdiTrashCanOutline" size="15" />
+          </v-btn>
         </div>
 
         <v-tooltip
@@ -333,7 +344,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
-import { mdiAlertCircleOutline } from "@mdi/js";
+import { mdiAlertCircleOutline, mdiTrashCanOutline } from "@mdi/js";
 import type { Ticket, QaCaseItem } from "@/api/types";
 import { ticketColor, TICKET_STATE_LABELS } from "@/composables/labels";
 import { qaScreenshotUrl } from "@/composables/qa";
@@ -358,6 +369,7 @@ defineEmits<{
   review: [id: string];
   diff: [id: string];
   feedback: [ticket: Ticket];
+  delete: [ticket: Ticket];
   "open-case": [id: string];
   "preview-screenshot": [url: string];
 }>();
@@ -387,6 +399,14 @@ const isRunning = computed(() => {
       (j.state === "running" || j.state === "queued" || j.state === "waiting") &&
       j.ticket_ids?.includes(props.ticket.id),
   );
+});
+
+// Only not-yet-started bug tickets (contract/test) can be dropped from the board.
+const canDelete = computed(() => {
+  const t = props.ticket;
+  if (t.source !== "contract" && t.source !== "test") return false;
+  if (t.state !== "pending" && t.state !== "ready") return false;
+  return !isRunning.value;
 });
 
 // 成功摘要也会写 "无 error / warning"；用票状态，不要扫正文。

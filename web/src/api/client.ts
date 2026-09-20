@@ -284,6 +284,13 @@ export function submitTicketReview(
   );
 }
 
+export function deleteTicket(jira: string, ticketId: string) {
+  return api<{ jira: string; ticket_id: string; title: string; source: string }>(
+    `/api/requirements/${encodeURIComponent(jira)}/tickets/${encodeURIComponent(ticketId)}`,
+    { method: "DELETE" },
+  );
+}
+
 export function getAssistantContext(route: string, jira?: string) {
   const q = new URLSearchParams({ route });
   if (jira) q.set("jira", jira);

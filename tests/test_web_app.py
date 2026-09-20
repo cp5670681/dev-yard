@@ -1575,6 +1575,41 @@ def test_contract_review_api(tmp_path: Path, git_src: Path, monkeypatch):
     assert "Contracts approved" in detail_data["contract_summary_html"]
 
 
+def test_ticket_delete_api(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "DEL-01", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: add auth\n- repo: backend\n- depends_on:\n- parallel: false\n\n"
+        "## B1: 契约缺口 (backend)\n- repo: backend\n- depends_on: T1\n"
+        "- parallel: true\n- source: contract\n- finding: repo:backend\n\n"
+        "### 做什么\n1. fix it\n\n"
+        "## B2: 契约缺口 (frontend)\n- repo: backend\n- depends_on:\n"
+        "- parallel: true\n- source: contract\n- finding: repo:frontend\n"
+    )
+    client = _client(yard)
+
+    # Non-bug tickets are rejected.
+    assert client.delete("/api/requirements/DEL-01/tickets/T1").status_code == 400
+    # Unknown ticket.
+    assert client.delete("/api/requirements/DEL-01/tickets/B9").status_code == 404
+
+    r = client.delete("/api/requirements/DEL-01/tickets/B2")
+    assert r.status_code == 200
+    assert r.json()["ticket_id"] == "B2"
+
+    text = (d / "TICKETS.md").read_text()
+    assert "## B2" not in text
+    assert "## B1" in text
+    assert "## T1" in text
+
+    detail = client.get("/api/requirements/DEL-01").json()
+    assert [t["id"] for t in detail["tickets"]] == ["T1", "B1"]
+
+
 def test_create_app_recovers_stale_reviewing(tmp_path: Path, git_src: Path, monkeypatch):
     from dev_yard import status as st
     from dev_yard.service import req_freeze

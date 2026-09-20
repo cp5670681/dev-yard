@@ -281,6 +281,7 @@
         @review="(id) => confirmAction('review', id)"
         @diff="(id) => openDiff(id)"
         @feedback="(ticket) => openReview(ticket)"
+        @delete="(ticket) => confirmDeleteTicket(ticket)"
         @preview-screenshot="openPreview"
         @fill-bug="confirmAction('fill-test-report')"
         @open-case="openCaseDetail"
@@ -447,6 +448,29 @@
       </v-card>
     </v-dialog>
 
+    <v-dialog v-model="ticketDelete.open" max-width="480">
+      <v-card>
+        <v-card-title>删除 bug 票？</v-card-title>
+        <v-card-text>
+          将从 <code>TICKETS.md</code> 删除
+          <strong>{{ ticketDelete.ticket?.id }}</strong>
+          （{{ ticketDelete.ticket?.title || ticketDelete.ticket?.id }}）整块，并从状态里移除。
+          仅未开工的 bug 票可删；此操作不可恢复。
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="ticketDelete.open = false">取消</v-btn>
+          <v-btn
+            color="error"
+            :loading="acting === `delete-ticket-${ticketDelete.ticket?.id}`"
+            @click="doDeleteTicket"
+          >
+            删除
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <v-dialog v-model="confirm.open" max-width="420">
       <v-card>
         <v-card-title>确认操作</v-card-title>
@@ -528,7 +552,7 @@ import {
   mdiRefresh,
   mdiWrench,
 } from "@mdi/js";
-import { deleteRequirement, getRequirement, runAction, submitTestReport } from "@/api/client";
+import { deleteRequirement, deleteTicket, getRequirement, runAction, submitTestReport } from "@/api/client";
 import type { Action, JobSnapshot, QaProgress, ReqDetail, ShotItem, Ticket } from "@/api/types";
 import ContractReviewDialog from "@/components/ContractReviewDialog.vue";
 import JobPanel from "@/components/JobPanel.vue";
@@ -569,6 +593,7 @@ const confirm = reactive({
 const qaEnvs = computed(() => detail.value?.qa?.envs ?? []);
 const incompleteRun = computed(() => detail.value?.qa?.incomplete_run || null);
 const deleteOpen = ref(false);
+const ticketDelete = reactive({ open: false, ticket: null as Ticket | null });
 const diffDialog = reactive({ open: false, ticketId: "" });
 const reviewDialog = reactive({ open: false, ticket: null as Ticket | null });
 const contractDialog = ref(false);
@@ -846,6 +871,29 @@ async function doDelete() {
     deleteOpen.value = false;
     snack.notify(`已删除 ${jira.value}`, "success");
     await router.push("/");
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    acting.value = "";
+  }
+}
+
+function confirmDeleteTicket(ticket: Ticket) {
+  ticketDelete.ticket = ticket;
+  ticketDelete.open = true;
+}
+
+async function doDeleteTicket() {
+  const t = ticketDelete.ticket;
+  if (!t) return;
+  error.value = "";
+  acting.value = `delete-ticket-${t.id}`;
+  try {
+    await deleteTicket(jira.value, t.id);
+    ticketDelete.open = false;
+    ticketDelete.ticket = null;
+    snack.notify(`已删除 ${t.id}`, "success");
+    await load();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {

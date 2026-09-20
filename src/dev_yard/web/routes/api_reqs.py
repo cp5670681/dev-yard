@@ -184,6 +184,22 @@ def build(ctx: AppContext) -> APIRouter:
             "error": auto_error,
         }
 
+    @router.delete("/api/requirements/{jira}/tickets/{ticket_id}")
+    def api_ticket_delete(jira: str, ticket_id: str):
+        if paths.is_reserved_req_name(jira):
+            raise HTTPException(404, f"no requirement {jira}")
+        for job in ctx.jobs.running():
+            if job.jira.upper() != jira.strip().upper():
+                continue
+            if not job.ticket_ids or ticket_id in job.ticket_ids:
+                raise HTTPException(409, f"{ticket_id} 有进行中的任务，结束后再删")
+        try:
+            return yard_service.ticket_delete(ctx.root, jira, ticket_id)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+        except (ValueError, gitops.GitError, OSError) as e:
+            raise HTTPException(400, str(e)) from e
+
     @router.post("/api/requirements/{jira}/contract/review")
     def api_contract_review_override(jira: str, payload: ContractReviewIn):
         if paths.is_reserved_req_name(jira):

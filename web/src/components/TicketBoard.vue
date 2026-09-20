@@ -333,6 +333,7 @@
                       @review="$emit('review', $event)"
                       @diff="$emit('diff', $event)"
                       @feedback="$emit('feedback', $event)"
+                      @delete="$emit('delete', $event)"
                       @open-case="$emit('open-case', $event)"
                       @preview-screenshot="$emit('preview-screenshot', $event)"
                     />
@@ -371,6 +372,7 @@
                 @review="$emit('review', $event)"
                 @diff="$emit('diff', $event)"
                 @feedback="$emit('feedback', $event)"
+                @delete="$emit('delete', $event)"
                 @open-case="$emit('open-case', $event)"
                 @preview-screenshot="$emit('preview-screenshot', $event)"
               />
@@ -428,6 +430,7 @@ defineEmits<{
   review: [id: string];
   diff: [id: string];
   feedback: [ticket: Ticket];
+  delete: [ticket: Ticket];
   "preview-screenshot": [url: string];
   "fill-bug": [];
   "open-case": [caseId: string];

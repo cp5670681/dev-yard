@@ -5,7 +5,15 @@ import pytest
 from dev_yard import status as st
 from dev_yard.bug_tickets import parse_findings_from_summary, spawn_fix_tickets
 from dev_yard.runners import DryRunRunner
-from dev_yard.service import implement, init_yard, repo_add, req_freeze, req_open, review
+from dev_yard.service import (
+    _remove_ticket_block,
+    implement,
+    init_yard,
+    repo_add,
+    req_freeze,
+    req_open,
+    review,
+)
 from dev_yard.test_report import (
     Finding,
     InboundReport,
@@ -34,6 +42,21 @@ def test_parse_bug_headings():
     assert ts[1].finding == "F1"
     assert ts[1].depends_on == ["T1"]
     assert ts[1].parallel is True
+
+
+def test_remove_ticket_block_drops_section_and_depends_refs():
+    text = (
+        "## T1: feat\n- repo: backend\n- depends_on:\n\n"
+        "## B1: gap\n- repo: backend\n- depends_on: T1 B2\n\n"
+        "# review notes\n## Spec 轴\n- not a ticket\n\n"
+        "## B2: other\n- repo: backend\n- depends_on:\n"
+    )
+    out = _remove_ticket_block(text, "B2")
+    assert "## B2" not in out
+    assert "## B1" in out
+    assert "- depends_on: T1" in out
+    assert "# review notes" in out
+    assert "## Spec 轴" in out
 
 
 def _two_repo_req(tmp_path: Path, git_src: Path, key: str) -> Path:

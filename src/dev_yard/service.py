@@ -38,6 +38,7 @@ from dev_yard.runners import (
 )
 from dev_yard.skillbind import session_prompt, session_prompt_for
 from dev_yard.stages import StageSpec, load_registry
+from dev_yard.tickets import HEADING as TICKET_HEADING
 from dev_yard.tickets import Ticket, load_tickets
 
 REQ_SKELETON = """# {key}
@@ -938,6 +939,74 @@ def prepare_fix_tickets(root: Path, jira: str, kind: str) -> list[str]:
     tickets = {t.id: t for t in load_tickets(req)}
     data = st.load(root, jira)
     return fix_ticket_ids(tickets, None, data, kind)
+
+
+def _remove_ticket_block(text: str, ticket_id: str) -> str:
+    """Drop one ticket section (heading to next ticket heading) and its depends_on refs."""
+    lines = text.splitlines()
+    out: list[str] = []
+    skipping = False
+    for line in lines:
+        m = TICKET_HEADING.match(line.strip())
+        if m:
+            if m.group(1) == ticket_id:
+                skipping = True
+                continue
+            skipping = False
+        if not skipping:
+            out.append(line)
+    cleaned: list[str] = []
+    for line in out:
+        stripped = line.strip()
+        if stripped.startswith("- depends_on:"):
+            prefix = line[: len(line) - len(line.lstrip())]
+            tokens = stripped.split(":", 1)[1].split()
+            tokens = [t for t in tokens if t != ticket_id]
+            line = f"{prefix}- depends_on: {' '.join(tokens)}".rstrip()
+        cleaned.append(line)
+    result = "\n".join(cleaned)
+    if text.endswith("\n"):
+        result += "\n"
+    return result
+
+
+def ticket_delete(root: Path, jira: str, ticket_id: str) -> dict[str, Any]:
+    """Remove a not-yet-started bug ticket (contract/test) from TICKETS.md.
+
+    Only bug tickets that have not started (state pending/ready, no worktree) can
+    be dropped here; anything further along must be handled by hand.
+    """
+    req = paths.req_dir(root, jira)
+    md_path = req / "TICKETS.md"
+    with st.jira_lock(jira):
+        tickets = {t.id: t for t in load_tickets(req)}
+        ticket = tickets.get(ticket_id)
+        if ticket is None:
+            raise FileNotFoundError(f"no ticket {ticket_id}")
+        if ticket.source not in {"contract", "test"}:
+            raise ValueError(f"{ticket_id} 不是 bug 票，不能删除")
+        data = st.sync_tickets(st.load(root, jira), list(tickets.values()))
+        st.refresh_ready(data)
+        slot = st.tickets_map(data.get("tickets")).get(ticket_id) or {}
+        if slot.get("worktree") or slot.get("child_worktree"):
+            raise ValueError(f"{ticket_id} 已开工，不能删除")
+        if slot.get("state") not in {"pending", "ready"}:
+            raise ValueError(f"{ticket_id} 状态为 {slot.get('state')}，不能删除")
+        text = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
+        new_text = _remove_ticket_block(text, ticket_id)
+        if new_text == text:
+            raise ValueError(f"未能在 TICKETS.md 定位 {ticket_id}")
+        md_path.write_text(new_text, encoding="utf-8")
+        parsed = load_tickets(req)
+        data = st.sync_tickets(st.load(root, jira), parsed)
+        st.refresh_ready(data)
+        st.save(root, jira, data)
+    return {
+        "jira": jira,
+        "ticket_id": ticket_id,
+        "title": ticket.title,
+        "source": ticket.source,
+    }
 
 
 def claim_run(root: Path, jira: str, action: str, ids: list[str]) -> tuple[list[str], dict[str, str]]:
