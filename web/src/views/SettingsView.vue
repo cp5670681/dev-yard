@@ -8,6 +8,7 @@
       </p>
     </div>
     <v-tabs v-model="tab" color="primary" class="mb-4" show-arrows>
+      <v-tab value="dev" :prepend-icon="mdiCodeBraces">开发</v-tab>
       <v-tab value="git" :prepend-icon="mdiSourceBranch">分支</v-tab>
       <v-tab value="pi" :prepend-icon="mdiCreationOutline">模型</v-tab>
     </v-tabs>
@@ -18,7 +19,41 @@
       {{ catalogError }}
     </v-alert>
 
-    <v-card v-if="tab === 'git'" variant="outlined">
+    <v-card v-if="tab === 'dev'" variant="outlined">
+      <v-card-text>
+        <div class="text-subtitle-2 mb-2">TDD 开发与审查模式</div>
+        <p class="text-body-2 text-medium-emphasis mb-4">
+          控制实现（<code>implement</code>）和代码审查（<code>review</code>）阶段是否使用测试驱动开发（TDD）。
+          写入 <code>repos.yaml</code> 的 <code>dev.tdd</code>。
+        </p>
+        <v-switch
+          v-model="tdd"
+          color="primary"
+          inset
+          :label="tdd ? '已开启 TDD（默认：编写测试套件、红绿循环、审查覆盖）' : '已关闭 TDD（免测模式：直接编写业务代码，不写不跑测试，免测审查）'"
+          hide-details
+        />
+        <v-alert
+          :type="tdd ? 'info' : 'warning'"
+          variant="tonal"
+          class="mt-4 mb-0"
+          density="compact"
+        >
+          <span v-if="tdd">
+            当前处于 <strong>TDD 模式</strong>：Agent 实现每张票时将编写测试并运行测试套件（如 RSpec / Jest）。
+          </span>
+          <span v-else>
+            当前处于 <strong>免测模式</strong>：Agent 实现阶段直接编写业务代码并进行静态走查，审查阶段不会因缺少测试文件打回。
+          </span>
+        </v-alert>
+      </v-card-text>
+      <v-card-actions class="px-6 pb-4">
+        <v-spacer />
+        <v-btn color="primary" :loading="savingDev" @click="saveDev">保存</v-btn>
+      </v-card-actions>
+    </v-card>
+
+    <v-card v-else-if="tab === 'git'" variant="outlined">
       <v-card-text>
         <div class="text-subtitle-2 mb-2">冻结分支模板</div>
         <p class="text-body-2 text-medium-emphasis mb-4">
@@ -131,18 +166,27 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
-import { mdiCreationOutline, mdiSourceBranch } from "@mdi/js";
-import { getGitSettings, getPiSettings, saveGitSettings, savePiSettings } from "@/api/client";
+import { mdiCodeBraces, mdiCreationOutline, mdiSourceBranch } from "@mdi/js";
+import {
+  getDevSettings,
+  getGitSettings,
+  getPiSettings,
+  saveDevSettings,
+  saveGitSettings,
+  savePiSettings,
+} from "@/api/client";
 import type { PiCatalogProvider } from "@/api/types";
 import { STEP_LABELS } from "@/composables/labels";
 import { useSnack } from "@/composables/snack";
 
 const snack = useSnack();
-const tab = ref("git");
+const tab = ref("dev");
 const error = ref("");
 const catalogError = ref("");
 const saving = ref(false);
 const savingGit = ref(false);
+const savingDev = ref(false);
+const tdd = ref(true);
 const provider = ref("");
 const model = ref("");
 const stageIds = ref<string[]>([]);
@@ -201,6 +245,12 @@ function onProviderChange(stageId: string, next: string | null) {
 
 onMounted(async () => {
   try {
+    const dev = await getDevSettings();
+    tdd.value = dev.tdd ?? true;
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  }
+  try {
     const git = await getGitSettings();
     freezeBranch.value = git.freeze_branch || "req/{jira}";
     if (git.examples?.length) examples.value = git.examples;
@@ -237,6 +287,20 @@ async function saveGit() {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
     savingGit.value = false;
+  }
+}
+
+async function saveDev() {
+  savingDev.value = true;
+  error.value = "";
+  try {
+    const saved = await saveDevSettings({ tdd: tdd.value });
+    tdd.value = saved.tdd;
+    snack.notify("已写入 repos.yaml", "success");
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    savingDev.value = false;
   }
 }
 

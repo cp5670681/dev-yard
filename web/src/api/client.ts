@@ -3,6 +3,7 @@ import type {
   AssistantSession,
   ContractReviewIn,
   ContractReviewOut,
+  DevSettings,
   DocPayload,
   GitSettings,
   JobsOut,
@@ -184,6 +185,17 @@ export function getGitSettings() {
 
 export function saveGitSettings(payload: { freeze_branch: string }) {
   return api<GitSettings>("/api/git", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getDevSettings() {
+  return api<DevSettings>("/api/dev");
+}
+
+export function saveDevSettings(payload: { tdd: boolean }) {
+  return api<DevSettings>("/api/dev", {
     method: "PUT",
     body: JSON.stringify(payload),
   });

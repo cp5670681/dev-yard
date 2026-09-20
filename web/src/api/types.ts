@@ -333,6 +333,10 @@ export interface GitSettings {
   examples: string[];
 }
 
+export interface DevSettings {
+  tdd: boolean;
+}
+
 export interface QaAccountCfg {
   username: string;
   password: string;
