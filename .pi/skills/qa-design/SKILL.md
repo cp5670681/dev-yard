@@ -25,7 +25,7 @@ description: >
 1. 每个 worktree 做 `git diff <default_base>...HEAD`。空 diff：停止并说明，不要编改动。
 2. 改动点 D1..Dn 写入 `qa/meta.yaml`。`repo` 必须是 `repos.yaml` 别名（context 地图里的 alias），不要写 frontend/backend 泛称。`role` 只作阅读提示。
 3. **增量**更新 `meta.yaml`：改 `changes` / `base_branches` / `feature_branches` / `module` / `requirement`；保留已有 `routes:`，不要整文件覆盖。
-4. 覆盖：每个 D 至少 1 条 + 1 条正常流 + UI **可达**的后端错误分支（无权限/重复/超限）。控件 `disabled`/`maxlength`/无清空导致点不到的拦截，不要写成用例。
+4. 覆盖：每个 D 至少 1 条 + 1 条正常流 + UI **可达**的后端错误分支（无权限/重复/超限）。控件 `disabled`/`maxlength`/无清空导致点不到的拦截，不要写成用例。**每条含 UI 预期的步骤还必须过「数据可达性审查」（见下节）**。
 5. 步骤用业务语言，不要写 selector、不要写 `bin/rails runner` / usql。按钮/文案必须来自 worktree 代码，不来自想象。
 6. 预期写需求口径。实现与 SPEC 不符时仍写需求值，并备注「需求偏差」。
 7. 跨仓改动拆成多条 case，或 `covers` 只含一个主仓。每条 frontmatter 必有 `repo:`（yard alias）。
@@ -37,6 +37,18 @@ description: >
     - 业务参数只读 `ENV['QA_ENV']` / `QA_JIRA` / `QA_CASE_ID` / `QA_SCRIPT_KIND`，**不要读 ARGV**（stdin 模式下 ARGV 是空的）。
     - stdout 是唯一回传通道（seed id 用 `puts`/`print`）。
     - 幂等，且不假设两次执行落在同一副本。
+
+## 数据可达性审查（强制）
+
+UI 预期只有在「该区域的数据确实会被 setup 造出（或已被核实存在）」时才可判定。写用例时逐条自查：这个元素在哪个区域、由什么数据驱动、setup 是否覆盖了那笔数据。
+
+重点——**关联行 / 展开行 / 子表格往往是独立实体，不会从主记录继承字段**：
+
+- 公司/项目的「联系人列表」与「联系人-项目表格」数据源不同：后者只列**参与过项目**的联系人。期望某联系人出现在该表，setup 必须建好 项目↔联系人 关联（如 `pj_contacts`/`firmtender`），只 `INSERT contacts` 不够。
+- 查重页/重复电话子表格里的「重复联系人」是**同号码的其它 contacts 记录**（各自的字段独立）。期望子行展示某字段，setup 必须逐条设置这些子记录，不能只改主联系人并指望继承。
+- 每个断言对象都要能追到 setup：前置里逐条列出 setup 会创建/修改的实体及关联、键值，并确认表单现在 UI 预期引用的每个对象上。
+
+**只读自检**：依赖「线上已有数据」的步骤（如"某项目已有重复电话数据"）不要只写"假设"。设计阶段用只读 SQL 先核实（只允许 `SELECT`/`SHOW`/`DESC`，禁止写库；连接串取 `qa.yaml` 的 `db.url`）；查不了（无 usql/无权限/remote 现场）就在前置里显式标注「未验证假设」，或改成自带 setup 造数。
 
 ## meta.yaml
 
@@ -70,7 +82,7 @@ data: { setup: setup.sql, cleanup: cleanup.sql }
 
 ## 前置
 - 已登录
-- <业务前置>
+- <业务前置；逐条列出 setup 会创建/修改的实体及关联与键值，以及本 case 依赖的既有数据（已用只读 SQL 核实，或标注「未验证假设」）>
 
 ## 步骤
 1. <可在 UI 上执行的业务步骤>
@@ -81,6 +93,6 @@ data: { setup: setup.sql, cleanup: cleanup.sql }
 - DB: <预期含 DB 时>
 ```
 
-无 DB 则去掉 `data` 与 DB 预期。造数脚本与 case 同目录，幂等。不要在步骤里写执行器命令。
+无 DB 则去掉 `data` 与 DB 预期。造数脚本与 case 同目录，幂等。**setup 必须覆盖该 case 每条 UI 预期引用的实体，含关联行/展开行/子表格里的独立实体；cleanup 对称恢复。** 不要在步骤里写执行器命令。
 
 写完后停。不要跑浏览器、不要改 STATUS.yaml。

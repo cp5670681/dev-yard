@@ -46,7 +46,11 @@ description: >
 4. **探索**（无回放）：每步 snapshot → 按语义操作 → 失败重试 1 次 → 把稳定的 getByRole/getByLabel 命令追加进 `.replay.sh`。文案与用例不一致仍完成操作，但 ui 断言判 failed（文案漂移）。
 5. 三层断言：UI → 网络（有提交时）→ DB（预期含 DB 时）。下层为准。HTTP 2xx ≠ 成功，必看 response-body。
 6. 瞬态 toast：操作后立即 snapshot；抓不到则断言「关键请求未发出 + 页面未变」。
-7. 四态：`passed | failed | blocked | skipped`。登录失败 / 5xx / DB 连不上 = **blocked**。
+7. 四态：`passed | failed | blocked | skipped`。
+   - `failed`：**被测实现**与预期不符（UI 实际值 ≠ 预期，或落库值不符）。
+   - `blocked`：登录失败 / 5xx / DB 连不上；或**用例自身的种子数据/前置不满足**（如期望出现在关联表/展开行/子表格里的记录，setup 没造出对应关联或字段）。
+   - **数据缺口判 blocked，不判 failed**：先查 DB 定位。DB 里**根本没有**该数据（记录/关联/字段缺失）→ 用例缺陷，`status: blocked`，`reason` 以 `case-defect:` 开头并写明缺哪个实体/关联/字段；DB 里**有**该数据但页面或接口没透出 → `failed`（实现问题）。
+   - 数据缺口只取证、不改 setup/预期；在 reason 里点明需回设计阶段补种子数据后重跑。
 8. 失败只取证。写该 case 的 `result.yaml`。不要写 run 级 `evidence/<run_id>/result.yaml`。
 9. 命令、日志、result 里的 DSN 与密码脱敏为 `***`。
 
@@ -84,3 +88,4 @@ failure:
 | 截图落仓库根 | `--filename` 绝对路径 |
 | ref 过期 | 重新 snapshot，不要写死 ref |
 | 组件状态残留 | 每条 case 先导航到目标页 |
+| 期望元素在关联行/展开行/子表格却不存在 | 先查 DB：该行对应实体/关联/字段是否存在；不存在 = 用例种子数据缺口，判 `blocked` + `reason: case-defect:`，不是产品缺陷 |
