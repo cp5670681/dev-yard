@@ -3,8 +3,9 @@
 `submit_test` (test_report.py) validates the requirement, then hands the git
 work to :func:`integrate_test_branches` here. The flow per repo is:
 
-    fetch origin <test> -> detached worktree at origin/<test>
-    -> merge <freeze> -> (AI resolve on conflict) -> push HEAD:refs/heads/<test>
+    push <freeze> to origin -> fetch origin <test> -> detached worktree at
+    origin/<test> -> merge <freeze> -> (AI resolve on conflict)
+    -> push HEAD:refs/heads/<test>
 
 The shared test branch is never checked out locally (detached + explicit push
 ref), so several requirements can integrate in parallel without fighting over a
@@ -83,6 +84,7 @@ class RepoIntegration:
     test_sha_before: str | None = None
     merge_sha: str | None = None
     pushed: bool = False
+    freeze_pushed: bool = False
     conflict: bool = False
     worktree: str | None = None
     pushed_at: str | None = None
@@ -95,6 +97,7 @@ class RepoIntegration:
             "test_sha_before": self.test_sha_before,
             "merge_sha": self.merge_sha,
             "pushed": self.pushed,
+            "freeze_pushed": self.freeze_pushed,
             "skipped": self.status == STATUS_SKIPPED,
             "conflict": self.conflict,
             "worktree": self.worktree,
@@ -196,6 +199,8 @@ def has_new_changes(root: Path, jira: str, data: dict[str, Any]) -> bool:
             return True
         head = gitops.rev_parse(repo.source_path(root), freeze)
         if not record.get("pushed"):
+            return True
+        if not record.get("freeze_pushed"):
             return True
         if record.get("test_branch") != repo.test_branch:
             return True
@@ -309,6 +314,30 @@ def integrate_test_branches(
     return outcome
 
 
+def _push_freeze_branch(
+    source: Path,
+    jira: str,
+    remote: str,
+    freeze: str,
+    rec: RepoIntegration,
+    on_progress: Callable[[str], None] | None,
+) -> None:
+    """Push the freeze branch (non-force) so the remote has the ref merged into test."""
+    _progress(on_progress, f"{freeze}: push to {remote}")
+    try:
+        gitops.push_ref(
+            source, remote, freeze, f"refs/heads/{freeze}", on_progress=on_progress
+        )
+    except gitops.GitError as e:
+        raise _IntegrationError(
+            f"{freeze}: push to {remote} failed: {e}\n"
+            f"  if the remote branch diverged, force-push it first: "
+            f"dev-yard req push {jira} --force",
+            status=STATUS_FAILED,
+        ) from e
+    rec.freeze_pushed = True
+
+
 def _integrate_one(
     root: Path,
     jira: str,
@@ -343,19 +372,35 @@ def _integrate_one(
     rec.freeze_sha = freeze_sha
 
     prev = integration.get(alias) or {}
-    if (
+    unchanged = (
         not force_all
         and prev.get("pushed")
         and prev.get("freeze_sha") == freeze_sha
         and prev.get("test_branch") == test
-    ):
+    )
+    if unchanged and prev.get("freeze_pushed"):
+        rec.status = STATUS_UNCHANGED
+        rec.pushed = True
+        rec.freeze_pushed = True
+        rec.test_sha_before = prev.get("test_sha_before")
+        rec.merge_sha = prev.get("merge_sha")
+        rec.pushed_at = prev.get("pushed_at")
+        rec.detail = "freeze branch unchanged since last integration"
+        _progress(on_progress, f"{alias}: unchanged ({freeze_sha[:8]}); skip")
+        return
+
+    # Publish the freeze branch too: the test branch is built from this exact ref,
+    # so the remote should carry it (e.g. for reviewers or a rebuild from source).
+    _push_freeze_branch(source, jira, remote, freeze, rec, on_progress)
+
+    if unchanged:
         rec.status = STATUS_UNCHANGED
         rec.pushed = True
         rec.test_sha_before = prev.get("test_sha_before")
         rec.merge_sha = prev.get("merge_sha")
         rec.pushed_at = prev.get("pushed_at")
         rec.detail = "freeze branch unchanged since last integration"
-        _progress(on_progress, f"{alias}: unchanged ({freeze_sha[:8]}); skip")
+        _progress(on_progress, f"{alias}: unchanged ({freeze_sha[:8]}); skip merge")
         return
 
     with branch_lock(source, test):

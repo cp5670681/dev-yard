@@ -332,11 +332,13 @@ def test_non_fast_forward_push_is_retried(tmp_path: Path, monkeypatch):
     calls = {"n": 0}
     real_push = gitops.push_ref
 
-    def flaky(*args, **kwargs):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise gitops.GitError("! [rejected] PG-test (non-fast-forward)")
-        return real_push(*args, **kwargs)
+    def flaky(worktree, remote, src, dst, **kwargs):
+        # Only the test-branch push is flaky; the freeze-branch push is not.
+        if dst.endswith("/PG-test"):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise gitops.GitError("! [rejected] PG-test (non-fast-forward)")
+        return real_push(worktree, remote, src, dst, **kwargs)
 
     monkeypatch.setattr(gitops, "push_ref", flaky)
     data = submit_test(yard, "AB-71")
@@ -394,3 +396,50 @@ def test_setext_and_trailing_whitespace_not_misjudged(tmp_path: Path):
     )
     assert data["phase"] == "testing"
     assert "=======" in _bare_show(remote, "PG-test:shared.txt")
+
+
+def test_submit_test_also_pushes_freeze_branch(tmp_path: Path, monkeypatch):
+    remote, work = _make_repo(tmp_path)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    _frozen_with_contract(yard, "AB-75", remote, work)
+    _commit_in_freeze(yard, "AB-75", "feature.txt", "feature\n")
+
+    from dev_yard.config import resolve_freeze_branch
+
+    branch = resolve_freeze_branch(yard, "AB-75", st.load(yard, "AB-75"))
+    with pytest.raises(subprocess.CalledProcessError):
+        _bare_rev(remote, branch)
+
+    data = submit_test(yard, "AB-75")
+
+    rec = data["test"]["integration"]["backend"]
+    assert rec["freeze_pushed"] is True
+    assert "feature" in _bare_show(remote, f"{branch}:feature.txt")
+
+
+def test_resubmit_unchanged_still_pushes_missing_freeze(tmp_path: Path, monkeypatch):
+    remote, work = _make_repo(tmp_path)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    _frozen_with_contract(yard, "AB-76", remote, work)
+    _commit_in_freeze(yard, "AB-76", "feature.txt", "feature\n")
+    submit_test(yard, "AB-76")
+
+    from dev_yard import test_integrate
+    from dev_yard.config import resolve_freeze_branch
+
+    branch = resolve_freeze_branch(yard, "AB-76", st.load(yard, "AB-76"))
+    # Simulate an old integration record whose freeze branch was never published.
+    data = st.load(yard, "AB-76")
+    rec = data["test"]["integration"]["backend"]
+    rec.pop("freeze_pushed", None)
+    st.save(yard, "AB-76", data)
+    _git(remote, "branch", "-D", branch)
+    with pytest.raises(subprocess.CalledProcessError):
+        _bare_rev(remote, branch)
+
+    outcome = test_integrate.integrate_test_branches(yard, "AB-76")
+    assert outcome.repos[0].status == "unchanged"
+    assert outcome.repos[0].freeze_pushed is True
+    assert "feature" in _bare_show(remote, f"{branch}:feature.txt")
