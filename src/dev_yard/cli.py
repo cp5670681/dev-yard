@@ -815,6 +815,34 @@ def status(jira: Optional[str] = typer.Argument(None)) -> None:
     typer.echo(service.status_text(root, jira))
 
 
+@app.command(name="tdd")
+def tdd_cmd(
+    mode: Optional[str] = typer.Argument(
+        None, help="'on' | 'off' | 'status'. Omit to view current status."
+    ),
+) -> None:
+    """Get or set workspace TDD development and review mode (default: on)."""
+    from dev_yard.config import DevSettings, load_dev_settings, save_dev_settings
+
+    root = root_opt()
+    settings = load_dev_settings(root)
+    if mode is None or mode.strip().lower() == "status":
+        status_str = "on" if settings.tdd else "off"
+        typer.echo(f"tdd: {status_str}")
+        return
+    m = mode.strip().lower()
+    if m == "on":
+        val = True
+    elif m == "off":
+        val = False
+    else:
+        _die(ValueError(f"invalid mode {mode!r}; expected 'on' or 'off'"))
+        return
+    settings.tdd = val
+    save_dev_settings(root, settings)
+    typer.echo(f"tdd set to {'on' if val else 'off'}")
+
+
 @app.command()
 def web(
     host: str = typer.Option("127.0.0.1", help="Bind address"),

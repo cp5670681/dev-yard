@@ -270,21 +270,30 @@ def load_git_settings(root: Path) -> GitSettings:
     return GitSettings(freeze_branch=normalize_freeze_template(template))
 
 
-def save_git_settings(root: Path, settings: GitSettings) -> None:
-    template = normalize_freeze_template(settings.freeze_branch)
+def _load_mutable_section(root: Path, section: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Load repos.yaml with a copy of `section` ready to mutate."""
     data = load_workspace(root)
     data.setdefault("repos", data.get("repos") or {})
-    git = dict(data["git"]) if isinstance(data.get("git"), dict) else {}
+    current = data.get(section)
+    return data, dict(current) if isinstance(current, dict) else {}
+
+
+def _store_section(root: Path, data: dict[str, Any], section: str, values: dict[str, Any]) -> None:
+    if values:
+        data[section] = values
+    else:
+        data.pop(section, None)
+    dump_workspace(root, data)
+
+
+def save_git_settings(root: Path, settings: GitSettings) -> None:
+    template = normalize_freeze_template(settings.freeze_branch)
+    data, git = _load_mutable_section(root, "git")
     if template == DEFAULT_FREEZE_BRANCH:
         git.pop("freeze_branch", None)
-        if git:
-            data["git"] = git
-        else:
-            data.pop("git", None)
     else:
         git["freeze_branch"] = template
-        data["git"] = git
-    dump_workspace(root, data)
+    _store_section(root, data, "git", git)
 
 
 def resolve_freeze_branch(
@@ -318,6 +327,34 @@ def git_settings_out(settings: GitSettings) -> dict[str, Any]:
         "placeholders": ["{jira}"],
         "examples": [DEFAULT_FREEZE_BRANCH, "feature/{jira}", "feat/{jira}", "{jira}"],
     }
+
+
+@dataclass
+class DevSettings:
+    tdd: bool = True
+
+
+def load_dev_settings(root: Path) -> DevSettings:
+    raw = load_workspace(root).get("dev")
+    if not raw:
+        return DevSettings()
+    if not isinstance(raw, dict):
+        raise ValueError("repos.yaml dev must be a mapping")
+    if "tdd" not in raw:
+        return DevSettings()
+    value = raw["tdd"]
+    if not isinstance(value, bool):
+        raise ValueError("repos.yaml dev.tdd must be a boolean")
+    return DevSettings(tdd=value)
+
+
+def save_dev_settings(root: Path, settings: DevSettings) -> None:
+    data, dev = _load_mutable_section(root, "dev")
+    if settings.tdd:
+        dev.pop("tdd", None)
+    else:
+        dev["tdd"] = False
+    _store_section(root, data, "dev", dev)
 
 
 def save_repos(root: Path, repos: dict[str, Repo]) -> None:

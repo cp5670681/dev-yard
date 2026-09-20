@@ -2,6 +2,12 @@
 # path: optional existing clone. grill/spec/tickets will NOT checkout it;
 # it must already be on default_base.
 #
+# dev.tdd: whether to use TDD (test-first, writing & running test suites)
+# during implement and review stages. Default is true.
+# Set to false to disable TDD / test writing and review enforcement.
+# dev:
+#   tdd: true
+#
 # git.freeze_branch: freeze worktree branch template. Must contain {jira}.
 # Default req/{jira}. Ticket child branches are {freeze}-{ticket}.
 # git:

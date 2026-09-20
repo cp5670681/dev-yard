@@ -950,6 +950,19 @@ def test_git_settings_api(tmp_path: Path):
     assert 'title="配置"' in nav
 
 
+def test_dev_settings_api(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    client = _client(yard)
+    default_res = client.get("/api/dev").json()
+    assert default_res["tdd"] is True
+    saved = client.put("/api/dev", json={"tdd": False})
+    assert saved.status_code == 200
+    assert saved.json()["tdd"] is False
+    again = client.get("/api/dev").json()
+    assert again["tdd"] is False
+
+
 def test_qa_config_page_serves_spa(tmp_path: Path):
     yard = tmp_path / "yard"
     init_yard(yard)

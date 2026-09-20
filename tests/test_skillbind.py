@@ -1,7 +1,9 @@
 import subprocess
 from pathlib import Path
 
+from dev_yard.config import DevSettings, save_dev_settings
 from dev_yard.runners import pi_argv, run_pi_print
+from dev_yard.service import init_yard
 from dev_yard.skillbind import session_prompt
 
 
@@ -233,4 +235,26 @@ def test_tickets_prompt_starts_at_spec():
     spec = Path("/tmp") / "reqs" / "AB-1" / "SPEC.md"
     assert f"starting with {spec}" in p
     assert "REQUIREMENT.md" not in p
+
+
+def test_implement_prompt_tdd_enabled_by_default(tmp_path: Path):
+    init_yard(tmp_path)
+    p = session_prompt(tmp_path, "implement", "AB-1")
+    assert "TDD mode is OFF" not in p
+
+
+def test_implement_prompt_tdd_disabled(tmp_path: Path):
+    init_yard(tmp_path)
+    save_dev_settings(tmp_path, DevSettings(tdd=False))
+    p = session_prompt(tmp_path, "implement", "AB-1")
+    assert "TDD mode is OFF (dev.tdd=false)" in p
+    assert "Do NOT write test files" in p
+
+
+def test_review_prompt_tdd_disabled(tmp_path: Path):
+    init_yard(tmp_path)
+    save_dev_settings(tmp_path, DevSettings(tdd=False))
+    p = session_prompt(tmp_path, "review", "AB-1")
+    assert "TDD mode is OFF (dev.tdd=false)" in p
+    assert "Do NOT require test files" in p
 

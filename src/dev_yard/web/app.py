@@ -22,12 +22,15 @@ from dev_yard.gitops import GitError
 from dev_yard.service import extract_req_key
 from dev_yard.config import (
     PI_STAGES,
+    DevSettings,
     GitSettings,
     PiSettings,
     StageModel,
     git_settings_out,
+    load_dev_settings,
     load_git_settings,
     load_pi_settings,
+    save_dev_settings,
     save_git_settings,
     save_pi_settings,
 )
@@ -208,6 +211,10 @@ class PiSettingsIn(BaseModel):
 
 class GitSettingsIn(BaseModel):
     freeze_branch: str = ""
+
+
+class DevSettingsIn(BaseModel):
+    tdd: bool = True
 
 
 def _bearer_ok(authorization: str | None, token: str) -> bool:
@@ -1089,6 +1096,24 @@ def create_app(
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         return _git_settings_out()
+
+    def _dev_settings_out():
+        return {"tdd": load_dev_settings(root).tdd}
+
+    @app.get("/api/dev")
+    def api_dev_get():
+        try:
+            return _dev_settings_out()
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.put("/api/dev")
+    def api_dev_put(payload: DevSettingsIn):
+        try:
+            save_dev_settings(root, DevSettings(tdd=payload.tdd))
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return _dev_settings_out()
 
     def _qa_config_out():
         """Form state for qa.yaml.

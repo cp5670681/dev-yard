@@ -253,6 +253,7 @@ dev-yard web --host 0.0.0.0 --allow-remote
 | `dev-yard stages` | 列出内置 + 已启用插件阶段 | |
 | `dev-yard run <stage> <key>` | 跑插件阶段，或 grill/spec/tickets | `--print`；`open`/`implement`/`review`/`contract`/`qa-*`/`test` 请用专用命令 |
 | `dev-yard push <key> [repos..]` | 推送各仓 Worktree 分支到远端 | `--remote`, `--force` |
+| `dev-yard tdd [on\|off\|status]` | 开/关 TDD（写 `repos.yaml` 的 `dev.tdd`，默认 on） | |
 | `dev-yard status [key]` | 查看需求与任务状态 | |
 | `dev-yard web` | 启动 Web 看板 | `--port 8765`, `--host 0.0.0.0 --allow-remote` |
 

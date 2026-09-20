@@ -24,6 +24,7 @@ CLI 入口是 `dev-yard`（或 `devyard`），不要用 `yard`（会撞上 Ruby 
 | `dev-yard req test` | qa-design + qa-run（提测后自动测；产物在 `reqs/<JIRA>/qa/`） |
 | `dev-yard qa check-env` | 不跑 agent；解析 qa.yaml exec 配方 → ping → hello 回显 |
 | `dev-yard implement --from-test` | 修就绪的测试 bug 票（B 票） |
+| `dev-yard tdd [on\|off\|status]` | 开/关 TDD（写 `repos.yaml` 的 `dev.tdd`，默认 on）；不跑 agent。关掉后 implement/review 不再要求写跑测试 |
 
 ## 产物
 

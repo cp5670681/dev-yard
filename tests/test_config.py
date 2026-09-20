@@ -3,16 +3,19 @@ from pathlib import Path
 import pytest
 
 from dev_yard.config import (
+    DevSettings,
     GitSettings,
     PiSettings,
     StageModel,
     git_project_name,
+    load_dev_settings,
     load_git_settings,
     load_pi_settings,
     load_repos,
     render_freeze_branch,
     resolve_freeze_branch,
     resolve_pi_choice,
+    save_dev_settings,
     save_git_settings,
     save_pi_settings,
     ticket_branch_name,
@@ -245,3 +248,78 @@ def test_dump_workspace_preserves_unicode(tmp_path: Path):
     assert "\\u" not in content
 
 
+def test_dev_settings_default_tdd_is_true(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    settings = load_dev_settings(yard)
+    assert settings.tdd is True
+
+
+def test_dev_settings_load_from_dev_section(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    (yard / "repos.yaml").write_text("repos: {}\ndev:\n  tdd: false\n", encoding="utf-8")
+    assert load_dev_settings(yard).tdd is False
+
+
+def test_dev_settings_reject_non_mapping_dev(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    (yard / "repos.yaml").write_text("repos: {}\ndev: nope\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="dev must be a mapping"):
+        load_dev_settings(yard)
+
+
+def test_dev_settings_reject_non_bool_tdd(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    (yard / "repos.yaml").write_text('repos: {}\ndev:\n  tdd: "false"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="dev.tdd must be a boolean"):
+        load_dev_settings(yard)
+
+
+def test_dev_settings_save_and_reload(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    save_dev_settings(yard, DevSettings(tdd=False))
+    assert "tdd: false" in (yard / "repos.yaml").read_text(encoding="utf-8")
+    assert load_dev_settings(yard).tdd is False
+    save_dev_settings(yard, DevSettings(tdd=True))
+    assert "dev:" not in (yard / "repos.yaml").read_text(encoding="utf-8")
+    assert load_dev_settings(yard).tdd is True
+
+
+def test_cli_tdd_command(tmp_path: Path, monkeypatch):
+    from typer.testing import CliRunner
+    from dev_yard.cli import app
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    monkeypatch.chdir(yard)
+    runner = CliRunner()
+
+    # Status (default: on)
+    res = runner.invoke(app, ["tdd"])
+    assert res.exit_code == 0
+    assert "tdd: on" in res.output
+
+    # Turn off
+    res = runner.invoke(app, ["tdd", "off"])
+    assert res.exit_code == 0
+    assert "tdd set to off" in res.output
+    assert load_dev_settings(yard).tdd is False
+
+    # Check status
+    res = runner.invoke(app, ["tdd", "status"])
+    assert res.exit_code == 0
+    assert "tdd: off" in res.output
+
+    # Turn on
+    res = runner.invoke(app, ["tdd", "on"])
+    assert res.exit_code == 0
+    assert "tdd set to on" in res.output
+    assert load_dev_settings(yard).tdd is True
+
+    # Bad argument
+    res = runner.invoke(app, ["tdd", "invalid"])
+    assert res.exit_code != 0
