@@ -680,15 +680,13 @@ class JmsK8sExecutor(ScriptExecutor):
         t = timeout or self.spec.timeout
         pod = self._pick_pod(timeout=min(t, self.spec.ping_timeout))
         runner = _remote_runner(self.spec, script)
-        inner = _cd_wrap(self.spec.workdir, runner)
+        assigns = [f"{k}={v}" for k, v in _qa_assigns(env_extra)]
+        cmd = ["env", *assigns, *runner] if assigns else runner
+        inner = _cd_wrap(self.spec.workdir, cmd)
         remote_cmd = " ".join(shlex.quote(a) for a in inner)
-        envs = " ".join(
-            f"--env={shlex.quote(f'{k}={v}')}" for k, v in _qa_assigns(env_extra)
-        )
-        env_bit = f" {envs}" if envs else ""
         remote = (
             f"kubectl exec -i -n {shlex.quote(self.spec.namespace)} {shlex.quote(pod)} "
-            f"-c {shlex.quote(self.spec.k8s_container)}{env_bit} -- {remote_cmd}"
+            f"-c {shlex.quote(self.spec.k8s_container)} -- {remote_cmd}"
         )
         r = self._ssh(
             remote,
@@ -956,22 +954,31 @@ def check_env(
         if cfg.env.db_url and cfg.env.db_exec != "inherit":
             usql = shutil.which("usql")
             if usql:
-                r = subprocess.run(
-                    [usql, cfg.env.db_url, "-c", "select 1"],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                if r.returncode != 0:
+                try:
+                    r = subprocess.run(
+                        [usql, cfg.env.db_url, "-c", "select 1"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    if r.returncode != 0:
+                        steps.append(
+                            {
+                                "step": "db",
+                                "status": "warn",
+                                "detail": "db.url 从本机不通；可改 db.exec: inherit 走同一现场",
+                            }
+                        )
+                    else:
+                        steps.append({"step": "db", "status": "ok", "detail": "usql select 1"})
+                except (subprocess.TimeoutExpired, OSError) as e:
                     steps.append(
                         {
                             "step": "db",
                             "status": "warn",
-                            "detail": "db.url 从本机不通；可改 db.exec: inherit 走同一现场",
+                            "detail": f"db.url 从本机超时/不通（{e}）；可改 db.exec: inherit 走同一现场",
                         }
                     )
-                else:
-                    steps.append({"step": "db", "status": "ok", "detail": "usql select 1"})
         return {
             "ok": True,
             "env": cfg.active_env,
