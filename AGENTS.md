@@ -23,6 +23,7 @@ CLI 入口是 `dev-yard`（或 `devyard`），不要用 `yard`（会撞上 Ruby 
 | `dev-yard req accounts` | 配本需求要用的账号，写 `.yard-qa/requirements/<JIRA>/accounts.yaml`（明文、随需求变、已 gitignore）；不跑 agent |
 | `dev-yard req test` | qa-design + qa-run（提测后设计用例，**暂停等人工审核**；`--approve` 通过后执行，`--redesign` 配合 `--feedback`/`--feedback-file` 带意见重做；产物在 `reqs/<JIRA>/qa/`） |
 | `dev-yard qa check-env` | 不跑 agent；解析 qa.yaml exec 配方 → ping → hello 回显 |
+| `dev-yard req change <JIRA> --note ... --repo ...` | 轻量变更：追加变更记录到 REQUIREMENT.md →（可选 grill）→ 更新 SPEC → 追加一张 `source: light` 票；不重跑 tickets、不改 phase、不动契约。仅 frozen/testing，不涉及契约 |
 | `dev-yard implement --from-test` | 修就绪的测试 bug 票（B 票） |
 | `dev-yard tdd [on\|off\|status]` | 开/关 TDD（写 `repos.yaml` 的 `dev.tdd`，默认 on）；不跑 agent。关掉后 implement/review 不再要求写跑测试 |
 

@@ -460,6 +460,40 @@ def default_execute(root: Path, job: Job) -> None:
         data = service.req_reset_phase(root, job.jira)
         job.append(f"{job.jira} phase={data.get('phase')}")
         return
+    if job.action == "change":
+        note = str(extra.get("note") or "")
+        repo = str(extra.get("repo") or "")
+        want_grill = bool(extra.get("grill"))
+        want_run = bool(extra.get("run"))
+
+        def _runner_factory(name: str) -> JobLogRunner:
+            return JobLogRunner(job, root, name)
+
+        def _grill() -> None:
+            _run_web_grill(root, job, note=note)
+
+        out = service.req_change(
+            root,
+            job.jira,
+            note,
+            repo=repo,
+            grill=want_grill,
+            run=want_run,
+            print_mode=True,
+            actor="web",
+            on_progress=job.append,
+            runner_factory=_runner_factory,
+            grill_runner=_grill if want_grill else None,
+        )
+        job.append(f"change {out['change_id']}: +{out['ticket']}")
+        if out.get("contract_touched"):
+            job.append(
+                "warning: SPEC contract section changed; "
+                "consider re-running 契约审查"
+            )
+        if out.get("ran"):
+            job.append("ran: " + ", ".join(out["ran"]))
+        return
     if job.action == "freeze":
         created = service.req_freeze(
             root, job.jira, force=bool((job.extra or {}).get("force"))
@@ -663,8 +697,8 @@ def default_execute(root: Path, job: Job) -> None:
     job.append("contract: " + (", ".join(ran) if ran else "(none)"))
 
 
-def _run_web_grill(root: Path, job: Job) -> None:
-    extra = grill_round.web_grill_extra(job.jira)
+def _run_web_grill(root: Path, job: Job, note: str = "") -> None:
+    extra = grill_round.web_grill_extra(job.jira, note)
     req = paths.req_dir(root, job.jira)
     for _ in range(grill_round.MAX_ROUNDS):
         rnd = grill_round.load_round(req)
@@ -693,7 +727,7 @@ def _run_web_grill(root: Path, job: Job) -> None:
         grill_round.apply_answers(req, rnd, answers)
         job.append(f"round {rnd.round} answers recorded")
         extra = (
-            grill_round.web_grill_extra(job.jira)
+            grill_round.web_grill_extra(job.jira, note)
             + "\nPrevious round answers are in GRILL.md. Continue the frontier."
         )
     raise RuntimeError("too many grill rounds")

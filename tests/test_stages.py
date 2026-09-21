@@ -53,8 +53,8 @@ def test_builtin_registry_fields(tmp_path):
         assert list(spec.bundles) == EXPECTED_SKILLS[name]
         assert spec.skill == EXPECTED_SKILLS[name][0]
     assert reg["open"].protects == ("GRILL.md", "SPEC.md", "TICKETS.md", "STATUS.yaml")
-    assert reg["grill"].protects == ("SPEC.md", "TICKETS.md")
-    assert reg["spec"].protects == ("TICKETS.md",)
+    assert reg["grill"].protects == ("REQUIREMENT.md", "SPEC.md", "TICKETS.md")
+    assert reg["spec"].protects == ("REQUIREMENT.md", "GRILL.md", "TICKETS.md")
     assert reg["tickets"].protects == ("REQUIREMENT.md", "GRILL.md", "SPEC.md", "STATUS.yaml")
     assert reg["implement"].protects == ()
     assert reg["review"].protects == ()

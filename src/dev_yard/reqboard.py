@@ -114,6 +114,7 @@ class ReqDetail:
     stage_runs: dict = field(default_factory=dict)
     qa: dict | None = None
     branch: str = ""
+    changes: list[dict] = field(default_factory=list)
 
 
 def parse_requirement_title(text: str, jira: str) -> str | None:
@@ -252,6 +253,7 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
         stage_runs=dict(data.get("stage_runs") or {}),
         qa=qa,
         branch=resolve_freeze_branch(root, jira, data, sample_wt),
+        changes=st.changes(data),
     )
     detail.actions = available_actions(detail, root)
     return detail
@@ -384,6 +386,20 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
             ""
             if detail.phase != "open"
             else "已在 open 阶段，无需重置",
+        ),
+        Action(
+            "change",
+            ACTION_LABELS["change"],
+            has_worktrees and detail.phase in {"frozen", "testing"},
+            ""
+            if has_worktrees and detail.phase in {"frozen", "testing"}
+            else (
+                "需要先 freeze 创建 worktree"
+                if not has_worktrees
+                else "已完成的需求改动属于方案级，本次不支持"
+                if detail.phase == "done"
+                else "在 open 阶段直接改文档后重跑对齐/写规约/拆票"
+            ),
         ),
         Action("grill", ACTION_LABELS["grill"], True),
         Action("spec", ACTION_LABELS["spec"], True),

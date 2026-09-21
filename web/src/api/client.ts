@@ -134,6 +134,10 @@ export function runAction(
     approve?: boolean;
     redesign?: boolean;
     feedback?: string;
+    note?: string;
+    repo?: string;
+    grill?: boolean;
+    run?: boolean;
   } = {},
 ) {
   return api<JobsOut>(

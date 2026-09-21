@@ -197,6 +197,19 @@ export interface ReqDetail {
     cases?: QaCaseItem[];
     review?: QaReview | null;
   } | null;
+  changes?: ChangeEntry[];
+}
+
+export interface ChangeEntry {
+  id: string;
+  at?: string;
+  actor?: string;
+  note?: string;
+  repo?: string;
+  ticket?: string;
+  grilled?: boolean;
+  contract_touched?: boolean;
+  stale?: { qa?: boolean };
 }
 
 export interface QaCase {
@@ -262,6 +275,7 @@ export interface QaReview {
   status: string;
   approved: boolean;
   stale: boolean;
+  stale_reason?: string;
   feedback: string;
   updated_at: string;
   fingerprint: string;

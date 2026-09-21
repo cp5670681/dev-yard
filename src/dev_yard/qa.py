@@ -36,6 +36,7 @@ from dev_yard.qa_exec import (
 from dev_yard.qa_report import map_qa_result
 from dev_yard.qa_review import (
     approve_cases,
+    clear_stale,
     reject_cases,
     review_gate,
     review_payload,
@@ -1248,6 +1249,10 @@ def _req_test(
         cases = discover_cases(qa)
         if feedback_text:
             reject_cases(qa, feedback_text)
+        elif redesign:
+            # A redesign supersedes a doc-change stale flag; the changed case
+            # fingerprint still forces a fresh review.
+            clear_stale(qa)
     if design_only:
         return {
             "jira": jira,

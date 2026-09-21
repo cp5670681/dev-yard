@@ -306,6 +306,10 @@ def build(ctx: AppContext) -> APIRouter:
             "redesign": body.redesign,
             "feedback": body.feedback,
             "resolve": body.resolve,
+            "note": body.note,
+            "repo": body.repo,
+            "grill": body.grill,
+            "run": body.run,
         }
         try:
             submitted = ctx.submit_action(action, jira, ids, extra)

@@ -28,6 +28,9 @@ class ReviewState:
     fingerprint: str
     feedback: str = ""
     updated_at: str = ""
+    # Set when the requirement docs changed after the cases were designed;
+    # forces `approved=False` until a person re-approves or redesigns.
+    stale_reason: str = ""
 
 
 def _case_assets(qa: Path) -> list[Path]:
@@ -79,10 +82,17 @@ def load_review(qa: Path) -> ReviewState | None:
         fingerprint=fingerprint,
         feedback=str(data.get("feedback") or ""),
         updated_at=str(data.get("updated_at") or ""),
+        stale_reason=str(data.get("stale_reason") or ""),
     )
 
 
-def save_review(qa: Path, status: str, fingerprint: str, feedback: str = "") -> Path:
+def save_review(
+    qa: Path,
+    status: str,
+    fingerprint: str,
+    feedback: str = "",
+    stale_reason: str = "",
+) -> Path:
     qa.mkdir(parents=True, exist_ok=True)
     path = qa / REVIEW_FILE
     payload = {
@@ -91,6 +101,8 @@ def save_review(qa: Path, status: str, fingerprint: str, feedback: str = "") -> 
         "feedback": feedback,
         "updated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+    if stale_reason:
+        payload["stale_reason"] = stale_reason
     path.write_text(
         yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
@@ -108,14 +120,23 @@ def review_payload(qa: Path) -> dict[str, object]:
     has_cases = root.is_dir() and any(root.rglob("case-*.md"))
     current = cases_fingerprint(qa)
     state = load_review(qa)
+    stale_reason = state.stale_reason if state else ""
     approved = bool(
-        state and state.status == STATUS_PASSED and state.fingerprint == current
+        state
+        and state.status == STATUS_PASSED
+        and state.fingerprint == current
+        and not stale_reason
     )
     stale = bool(
-        state and state.status == STATUS_PASSED and state.fingerprint != current
+        state
+        and state.status == STATUS_PASSED
+        and state.fingerprint != current
+        and not stale_reason
     )
     if not has_cases:
         status = NO_CASES
+    elif stale_reason:
+        status = STATUS_AWAITING
     elif approved:
         status = STATUS_PASSED
     elif state and state.status == STATUS_REJECTED:
@@ -126,6 +147,7 @@ def review_payload(qa: Path) -> dict[str, object]:
         "status": status,
         "approved": approved,
         "stale": stale,
+        "stale_reason": stale_reason,
         "feedback": state.feedback if state else "",
         "updated_at": state.updated_at if state else "",
         "fingerprint": current,
@@ -140,6 +162,8 @@ def review_gate(qa: Path) -> tuple[bool, str]:
     status = payload["status"]
     if status == NO_CASES:
         return False, "还没有用例"
+    if payload.get("stale_reason"):
+        return False, f"需求已变更（{payload['stale_reason']}），请复核用例"
     if payload["stale"]:
         return False, "用例已改动，需重新审核"
     if status == STATUS_REJECTED:
@@ -156,4 +180,32 @@ def approve_cases(qa: Path) -> dict[str, object]:
 def reject_cases(qa: Path, feedback: str) -> dict[str, object]:
     """Record a rejection with the reviewer's feedback."""
     save_review(qa, STATUS_REJECTED, cases_fingerprint(qa), feedback=feedback)
+    return review_payload(qa)
+
+
+def mark_stale(qa: Path, reason: str) -> dict[str, object]:
+    """Flag the current cases as needing re-review after a doc change.
+
+    Keeps any prior status/fingerprint but clears `approved` until a person
+    re-approves (`approve_cases`) or redesigns (`reject_cases`).
+    """
+    state = load_review(qa)
+    status = state.status if state else STATUS_AWAITING
+    fingerprint = cases_fingerprint(qa)
+    save_review(
+        qa,
+        status,
+        fingerprint,
+        feedback=state.feedback if state else "",
+        stale_reason=reason,
+    )
+    return review_payload(qa)
+
+
+def clear_stale(qa: Path) -> dict[str, object]:
+    """Drop the doc-change flag while keeping the previous approval fingerprint."""
+    state = load_review(qa)
+    if not state or not state.stale_reason:
+        return review_payload(qa)
+    save_review(qa, state.status, state.fingerprint, feedback=state.feedback)
     return review_payload(qa)

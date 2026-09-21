@@ -65,6 +65,10 @@ class ActionIn(BaseModel):
     redesign: bool = False
     feedback: str = ""
     resolve: bool | None = None
+    note: str = ""
+    repo: str = ""
+    grill: bool = False
+    run: bool = False
 
 
 class QaRerunIn(BaseModel):

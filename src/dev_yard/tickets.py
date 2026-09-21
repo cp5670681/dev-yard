@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from dev_yard.fsutil import atomic_write_text
 from dev_yard.parse import as_bool
 
 
@@ -16,9 +17,12 @@ class Ticket:
     parallel: bool = False
     source: str = ""
     finding: str = ""
+    # Lightweight doc-change ticket: id of the STATUS.yaml `changes[]` entry.
+    change: str = ""
 
 
 HEADING = re.compile(r"^##\s+((?:T|B)\d+)(?:\s*:\s*(.*))?$")
+_TICKET_NUM = re.compile(r"^T(\d+)$")
 
 
 def parse_tickets(text: str) -> list[Ticket]:
@@ -48,6 +52,8 @@ def parse_tickets(text: str) -> list[Ticket]:
             current.source = val
         elif key == "finding":
             current.finding = val
+        elif key == "change":
+            current.change = val
     if current:
         tickets.append(current)
     return tickets
@@ -58,3 +64,55 @@ def load_tickets(req_path: Path) -> list[Ticket]:
     if not p.exists():
         return []
     return [t for t in parse_tickets(p.read_text(encoding="utf-8")) if t.repo]
+
+
+def next_ticket_id(tickets: list[Ticket]) -> str:
+    """Next free `T<n>` id, ignoring `B<n>` bug tickets."""
+    nums = [int(m.group(1)) for t in tickets if (m := _TICKET_NUM.match(t.id))]
+    return f"T{max(nums, default=0) + 1}"
+
+
+def format_light_ticket(
+    *, ticket_id: str, title: str, repo: str, note: str, change_id: str
+) -> str:
+    return "\n".join(
+        [
+            f"## {ticket_id}: {title}",
+            f"- repo: {repo}",
+            "- depends_on:",
+            "- parallel: false",
+            "- source: light",
+            f"- change: {change_id}",
+            "",
+            f"来自轻量变更 {change_id}。变更说明：{note}。",
+            f"详见 REQUIREMENT.md「变更记录 {change_id}」与 SPEC.md 对应段落。",
+            "验收：（可留空，由实现阶段补齐）",
+            "",
+        ]
+    )
+
+
+def append_light_ticket(
+    req_path: Path,
+    *,
+    ticket_id: str,
+    title: str,
+    repo: str,
+    note: str,
+    change_id: str,
+) -> Path:
+    """Append one `source: light` ticket to TICKETS.md without touching existing tickets."""
+    path = req_path / "TICKETS.md"
+    existing = ""
+    if path.exists():
+        existing = path.read_text(encoding="utf-8")
+    if not existing.strip():
+        existing = f"# Tickets — {req_path.name}\n"
+    block = format_light_ticket(
+        ticket_id=ticket_id, title=title, repo=repo, note=note, change_id=change_id
+    )
+    text = existing.rstrip() + "\n\n" + block
+    if not text.endswith("\n"):
+        text += "\n"
+    atomic_write_text(path, text)
+    return path

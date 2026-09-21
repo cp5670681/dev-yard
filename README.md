@@ -208,6 +208,17 @@ repos:
 - **测试分支（`test_branch`）**：每仓可选。提测（`dev-yard req submit-test`）时，对配了该字段的仓，先把冻结分支 push 到远端，再把它 merge 进 `test_branch` 并 push；没配的仓跳过。测试分支是长命共享分支（同一仓对所有需求同一个），别并行提测多个需求，否则一个需求会把另一个需求的改动带进测试环境。另注意：若测试分支落后于 `default_base`，合并冻结分支会把它之后基线的大量无关提交一并带入，冲突面也会变大——提测前建议先把测试分支同步到基线。
 - **提测可重入**：`submit-test` 幂等。修完测试 bug（冻结分支前进）后再跑一次，只重推 `freeze_sha` 变化或未推的仓；`--all` 强制全量，`--no-resolve` 关闭 AI 解冲突。
 
+### 轻量变更（需求小改）
+
+产品在实现/提测中改了一小段需求（补规则、改描述、加验收点）时用 `dev-yard req change`（Web 看板「轻量变更」）。只支持 `phase=frozen/testing`，只改描述/规则/验收等**非契约**内容；涉及接口契约请另开需求（方案级变更暂不支持）。
+
+```bash
+dev-yard req change PROJ-101 --note "外聘联系人可同时挂靠" --repo core-api
+dev-yard req changes PROJ-101            # 查看变更记录（只读）
+```
+
+流程：追加变更记录到 `REQUIREMENT.md`（`## 变更记录`，不改原文）→（可选 `--grill`）→ 更新 `SPEC.md` → 追加**一张** `source: light` 的票。不重跑 `to-tickets`、不重排已有票、不改 `phase`、不动契约审查。新票按普通票「实现 → 审查 → 合并」；合并后 `submit-test` 幂等重提。若 SPEC 契约段被改动会告警，QA 用例会被标为待复核（需重新审核/`--redesign`）。
+
 ### 目录与分支拓扑
 ```text
 my-workspace/
@@ -251,6 +262,8 @@ dev-yard web --host 0.0.0.0 --allow-remote
 | `dev-yard req push <key> [repos..]` | 推送各仓 Worktree 分支到远端 | `--remote`, `--force` |
 | `dev-yard req submit-test <key>` | 标记提测 | |
 | `dev-yard req test <key>` | 提测后设计用例（暂停等人工审核）+ 执行 | `--env`, `--print`, `--design-only`, `--run-only`, `--redesign`, `--approve`, `--feedback`, `--feedback-file`, `--no-ingest` |
+| `dev-yard req change <key>` | 轻量变更：追加变更记录 + 更新 SPEC + 建一张轻量票 | `--note`, `--repo`, `--grill`, `--run`, `--print` |
+| `dev-yard req changes <key>` | 打印该需求的变更记录 | |
 | `dev-yard qa check-env` | 解析 exec 配方、ping、hello 回显 | `--env`, `--jira` |
 | `dev-yard req accept-test <key>` | 录入测试报告 | `--verdict`, `--body-file` |
 | `dev-yard grill <key>` | 需求答辩与对齐 | `--print`, `--dry-run` |

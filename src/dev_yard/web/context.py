@@ -256,6 +256,7 @@ class AppContext:
             "stage_runs": detail.stage_runs,
             "qa": detail.qa,
             "branch": detail.branch,
+            "changes": detail.changes,
         }
 
     def doc_payload(self, detail: ReqDetail, slug: str) -> dict[str, Any]:

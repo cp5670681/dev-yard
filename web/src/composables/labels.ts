@@ -50,6 +50,7 @@ export const ACTION_LABELS: Record<string, string> = {
   spec: "写规约",
   freeze: "冻结 worktree",
   contract: "契约审查",
+  change: "轻量变更",
   "fix-contract": "按契约修",
   "submit-test": "提测",
   "qa-review": "审核用例",

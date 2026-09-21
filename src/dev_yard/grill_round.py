@@ -12,12 +12,18 @@ WEB_GRILL_MARKER = "WEB_GRILL_ROUND"
 MAX_ROUNDS = 12
 
 
-def web_grill_extra(jira: str) -> str:
-    return (
+def web_grill_extra(jira: str, note: str = "") -> str:
+    extra = (
         f"{WEB_GRILL_MARKER}: follow grill-with-docs {WEB_GRILL_MARKER} "
         f"(read WEB-ROUND.md). Write `reqs/{jira}/{ROUND_FILE}` for this frontier, "
         "then stop. Do not invent user answers."
     )
+    if note:
+        extra += (
+            "\nThis is a lightweight requirement change; focus the frontier on it. "
+            f"变更说明：{note}"
+        )
+    return extra
 
 
 @dataclass

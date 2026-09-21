@@ -233,7 +233,7 @@
       <!-- 用例审核门：通过后「自动测」才会真正执行 -->
       <v-alert
         v-if="qaReviewPending"
-        :type="qaReview?.stale || qaReview?.status === 'rejected' ? 'warning' : 'info'"
+        :type="qaReview?.stale || qaReview?.stale_reason || qaReview?.status === 'rejected' ? 'warning' : 'info'"
         variant="tonal"
         border="start"
         class="mb-4"
@@ -245,7 +245,10 @@
               测试用例待审核（{{ qaReviewLabel }}）
             </div>
             <div class="text-body-2 text-medium-emphasis mt-0.5">
-              <template v-if="qaReview?.feedback">审核意见：{{ qaReview.feedback }}</template>
+              <template v-if="qaReview?.stale_reason">
+                需求已变更（{{ qaReview.stale_reason }}），请复核用例后重新审核。
+              </template>
+              <template v-else-if="qaReview?.feedback">审核意见：{{ qaReview.feedback }}</template>
               <template v-else-if="qaReview?.stale">用例在通过之后又改动过，需要重新审核。</template>
               <template v-else>通过后「自动测」才会开始执行；改预期等于洗白失败。</template>
             </div>
@@ -322,6 +325,27 @@
         @open-case="openCaseDetail"
         @rerun-case="rerunCase"
       />
+      <v-card v-if="detail.changes?.length" variant="outlined" class="mt-4">
+        <v-card-title class="text-subtitle-2">需求变更记录</v-card-title>
+        <v-card-text>
+          <div v-for="c in detail.changes" :key="c.id" class="mb-3">
+            <div class="d-flex align-center ga-2 flex-wrap">
+              <v-chip size="x-small" variant="tonal">{{ c.id }}</v-chip>
+              <span class="text-caption text-medium-emphasis">{{ c.at }}</span>
+              <v-chip v-if="c.ticket" size="x-small" color="primary" variant="tonal">
+                {{ c.ticket }}
+              </v-chip>
+              <v-chip v-if="c.contract_touched" size="x-small" color="warning" variant="tonal">
+                触及契约
+              </v-chip>
+              <v-chip v-if="c.stale?.qa" size="x-small" color="warning" variant="tonal">
+                用例待复核
+              </v-chip>
+            </div>
+            <div class="text-body-2 mt-1">{{ c.note }}</div>
+          </div>
+        </v-card-text>
+      </v-card>
       <v-expansion-panels
         v-if="detail.worktrees.length || detail.contract_summary || detail.test"
         class="mt-4"
@@ -547,6 +571,60 @@
       @reviewed="onContractReviewed"
     />
 
+    <v-dialog v-model="changeOpen" max-width="560">
+      <v-card>
+        <v-card-title>轻量变更</v-card-title>
+        <v-card-text>
+          <p class="text-body-2 mb-3">
+            只改描述 / 规则 / 验收等非契约内容；涉及接口契约请另开需求。
+            流程：追加变更记录 →（可选）对齐 → 写规约 → 追加一张轻量票。
+          </p>
+          <v-textarea
+            v-model="changeForm.note"
+            label="变更说明"
+            rows="3"
+            auto-grow
+            density="compact"
+            variant="outlined"
+            hide-details
+          />
+          <v-select
+            v-model="changeForm.repo"
+            :items="frozenRepos"
+            label="受影响仓库（本需求已冻结的仓）"
+            density="compact"
+            variant="outlined"
+            class="mt-3"
+            hide-details
+          />
+          <v-checkbox
+            v-model="changeForm.grill"
+            density="compact"
+            hide-details
+            label="需要澄清（先跑一轮对齐）"
+            class="mt-2"
+          />
+          <v-checkbox
+            v-model="changeForm.run"
+            density="compact"
+            hide-details
+            label="创建后立即实现这张票"
+          />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="changeOpen = false">取消</v-btn>
+          <v-btn
+            color="primary"
+            :disabled="!changeForm.note.trim() || !changeForm.repo"
+            @click="runChange"
+          >
+            开始
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <v-dialog v-model="qaReviewOpen" max-width="560">
       <v-card>
         <v-card-title class="d-flex align-center ga-2">
@@ -684,12 +762,21 @@ const qaReviewPending = computed(
   () => Boolean(detail.value?.qa?.has_cases) && !qaReview.value?.approved,
 );
 const qaReviewLabel = computed(() => {
+  if (qaReview.value?.stale_reason) return "需求已变更";
   if (qaReview.value?.stale) return "需重审";
   if (qaReview.value?.status === "rejected") return "已打回";
   return "待审核";
 });
 const qaReviewOpen = ref(false);
 const qaReviewFeedback = ref("");
+const changeOpen = ref(false);
+const changeForm = reactive({ note: "", repo: "", grill: false, run: false });
+const frozenRepos = computed(() =>
+  (detail.value?.worktrees || [])
+    .map((p) => p.split("/").filter(Boolean).pop() || "")
+    .filter(Boolean)
+    .sort(),
+);
 const rerunningCase = ref("");
 const deleteOpen = ref(false);
 const ticketDelete = reactive({ open: false, ticket: null as Ticket | null });
@@ -918,6 +1005,14 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
     snack.notify(meta.reason || "当前不能执行", "info");
     return;
   }
+  if (action === "change") {
+    changeForm.note = "";
+    changeForm.repo = frozenRepos.value[0] || "";
+    changeForm.grill = false;
+    changeForm.run = false;
+    changeOpen.value = true;
+    return;
+  }
   if (action === "fill-test-report") {
     reportForm.verdict = "failed";
     reportForm.summary = "";
@@ -961,6 +1056,16 @@ function runConfirmed() {
   const env = confirm.action === "run-test" ? confirm.env : undefined;
   const resume = confirm.action === "run-test" ? confirm.resume : undefined;
   void onAction(confirm.action, confirm.ticketId || undefined, env, resume);
+}
+
+function runChange() {
+  changeOpen.value = false;
+  void onAction("change", undefined, undefined, undefined, {
+    note: changeForm.note.trim(),
+    repo: changeForm.repo,
+    grill: changeForm.grill,
+    run: changeForm.run,
+  });
 }
 
 function openQaReview() {
@@ -1094,7 +1199,15 @@ async function onAction(
   ticketId?: string,
   env?: string,
   resume?: boolean,
-  extra?: { approve?: boolean; redesign?: boolean; feedback?: string },
+  extra?: {
+    approve?: boolean;
+    redesign?: boolean;
+    feedback?: string;
+    note?: string;
+    repo?: string;
+    grill?: boolean;
+    run?: boolean;
+  },
 ) {
   error.value = "";
   acting.value = action;
@@ -1106,6 +1219,10 @@ async function onAction(
       approve: extra?.approve,
       redesign: extra?.redesign,
       feedback: extra?.feedback,
+      note: extra?.note,
+      repo: extra?.repo,
+      grill: extra?.grill,
+      run: extra?.run,
     });
     const job = out.jobs[0]?.id;
     if (job) {

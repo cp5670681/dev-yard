@@ -118,6 +118,8 @@ def sync_tickets(data: dict[str, Any], tickets: list[Ticket]) -> dict[str, Any]:
         slot["repo"] = t.repo
         slot["parallel"] = t.parallel
         slot["depends_on"] = t.depends_on
+        if t.change:
+            slot["change"] = t.change
     data["repos"] = sorted({t.repo for t in tickets if t.repo})
     return data
 
@@ -154,3 +156,26 @@ def test_passed(data: dict[str, Any]) -> bool:
 def pipeline_complete(data: dict[str, Any]) -> bool:
     """True only after a passed test report. Legacy phase=done (contract only) is not complete."""
     return data.get("phase") == "done" and test_passed(data)
+
+
+def changes(data: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = data.get("changes")
+    if not isinstance(raw, list):
+        return []
+    return [dict(c) for c in raw if isinstance(c, dict)]
+
+
+def upsert_change(data: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
+    """Append the change, or replace the same-id entry (idempotent retries)."""
+    raw = data.get("changes")
+    if not isinstance(raw, list):
+        raw = []
+    cid = str(entry.get("id") or "")
+    for i, existing in enumerate(raw):
+        if isinstance(existing, dict) and str(existing.get("id") or "") == cid:
+            raw[i] = entry
+            data["changes"] = raw
+            return data
+    raw.append(entry)
+    data["changes"] = raw
+    return data

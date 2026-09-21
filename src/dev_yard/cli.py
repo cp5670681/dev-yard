@@ -285,6 +285,68 @@ def req_reset_phase(
     typer.echo(f"{jira} phase={data.get('phase')}")
 
 
+@req_app.command("change")
+def req_change_cmd(
+    jira: str = typer.Argument(..., help="Requirement key (e.g. PROJ-101)"),
+    note: str = typer.Option(..., "--note", "-n", help="变更说明（一句话）"),
+    repo: str = typer.Option(
+        ..., "--repo", "-r", help="受影响的仓 alias（必须是本需求已冻结的仓）"
+    ),
+    grill: bool = typer.Option(False, "--grill", help="先跑一轮 grill 澄清"),
+    run: bool = typer.Option(False, "--run", help="建票后立即实现这张轻量票"),
+    print_mode: bool = typer.Option(False, "--print", help="pi -p one-shot instead of TUI"),
+) -> None:
+    """Lightweight requirement-doc change: append change note, update SPEC, add one ticket."""
+    root = root_opt()
+    try:
+        out = service.req_change(
+            root,
+            jira,
+            note,
+            repo=repo,
+            grill=grill,
+            run=run,
+            print_mode=print_mode,
+            actor="cli",
+            on_progress=lambda line: typer.echo(line, err=True),
+        )
+    except (ValueError, FileNotFoundError, RuntimeError, GitError) as e:
+        _die(e)
+        return
+    typer.echo(f"change {out['change_id']}: +{out['ticket']} ({out['repo']})")
+    if out.get("contract_touched"):
+        typer.echo("warning: SPEC 契约段被改动，建议重跑契约审查", err=True)
+    if not out.get("ran"):
+        typer.echo(f"next: dev-yard implement {jira} {out['ticket']}")
+
+
+@req_app.command("changes")
+def req_changes(jira: str = typer.Argument(..., help="Requirement key (e.g. PROJ-101)")) -> None:
+    """Print this requirement's lightweight-change log (read-only)."""
+    from dev_yard import status as st
+
+    root = root_opt()
+    try:
+        paths.req_dir(root, jira)
+    except ValueError as e:
+        _die(e)
+        return
+    entries = st.changes(st.load(root, jira))
+    if not entries:
+        typer.echo("(no changes)")
+        return
+    for c in entries:
+        bits = []
+        if c.get("repo"):
+            bits.append(f"repo={c['repo']}")
+        if c.get("ticket"):
+            bits.append(f"ticket={c['ticket']}")
+        if c.get("contract_touched"):
+            bits.append("contract_touched")
+        suffix = "  " + " ".join(bits) if bits else ""
+        typer.echo(f"{c.get('id')} {c.get('at')} ({c.get('actor')}) {c.get('note')}{suffix}")
+
+
 @req_app.command("delete")
 def req_delete(jira: str) -> None:
     """Remove this requirement's docs and worktrees. Does not touch Jira or shared glossary/ADR."""
