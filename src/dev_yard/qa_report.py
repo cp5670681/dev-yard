@@ -7,6 +7,24 @@ import yaml
 from dev_yard.qa_schedule import blocked_kind, format_blocked_kind
 from dev_yard.test_report import Finding, InboundReport, ReportRejected
 
+DESIGN_BLOCKED_PREFIX = "design-blocked:"
+
+
+def has_design_blocked_skip(cases: list[dict[str, Any]]) -> bool:
+    """True when a case was skipped because its data could not be verified.
+
+    `--allow-unverified` waives the gate and skips those cases; that must not
+    let the rest of the run read as a clean pass, so the caller refuses ingest.
+    """
+    for item in cases:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("status") or "") != "skipped":
+            continue
+        if str(item.get("reason") or "").startswith(DESIGN_BLOCKED_PREFIX):
+            return True
+    return False
+
 
 def map_qa_result(run: dict[str, Any], cases: list[dict[str, Any]]) -> InboundReport | None:
     """Map a yard-qa run into an inbound test report. None means do not ingest."""
@@ -19,6 +37,10 @@ def map_qa_result(run: dict[str, Any], cases: list[dict[str, Any]]) -> InboundRe
     if not cases or (total == 0 and failed == 0 and blocked == 0 and passed == 0 and skipped == 0):
         return None
     if failed == 0 and blocked > 0:
+        return None
+    # A skipped design-blocked case means unverified data was waived through;
+    # the run is not a clean pass even if the rest passed.
+    if failed == 0 and has_design_blocked_skip(cases):
         return None
     # A skipped-only run proves nothing: do not ingest it as a pass.
     if failed == 0 and passed == 0:
@@ -104,7 +126,7 @@ def _blocked_lines(cases: list[dict[str, Any]]) -> list[str]:
     lines = ["", "## blocked", ""]
     for c in rows:
         cid = md_cell(c.get("case") or c.get("id"))
-        kind = blocked_kind(str(c.get("reason") or ""))
+        kind = blocked_kind(str(c.get("reason") or ""), str(c.get("blocked_class") or ""))
         reason = md_cell(c.get("reason"))
         lines.append(f"- `{cid}` [{kind}] {reason}".rstrip())
     lines.append("")

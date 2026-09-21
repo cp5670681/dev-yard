@@ -75,6 +75,7 @@ def _normalize_cases(run: dict[str, Any], fm: dict[str, dict[str, Any]]) -> list
                 "title": str(item.get("title") or ""),
                 "status": str(item.get("status") or ""),
                 "reason": str(item.get("reason") or ""),
+                "blocked_class": str(item.get("blocked_class") or ""),
                 "repo": str(item.get("repo") or ""),
                 "covers": [],
                 "failure": item.get("failure"),
@@ -123,7 +124,12 @@ def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     breakdown = dict.fromkeys(BLOCKED_KINDS, 0)
     for row in rows:
         if row.get("status") == "blocked":
-            breakdown[blocked_kind(str(row.get("reason") or ""))] += 1
+            breakdown[
+                blocked_kind(
+                    str(row.get("reason") or ""),
+                    str(row.get("blocked_class") or ""),
+                )
+            ] += 1
     counts["blocked_kind"] = breakdown
     return counts
 
@@ -164,7 +170,9 @@ def _blocked_detail(rows: list[dict[str, Any]]) -> list[str]:
         return []
     lines = ["## BLOCKED 说明", ""]
     for row in blocked:
-        kind = blocked_kind(str(row.get("reason") or ""))
+        kind = blocked_kind(
+            str(row.get("reason") or ""), str(row.get("blocked_class") or "")
+        )
         reason = md_cell(row.get("reason"))
         lines += [
             f"### {md_cell(row['case'])} ⛔ [{kind}]",

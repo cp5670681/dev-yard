@@ -139,7 +139,7 @@ dev-yard review PROJ-101 --contract # 跨仓契约校验
 
 # 8. 提测与修复闭环
 dev-yard req submit-test PROJ-101
-# 工作区根放 qa.yaml（envs.<环境>.base_url + auth.accounts 账号密码 + db.url，均明文直存、文件已 gitignore；测试模型也在这里：可选 design（qa-design）与 workers 模型池（qa-run））后：
+# 工作区根放 qa.yaml（envs.<环境>.base_url + auth.accounts 账号密码 + db.url，均明文直存、文件已 gitignore；db.verify_url 可选，给设计期只读核实用；测试模型也在这里：可选 design（qa-design）与 workers 模型池（qa-run））后：
 dev-yard req accounts PROJ-101 --env test   # 本需求要多账号时先配：写 .yard-qa/requirements/<JIRA>/accounts.yaml（随需求变，已 gitignore）
 dev-yard req test PROJ-101          # 设计用例后暂停，等人工审核；通过后执行，失败拆 B 票，通过则 phase=done
 dev-yard req test PROJ-101 --env test   # 指定环境；缺省用 qa.yaml 的 active_env
@@ -147,7 +147,7 @@ dev-yard req test PROJ-101 --approve    # 人工审核通过当前用例并开�
 dev-yard req test PROJ-101 --redesign --feedback "补齐权限拦截用例"   # 打回：带意见让 qa-design 重做用例
 # 用例 frontmatter 的 account: 选需求账号；不写用需求 default（需求无则回退全局默认）
 # 需求页「测试」Tab（/r/:key/qa）可看用例、改动点、run 与截图，并通过/打回用例
-# --design-only / --run-only 仍可绕过审核门（CI 或已审过时）
+# --design-only 仍可只出用例；--run-only 在用例未审核时需显式加 --unsafe-skip-review（CI 或已审过时）
 # 提 bug 后修就绪的 B 票：dev-yard implement PROJ-101 --from-test
 
 # 9. 一键推送远端分支（提 PR）
@@ -219,6 +219,14 @@ dev-yard req changes PROJ-101            # 查看变更记录（只读）
 
 流程：追加变更记录到 `REQUIREMENT.md`（`## 变更记录`，不改原文）→（可选 `--grill`）→ 更新 `SPEC.md` → 追加**一张** `source: light` 的票。不重跑 `to-tickets`、不重排已有票、不改 `phase`、不动契约审查。新票按普通票「实现 → 审查 → 合并」；合并后 `submit-test` 幂等重提。若 SPEC 契约段被改动会告警，QA 用例会被标为待复核（需重新审核/`--redesign`）。
 
+### 自动化测试（`req test`）
+
+- **人工审核门**：qa-design 产出用例后暂停，需 `--approve` 才执行；审核绑定用例指纹，改动用例即失效。`--run-only` 跳过审核时必须显式 `--unsafe-skip-review`。
+- **数据核实**：设计期由宿主真跑每条用例的 `data.verify`（单条只读 SQL，≥1 行通过），失败自动回灌 qa-design 重做，最多 `design.verify_attempts` 次；配 `db.verify_url` 可让核实走只读账号。
+- **宿主独立复核**：run 期 worker 对带 `sql` 的 db 断言自报 passed，宿主会重跑该 SQL 比对 `expected`，不一致降级为 `failed`。
+- **阻塞分类**：worker 在 result.yaml 写 `blocked_class`（`case-defect`/`env`/`undeployed`/`auth`/`other`），宿主据此决策；无法归类的原因不再触发整轮中断。
+- **变更门**：run 前后比对 worktree 的 git 状态与 HEAD，commit 级改动也会被判为 worker 越权改动而中止。
+
 ### 目录与分支拓扑
 ```text
 my-workspace/
@@ -261,7 +269,7 @@ dev-yard web --host 0.0.0.0 --allow-remote
 | `dev-yard req delete <key>` | 删除需求产物与 Worktree | |
 | `dev-yard req push <key> [repos..]` | 推送各仓 Worktree 分支到远端 | `--remote`, `--force` |
 | `dev-yard req submit-test <key>` | 标记提测 | |
-| `dev-yard req test <key>` | 提测后设计用例（暂停等人工审核）+ 执行 | `--env`, `--print`, `--design-only`, `--run-only`, `--redesign`, `--approve`, `--feedback`, `--feedback-file`, `--no-ingest` |
+| `dev-yard req test <key>` | 提测后设计用例（暂停等人工审核）+ 执行 | `--env`, `--print`, `--design-only`, `--run-only`, `--unsafe-skip-review`, `--redesign`, `--approve`, `--feedback`, `--feedback-file`, `--verify-only`, `--no-verify`, `--allow-unverified`, `--resume`, `--fresh`, `--rerun-case`, `--no-ingest` |
 | `dev-yard req change <key>` | 轻量变更：追加变更记录 + 更新 SPEC + 建一张轻量票 | `--note`, `--repo`, `--grill`, `--run`, `--print` |
 | `dev-yard req changes <key>` | 打印该需求的变更记录 | |
 | `dev-yard qa check-env` | 解析 exec 配方、ping、hello 回显 | `--env`, `--jira` |

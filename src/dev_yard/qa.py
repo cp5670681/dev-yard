@@ -30,10 +30,11 @@ from dev_yard.qa_config import (
 from dev_yard.qa_exec import (
     ensure_auth,
     normalize_case_result,
+    recheck_db_assertions,
     replay_path,
     run_case_script,
 )
-from dev_yard.qa_report import map_qa_result
+from dev_yard.qa_report import has_design_blocked_skip, map_qa_result
 from dev_yard.qa_review import (
     approve_cases,
     cases_fingerprint,
@@ -57,6 +58,7 @@ from dev_yard.qa_schedule import (
 from dev_yard.qa_verify import (
     VerifyResult,
     describe,
+    env_lock,
     failed_cases,
     prior_defects,
     render_feedback,
@@ -305,6 +307,47 @@ def _involved_aliases(root: Path, jira: str) -> list[str]:
     return sorted(aliases)
 
 
+def _check_case_repos(root: Path, cases: list[CaseJob]) -> None:
+    """Every runnable case must name a real repos.yaml alias.
+
+    Caught before the run so a repo-less case cannot abort ingest afterwards
+    (a failed finding needs a repo) or attribute its result to everything.
+    """
+    repos = set(load_repos(root))
+    for job in cases:
+        if not job.repo:
+            raise TestRejected(
+                f"case {job.id} has no repo; add `repo: <alias>` to its frontmatter"
+            )
+        if repos and job.repo not in repos:
+            raise TestRejected(
+                f"case {job.id} repo {job.repo!r} is not a repos.yaml alias"
+            )
+
+
+def uncovered_changes(qa: Path, cases: list[CaseJob]) -> list[str]:
+    """Change ids (meta.yaml `changes`) no case declares in `covers`."""
+    meta = qa / "meta.yaml"
+    if not meta.is_file():
+        return []
+    try:
+        data = yaml.safe_load(meta.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return []
+    changes = data.get("changes") if isinstance(data, dict) else None
+    if not isinstance(changes, list):
+        return []
+    ids = [
+        str(c.get("id")).strip()
+        for c in changes
+        if isinstance(c, dict) and str(c.get("id") or "").strip()
+    ]
+    if not ids:
+        return []
+    covered = {c for job in cases for c in job.covers}
+    return [cid for cid in ids if cid not in covered]
+
+
 _PERMISSION_HINT = re.compile(r"权限|角色|授权|可见范围|permission|authoriz", re.I)
 _PERMISSION_SCAN_MAX = 2 * 1024 * 1024
 
@@ -491,6 +534,13 @@ def _porcelain_lines(text: str) -> set[str]:
     return {ln for ln in text.splitlines() if ln.strip() and not ln.startswith("(")}
 
 
+def _head_sha(worktree: Path) -> str | None:
+    try:
+        return gitops.run(["git", "rev-parse", "HEAD"], cwd=worktree).strip()
+    except gitops.GitError:
+        return None
+
+
 def _tree_state(worktree: Path) -> dict[str, str] | None:
     """Map changed path → `status|content-hash`, or None if git status failed.
 
@@ -546,6 +596,23 @@ def _check_case_accounts(cfg: QaConfig, cases: list[CaseJob], jira: str) -> None
                 f"case {job.id} uses account {job.account!r}, which is not configured "
                 f"for env {cfg.active_env}; run `dev-yard req accounts {jira}`"
             )
+
+
+def _case_auth_env(cfg: QaConfig, job: CaseJob) -> dict[str, str]:
+    """Credentials for a case, handed to the worker via env, never the prompt."""
+    name = _case_account(cfg, job)
+    acct = cfg.env.accounts.get(name) if name else None
+    if acct is None:
+        return {}
+    state_str = acct.state_file or str(
+        default_state_file(cfg.active_env, acct.name)
+    )
+    return {
+        "YARD_QA_USERNAME": acct.username or "",
+        "YARD_QA_PASSWORD": acct.password or "",
+        "YARD_QA_STATE_FILE": state_str,
+        "YARD_QA_AUTH_REPLAY": str(Path(state_str).with_suffix(".replay.sh")),
+    }
 
 
 def _used_accounts(cfg: QaConfig, cases: list[CaseJob]) -> list[str]:
@@ -685,12 +752,10 @@ def _run_prompt(root: Path, jira: str, cfg: QaConfig, job: CaseJob, run_id: str)
     if acct:
         state_str = acct.state_file or str(default_state_file(cfg.active_env, acct.name, jira))
         replay_str = str(Path(state_str).with_suffix(".replay.sh"))
-        user_str = acct.username or "(none)"
-        pass_str = acct.password or "(none)"
         account_line += (
-            f"\nAccount Details:\n"
-            f"  username: {user_str}\n"
-            f"  password: {pass_str}\n"
+            f"\nAccount Details (credentials are in the environment, not the prompt):\n"
+            f"  username: $YARD_QA_USERNAME\n"
+            f"  password: $YARD_QA_PASSWORD (never echo this)\n"
             f"  state_file: {state_str}\n"
             f"  auth_replay: {replay_str}\n"
             f"Login & Session Protocol:\n"
@@ -698,10 +763,10 @@ def _run_prompt(root: Path, jira: str, cfg: QaConfig, job: CaseJob, run_id: str)
             f"  2. Navigate to target URL. If unauthenticated / on login page:\n"
             f"     - If `{replay_str}` exists, replay or reference its login commands.\n"
             f"     - Otherwise, explore login form with snapshot (inspect actual inputs/buttons dynamically).\n"
-            f"     - Fill username and password, submit, and verify entry into system.\n"
+            f"     - Fill username/password from the env vars above, submit, and verify entry into system.\n"
             f"     - Save session: `playwright-cli -s=qap-{job.id} state-save {state_str}`\n"
             f"     - Save explored login commands to `{replay_str}` for future runs to reuse.\n"
-            f"  3. Never write passwords to result.yaml or evidence files; redact as `***`."
+            f"  3. Never write credentials to result.yaml, .replay.sh, or evidence; redact as `***`."
         )
     replay = replay_path(job)
     replay_line = (
@@ -882,6 +947,7 @@ def _read_case_result(
             return {
                 "status": normalize_status(data.get("status")),
                 "reason": str(data.get("reason") or ""),
+                "blocked_class": str(data.get("blocked_class") or ""),
                 "repo": str(data.get("repo") or job.repo),
                 "title": str(data.get("title") or job.title),
                 "covers": data.get("covers") or job.covers,
@@ -939,7 +1005,7 @@ def _summarize(cases: list[CaseJob]) -> dict[str, Any]:
     breakdown = dict.fromkeys(BLOCKED_KINDS, 0)
     for c in cases:
         if c.state == "blocked":
-            breakdown[blocked_kind(c.reason)] += 1
+            breakdown[blocked_kind(c.reason, c.blocked_class)] += 1
     counts["blocked_kind"] = breakdown
     return counts
 
@@ -1140,6 +1206,9 @@ def _apply_resume(cases: list[CaseJob], run_dir: Path) -> int:
             continue
         job.state = status
         job.reason = str(got.get("reason") or prev.get("reason") or "")
+        job.blocked_class = str(
+            got.get("blocked_class") or prev.get("blocked_class") or ""
+        )
         job.model = str(got.get("model") or prev.get("model") or "")
         job.provider = str(got.get("provider") or prev.get("provider") or "")
         job.failure = got.get("failure") if isinstance(got.get("failure"), dict) else None
@@ -1222,6 +1291,7 @@ def req_test(
     verify: bool | None = None,
     verify_only: bool = False,
     allow_unverified: bool = False,
+    unsafe_skip_review: bool = False,
     runner: Runner | None = None,
     case_runner: Callable[[CaseJob, PoolSlot], dict[str, Any]] | None = None,
     on_progress: ProgressFn | None = None,
@@ -1248,6 +1318,7 @@ def req_test(
             verify=verify,
             verify_only=verify_only,
             allow_unverified=allow_unverified,
+            unsafe_skip_review=unsafe_skip_review,
             runner=runner,
             case_runner=case_runner,
             on_progress=on_progress,
@@ -1280,6 +1351,7 @@ def _req_test(
     verify: bool | None = None,
     verify_only: bool = False,
     allow_unverified: bool = False,
+    unsafe_skip_review: bool = False,
     runner: Runner | None = None,
     case_runner: Callable[[CaseJob, PoolSlot], dict[str, Any]] | None = None,
     on_progress: ProgressFn | None = None,
@@ -1334,6 +1406,7 @@ def _req_test(
     if run_only and not cases:
         raise TestRejected(f"{jira} has no qa/cases; cannot --run-only")
     feedback_text = feedback.strip() if feedback else ""
+    review_bypassed = False
     if approve and (redesign or feedback_text):
         raise TestRejected(
             "--approve cannot be combined with --redesign or --feedback"
@@ -1449,6 +1522,11 @@ def _req_test(
     verify_info = (
         verify_view(qa, verify_fingerprint) if cases else {"present": False, "stale": False}
     )
+    # Advisory coverage: a change point no case claims. Surfaced at review time
+    # so a human can ask for the missing case before approving.
+    uncovered = uncovered_changes(qa, cases)
+    if uncovered and on_log is not None:
+        on_log(f"提示：改动点未被任何用例 covers：{', '.join(uncovered)}\n")
 
     if design_only:
         return {
@@ -1459,6 +1537,7 @@ def _req_test(
             "open_questions": open_questions_payload(qa),
             "review": review_payload(qa),
             "verify": verify_info,
+            "uncovered_changes": uncovered,
         }
     if verify_only:
         return {
@@ -1483,6 +1562,7 @@ def _req_test(
                 "reason": "数据核实失败已自动重做用例，请复核后重新 --approve",
                 "review": review_payload(qa),
                 "verify": verify_info,
+                "uncovered_changes": uncovered,
             }
         ok, why = verify_gate(
             qa,
@@ -1495,13 +1575,24 @@ def _req_test(
                 f"--approve 被拒绝：{why}；修好后重跑设计，或加 --allow-unverified 越权"
             )
         approve_cases(qa)
-    elif not run_only and not rerun_ids:
+    elif not rerun_ids:
         can_run, hold_reason = review_gate(
             qa,
             require_verify=require_verify,
             allow_unverified=allow_unverified,
         )
-        if not can_run:
+        if not can_run and run_only:
+            # `--run-only` is the one path that can run unapproved cases. Make
+            # the bypass an explicit, auditable opt-in instead of a silent one.
+            if not unsafe_skip_review:
+                raise TestRejected(
+                    f"{hold_reason}；--run-only 会绕过人工审核，"
+                    "确认后加 --unsafe-skip-review 重跑"
+                )
+            review_bypassed = True
+            if on_log is not None:
+                on_log(f"警告：--run-only 绕过用例审核（{hold_reason}）\n")
+        elif not can_run:
             return {
                 "jira": jira,
                 "awaiting_review": True,
@@ -1511,10 +1602,12 @@ def _req_test(
                 "reason": hold_reason,
                 "review": review_payload(qa),
                 "verify": verify_info,
+                "uncovered_changes": uncovered,
             }
     if allow_unverified:
         _mark_design_blocked(cases, qa, cases_fingerprint(qa))
 
+    _check_case_repos(root, cases)
     evidence = qa / "evidence"
     case_ids = {c.id for c in cases}
     incomplete = find_incomplete_run(qa, case_ids, cfg.active_env)
@@ -1548,6 +1641,7 @@ def _req_test(
         resuming = False
     aliases = _involved_aliases(root, jira)
     tree_before: dict[str, dict[str, str]] = {}
+    heads_before: dict[str, str] = {}
     baseline_dir = run_dir / "repo-baseline"
     baseline_dir.mkdir(parents=True, exist_ok=True)
     for alias in aliases:
@@ -1583,6 +1677,15 @@ def _req_test(
             baseline_txt.write_text(
                 text + ("\n" if text else ""), encoding="utf-8"
             )
+        # A commit leaves `git status` clean, so the porcelain diff alone cannot
+        # see it; pin HEAD as a second baseline.
+        head_path = baseline_dir / f"{alias}.head"
+        if resuming and head_path.is_file():
+            heads_before[alias] = head_path.read_text(encoding="utf-8").strip()
+        else:
+            sha = _head_sha(wt) or ""
+            heads_before[alias] = sha
+            head_path.write_text(sha, encoding="utf-8")
     root_png_before = _root_png_names(root)
     _check_case_accounts(cfg, cases, jira)
     # Resolve the default account so context/login use a real name. Concurrent
@@ -1599,6 +1702,7 @@ def _req_test(
             if acct in auth_failures:
                 job.state = "blocked"
                 job.reason = f"auth failed: {auth_failures[acct]}"
+                job.blocked_class = "auth"
                 job.ended_at = stamp
 
     pools = [PoolSlot.from_worker(w) for w in cfg.workers]
@@ -1652,6 +1756,7 @@ def _req_test(
             if job.setup and job.state not in TERMINAL:
                 job.state = "blocked"
                 job.reason = f"env fault: {e}"
+                job.blocked_class = "env"
                 job.ended_at = stamp
         if on_log is not None:
             on_log(f"env fault: {e}\n")
@@ -1666,6 +1771,7 @@ def _req_test(
             if c.setup and c.state not in TERMINAL:
                 c.state = "blocked"
                 c.reason = f"env fault: {message}"
+                c.blocked_class = "env"
                 c.ended_at = stamp
 
     def default_case_runner(job: CaseJob, slot: PoolSlot) -> dict[str, Any]:
@@ -1729,6 +1835,7 @@ def _req_test(
             got = {
                 "status": "blocked",
                 "reason": setup_failed,
+                "blocked_class": "env",
                 "repo": job.repo,
                 "model": slot.model,
                 "provider": slot.provider,
@@ -1738,6 +1845,7 @@ def _req_test(
             # never let a stale file stand in for this run's outcome.
             result_path.unlink(missing_ok=True)
             _raise_if_cancelled(cancel_check, f"qa-run {job.id}")
+            auth_env = _case_auth_env(cfg, job)
             code, raw = run_pi_print_tracked(
                 argv,
                 root,
@@ -1745,12 +1853,14 @@ def _req_test(
                 on_line=_echo,
                 on_spawn=on_spawn,
                 on_reap=on_reap,
+                **({"env": auth_env} if auth_env else {}),
             )
             _raise_if_cancelled(cancel_check, f"qa-run {job.id}")
             if code != 0 and not result_path.is_file():
                 got = {
                     "status": "blocked",
                     "reason": f"worker exit: pi exit {code}",
+                    "blocked_class": "env",
                     "repo": job.repo,
                     "model": slot.model,
                     "provider": slot.provider,
@@ -1761,6 +1871,21 @@ def _req_test(
                     got["model"] = slot.model
                 if not got.get("provider"):
                     got["provider"] = slot.provider
+                if normalize_status(got.get("status")) == "passed":
+                    problems = recheck_db_assertions(cfg, job, got, on_log=on_log)
+                    mismatches = [p for p in problems if p.get("kind") == "mismatch"]
+                    if mismatches:
+                        detail = "; ".join(
+                            f"expected={p.get('expected')!r} actual={p.get('actual')!r}"
+                            for p in mismatches
+                        )
+                        got["status"] = "failed"
+                        got["reason"] = f"host-recheck-mismatch: {detail}"
+                    for p in problems:
+                        if p.get("kind") == "error" and on_log is not None:
+                            on_log(
+                                f"db 断言复核未执行（{job.id}）：{p.get('actual')}\n"
+                            )
                 if raw and on_log is not None and code != 0:
                     on_log(raw[-500:])
         if job.cleanup:
@@ -1788,14 +1913,17 @@ def _req_test(
 
     runner_fn = case_runner or default_case_runner
     try:
-        run_schedule(
-            cases,
-            pools,
-            runner_fn,
-            on_progress=ping,
-            serialize_accounts=cfg.serialize_accounts,
-            cancel_check=cancel_check,
-        )
+        # Seeds share one test DB across requirements, so a run must not overlap
+        # another requirement's run/verification in the same env.
+        with env_lock(root, cfg.active_env, what="qa run"):
+            run_schedule(
+                cases,
+                pools,
+                runner_fn,
+                on_progress=ping,
+                serialize_accounts=cfg.serialize_accounts,
+                cancel_check=cancel_check,
+            )
     finally:
         executor.close()
 
@@ -1825,6 +1953,12 @@ def _req_test(
             # silently skipping the mutation check.
             extra.append(f"{alias}: git status unreadable after run")
             continue
+        head_after = _head_sha(wt)
+        before_head = heads_before.get(alias) or ""
+        if before_head and head_after and head_after != before_head:
+            extra.append(
+                f"{alias}: HEAD moved {before_head[:8]}..{head_after[:8]}"
+            )
         for path, sig in after_state.items():
             if before_state.get(path) != sig:
                 extra.append(path)
@@ -1851,6 +1985,7 @@ def _req_test(
                 "repo": c.repo,
                 "model": c.model,
                 "reason": c.reason,
+                "blocked_class": c.blocked_class,
                 "assertions": c.assertions,
             }
             for c in cases
@@ -1861,6 +1996,8 @@ def _req_test(
         run_doc["env_fault"] = env_fault
     if extra:
         run_doc["mutation"] = extra
+    if review_bypassed:
+        run_doc["review_bypassed"] = True
     (run_dir / "result.yaml").write_text(
         yaml.safe_dump(run_doc, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
@@ -1916,6 +2053,8 @@ def _req_test(
         if report is None:
             if summary.get("blocked"):
                 ingest_skipped = "blocked"
+            elif has_design_blocked_skip(case_payloads):
+                ingest_skipped = "design-blocked"
             elif summary.get("passed"):
                 ingest_skipped = "malformed"
             else:

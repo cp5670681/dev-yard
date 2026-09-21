@@ -84,6 +84,7 @@ class CaseJob:
     started_at: str | None = None
     ended_at: str | None = None
     reason: str = ""
+    blocked_class: str = ""
     failure: dict[str, Any] | None = None
     assertions: list[Any] = field(default_factory=list)
 
@@ -148,8 +149,17 @@ def _env_signal(reason_lower: str) -> str | None:
     return None
 
 
-def env_block_class(reason: str) -> str | None:
+def env_block_class(reason: str, blocked_class: str = "") -> str | None:
+    """The breaker class for a blocked case, or None if it must not trip it.
+
+    A worker-declared `blocked_class` wins over guessing from free-form text;
+    the reason regex is only a fallback for results that predate the field.
+    Unknown reasons return None: the breaker must only trip on a *recognised*,
+    repeated environment fault, never on two unrelated untyped blockers.
+    """
     r = (reason or "").lower()
+    # Host-generated reasons are classified first: they must keep their original
+    # breaker semantics regardless of any `blocked_class` the host attached.
     # A cancelled run is not an environment fault: it must not trip the breaker
     # (otherwise a cancel stamps every remaining case as blocked "worker exit").
     if _CANCEL_RE.search(r):
@@ -162,14 +172,24 @@ def env_block_class(reason: str) -> str | None:
     # also trip the schedule breaker (that would block no-setup cases).
     if r.startswith(("env fault:", "setup failed:")):
         return None
-    # Unknown reasons fall back to "env" here (the breaker is conservative);
-    # `blocked_kind` reports those as `other` instead. Same matcher, different
-    # conservative default.
-    return _env_signal(r) or "env"
+    declared = (blocked_class or "").strip().lower()
+    if declared in {"case-defect", "other", "cancelled"}:
+        # Explicitly "not an environment fault" (or unrecognised): never let two
+        # of them abort the rest of the run.
+        return None
+    if declared in {"env", "auth", "undeployed"}:
+        return declared
+    # No usable declared class: fall back to the text signal.
+    return _env_signal(r)
 
 
-def blocked_kind(reason: str) -> str:
-    """Bucket a blocked reason for reporting: case-defect | env | cancelled | other."""
+def blocked_kind(reason: str, blocked_class: str = "") -> str:
+    """Bucket a blocked case for reporting: case-defect | env | cancelled | other."""
+    declared = (blocked_class or "").strip().lower()
+    if declared in {"case-defect", "env", "cancelled", "other"}:
+        return declared
+    if declared in {"undeployed", "auth"}:
+        return "env"
     r = (reason or "").strip()
     low = r.lower()
     if low.startswith("case-defect:"):
@@ -267,6 +287,7 @@ def progress_payload(
                 "started_at": c.started_at,
                 "ended_at": c.ended_at,
                 "reason": c.reason,
+                "blocked_class": c.blocked_class,
             }
             for c in cases
         ],
@@ -359,6 +380,7 @@ def run_schedule(
                 status = normalize_status(result.get("status"))
                 job.state = status
                 job.reason = str(result.get("reason") or "")
+                job.blocked_class = str(result.get("blocked_class") or "")
                 job.failure = (
                     result.get("failure")
                     if isinstance(result.get("failure"), dict)
@@ -372,7 +394,7 @@ def run_schedule(
                     job.provider = str(result.get("provider"))
                 job.ended_at = now_iso()
                 if status == "blocked":
-                    klass = env_block_class(job.reason)
+                    klass = env_block_class(job.reason, job.blocked_class)
                     if klass is None:
                         pass
                     elif last_block_class == klass:
@@ -389,6 +411,7 @@ def run_schedule(
                 if job.state in {"pending", "ready"}:
                     job.state = "blocked"
                     job.reason = breaker_reason
+                    job.blocked_class = "env"
                     job.ended_at = stamp
             ping()
         elif cancelled:
@@ -397,6 +420,7 @@ def run_schedule(
                 if job.state in {"pending", "ready"}:
                     job.state = "blocked"
                     job.reason = "cancelled: run cancelled"
+                    job.blocked_class = "cancelled"
                     job.ended_at = stamp
             ping()
 

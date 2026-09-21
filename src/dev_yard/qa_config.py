@@ -90,6 +90,9 @@ class QaEnv:
     auth_default: str = "default"
     accounts: dict[str, QaAccount] = field(default_factory=dict)
     db_url: str = ""
+    # Optional restricted (read-only) DSN the design-time `verify.sql` runs on,
+    # so verifying data does not need the write credentials `db.url` carries.
+    verify_db_url: str = ""
     script_runner: str = ""
     notes: tuple[str, ...] = ()
     db_exec: str = "host"
@@ -243,6 +246,7 @@ def _parse_env(name: str, raw: Any) -> QaEnv:
         auth_default=default,
         accounts=filled,
         db_url=_blank(db.get("url")),
+        verify_db_url=_blank(db.get("verify_url")),
         script_runner=script_runner,
         notes=tuple(str(n) for n in notes_raw),
         db_exec=db_exec,

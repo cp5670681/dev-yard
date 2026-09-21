@@ -159,6 +159,7 @@ def run_pi_print(
     on_line: Callable[[str], None] | None = None,
     timeout: float | None = None,
     on_spawn: Callable[[subprocess.Popen], None] | None = None,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, str]:
     """Run `pi -p` with the prompt on stdin so large diffs do not hit ARG_MAX.
 
@@ -174,6 +175,9 @@ def run_pi_print(
             limit = float(os.environ.get("YARD_PI_TIMEOUT", "3600") or "0")
         except ValueError:
             limit = 3600.0
+    child_env = None
+    if env:
+        child_env = {**os.environ, **env}
     try:
         proc = subprocess.Popen(
             argv,
@@ -183,6 +187,7 @@ def run_pi_print(
             stderr=subprocess.STDOUT,
             text=True,
             start_new_session=True,
+            env=child_env,
         )
     except OSError as e:
         if e.errno == errno.E2BIG:
@@ -236,6 +241,7 @@ def run_pi_print_tracked(
     timeout: float | None = None,
     on_spawn: Callable[[subprocess.Popen[str]], None] | None = None,
     on_reap: Callable[[subprocess.Popen[str]], None] | None = None,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, str]:
     """`run_pi_print` plus spawn/reap callbacks around the live subprocess.
 
@@ -251,8 +257,15 @@ def run_pi_print_tracked(
             on_spawn(proc)
 
     try:
+        extra = {"env": env} if env else {}
         return run_pi_print(
-            argv, cwd, prompt, on_line=on_line, timeout=timeout, on_spawn=_spawn
+            argv,
+            cwd,
+            prompt,
+            on_line=on_line,
+            timeout=timeout,
+            on_spawn=_spawn,
+            **extra,
         )
     finally:
         if on_reap is not None:

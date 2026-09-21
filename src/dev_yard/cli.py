@@ -100,6 +100,13 @@ def _echo_verify_hint(view: dict | None) -> None:
         typer.echo(f"  空转豁免（SELECT 1）：{', '.join(exempt)}")
 
 
+def _echo_uncovered_hint(result: dict) -> None:
+    """Advisory: change points no case claims (see meta.yaml `changes`)."""
+    uncovered = result.get("uncovered_changes") or []
+    if uncovered:
+        typer.echo(f"  未覆盖改动点：{', '.join(uncovered)}（无用例 covers）")
+
+
 def _echo_account_hint(root: Path, jira: str) -> None:
     """Point at discovery only while accounts are still missing."""
     if not paths.qa_accounts_discover_sql(root, jira).is_file():
@@ -794,6 +801,11 @@ def req_test_cmd(
         "--allow-unverified",
         help="显式越权：数据核实未通过也允许 --approve/执行（未通过用例会被跳过）",
     ),
+    unsafe_skip_review: bool = typer.Option(
+        False,
+        "--unsafe-skip-review",
+        help="显式越权：允许 --run-only 在用例未审核时执行",
+    ),
 ) -> None:
     """Design and run UI cases after submit-test. Ingests into the test slot."""
     from dev_yard.qa import req_test
@@ -853,6 +865,7 @@ def req_test_cmd(
             verify=False if no_verify else None,
             verify_only=verify_only,
             allow_unverified=allow_unverified,
+            unsafe_skip_review=unsafe_skip_review,
             on_log=lambda line: typer.echo(line.rstrip() if isinstance(line, str) else line),
         )
     except (ValueError, FileNotFoundError, TestRejected, ReportRejected, GitError) as e:
@@ -872,6 +885,7 @@ def req_test_cmd(
             f"{jira} 用例待审核 cases={result.get('cases')}（{result.get('reason') or ''}）{qline}"
         )
         _echo_verify_hint(result.get("verify"))
+        _echo_uncovered_hint(result)
         _echo_account_hint(root, jira)
         typer.echo(
             f"  通过：dev-yard req test {jira} --approve\n"
@@ -899,6 +913,7 @@ def req_test_cmd(
             f"review={review.get('status') or '?'}{qline}"
         )
         _echo_verify_hint(result.get("verify"))
+        _echo_uncovered_hint(result)
         _echo_account_hint(root, jira)
         return
     summary = result.get("summary") or {}

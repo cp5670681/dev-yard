@@ -22,6 +22,9 @@ from dev_yard.qa_config import (
 from dev_yard.qa_schedule import CaseJob, normalize_status
 
 _ASSERT_TYPES = {"ui", "net", "db"}
+# Structured values a worker may put in result.yaml `blocked_class`; the host
+# trusts this over guessing from the free-form `reason` text.
+BLOCKED_CLASSES = frozenset({"case-defect", "env", "undeployed", "auth", "other"})
 # Read-only statements a `data.verify` query may start with, and the write
 # keywords that disqualify one. Kept here (next to the SQL executor) so the
 # design-time verifier and any CLI discovery share one definition.
@@ -337,6 +340,90 @@ def assert_readonly_sql(text: str, *, what: str = "verify.sql") -> str:
     return body.rstrip(";").rstrip()
 
 
+def run_sql_value(cfg: QaConfig, sql: str, on_log: Any | None = None) -> str:
+    """Run a read-only verify statement and return its first scalar cell.
+
+    Used to re-check a worker's `db` assertion independently: the host runs the
+    statement the assertion carries and compares the value to `expected`. Empty
+    output is returned as "" so the caller can flag the mismatch.
+    """
+    body = assert_readonly_sql(sql, what="db assertion sql")
+    if not cfg.env.db_url:
+        raise TestRejected("qa.yaml has no db.url; cannot re-check db assertion")
+    binary = shutil.which("usql")
+    if not binary:
+        raise TestRejected("usql not found; cannot re-check db assertion")
+    if on_log is not None:
+        on_log(f"$ usql <db.url> -t -A -c {body[:200]}")
+    r = _run(
+        [binary, cfg.env.db_url, "-t", "-A", "-c", body],
+        timeout=120,
+        label="usql recheck",
+    )
+    if r.returncode != 0:
+        err = redact_qa_yaml((r.stderr or r.stdout or "").strip()) or str(r.returncode)
+        raise TestRejected(f"db assertion sql failed: {err}")
+    for line in (r.stdout or "").splitlines():
+        cell = line.split("|", 1)[0].strip()
+        if cell:
+            return cell
+    return ""
+
+
+def recheck_db_assertions(
+    cfg: QaConfig,
+    job: CaseJob,
+    result: dict[str, Any],
+    on_log: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Re-run the `db` assertions that carry a `sql` field; report mismatches.
+
+    A worker self-attests `passed`; this is the host's independent check. Only
+    assertions that declare a machine-runnable read-only `sql` can be re-checked
+    — ones without it are left to the human and recorded as unverified.
+    """
+    problems: list[dict[str, Any]] = []
+    for item in result.get("assertions") or []:
+        if not isinstance(item, dict) or str(item.get("type")) != "db":
+            continue
+        sql = str(item.get("sql") or "").strip()
+        if not sql:
+            continue
+        expected = item.get("expected")
+        try:
+            got = run_sql_value(cfg, sql, on_log=on_log)
+        except TestRejected as e:
+            # Could not run the check (usql missing, bad SQL): report it, but
+            # do not fail the case — only a real value mismatch downgrades.
+            problems.append(
+                {
+                    "case": job.id,
+                    "expected": expected,
+                    "actual": f"recheck error: {e}",
+                    "kind": "error",
+                }
+            )
+            continue
+        if _scalar_eq(expected, got):
+            continue
+        problems.append(
+            {
+                "case": job.id,
+                "expected": expected,
+                "actual": got,
+                "sql": sql,
+                "kind": "mismatch",
+            }
+        )
+    return problems
+
+
+def _scalar_eq(expected: Any, got: str) -> bool:
+    if expected is None:
+        return False
+    return " ".join(str(expected).split()).casefold() == " ".join(got.split()).casefold()
+
+
 def run_sql_count(cfg: QaConfig, sql: str, on_log: Any | None = None) -> int:
     """Row count of a read-only verify statement, run host-side via usql.
 
@@ -442,9 +529,12 @@ def normalize_case_result(
             }
         else:
             return None
+    raw_class = str(data.get("blocked_class") or "").strip().lower()
+    blocked_class = raw_class if status == "blocked" and raw_class in BLOCKED_CLASSES else ""
     return {
         "status": status,
         "reason": str(data.get("reason") or ""),
+        "blocked_class": blocked_class,
         "repo": str(data.get("repo") or job.repo),
         "title": str(data.get("title") or job.title),
         "covers": data.get("covers") or job.covers,
@@ -476,5 +566,9 @@ def _normalize_assertions(raw: Any) -> list[dict[str, Any]] | None:
         }
         if item.get("carrier"):
             row["carrier"] = item.get("carrier")
+        if typ == "db" and item.get("sql"):
+            # Carried so the host can re-run the assertion itself (see
+            # recheck_db_assertions) instead of trusting the worker's `passed`.
+            row["sql"] = str(item["sql"])
         out.append(row)
     return out

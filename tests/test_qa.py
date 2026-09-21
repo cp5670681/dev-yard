@@ -513,7 +513,7 @@ def test_req_test_uses_requirement_accounts(tmp_path: Path, git_src: Path, monke
         yard,
         "QA-A1",
         print_mode=True,
-        run_only=True,
+        run_only=True, unsafe_skip_review=True,
         ingest=False,
         case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
     )
@@ -537,7 +537,7 @@ def test_req_test_rejects_unconfigured_case_account(
             yard,
             "QA-A2",
             print_mode=True,
-            run_only=True,
+            run_only=True, unsafe_skip_review=True,
             ingest=False,
             case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
         )
@@ -568,7 +568,7 @@ def test_req_test_blocked_while_bug_tickets_open(
             yard,
             "QA-R1",
             print_mode=True,
-            run_only=True,
+            run_only=True, unsafe_skip_review=True,
             ingest=False,
             case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
         )
@@ -616,7 +616,7 @@ def test_req_test_runs_same_account_cases_in_parallel(
         return {"status": "passed", "repo": "backend"}
 
     monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: None)
-    req_test(yard, "QA-S1", print_mode=True, run_only=True, ingest=False, case_runner=run)
+    req_test(yard, "QA-S1", print_mode=True, run_only=True, unsafe_skip_review=True, ingest=False, case_runner=run)
     assert peak["n"] == 2
 
 
@@ -663,7 +663,7 @@ def test_req_test_serializes_when_configured(
         return {"status": "passed", "repo": "backend"}
 
     monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: None)
-    req_test(yard, "QA-S2", print_mode=True, run_only=True, ingest=False, case_runner=run)
+    req_test(yard, "QA-S2", print_mode=True, run_only=True, unsafe_skip_review=True, ingest=False, case_runner=run)
     assert peak["n"] == 1
 
 
@@ -1389,7 +1389,7 @@ def test_bad_frontmatter_rejects_run(tmp_path: Path, git_src: Path, monkeypatch)
             yard,
             "QA-12",
             print_mode=True,
-            run_only=True,
+            run_only=True, unsafe_skip_review=True,
             ingest=False,
             case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
         )
@@ -1513,7 +1513,7 @@ def test_req_test_resumes_incomplete_run(
         yard,
         "QA-RS",
         print_mode=True,
-        run_only=True,
+        run_only=True, unsafe_skip_review=True,
         ingest=False,
         resume=True,
         case_runner=run,
@@ -1544,7 +1544,7 @@ def test_req_test_fresh_starts_new_run(
         yard,
         "QA-FR",
         print_mode=True,
-        run_only=True,
+        run_only=True, unsafe_skip_review=True,
         ingest=False,
         resume=False,
         case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
@@ -1571,7 +1571,7 @@ def test_req_test_resume_errors_without_incomplete_run(
         "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
     )
     with pytest.raises(TestRejected, match="no incomplete run"):
-        req_test(yard, "QA-RN", print_mode=True, run_only=True, resume=True)
+        req_test(yard, "QA-RN", print_mode=True, run_only=True, unsafe_skip_review=True, resume=True)
 
 
 def test_req_test_resume_ignores_incomplete_run_from_other_env(
@@ -1595,7 +1595,7 @@ def test_req_test_resume_ignores_incomplete_run_from_other_env(
     )
     # active_env is local, so the test-env run is not resumable
     with pytest.raises(TestRejected, match="no incomplete run"):
-        req_test(yard, "QA-RE", print_mode=True, run_only=True, resume=True)
+        req_test(yard, "QA-RE", print_mode=True, run_only=True, unsafe_skip_review=True, resume=True)
 
 
 def test_req_test_resume_catches_mutation_from_prior_run(
@@ -1626,7 +1626,7 @@ def test_req_test_resume_catches_mutation_from_prior_run(
             yard,
             "QA-RM",
             print_mode=True,
-            run_only=True,
+            run_only=True, unsafe_skip_review=True,
             ingest=False,
             resume=True,
             case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
@@ -1661,7 +1661,7 @@ def test_req_test_stale_result_is_not_accepted_on_resume(
     monkeypatch.setattr("dev_yard.qa.run_pi_print_tracked", lambda *a, **k: (1, "boom"))
     monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: {})
     result = req_test(
-        yard, "QA-STALE", print_mode=True, run_only=True, ingest=False, resume=True
+        yard, "QA-STALE", print_mode=True, run_only=True, unsafe_skip_review=True, ingest=False, resume=True
     )
     assert result["summary"]["blocked"] == 1
     assert result["summary"]["passed"] == 0
@@ -1709,7 +1709,7 @@ def test_req_test_blocks_only_cases_on_failed_account(
         yard,
         "QA-AUTH",
         print_mode=True,
-        run_only=True,
+        run_only=True, unsafe_skip_review=True,
         ingest=False,
         case_runner=run,
     )
@@ -1742,7 +1742,7 @@ def test_req_test_setup_failure_still_runs_cleanup(
     monkeypatch.setattr("dev_yard.qa.run_case_script", fake_script)
     monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: {})
     result = req_test(
-        yard, "QA-SU", print_mode=True, run_only=True, ingest=False
+        yard, "QA-SU", print_mode=True, run_only=True, unsafe_skip_review=True, ingest=False
     )
     assert kinds == ["setup", "cleanup"]
     assert result["summary"]["blocked"] == 1
@@ -1797,7 +1797,7 @@ def test_req_test_ping_failure_blocks_setup_only(
         yard,
         "QA-EF",
         print_mode=True,
-        run_only=True,
+        run_only=True, unsafe_skip_review=True,
         ingest=False,
         case_runner=run,
     )
@@ -1876,7 +1876,7 @@ def test_req_test_setup_fuse_spares_no_setup_cases(
         yard,
         "QA-FUSE",
         print_mode=True,
-        run_only=True,
+        run_only=True, unsafe_skip_review=True,
         ingest=False,
     )
     assert "case-03" not in setup_ids
@@ -1923,7 +1923,7 @@ def test_req_test_default_case_runner_success(
     monkeypatch.setattr("dev_yard.qa.run_pi_print_tracked", fake_run_pi_print)
     monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: {})
     result = req_test(
-        yard, "QA-DEF", print_mode=True, run_only=True, ingest=False
+        yard, "QA-DEF", print_mode=True, run_only=True, unsafe_skip_review=True, ingest=False
     )
     assert result["summary"]["passed"] == 1
     assert result["summary"]["blocked"] == 0
@@ -2225,7 +2225,7 @@ def test_req_test_cancel_raises_and_reaps_proc(
             yard,
             "QA-CANCEL",
             print_mode=True,
-            run_only=True,
+            run_only=True, unsafe_skip_review=True,
             ingest=False,
             cancel_check=cancel.is_set,
             on_spawn=spawned.append,
@@ -2566,3 +2566,265 @@ def test_rerun_dedupes_identical_jobs(tmp_path: Path, git_src: Path, monkeypatch
             job.cancel()
         for job in list(runner._jobs.values()):
             job.done.wait(timeout=10)
+
+
+# --- hardening: structured blocked_class, host recheck, mutation HEAD, gates ----
+
+
+def test_env_block_class_prefers_declared_and_ignores_unknown():
+    from dev_yard.qa_schedule import blocked_kind, env_block_class
+
+    assert env_block_class("mystery", "case-defect") is None
+    assert env_block_class("mystery", "undeployed") == "undeployed"
+    assert env_block_class("mystery", "auth") == "auth"
+    # No declared class / declared "other" / unknown string: must not trip.
+    assert env_block_class("mystery", "") is None
+    assert env_block_class("mystery", "other") is None
+    assert env_block_class("mystery", "garbage") is None
+    # Host-generated reasons keep their original breaker semantics.
+    assert env_block_class("env fault: down", "env") is None
+    assert env_block_class("setup failed: x", "env") is None
+
+    assert blocked_kind("mystery", "case-defect") == "case-defect"
+    assert blocked_kind("mystery", "auth") == "env"
+    assert blocked_kind("mystery", "undeployed") == "env"
+    assert blocked_kind("mystery", "") == "other"
+
+
+def test_unknown_blocked_reasons_do_not_trip_breaker():
+    cases = [CaseJob(id=f"c{i}", title="t", repo="be") for i in (1, 2, 3)]
+    pools = [PoolSlot(id="p", provider="rcc", model="m", concurrency=1, priority=1)]
+
+    def run(job, slot):
+        if job.id in {"c1", "c2"}:
+            return {"status": "blocked", "reason": "mystery failure"}
+        return {"status": "passed"}
+
+    run_schedule(cases, pools, run)
+    # Two unrelated untyped blockers must not abort the rest of the run.
+    assert cases[2].state == "passed"
+
+
+def test_declared_case_defect_does_not_trip_breaker():
+    cases = [CaseJob(id=f"c{i}", title="t", repo="be") for i in (1, 2, 3)]
+    pools = [PoolSlot(id="p", provider="rcc", model="m", concurrency=1, priority=1)]
+
+    def run(job, slot):
+        if job.id in {"c1", "c2"}:
+            return {"status": "blocked", "reason": "missing seed", "blocked_class": "case-defect"}
+        return {"status": "passed"}
+
+    run_schedule(cases, pools, run)
+    assert cases[2].state == "passed"
+
+
+def test_recheck_db_assertions_flags_false_pass(tmp_path: Path, monkeypatch):
+    from dev_yard.qa_exec import recheck_db_assertions
+
+    _write_qa_yaml(tmp_path, "    db:\n      url: postgres://u:p@h/db\n")
+    cfg = load_qa_config(tmp_path)
+    job = CaseJob(id="c1", title="t", repo="be")
+    result = {
+        "status": "passed",
+        "assertions": [
+            {
+                "type": "db",
+                "expected": "3",
+                "actual": "3",
+                "status": "passed",
+                "sql": "SELECT count(*) FROM projects",
+            }
+        ],
+    }
+
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None: "3")
+    assert recheck_db_assertions(cfg, job, result) == []
+
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None: "0")
+    problems = recheck_db_assertions(cfg, job, result)
+    assert len(problems) == 1
+    assert problems[0]["actual"] == "0"
+
+
+def test_recheck_skips_db_assertion_without_sql(tmp_path: Path, monkeypatch):
+    from dev_yard.qa_exec import recheck_db_assertions
+
+    _write_qa_yaml(tmp_path, "    db:\n      url: postgres://u:p@h/db\n")
+    cfg = load_qa_config(tmp_path)
+
+    def boom(*a, **k):
+        raise AssertionError("must not run sql without a sql field")
+
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", boom)
+    job = CaseJob(id="c1", title="t", repo="be")
+    result = {
+        "status": "passed",
+        "assertions": [{"type": "db", "expected": "x", "actual": "x", "status": "passed"}],
+    }
+    assert recheck_db_assertions(cfg, job, result) == []
+
+
+def test_head_move_counts_as_worker_mutation(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-HEAD")
+    _write_case(
+        yard,
+        "QA-HEAD",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+    monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: {})
+    heads = iter(["a" * 40, "b" * 40])
+    monkeypatch.setattr("dev_yard.qa._head_sha", lambda wt: next(heads))
+    with pytest.raises(TestRejected, match="worker mutated"):
+        req_test(
+            yard,
+            "QA-HEAD",
+            print_mode=True,
+            run_only=True, unsafe_skip_review=True,
+            ingest=False,
+            case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
+        )
+
+
+def test_case_without_repo_rejected_before_run(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-NOREPO")
+    _write_case(
+        yard,
+        "QA-NOREPO",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\n---\n\nbody\n",
+    )
+    monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: {})
+    with pytest.raises(TestRejected, match="has no repo"):
+        req_test(
+            yard,
+            "QA-NOREPO",
+            print_mode=True,
+            run_only=True, unsafe_skip_review=True,
+            ingest=False,
+            case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
+        )
+
+
+def test_run_only_requires_unsafe_skip_review(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-UNSAFE")
+    _write_case(
+        yard,
+        "QA-UNSAFE",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+    monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: {})
+    with pytest.raises(TestRejected, match="unsafe-skip-review"):
+        req_test(
+            yard,
+            "QA-UNSAFE",
+            print_mode=True,
+            run_only=True,
+            ingest=False,
+            case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
+        )
+
+
+def test_map_qa_result_refuses_design_blocked_skip():
+    run = {"summary": {"passed": 1, "failed": 0, "blocked": 0, "skipped": 1, "total": 2}}
+    cases = [
+        {"case": "c1", "status": "passed"},
+        {"case": "c2", "status": "skipped", "reason": "design-blocked: 0 rows"},
+    ]
+    assert map_qa_result(run, cases) is None
+
+
+def test_uncovered_changes_lists_change_without_case(tmp_path: Path):
+    from dev_yard import paths
+    from dev_yard.qa import uncovered_changes
+
+    qa = paths.qa_dir(tmp_path, "J-1")
+    qa.mkdir(parents=True)
+    (qa / "meta.yaml").write_text(
+        "changes:\n  - {id: D1}\n  - {id: D2}\n", encoding="utf-8"
+    )
+    cases = [CaseJob(id="case-01", title="t", repo="be", covers=["D1"])]
+    assert uncovered_changes(qa, cases) == ["D2"]
+
+
+def test_verify_lint_requires_column_in_body():
+    from dev_yard.qa_schedule import CaseJob as _Job
+    from dev_yard.qa_verify import lint_verify
+
+    job = _Job(id="c", title="t", repo="be", body="## 预期\n- DB: projects 存在\n")
+    bad = lint_verify(job, "SELECT id FROM projects WHERE id=1")
+    assert not bad["ok"]
+    assert "id" in bad["detail"]
+
+
+def test_verify_case_uses_verify_db_url(tmp_path: Path, monkeypatch):
+    from dev_yard import paths
+    from dev_yard.qa_verify import verify_case
+
+    _write_qa_yaml(
+        tmp_path,
+        "    db:\n      url: postgres://w:p@h/db\n"
+        "      verify_url: postgres://ro:p@h/db\n",
+    )
+    cfg = load_qa_config(tmp_path)
+    assert cfg.env.verify_db_url == "postgres://ro:p@h/db"
+    case_dir = paths.qa_dir(tmp_path, "J-1") / "cases" / "mod"
+    case_dir.mkdir(parents=True)
+    path = case_dir / "case-01.md"
+    path.write_text(
+        "---\nid: case-01\ntitle: t\nrepo: be\n---\n\n## 预期\n- DB: projects.id=1\n",
+        encoding="utf-8",
+    )
+    (case_dir / "verify.sql").write_text(
+        "SELECT id FROM projects WHERE id=1", encoding="utf-8"
+    )
+    job = CaseJob(
+        id="case-01",
+        title="t",
+        repo="be",
+        body="## 预期\n- DB: projects.id=1\n",
+        path=str(path),
+        verify="verify.sql",
+    )
+    seen: dict[str, str] = {}
+
+    def fake_count(c, sql, on_log=None):
+        seen["url"] = c.env.db_url
+        return 1
+
+    monkeypatch.setattr("dev_yard.qa_verify.run_sql_count", fake_count)
+    assert verify_case(tmp_path, "J-1", cfg, job).status == "passed"
+    assert seen["url"] == "postgres://ro:p@h/db"
+
+
+def test_run_prompt_hides_password(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.qa import _case_auth_env, _run_prompt
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-PW")
+    (yard / "qa.yaml").write_text(
+        "active_env: local\n"
+        "browser:\n  channel: chrome\n  headed: false\n"
+        "workers:\n"
+        "  - id: a\n    provider: rcc\n    model: grok-4\n"
+        "    concurrency: 1\n    priority: 1\n"
+        "envs:\n  local:\n    base_url: http://127.0.0.1:8080\n"
+        "    auth:\n      default: admin\n"
+        "      accounts:\n        admin: { username: admin, password: s3cret }\n",
+        encoding="utf-8",
+    )
+    cfg = load_qa_config(yard, jira="QA-PW")
+    job = CaseJob(id="case-01", title="t", repo="backend", account="admin")
+    prompt = _run_prompt(yard, "QA-PW", cfg, job, "2026-01-01-000000")
+    assert "s3cret" not in prompt
+    assert "YARD_QA_PASSWORD" in prompt
+    env = _case_auth_env(cfg, job)
+    assert env["YARD_QA_PASSWORD"] == "s3cret"

@@ -36,6 +36,7 @@ description: >
 
 1. 登录态：
    - 若配置了 `state_file` 且文件存在，先在会话 `-s=qap-<case-id>` 执行 `playwright-cli state-load <state_file>`。
+   - 账号凭据**不在 prompt 里**，从环境变量取：`$YARD_QA_USERNAME` / `$YARD_QA_PASSWORD`（`state_file` / `auth_replay` 亦见 `$YARD_QA_STATE_FILE` / `$YARD_QA_AUTH_REPLAY`）。不要把值打印或写进任何文件。
    - 打开页面后，若未登录或被重定向至登录页（或会话失效）：
      - **不要硬编码或假设固定表单结构**。先执行 `snapshot` 查看当前页面的真实输入框与按钮（支持各种自定义表单、SSO、OAuth 等）。
      - 按页面语义定位并填入用户名（`username`）与密码（`password`），点击登录/提交按钮。
@@ -49,9 +50,9 @@ description: >
 7. 四态：`passed | failed | blocked | skipped`。
    - `failed`：**被测实现**与预期不符（UI 实际值 ≠ 预期，或落库值不符）。
    - `blocked`：登录失败 / 5xx / DB 连不上；或**用例自身的种子数据/前置不满足**（如期望出现在关联表/展开行/子表格里的记录，setup 没造出对应关联或字段）。
-   - **数据缺口判 blocked，不判 failed**：先查 DB 定位。DB 里**根本没有**该数据（记录/关联/字段缺失）→ 用例缺陷，`status: blocked`，`reason` 以 `case-defect:` 开头并写明缺哪个实体/关联/字段 + 建议补什么；DB 里**有**该数据但页面或接口没透出 → `failed`（实现问题）。
+   - **数据缺口判 blocked，不判 failed**：先查 DB 定位。DB 里**根本没有**该数据（记录/关联/字段缺失）→ 用例缺陷，`status: blocked`、`blocked_class: case-defect`，`reason` 也以 `case-defect:` 开头并写明缺哪个实体/关联/字段 + 建议补什么；DB 里**有**该数据但页面或接口没透出 → `failed`（实现问题）。
      - 注意：设计期已跑过 `data.verify`（宿主执行，见 `qa/design-verify/`）。核实已过仍在 run 期缺数据，多半是**漂移**（被前序用例改脏或库变动）；照常按上面取证并写 `case-defect:`，宿主会据此自动回流设计期修种子后重排，不需要你在 run 期改 setup/预期。
-   - **5xx 判据（诊断优先，禁止默认豁免）**：响应体常是兜底文案（如 `{"error":"Invalid response"}`），不代表真实原因。先取响应头 `x-request-id`，用宿主只读命令查日志：`dev-yard qa logs <JIRA> --request-id <id>`（不要自己 ssh/kubectl）。再判：未部署/环境 → `blocked: undeployed`（`reason` 写明依据）；实现缺陷 → `failed`。不要只看响应体，也不要先入为主写成"环境问题"；日志命令不可达时，在 `reason` 记 `undeployed:` + `x-request-id`，交人工排查。
+   - **5xx 判据（诊断优先，禁止默认豁免）**：响应体常是兜底文案（如 `{"error":"Invalid response"}`），不代表真实原因。先取响应头 `x-request-id`，用宿主只读命令查日志：`dev-yard qa logs <JIRA> --request-id <id>`（不要自己 ssh/kubectl）。再判：未部署/环境 → `status: blocked`、`blocked_class: undeployed`（`reason` 写明依据）；实现缺陷 → `failed`。不要只看响应体，也不要先入为主写成"环境问题"；日志命令不可达时，在 `reason` 记 `undeployed:` + `x-request-id`，交人工排查。
    - **取消**：`reason` 以 `cancelled:` 开头，与 `case-defect:`/环境故障分开（由宿主统一打，不用你写）。
    - **校验类用例「意外成功」**：预期被拦截却通过了 → 先查 DB 确认是否真的写入。未写入按断言正常判；已写入即误创建：按记录 ID 清理，在 result.yaml 的 `cleanup` 段注明「执行中误创建并已清理」，然后复测该用例。
    - 数据缺口只取证、不改 setup/预期；在 reason 里点明需回设计阶段补种子数据后重跑。
@@ -67,13 +68,19 @@ repo: <alias>
 covers: [D1]
 model: <prompt 里的池模型>
 provider: <池 provider>
-status: passed
+status: passed            # passed | failed | blocked | skipped
 reason: ""
+blocked_class: ""         # 仅 blocked 时写：case-defect | env | undeployed | auth | other
 assertions:
   - type: ui            # ui | net | db
     expected: "..."
     actual: "..."
     status: passed
+  - type: db
+    expected: "3"       # 期望的标量值
+    actual: "3"
+    status: passed
+    sql: "SELECT count(*) FROM projects WHERE status=1"  # 单条只读 SQL；宿主会独立重跑它比对 expected
 failure:
   step: 3
   step_desc: ...
@@ -81,6 +88,9 @@ failure:
 ```
 
 `failure` 仅 `failed` 时写。每条 assertion 必须有 `type`、`expected`、`actual`、`status`。缺字段宿主会把本 case 标 blocked，不当 passed。
+
+- **`blocked_class`（结构化，必填于 blocked）**：宿主优先按它分类，不再猜文本。`case-defect`（用例种子/前置缺口）、`undeployed`（现场未部署）、`auth`（登录失败）、`env`（环境故障）、`other`。缺字段时宿主按 `reason` 文本猜，容易误判并可能误触整轮中断。
+- **db 断言务必带 `sql`**：宿主会独立重跑该只读 SQL 并把结果与 `expected` 比对；不一致会把本 case 降级为 `failed`（`host-recheck-mismatch`），不要自报 passed 蒙混。
 
 ## 陷阱
 

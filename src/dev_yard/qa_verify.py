@@ -15,7 +15,7 @@ import re
 import uuid
 from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -131,21 +131,35 @@ def lint_verify(job: CaseJob, sql: str) -> dict[str, Any]:
     body = (job.body or "").lower()
     if not idents and not tables:
         return {"ok": True, "empty": True, "matched": []}
-    required = tables or idents
-    missing = sorted(t for t in required if t not in body)
-    matched = sorted(t for t in required if t in body)
-    if not missing:
-        return {"ok": True, "empty": False, "matched": matched}
-    return {
-        "ok": False,
-        "empty": False,
-        "matched": matched,
-        "detail": (
-            "verify.sql 引用了 "
-            + ", ".join(missing)
-            + "，但用例正文从未提及这些表/字段；请把断言对象写进正文，或改用真查该数据的 verify.sql"
-        ),
-    }
+    # Every table must be named in the case body (a generic column name cannot
+    # carry a query on its own), and at least one column must appear too — so
+    # `SELECT id FROM unrelated_table` cannot pass by matching an identifier.
+    missing_tables = sorted(t for t in tables if t not in body)
+    if missing_tables:
+        return {
+            "ok": False,
+            "empty": False,
+            "matched": sorted(t for t in tables if t in body),
+            "detail": (
+                "verify.sql 引用了表 "
+                + ", ".join(missing_tables)
+                + "，但用例正文从未提及；请把断言对象写进正文，或改用真查该数据的 verify.sql"
+            ),
+        }
+    columns = sorted(idents - tables)
+    hit = [c for c in columns if c in body]
+    if columns and not hit:
+        return {
+            "ok": False,
+            "empty": False,
+            "matched": sorted(tables),
+            "detail": (
+                "verify.sql 的列 "
+                + ", ".join(columns)
+                + " 未出现在用例正文；请把断言字段写进正文（- DB: <表.字段=值>）"
+            ),
+        }
+    return {"ok": True, "empty": False, "matched": sorted(set(tables) | set(hit))}
 
 
 def needs_verify(job: CaseJob) -> bool:
@@ -253,8 +267,13 @@ def verify_case(
             result.error = f"setup error: {e}"
             return finish()
 
+    # A restricted read-only role (db.verify_url) can be used for the verify
+    # query without granting the design agent write access to the shared DB.
+    verify_cfg = cfg
+    if getattr(cfg.env, "verify_db_url", ""):
+        verify_cfg = replace(cfg, env=replace(cfg.env, db_url=cfg.env.verify_db_url))
     try:
-        result.rows = run_sql_count(cfg, text, on_log=on_log)
+        result.rows = run_sql_count(verify_cfg, text, on_log=on_log)
     except TestRejected as e:
         result.status = "failed"
         result.error = f"verify query failed: {e}"
@@ -294,11 +313,12 @@ def _cleanup(
 
 
 @contextmanager
-def env_lock(root: Path, env: str):
-    """Serialize design-time verification per env across requirements.
+def env_lock(root: Path, env: str, what: str = "design verification"):
+    """Serialize per-env QA work (verification and runs) across requirements.
 
-    `req test` already holds a per-JIRA lock; verification additionally writes
-    seeds to the shared test DB, so two requirements' verifies must not overlap.
+    `req test` already holds a per-JIRA lock, but seeds share one test DB, so two
+    requirements' verifies *or runs* must not overlap. `what` names the holder in
+    the refusal message.
     """
     lock_dir = root / LOCK_DIR
     lock_dir.mkdir(parents=True, exist_ok=True)
@@ -329,7 +349,7 @@ def env_lock(root: Path, env: str):
                         stale.unlink(missing_ok=True)
                     continue
                 raise TestRejected(
-                    f"another design verification is running for env {env}; "
+                    f"another {what} is running for env {env}; "
                     f"wait for it (or delete {path} if it is stale)"
                 ) from None
         finally:

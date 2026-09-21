@@ -52,7 +52,7 @@ description: >
 1. 每个 worktree 做 `git diff <default_base>...HEAD`。空 diff：停止并说明，不要编改动。
 2. 改动点 D1..Dn 写入 `qa/meta.yaml`。`repo` 必须是 `repos.yaml` 别名（context 地图里的 alias），不要写 frontend/backend 泛称。`role` 只作阅读提示。
 3. **增量**更新 `meta.yaml`：改 `changes` / `base_branches` / `feature_branches` / `module` / `requirement`；保留已有 `routes:`，不要整文件覆盖。
-4. 覆盖：每个 D 至少 1 条 + 1 条正常流 + UI **可达**的后端错误分支（无权限/重复/超限）。控件 `disabled`/`maxlength`/无清空导致点不到的拦截，不要写成用例。**每条含 UI 预期的步骤还必须过「预期可达性审查」（见下节）**。
+4. 覆盖：每个 D 至少 1 条 + 1 条正常流 + UI **可达**的后端错误分支（无权限/重复/超限）。**每条 `meta.yaml` 的 `changes[].id` 都必须被至少一条 case 的 `covers` 引用**（宿主会把未覆盖的 D 单独提示，不能漏）。控件 `disabled`/`maxlength`/无清空导致点不到的拦截，不要写成用例。**每条含 UI 预期的步骤还必须过「预期可达性审查」（见下节）**。
 5. 步骤用业务语言，不要写 selector、不要写 `bin/rails runner` / usql。按钮/文案必须来自 worktree 代码，不来自想象。
 6. 预期写需求口径。实现与 SPEC 不符时仍写需求值，并备注「需求偏差」。
 7. 跨仓改动拆成多条 case，或 `covers` 只含一个主仓。每条 frontmatter 必有 `repo:`（yard alias）。
@@ -83,9 +83,9 @@ UI 预期只有在「该区域的数据确实会被 setup 造出（或已被核�
 - **编辑/保存路径的必填字段**：种子记录必须带上保存时前端/后端会校验的字段（yard 实例：`l_salutation/province_id/city_id/l_address`），否则「更新」被校验拦住，断言根本执行不到。
 - 每个断言对象都要能追到 setup：前置里逐条列出 setup 会创建/修改的实体及关联、键值。
 
-**只读自检 → 写成可执行的 `verify.sql`（强制）**：依赖「线上已有数据」或自带种子的用例，都要在 frontmatter 声明 `data.verify: verify.sql`，内容是**单条只读查询**（`SELECT`/`SHOW`/`DESC`/`EXPLAIN`，连接串取 `qa.yaml` 的 `db.url`），语义为**返回 ≥1 行即通过**（写成 `SELECT ... WHERE <前置条件>`，0 行即失败）。宿主在设计期真跑它，失败会带着结果回灌给你重做。
+**只读自检 → 写成可执行的 `verify.sql`（强制）**：依赖「线上已有数据」或自带种子的用例，都要在 frontmatter 声明 `data.verify: verify.sql`，内容是**单条只读查询**（`SELECT`/`SHOW`/`DESC`/`EXPLAIN`，连接串取 `qa.yaml` 的 `db.url`，配了只读的 `db.verify_url` 则用它），语义为**返回 ≥1 行即通过**（写成 `SELECT ... WHERE <前置条件>`，0 行即失败）。宿主在设计期真跑它，失败会带着结果回灌给你重做。
 
-- 每个断言对象都要能追到 `verify.sql`：`verify.sql` 里的表/列名必须出现在用例正文里（宿主会 lint，命中不了直接判失败）。
+- 每个断言对象都要能追到 `verify.sql`：**FROM/JOIN 里的每张表名**和**至少一个列名**都必须出现在用例正文里（宿主会 lint，缺表或缺列直接判失败；连表都不提的 `SELECT id FROM 别的表` 不能蒙混）。
 - 含 `setup`/`cleanup` 或 `## 预期` 里有 `- DB:` 的用例**必须**有 `data.verify`，否则判失败。
 - 纯 UI 用例无数据可断言时写 `SELECT 1`，会被标为「空转豁免」供人抽查；不要用它掩盖真断言。
 - 依赖线上既有数据的步骤（如"某项目已有重复电话数据"）不要只写"假设"：要么用 `verify.sql` 核实，要么改成自带 setup 造数。查不了（无 usql/无权限）就在前置里显式标注「未验证假设」。
