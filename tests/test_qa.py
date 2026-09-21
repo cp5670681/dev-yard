@@ -878,6 +878,505 @@ def test_env_block_class_skips_setup_fuse():
     assert env_block_class("login failed") == "login"
 
 
+def test_env_block_class_ignores_cancellation():
+    from dev_yard.qa_schedule import env_block_class
+
+    # A cancel must not trip the breaker (else remaining cases get stamped
+    # blocked "worker exit" instead of cancelled).
+    assert env_block_class("cancelled: run cancelled") is None
+    assert env_block_class("worker exit: qa-run case-03 cancelled") is None
+
+
+def test_blocked_kind_buckets_reasons():
+    from dev_yard.qa_schedule import blocked_kind
+
+    assert blocked_kind("case-defect: setup missed city_id") == "case-defect"
+    assert blocked_kind("cancelled: qa-run case-03 cancelled") == "cancelled"
+    assert blocked_kind("login failed") == "env"
+    assert blocked_kind("POST /contacts/save returned 500") == "env"
+    assert blocked_kind("something odd happened") == "other"
+
+
+def test_summarize_splits_blocked_kinds():
+    from dev_yard.qa import _summarize
+
+    cases = [
+        CaseJob(id="c1", title="t", repo="r", state="blocked", reason="case-defect: x"),
+        CaseJob(id="c2", title="t", repo="r", state="blocked", reason="cancelled: y"),
+        CaseJob(id="c3", title="t", repo="r", state="blocked", reason="login failed"),
+        CaseJob(id="c4", title="t", repo="r", state="blocked", reason="weird"),
+        CaseJob(id="c5", title="t", repo="r", state="passed"),
+    ]
+    summary = _summarize(cases)
+    assert summary["blocked"] == 4
+    assert summary["blocked_kind"] == {
+        "case-defect": 1,
+        "env": 1,
+        "cancelled": 1,
+        "other": 1,
+    }
+
+
+def test_open_questions_payload_counts_entries(tmp_path: Path):
+    from dev_yard.qa import open_questions_payload
+
+    qa = tmp_path / "qa"
+    qa.mkdir()
+    assert open_questions_payload(qa) == {"count": 0, "body": "", "exists": False}
+    (qa / "OPEN-QUESTIONS.md").write_text(
+        "# 开放问题\n\nQ1: 问题一 | 默认: a\n- Q2：问题二\n**Q3**: 加粗\n### Q4 标题\n无关噪声\n",
+        encoding="utf-8",
+    )
+    payload = open_questions_payload(qa)
+    assert payload["count"] == 4
+    assert payload["exists"] is True
+    assert "Q1" in payload["body"]
+
+    # The contract says an empty file is still written; `exists` proves it.
+    (qa / "OPEN-QUESTIONS.md").write_text("", encoding="utf-8")
+    assert open_questions_payload(qa) == {"count": 0, "body": "", "exists": True}
+
+
+def test_blocked_kind_and_env_block_class_share_one_matcher():
+    from dev_yard.qa_schedule import blocked_kind, env_block_class
+
+    reasons = [
+        "login failed",
+        "unauthorized 401",
+        "POST /contacts/save returned 500",
+        "5xx on save",
+        "db is down",
+        "usql not found",
+        "worker exit: killed",
+        "connection refused",
+        "request timeout",
+        "something odd happened",
+    ]
+    for reason in reasons:
+        klass = env_block_class(reason)
+        kind = blocked_kind(reason)
+        # env_block_class may default an unknown reason to "env"; blocked_kind
+        # reports those as "other". But never the reverse: an "env" kind must
+        # also be an env class for the breaker.
+        if kind == "env":
+            assert klass is not None, reason
+        if klass is None:
+            assert kind != "env", reason
+
+
+def test_env_block_class_ignores_case_defect():
+    from dev_yard.qa_schedule import env_block_class
+
+    # A seed gap is the case's own bug; two of them must not abort the run.
+    assert env_block_class("case-defect: setup missed city_id") is None
+
+
+def test_design_only_reports_open_questions(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-OQ")
+
+    class _DesignWithQuestions(Runner):
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            qa = yard / "reqs" / "QA-OQ" / "qa"
+            cases = qa / "cases" / "mod"
+            cases.mkdir(parents=True, exist_ok=True)
+            (cases / "case-01.md").write_text(
+                "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+                encoding="utf-8",
+            )
+            (qa / "OPEN-QUESTIONS.md").write_text(
+                "Q1: 是否需要权限账号？ | 默认取值: 不需要 | 影响: case-01 | 答错后果: 漏测\n",
+                encoding="utf-8",
+            )
+            return RunResult(ok=True, summary="designed")
+
+    result = req_test(
+        yard, "QA-OQ", print_mode=True, design_only=True, runner=_DesignWithQuestions()
+    )
+    assert result["design_only"] is True
+    assert result["questions"] == 1
+    assert result["open_questions"]["exists"] is True
+
+
+def test_run_schedule_cancel_marks_remaining_cancelled():
+    cases = [CaseJob(id=f"c{i}", title="t", repo="backend") for i in (1, 2, 3)]
+    pools = [PoolSlot(id="a", provider=None, model=None, concurrency=1, priority=1)]
+    cancel = threading.Event()
+    ran: list[str] = []
+
+    def run(job: CaseJob, slot: PoolSlot) -> dict:
+        ran.append(job.id)
+        cancel.set()
+        return {"status": "passed", "repo": job.repo}
+
+    run_schedule(cases, pools, run, cancel_check=cancel.is_set)
+    assert ran == ["c1"]
+    rest = [c for c in cases if c.id != "c1"]
+    assert all(c.state == "blocked" for c in rest)
+    assert all(c.reason.startswith("cancelled:") for c in rest)
+
+
+def test_run_schedule_worker_jobcancelled_is_cancelled_not_env():
+    from dev_yard.runners import JobCancelled
+
+    cases = [CaseJob(id="c1", title="t", repo="backend")]
+    pools = [PoolSlot(id="a", provider=None, model=None, concurrency=1, priority=1)]
+
+    def run(job: CaseJob, slot: PoolSlot) -> dict:
+        raise JobCancelled("qa-run c1 cancelled")
+
+    run_schedule(cases, pools, run)
+    assert cases[0].state == "blocked"
+    assert cases[0].reason.startswith("cancelled:")
+
+
+def test_qa_duties_and_skills_stay_in_sync():
+    from dev_yard.qa import _duties
+    from dev_yard.stages import resolve_skill_dir
+
+    root = Path(__file__).resolve().parents[1]
+    design_duties = _duties("design", "J-1")
+    run_duties = _duties("run", "J-1")
+    # The old blanket "Do not interview." is what let design ship data gaps.
+    assert "Do not interview." not in design_duties
+    assert "OPEN-QUESTIONS" in design_duties
+    assert "accounts-discover.sql" in design_duties
+    assert "case-defect" in run_duties
+    assert "cancelled:" in run_duties
+    assert "qa logs" in run_duties
+
+    design_skill = resolve_skill_dir(root, "qa-design")
+    run_skill = resolve_skill_dir(root, "qa-run")
+    assert design_skill is not None and run_skill is not None
+    design_text = (design_skill / "SKILL.md").read_text(encoding="utf-8")
+    run_text = (run_skill / "SKILL.md").read_text(encoding="utf-8")
+    assert "OPEN-QUESTIONS" in design_text
+    assert "accounts-discover.sql" in design_text
+    assert "Do not interview." not in design_text
+    assert "case-defect" in run_text
+    assert "cancelled:" in run_text
+    # qa-powers traps that used to be missing.
+    assert "意外成功" in run_text
+    assert "qa logs" in run_text
+
+
+def test_permission_gap_warning_flags_single_account(tmp_path: Path):
+    from dev_yard.qa import _permission_gap_warning
+    from dev_yard.qa_config import load_qa_config
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    _write_qa_yaml(yard)
+    req = yard / "reqs" / "J-1"
+    req.mkdir(parents=True)
+    (req / "REQUIREMENT.md").write_text(
+        "无权限用户不可见该入口，角色差异需覆盖。", encoding="utf-8"
+    )
+    cfg = load_qa_config(yard, None, "J-1")
+    warn = _permission_gap_warning(yard, "J-1", cfg)
+    assert warn is not None
+    assert "权限" in warn
+    assert "--discover" in warn
+
+    (req / "REQUIREMENT.md").write_text("普通列表页加一列。", encoding="utf-8")
+    assert _permission_gap_warning(yard, "J-1", cfg) is None
+
+
+def _seed_qa_for_report(yard: Path, key: str) -> Path:
+    qa = yard / "reqs" / key / "qa"
+    (qa / "cases" / "mod").mkdir(parents=True, exist_ok=True)
+    (qa / "meta.yaml").write_text(
+        "module: J-1-mod\nrequirement: J-1\n"
+        "changes:\n"
+        "  - id: D1\n    repo: backend\n    desc: 保存接口\n"
+        "  - id: D2\n    repo: backend\n    desc: 未覆盖点\n",
+        encoding="utf-8",
+    )
+    (qa / "cases" / "mod" / "case-01.md").write_text(
+        "---\nid: case-01\ntitle: 正常保存\nrepo: backend\ncovers: [D1]\n"
+        "account: admin\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    (qa / "cases" / "mod" / "case-02.md").write_text(
+        "---\nid: case-02\ntitle: 权限拦截\nrepo: backend\ncovers: [D1]\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    return qa
+
+
+def test_render_qa_report_sections(tmp_path: Path):
+    from dev_yard.qa_doc import render_qa_report
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    _write_qa_yaml(yard)
+    qa = _seed_qa_for_report(yard, "J-1")
+    run = qa / "evidence" / "2020-01-01-000000"
+    run.mkdir(parents=True)
+    (run / "result.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "run_id": "2020-01-01-000000",
+                "env": "local",
+                "cases": [
+                    {"case": "case-01", "status": "passed", "repo": "backend"},
+                    {
+                        "case": "case-02",
+                        "status": "blocked",
+                        "repo": "backend",
+                        "reason": "case-defect: 缺 firm 关联",
+                    },
+                ],
+                "summary": {
+                    "passed": 1,
+                    "failed": 0,
+                    "blocked": 1,
+                    "skipped": 0,
+                    "total": 2,
+                    "blocked_kind": {
+                        "case-defect": 1,
+                        "env": 0,
+                        "cancelled": 0,
+                        "other": 0,
+                    },
+                },
+            },
+            sort_keys=False,
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    path, summary = render_qa_report(yard, "J-1")
+    text = path.read_text(encoding="utf-8")
+    assert path.name == "2020-01-01-000000.md"
+    assert "覆盖改动点与验证结论" in text
+    assert "账号覆盖" in text
+    assert "BLOCKED 说明" in text
+    assert "case-defect=1" in text
+    assert "未覆盖改动点：D2" in text
+    assert summary["blocked_kind"]["case-defect"] == 1
+
+
+def test_render_qa_report_uses_progress_for_cancelled_run(tmp_path: Path):
+    from dev_yard.qa_doc import render_qa_report
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    _write_qa_yaml(yard)
+    qa = _seed_qa_for_report(yard, "J-1")
+    run = qa / "evidence" / "2020-01-02-000000"
+    run.mkdir(parents=True)
+    (run / "progress.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "run_id": "2020-01-02-000000",
+                "env": "local",
+                "cases": [
+                    {
+                        "id": "case-01",
+                        "state": "passed",
+                        "title": "正常保存",
+                        "repo": "backend",
+                        "reason": "",
+                    },
+                    {
+                        "id": "case-02",
+                        "state": "blocked",
+                        "title": "权限拦截",
+                        "repo": "backend",
+                        "reason": "cancelled: run cancelled",
+                    },
+                ],
+            },
+            sort_keys=False,
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    path, summary = render_qa_report(yard, "J-1", "2020-01-02-000000")
+    text = path.read_text(encoding="utf-8")
+    assert "cancelled=1" in text
+    # progress.yaml is the only source of env for a cancelled run.
+    assert "环境：local" in text
+    assert summary["blocked_kind"]["cancelled"] == 1
+
+
+def test_summary_line_breaks_down_blocked():
+    from dev_yard.qa_report import summary_line
+
+    line = summary_line(
+        {
+            "passed": 1,
+            "failed": 0,
+            "blocked": 2,
+            "skipped": 0,
+            "blocked_kind": {
+                "case-defect": 1,
+                "env": 1,
+                "cancelled": 0,
+                "other": 0,
+            },
+        }
+    )
+    assert line == "passed=1 failed=0 blocked=2 skipped=0 (case-defect=1 env=1)"
+
+
+def test_map_qa_result_body_lists_blocked_kinds():
+    run = {
+        "summary": {
+            "passed": 0,
+            "failed": 1,
+            "blocked": 1,
+            "skipped": 0,
+            "total": 2,
+            "blocked_kind": {"case-defect": 1, "env": 0, "cancelled": 0, "other": 0},
+        }
+    }
+    cases = [
+        {
+            "case": "c1",
+            "status": "failed",
+            "repo": "backend",
+            "title": "t1",
+            "reason": "boom",
+            "failure": {"step_desc": "保存"},
+            "assertions": [],
+        },
+        {
+            "case": "c2",
+            "status": "blocked",
+            "repo": "backend",
+            "reason": "case-defect: 缺关联",
+        },
+    ]
+    report = map_qa_result(run, cases)
+    assert report is not None
+    assert "[case-defect]" in report.body
+    assert "case-defect=1" in report.summary
+
+
+def test_format_blocked_kind_skips_zero_buckets():
+    from dev_yard.qa_schedule import format_blocked_kind
+
+    assert format_blocked_kind(None) == ""
+    assert format_blocked_kind({}) == ""
+    assert format_blocked_kind(
+        {"case-defect": 2, "env": 0, "cancelled": 1, "other": 0}
+    ) == "case-defect=2 cancelled=1"
+
+
+def test_md_cell_escapes_pipes_and_newlines():
+    from dev_yard.qa_report import md_cell
+
+    assert md_cell(None) == ""
+    assert md_cell("a | b") == "a \\| b"
+    assert md_cell("line1\nline2") == "line1 line2"
+
+
+def test_open_questions_payload_unreadable_file(tmp_path: Path, monkeypatch):
+    from dev_yard.qa import open_questions_payload
+
+    qa = tmp_path / "qa"
+    qa.mkdir()
+    path = qa / "OPEN-QUESTIONS.md"
+    path.write_text("Q1: 问题\n", encoding="utf-8")
+    real = Path.read_text
+
+    def boom(self, *args, **kwargs):
+        if self == path:
+            raise OSError("nope")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", boom)
+    payload = open_questions_payload(qa)
+    assert payload["exists"] is True
+    assert payload["error"] == "unreadable"
+
+
+def test_qa_report_cli_writes_file(tmp_path: Path, monkeypatch):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    _write_qa_yaml(yard)
+    qa = _seed_qa_for_report(yard, "J-1")
+    run = qa / "evidence" / "2020-01-03-000000"
+    run.mkdir(parents=True)
+    (run / "result.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "run_id": "2020-01-03-000000",
+                "env": "local",
+                "cases": [{"case": "case-01", "status": "passed", "repo": "backend"}],
+                "summary": {
+                    "passed": 1,
+                    "failed": 0,
+                    "blocked": 0,
+                    "skipped": 0,
+                    "total": 1,
+                },
+            },
+            sort_keys=False,
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(yard)
+    out = cli.invoke(app, ["qa", "report", "J-1"])
+    assert out.exit_code == 0, out.output
+    assert "报告:" in out.output
+    assert (qa / "reports" / "2020-01-03-000000.md").is_file()
+
+
+def test_qa_logs_cli_local_env_unsupported(tmp_path: Path, monkeypatch):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    _write_qa_yaml(yard)
+    monkeypatch.chdir(yard)
+    out = cli.invoke(app, ["qa", "logs", "J-1", "--request-id", "abc"])
+    assert out.exit_code == 1
+
+
+def test_jms_k8s_logs_filters_locally():
+    from types import SimpleNamespace
+
+    from dev_yard import script_exec as se
+
+    class _Fake(se.JmsK8sExecutor):
+        def _pick_pod(self, *, timeout: int) -> str:
+            return "pod-1"
+
+        def _ssh(self, remote, *, stdin=None, timeout=0, on_log=None):
+            self.remote = remote
+            return se.ExecResult(0, "line req=abc\nother\nREQ=ABC\n", "")
+
+    ex = _Fake.__new__(_Fake)
+    ex.spec = SimpleNamespace(namespace="dev", k8s_container="research", ping_timeout=30)
+    text = ex.logs("abc", tail=50)
+    assert text.splitlines() == ["line req=abc", "REQ=ABC"]
+    assert "kubectl logs" in ex.remote
+    assert "--tail=50" in ex.remote
+
+
+def test_fetch_logs_requires_needle(tmp_path: Path):
+    from dev_yard.script_exec import fetch_logs
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    _write_qa_yaml(yard)
+    with pytest.raises(TestRejected):
+        fetch_logs(yard, env_name=None, jira=None)
+
+
+def test_fetch_logs_local_env_unsupported(tmp_path: Path):
+    from dev_yard.script_exec import fetch_logs
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    _write_qa_yaml(yard)
+    with pytest.raises(TestRejected):
+        fetch_logs(yard, env_name=None, jira=None, request_id="abc")
+
+
 def test_bad_frontmatter_rejects_run(tmp_path: Path, git_src: Path, monkeypatch):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)
@@ -1771,7 +2270,7 @@ def _seed_run_with_cases(
     key: str,
     *,
     case_states: dict[str, str],
-    design: "_DesignRunner",
+    design: _DesignRunner,
 ) -> Path:
     """Design two cases and record a run whose progress holds the given states."""
     qa = yard / "reqs" / key / "qa"
@@ -1862,7 +2361,14 @@ def test_rerun_case_only_reruns_target(tmp_path: Path, git_src: Path, monkeypatc
     # Only the failed case is dispatched; the passed one keeps its result.
     assert ran == ["case-01"]
     assert result["run_id"] == "2020-01-01-000000"
-    assert result["summary"] == {"passed": 2, "failed": 0, "blocked": 0, "skipped": 0, "total": 2}
+    assert result["summary"] == {
+        "passed": 2,
+        "failed": 0,
+        "blocked": 0,
+        "skipped": 0,
+        "total": 2,
+        "blocked_kind": {"case-defect": 0, "env": 0, "cancelled": 0, "other": 0},
+    }
     # Same run dir: the rerun amends the existing run, not a new one.
     assert sorted(p.name for p in (run_dir.parent).iterdir() if p.is_dir()) == [
         "2020-01-01-000000"

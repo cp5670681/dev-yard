@@ -4,6 +4,7 @@ from typing import Any
 
 import yaml
 
+from dev_yard.qa_schedule import blocked_kind, format_blocked_kind
 from dev_yard.test_report import Finding, InboundReport, ReportRejected
 
 
@@ -70,12 +71,44 @@ def map_qa_result(run: dict[str, Any], cases: list[dict[str, Any]]) -> InboundRe
 
 
 def _summary_line(summary: dict[str, Any]) -> str:
-    return (
+    return summary_line(summary)
+
+
+def md_cell(text: Any) -> str:
+    """One-line, pipe-escaped text safe inside a Markdown table cell."""
+    return " ".join(str(text or "").split()).replace("|", "\\|")
+
+
+def summary_line(summary: dict[str, Any]) -> str:
+    """`blocked` is not one number: break it out so a case-defect is visible."""
+    line = (
         f"passed={summary.get('passed') or 0} "
         f"failed={summary.get('failed') or 0} "
         f"blocked={summary.get('blocked') or 0} "
         f"skipped={summary.get('skipped') or 0}"
     )
+    parts = format_blocked_kind(summary.get("blocked_kind"))
+    if parts:
+        line += f" ({parts})"
+    return line
+
+
+def _blocked_rows(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [c for c in cases if isinstance(c, dict) and str(c.get("status") or "") == "blocked"]
+
+
+def _blocked_lines(cases: list[dict[str, Any]]) -> list[str]:
+    rows = _blocked_rows(cases)
+    if not rows:
+        return []
+    lines = ["", "## blocked", ""]
+    for c in rows:
+        cid = md_cell(c.get("case") or c.get("id"))
+        kind = blocked_kind(str(c.get("reason") or ""))
+        reason = md_cell(c.get("reason"))
+        lines.append(f"- `{cid}` [{kind}] {reason}".rstrip())
+    lines.append("")
+    return lines
 
 
 def _body(run: dict[str, Any], cases: list[dict[str, Any]]) -> str:
@@ -87,11 +120,11 @@ def _body(run: dict[str, Any], cases: list[dict[str, Any]]) -> str:
     if failed:
         lines = ["# yard-qa failures", ""]
         for c in failed:
-            cid = c.get("case") or c.get("id")
-            title = c.get("title") or ""
-            reason = c.get("reason") or ""
+            cid = md_cell(c.get("case") or c.get("id"))
+            title = md_cell(c.get("title"))
+            reason = md_cell(c.get("reason"))
             lines.append(f"- `{cid}` {title}: {reason}".rstrip())
-        lines.append("")
+        lines.extend(_blocked_lines(cases))
         return "\n".join(lines)
     dumped = yaml.safe_dump(run, sort_keys=False, allow_unicode=True)
     if not dumped.endswith("\n"):

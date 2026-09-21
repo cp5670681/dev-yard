@@ -18,7 +18,7 @@ description: >
 
 页面 URL = `context.md` 的 `base_url` + 已知路由。不要猜 host。hash 路由必须带 `#/`（如 `http://host/#/works/...`）。
 
-造数 / 清理由**宿主**按本次 env 的 exec 配方执行。不要再跑 `data.setup` / `data.cleanup`，不要自己 ssh/kubectl，不要对 freeze worktree 跑 `bin/rails runner`。
+造数 / 清理由**宿主**按本次 env 的 exec 配方执行。不要再跑 `data.setup` / `data.cleanup`，不要自己 ssh/kubectl，不要对 freeze worktree 跑 `bin/rails runner`。5xx 诊断走宿主只读命令 `dev-yard qa logs <JIRA> --request-id <id>`（见「四态」§7）。
 
 若 `context.md` 的 `exec.site` 是 remote：浏览器和脚本都打**已部署**现场，不是 freeze worktree。DB 断言以部署版模型为准。
 
@@ -49,7 +49,10 @@ description: >
 7. 四态：`passed | failed | blocked | skipped`。
    - `failed`：**被测实现**与预期不符（UI 实际值 ≠ 预期，或落库值不符）。
    - `blocked`：登录失败 / 5xx / DB 连不上；或**用例自身的种子数据/前置不满足**（如期望出现在关联表/展开行/子表格里的记录，setup 没造出对应关联或字段）。
-   - **数据缺口判 blocked，不判 failed**：先查 DB 定位。DB 里**根本没有**该数据（记录/关联/字段缺失）→ 用例缺陷，`status: blocked`，`reason` 以 `case-defect:` 开头并写明缺哪个实体/关联/字段；DB 里**有**该数据但页面或接口没透出 → `failed`（实现问题）。
+   - **数据缺口判 blocked，不判 failed**：先查 DB 定位。DB 里**根本没有**该数据（记录/关联/字段缺失）→ 用例缺陷，`status: blocked`，`reason` 以 `case-defect:` 开头并写明缺哪个实体/关联/字段 + 建议补什么；DB 里**有**该数据但页面或接口没透出 → `failed`（实现问题）。
+   - **5xx 判据（诊断优先，禁止默认豁免）**：响应体常是兜底文案（如 `{"error":"Invalid response"}`），不代表真实原因。先取响应头 `x-request-id`，用宿主只读命令查日志：`dev-yard qa logs <JIRA> --request-id <id>`（不要自己 ssh/kubectl）。再判：未部署/环境 → `blocked: undeployed`（`reason` 写明依据）；实现缺陷 → `failed`。不要只看响应体，也不要先入为主写成"环境问题"；日志命令不可达时，在 `reason` 记 `undeployed:` + `x-request-id`，交人工排查。
+   - **取消**：`reason` 以 `cancelled:` 开头，与 `case-defect:`/环境故障分开（由宿主统一打，不用你写）。
+   - **校验类用例「意外成功」**：预期被拦截却通过了 → 先查 DB 确认是否真的写入。未写入按断言正常判；已写入即误创建：按记录 ID 清理，在 result.yaml 的 `cleanup` 段注明「执行中误创建并已清理」，然后复测该用例。
    - 数据缺口只取证、不改 setup/预期；在 reason 里点明需回设计阶段补种子数据后重跑。
 8. 失败只取证。写该 case 的 `result.yaml`。不要写 run 级 `evidence/<run_id>/result.yaml`。
 9. 命令、日志、result 里的 DSN 与密码脱敏为 `***`。
@@ -85,7 +88,15 @@ failure:
 | HTTP 2xx ≠ 成功 | 看 response-body |
 | 异步未返回就断言 | 先查 requests |
 | hash 路由拼错 | 用 meta.yaml `routes:`；带 `#/` |
+| hash 路由不重载 | goto 后快照确认，必要时 reload 再断言 |
 | 截图落仓库根 | `--filename` 绝对路径 |
 | ref 过期 | 重新 snapshot，不要写死 ref |
 | 组件状态残留 | 每条 case 先导航到目标页 |
+| 5xx/接口报错 | 响应体常是兜底文案；先按 `x-request-id` 查 pod 日志/Sentry 定位真实异常，再判环境/产品（见四态 §7） |
+| 时间字段显示 UTC | 断言前先换算到页面/需求口径 |
+| 只读库禁写 | DB 断言只用 `SELECT/SHOW/DESC`；写库交给宿主 setup/cleanup |
 | 期望元素在关联行/展开行/子表格却不存在 | 先查 DB：该行对应实体/关联/字段是否存在；不存在 = 用例种子数据缺口，判 `blocked` + `reason: case-defect:`，不是产品缺陷 |
+| 校验用例「意外成功」 | 先查 DB 确认是否真写入；已写入即误创建 → 按 ID 清理 → `cleanup` 段注明 → 复测 |
+| 两次结果不一致 | 大概率前端异步竞态：换一次性完整输入替代逐键输入，区分竞态与后端行为 |
+| local 环境服务没起 | 页面 5xx/连接拒绝 → `blocked`，提示起本地服务/看本地日志，不是用例失败 |
+| 截图/落库与快照冲突 | 以下层（网络/DB）为准，不凭快照判 passed |

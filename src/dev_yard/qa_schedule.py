@@ -8,10 +8,33 @@ from datetime import UTC, datetime
 from typing import Any
 
 from dev_yard.qa_config import QaWorker, TestRejected
+from dev_yard.runners import JobCancelled
 
 TERMINAL = frozenset({"passed", "failed", "blocked", "skipped"})
 _P_RANK = re.compile(r"^P(\d+)$", re.I)
-_HTTP_5XX = re.compile(r"\b5\d\d\b")
+_HTTP_5XX = re.compile(r"\b5\d\d\b|5xx", re.I)
+_DB_REASON = re.compile(r"\bdb\b|usql|database", re.I)
+# `cancelled`/`canceled`, as a whole word — not any "cancel" verb elsewhere.
+_CANCEL_RE = re.compile(r"cancell?ed", re.I)
+# Fallback signals that mean "the harness/environment broke", not the product.
+_ENV_REASON = re.compile(
+    r"timeout|unreachable|connection|no route|worker exit|malformed result|"
+    r"missing case result|not a mapping|bad result|cleanup failed|env fault|"
+    r"setup failed|fuse",
+    re.I,
+)
+BLOCKED_KINDS = ("case-defect", "env", "cancelled", "other")
+
+
+def format_blocked_kind(kind: Any) -> str:
+    """`case-defect=1 env=2` for the non-zero buckets ('' when none).
+
+    Single source for the CLI, web job log and markdown report so the four
+    buckets never drift apart.
+    """
+    if not isinstance(kind, dict):
+        return ""
+    return " ".join(f"{k}={kind.get(k, 0)}" for k in BLOCKED_KINDS if kind.get(k))
 
 
 def normalize_status(status: Any) -> str:
@@ -104,21 +127,57 @@ def validate_dag(cases: list[CaseJob]) -> None:
         dfs(c.id)
 
 
+def _env_signal(reason_lower: str) -> str | None:
+    """Shared matcher: the specific env-fault class, or None if it is not env.
+
+    `env_block_class` (breaker) and `blocked_kind` (reporting) must agree, or a
+    reason can trip the breaker while being reported as `other` (and vice
+    versa). Keep this the single source of truth.
+    """
+    if "login" in reason_lower or "auth" in reason_lower:
+        return "login"
+    if _HTTP_5XX.search(reason_lower):
+        return "http-5xx"
+    if _DB_REASON.search(reason_lower):
+        return "db"
+    if "worker exit" in reason_lower:
+        return "worker-exit"
+    if _ENV_REASON.search(reason_lower):
+        return "env"
+    return None
+
+
 def env_block_class(reason: str) -> str | None:
     r = (reason or "").lower()
+    # A cancelled run is not an environment fault: it must not trip the breaker
+    # (otherwise a cancel stamps every remaining case as blocked "worker exit").
+    if _CANCEL_RE.search(r):
+        return None
+    # A case-defect is the case's own seed gap, not the environment: it must not
+    # trip the breaker either (else two bad seeds abort the whole run).
+    if r.startswith("case-defect:"):
+        return None
     # Host-side setup fuse already skipped remaining setup cases; do not
     # also trip the schedule breaker (that would block no-setup cases).
     if r.startswith(("env fault:", "setup failed:")):
         return None
-    if "login" in r or "auth" in r:
-        return "login"
-    if "5xx" in r or _HTTP_5XX.search(r):
-        return "http-5xx"
-    if "db" in r or "usql" in r or "database" in r:
-        return "db"
-    if "worker exit" in r:
-        return "worker-exit"
-    return "env"
+    # Unknown reasons fall back to "env" here (the breaker is conservative);
+    # `blocked_kind` reports those as `other` instead. Same matcher, different
+    # conservative default.
+    return _env_signal(r) or "env"
+
+
+def blocked_kind(reason: str) -> str:
+    """Bucket a blocked reason for reporting: case-defect | env | cancelled | other."""
+    r = (reason or "").strip()
+    low = r.lower()
+    if low.startswith("case-defect:"):
+        return "case-defect"
+    if _CANCEL_RE.search(low):
+        return "cancelled"
+    if low.startswith(("env fault:", "setup failed:")):
+        return "env"
+    return "env" if _env_signal(low) else "other"
 
 
 def pick_pool(pools: list[PoolSlot]) -> PoolSlot | None:
@@ -331,6 +390,14 @@ def run_schedule(
                     job.reason = breaker_reason
                     job.ended_at = stamp
             ping()
+        elif cancelled:
+            stamp = now_iso()
+            for job in cases:
+                if job.state in {"pending", "ready"}:
+                    job.state = "blocked"
+                    job.reason = "cancelled: run cancelled"
+                    job.ended_at = stamp
+            ping()
 
 
 def _safe_run(
@@ -338,6 +405,8 @@ def _safe_run(
 ) -> dict[str, Any]:
     try:
         result = run_case(job, slot)
+    except JobCancelled as e:
+        return {"status": "blocked", "reason": f"cancelled: {e}"}
     except Exception as e:  # noqa: BLE001 — worker must not kill the run
         return {"status": "blocked", "reason": f"worker exit: {e}"}
     if not isinstance(result, dict):

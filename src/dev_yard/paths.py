@@ -91,6 +91,15 @@ def qa_dir(root: Path, jira: str) -> Path:
     return req_dir(root, jira) / "qa"
 
 
+def qa_reports_dir(root: Path, jira: str) -> Path:
+    return qa_dir(root, jira) / "reports"
+
+
+def qa_accounts_discover_sql(root: Path, jira: str) -> Path:
+    """Read-only query the design agent writes to find candidate accounts."""
+    return qa_dir(root, jira) / "accounts-discover.sql"
+
+
 def qa_yaml(root: Path) -> Path:
     return root / "qa.yaml"
 

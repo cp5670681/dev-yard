@@ -56,6 +56,45 @@ def _die(exc: BaseException) -> None:
     raise typer.Exit(1)
 
 
+def _echo_blocked_hint(summary: dict, jira: str = "") -> None:
+    """Show the blocked breakdown and the actionable follow-up."""
+    from dev_yard.qa_schedule import format_blocked_kind
+
+    kind = summary.get("blocked_kind") if isinstance(summary, dict) else None
+    shown = format_blocked_kind(kind)
+    if not shown:
+        return
+    typer.echo(f"  blocked 分类：{shown}")
+    target = (
+        f"dev-yard req test {jira} --redesign" if jira
+        else "dev-yard req test <JIRA> --redesign"
+    )
+    if kind.get("case-defect"):
+        typer.echo(
+            f"  {kind['case-defect']} 条为用例种子缺口（case-defect），"
+            f"补种子后重跑：{target}"
+        )
+    if kind.get("other"):
+        typer.echo(
+            f"  {kind['other']} 条原因未归类，请人工查看 qa/evidence 下的 result.yaml"
+        )
+
+
+def _echo_account_hint(root: Path, jira: str) -> None:
+    """Point at discovery only while accounts are still missing."""
+    if not paths.qa_accounts_discover_sql(root, jira).is_file():
+        return
+    from dev_yard.qa_config import load_qa_config
+
+    try:
+        accounts = load_qa_config(root, None, jira).env.accounts
+    except Exception:  # noqa: BLE001 — advisory hint must never break the command
+        return
+    if len(accounts) > 1:
+        return
+    typer.echo(f"  账号发现：dev-yard req accounts {jira} --discover")
+
+
 _READONLY_SQL = frozenset({"select", "show", "desc", "describe", "explain", "with", "table"})
 # Heuristic, not a real SQL parser: blocks obvious writes/exfiltration. The DB
 # account's own privileges remain the real guard.
@@ -410,6 +449,11 @@ def req_accounts(
     sql: str = typer.Option(
         "", "--sql", help="只读查询，返回用用户名的列（用于发现候选账号）"
     ),
+    discover: bool = typer.Option(
+        False,
+        "--discover",
+        help="用 qa/accounts-discover.sql（qa-design 产出）跑只读查询列候选账号",
+    ),
     reset: bool = typer.Option(
         False, "--reset", help="清空本环境已配的需求账号，从零开始收集"
     ),
@@ -454,7 +498,33 @@ def req_accounts(
             typer.echo("直接回车可结束；输入新账号名继续追加。")
 
     candidates: list[str] = []
-    if sql:
+    if discover and sql:
+        _die(ValueError("--discover and --sql are mutually exclusive"))
+        return
+    if discover:
+        sql_path = paths.qa_accounts_discover_sql(root, jira)
+        if not sql_path.is_file():
+            _die(
+                ValueError(
+                    f"缺少 {sql_path}（涉及权限时由 qa-design 产出只读查询）；"
+                    "或改用 --sql 直接给查询"
+                )
+            )
+            return
+        try:
+            query = sql_path.read_text(encoding="utf-8")
+        except OSError as e:
+            _die(e)
+            return
+        try:
+            candidates = _discover_usernames(cfg.env.db_url, query)
+        except (ValueError, OSError) as e:
+            _die(e)
+            return
+        typer.echo(f"发现候选用户名（{sql_path.name}）：")
+        for user in candidates:
+            typer.echo(f"  - {user}")
+    elif sql:
         try:
             candidates = _discover_usernames(cfg.env.db_url, sql)
         except (ValueError, OSError) as e:
@@ -544,6 +614,62 @@ def qa_check_env(
     typer.echo(f"ok env={result.get('env')} use={result.get('use')} site={result.get('site')}")
 
 
+@qa_app.command("report")
+def qa_report_cmd(
+    jira: str,
+    run: str = typer.Option("", "--run", help="run id; default latest"),
+) -> None:
+    """Render a markdown test report from the run's result.yaml/progress.yaml."""
+    from dev_yard.qa_config import TestRejected
+    from dev_yard.qa_doc import render_qa_report
+
+    root = root_opt()
+    try:
+        path, summary = render_qa_report(root, jira, run.strip() or None)
+    except (ValueError, FileNotFoundError, TestRejected) as e:
+        _die(e)
+        return
+    typer.echo(f"{jira} 报告: {path}")
+    typer.echo(
+        f"  total={summary.get('total', 0)} passed={summary.get('passed', 0)} "
+        f"failed={summary.get('failed', 0)} blocked={summary.get('blocked', 0)} "
+        f"skipped={summary.get('skipped', 0)}"
+    )
+    _echo_blocked_hint(summary, jira)
+
+
+@qa_app.command("logs")
+def qa_logs_cmd(
+    jira: str,
+    request_id: str = typer.Option("", "--request-id", help="响应头 x-request-id"),
+    grep: str = typer.Option("", "--grep", help="没有 request-id 时按关键字过滤"),
+    tail: int = typer.Option(2000, "--tail", help="tail 行数上限"),
+    env: str = typer.Option("", "--env", help="qa.yaml envs.<name>; default active_env"),
+) -> None:
+    """Read-only deployed-env log lookup for 5xx diagnosis (jms-k8s envs)."""
+    from dev_yard.qa_config import TestRejected
+    from dev_yard.script_exec import ExecUnreachable, fetch_logs
+
+    root = root_opt()
+    try:
+        use, text = fetch_logs(
+            root,
+            env_name=env.strip() or None,
+            jira=jira,
+            request_id=request_id,
+            grep=grep,
+            tail=tail,
+            on_log=lambda line: typer.echo(str(line).rstrip()),
+        )
+    except (ValueError, FileNotFoundError, TestRejected, ExecUnreachable, GitError) as e:
+        _die(e)
+        return
+    if not text.strip():
+        typer.echo(f"({use}) 无匹配日志")
+        return
+    typer.echo(text.rstrip())
+
+
 @req_app.command("test")
 def req_test_cmd(
     jira: str,
@@ -631,19 +757,42 @@ def req_test_cmd(
     except (ValueError, FileNotFoundError, TestRejected, ReportRejected, GitError) as e:
         _die(e)
     if result.get("awaiting_review"):
+        oq = result.get("open_questions") or {}
+        q = result.get("questions") or 0
+        if q:
+            qline = f"\n  OPEN-QUESTIONS: {q}（见 qa/OPEN-QUESTIONS.md）"
+        elif oq.get("error"):
+            qline = "\n  OPEN-QUESTIONS: 读取失败（qa/OPEN-QUESTIONS.md 存在但不可读）"
+        elif oq.get("exists"):
+            qline = "\n  OPEN-QUESTIONS: 0（已产出空文件，无待澄清）"
+        else:
+            qline = "\n  OPEN-QUESTIONS: 未产出（qa/OPEN-QUESTIONS.md 缺失）"
         typer.echo(
-            f"{jira} 用例待审核 cases={result.get('cases')}"
-            f"（{result.get('reason') or ''}）\n"
+            f"{jira} 用例待审核 cases={result.get('cases')}（{result.get('reason') or ''}）{qline}"
+        )
+        _echo_account_hint(root, jira)
+        typer.echo(
             f"  通过：dev-yard req test {jira} --approve\n"
             f"  打回重做：dev-yard req test {jira} --redesign --feedback-file <path>"
         )
         return
     if result.get("design_only"):
         review = result.get("review") or {}
+        oq = result.get("open_questions") or {}
+        q = result.get("questions") or 0
+        if q:
+            qline = f" OPEN-QUESTIONS={q}"
+        elif oq.get("error"):
+            qline = " OPEN-QUESTIONS=(读取失败)"
+        elif oq.get("exists"):
+            qline = " OPEN-QUESTIONS=0(空文件)"
+        else:
+            qline = " OPEN-QUESTIONS=(缺失)"
         typer.echo(
             f"{jira} design-only cases={result.get('cases')} "
-            f"review={review.get('status') or '?'}"
+            f"review={review.get('status') or '?'}{qline}"
         )
+        _echo_account_hint(root, jira)
         return
     summary = result.get("summary") or {}
     extra = ""
@@ -657,6 +806,9 @@ def req_test_cmd(
         f"blocked={summary.get('blocked', 0)} skipped={summary.get('skipped', 0)}"
         f"{extra}"
     )
+    _echo_blocked_hint(summary, jira)
+    if result.get("run_id"):
+        typer.echo(f"  报告：dev-yard qa report {jira}")
 
 
 @ticket_app.command("start")

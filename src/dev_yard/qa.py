@@ -41,9 +41,11 @@ from dev_yard.qa_review import (
     review_payload,
 )
 from dev_yard.qa_schedule import (
+    BLOCKED_KINDS,
     TERMINAL,
     CaseJob,
     PoolSlot,
+    blocked_kind,
     normalize_status,
     now_iso,
     progress_line,
@@ -128,6 +130,10 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
             "**deployed** environment, not the freeze worktree. DB assertions and seed "
             "models follow the deployed code. Worktrees are for reading code and the "
             "mutation gate only."
+        )
+        lines.append(
+            f"- 5xx 诊断：`dev-yard qa logs {jira} --request-id <x-request-id>`"
+            "（宿主只读查日志；不要自己 ssh/kubectl）"
         )
     lines += [
         "",
@@ -281,6 +287,62 @@ def _involved_aliases(root: Path, jira: str) -> list[str]:
         if repo:
             aliases.add(str(repo))
     return sorted(aliases)
+
+
+_PERMISSION_HINT = re.compile(r"权限|角色|授权|可见范围|permission|authoriz", re.I)
+_PERMISSION_SCAN_MAX = 2 * 1024 * 1024
+
+
+def _read_capped(path: Path, cap: int) -> str:
+    """Read at most `cap` chars, never raising (advisory scan must not break)."""
+    try:
+        with path.open("r", encoding="utf-8", errors="strict") as fh:
+            return fh.read(cap)
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def _permission_gap_warning(root: Path, jira: str, cfg: QaConfig) -> str | None:
+    """P1 nudge: permission-flavoured change but only the default account.
+
+    Advisory only — never blocks and never raises. Point at the discovery path
+    so the human can turn the nudge into accounts in one command.
+    """
+    if len(cfg.env.accounts) > 1:
+        return None
+    req = paths.req_dir(root, jira)
+    text = ""
+    for name in ("REQUIREMENT.md", "SPEC.md", "GRILL.md", "TICKETS.md"):
+        p = req / name
+        if p.is_file():
+            text += _read_capped(p, _PERMISSION_SCAN_MAX - len(text))
+    repos = load_repos(root)
+    for alias in _involved_aliases(root, jira):
+        if len(text) >= _PERMISSION_SCAN_MAX:
+            break
+        wt = paths.req_worktree(root, jira, alias)
+        repo = repos.get(alias)
+        if not wt.is_dir() or repo is None:
+            continue
+        try:
+            base = gitops.freeze_base(wt, repo.default_base)
+            changed = gitops.changed_files(wt, base)
+        except Exception:  # noqa: BLE001 — a nudge must never break design
+            continue
+        for rel in sorted(changed):
+            if len(text) >= _PERMISSION_SCAN_MAX:
+                break
+            f = wt / rel
+            if not f.is_file():
+                continue
+            text += _read_capped(f, _PERMISSION_SCAN_MAX - len(text))
+    if not _PERMISSION_HINT.search(text):
+        return None
+    return (
+        f"{jira} 改动疑似涉及权限控制，但只配了默认账号；"
+        f"跑 `dev-yard req accounts {jira} --discover` 发现候选账号后补权限账号"
+        "（仅提示，不阻塞）。"
+    )
 
 
 def _gate(root: Path, jira: str) -> None:
@@ -490,16 +552,27 @@ def _preload_auth(
 
 
 def _duties(kind: str, jira: str) -> str:
+    # Hard constraints only; the detailed playbook lives in the SKILL.md next to
+    # this text. Keep the two in sync (a test asserts the key phrases).
     qa = f"reqs/{jira}/qa/"
     if kind == "design":
         return (
             "You are designing UI test cases for this freeze worktree.\n"
-            f"Write only under {qa} (meta.yaml and cases/). "
+            f"Write only under {qa} (meta.yaml, cases/, OPEN-QUESTIONS.md). "
             "Do not write STATUS.yaml or REQUIREMENT/GRILL/SPEC/TICKETS.md.\n"
             "Read REQUIREMENT.md, SPEC.md, TICKETS.md. Do not call MCP or re-fetch Jira.\n"
             "Diff each worktree with `git diff <default_base>...HEAD`. "
             "Empty diff: stop and say so.\n"
-            "Do not git checkout, commit, push, or switch. Do not interview."
+            "Do not git checkout, commit, push, or switch.\n"
+            "Do not interview interactively; record uncertainties in "
+            "qa/OPEN-QUESTIONS.md instead.\n"
+            "Honor context.md Notes. Cover permission branches with real accounts, "
+            "or write 'not covered (missing account X)' explicitly.\n"
+            "When permissions are involved, discover accounts from the backend "
+            "permission code and write the read-only discovery query to "
+            "qa/accounts-discover.sql (host runs it via `req accounts --discover`).\n"
+            "Seeds must self-prove: every entity/field/link a case asserts must be "
+            "created by setup (or verified read-only)."
         )
     return (
         "You are executing ONE UI test case. Do not repair product code.\n"
@@ -512,8 +585,38 @@ def _duties(kind: str, jira: str) -> str:
         "inspect the page dynamically with snapshot, fill credentials, submit, and save state.\n"
         "Host already ran data.setup if the case has one; do not re-run it. "
         "Host will run cleanup after you finish.\n"
+        "Blocked reasons must be classified: data gap -> `case-defect:`; a 5xx must be "
+        "checked via `dev-yard qa logs <JIRA> --request-id <id>` (host read-only log "
+        "lookup; do not ssh/kubectl yourself) before deciding env vs product; "
+        "cancellation -> `cancelled:`.\n"
         "Assertions in result.yaml must use type (ui|net|db) plus expected and actual."
     )
+
+
+_OPEN_QUESTION = re.compile(r"^\s*(?:#{1,6}\s+|[-*+]\s+)?(?:\*\*|__)?Q\d+\b", re.I)
+
+
+def open_questions_payload(qa: Path) -> dict[str, Any]:
+    """Read-only view of qa/OPEN-QUESTIONS.md for CLI/web surfacing.
+
+    `exists` distinguishes "the agent thought about it and wrote an empty file"
+    (the contract) from "the agent never wrote one" — `count` alone cannot.
+    """
+    path = qa / "OPEN-QUESTIONS.md"
+    if not path.is_file():
+        return {"count": 0, "body": "", "exists": False}
+    try:
+        body = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        # The file is there but unreadable: say so instead of pretending the
+        # agent forgot to write it.
+        return {"count": 0, "body": "", "exists": True, "error": "unreadable"}
+    count = sum(1 for line in body.splitlines() if _OPEN_QUESTION.match(line))
+    return {"count": count, "body": body.strip(), "exists": True}
+
+
+def _count_open_questions(qa: Path) -> int:
+    return int(open_questions_payload(qa)["count"])
 
 
 def _design_prompt(
@@ -705,12 +808,22 @@ def _write_skipped_result(path: Path, job: CaseJob) -> None:
     )
 
 
-def _summarize(cases: list[CaseJob]) -> dict[str, int]:
-    counts = {"passed": 0, "failed": 0, "blocked": 0, "skipped": 0}
+def _summarize(cases: list[CaseJob]) -> dict[str, Any]:
+    counts: dict[str, Any] = {"passed": 0, "failed": 0, "blocked": 0, "skipped": 0}
     for c in cases:
         if c.state in counts:
             counts[c.state] += 1
     counts["total"] = len(cases)
+    # Blocked is not one thing: a case-defect must go back to design, a cancelled
+    # run is collateral, env is external. Split it so the metrics stay honest.
+    # A cancelled run bails before this summary is written (see _raise_if_cancelled
+    # below the schedule); its `cancelled` cases surface from progress.yaml via
+    # `dev-yard qa report` instead.
+    breakdown = dict.fromkeys(BLOCKED_KINDS, 0)
+    for c in cases:
+        if c.state == "blocked":
+            breakdown[blocked_kind(c.reason)] += 1
+    counts["blocked_kind"] = breakdown
     return counts
 
 
@@ -1107,6 +1220,13 @@ def _req_test(
             raise TestRejected("--feedback requires --redesign")
     if need_design:
         _raise_if_cancelled(cancel_check, "qa-design")
+        if on_log is not None:
+            try:
+                warn = _permission_gap_warning(root, jira, cfg)
+            except Exception:  # noqa: BLE001 — advisory only, never block design
+                warn = None
+            if warn:
+                on_log(warn + "\n")
         spec = load_registry(root)["qa-design"]
         r = runner or get_runner(
             root,
@@ -1133,6 +1253,8 @@ def _req_test(
             "jira": jira,
             "design_only": True,
             "cases": len(cases),
+            "questions": _count_open_questions(qa),
+            "open_questions": open_questions_payload(qa),
             "review": review_payload(qa),
         }
     if not cases:
@@ -1146,6 +1268,8 @@ def _req_test(
                 "jira": jira,
                 "awaiting_review": True,
                 "cases": len(cases),
+                "questions": _count_open_questions(qa),
+                "open_questions": open_questions_payload(qa),
                 "reason": hold_reason,
                 "review": review_payload(qa),
             }

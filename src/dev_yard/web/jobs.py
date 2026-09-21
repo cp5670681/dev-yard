@@ -15,6 +15,7 @@ from typing import Any
 from dev_yard import grill_round, paths, service
 from dev_yard.actions import HOST_JOB_ACTIONS, TICKET_ACTIONS
 from dev_yard.pi_session import load_conversation
+from dev_yard.qa_schedule import format_blocked_kind
 from dev_yard.runners import (
     JobCancelled,
     Runner,
@@ -49,6 +50,20 @@ _HOST_JOB_ACTIONS = HOST_JOB_ACTIONS
 
 def format_sse(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _questions_suffix(result: dict[str, Any]) -> str:
+    """OPEN-QUESTIONS count, distinguishing an empty file from a missing one."""
+    q = result.get("questions") or 0
+    if q:
+        return f" OPEN-QUESTIONS={q}"
+    oq = result.get("open_questions") or {}
+    if isinstance(oq, dict):
+        if oq.get("error"):
+            return " OPEN-QUESTIONS=(读取失败)"
+        if oq.get("exists"):
+            return " OPEN-QUESTIONS=0(空文件)"
+    return " OPEN-QUESTIONS=(缺失)"
 
 
 @dataclass
@@ -560,7 +575,14 @@ def default_execute(root: Path, job: Job) -> None:
             job.append(
                 f"{job.jira} 用例待审核 cases={result.get('cases')} "
                 f"review={review.get('status') or '?'} "
-                f"({result.get('reason') or ''})"
+                f"({result.get('reason') or ''})" + _questions_suffix(result)
+            )
+            return
+        if result.get("design_only"):
+            review = result.get("review") or {}
+            job.append(
+                f"{job.jira} design-only cases={result.get('cases')} "
+                f"review={review.get('status') or '?'}" + _questions_suffix(result)
             )
             return
         summary = result.get("summary") or {}
@@ -569,6 +591,17 @@ def default_execute(root: Path, job: Job) -> None:
             f"passed={summary.get('passed', 0)} failed={summary.get('failed', 0)} "
             f"blocked={summary.get('blocked', 0)} skipped={summary.get('skipped', 0)}"
         )
+        kind = summary.get("blocked_kind")
+        shown = format_blocked_kind(kind)
+        if shown:
+            job.append(f"blocked 分类：{shown}")
+            if kind.get("case-defect"):
+                job.append(
+                    f"{kind['case-defect']} 条为用例种子缺口（case-defect），"
+                    f"需 --redesign 补种子后重跑"
+                )
+        if result.get("run_id"):
+            job.append(f"报告：dev-yard qa report {job.jira}")
         if result.get("ingest_skipped"):
             job.append(f"ingest skipped ({result['ingest_skipped']})")
         return

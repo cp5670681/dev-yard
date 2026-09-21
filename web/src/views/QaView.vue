@@ -75,6 +75,27 @@
         </v-card-actions>
       </v-card>
 
+      <!-- Design-time ambiguities the agent could not resolve (qa/OPEN-QUESTIONS.md) -->
+      <v-card v-if="openQuestions.exists" variant="tonal" color="warning" class="mb-4">
+        <v-card-title class="d-flex align-center ga-2 py-2">
+          <v-icon :icon="mdiHelpCircleOutline" size="20" />
+          待澄清问题
+          <v-chip size="small" variant="flat">{{ openQuestions.count }}</v-chip>
+        </v-card-title>
+        <v-card-text>
+          <p v-if="openQuestions.error" class="text-body-2 mb-2">
+            qa/OPEN-QUESTIONS.md 存在但读取失败，请人工查看。
+          </p>
+          <p v-else-if="openQuestions.count" class="text-body-2 mb-2">
+            设计期发现的歧义（qa/OPEN-QUESTIONS.md）。回答后可「打回重做」并带上意见，让 qa-design 重新生成用例。
+          </p>
+          <p v-else class="text-body-2 mb-2">
+            已产出空文件（qa/OPEN-QUESTIONS.md），设计期无疑义。
+          </p>
+          <pre v-if="openQuestions.body" class="text-body-2" style="white-space: pre-wrap">{{ openQuestions.body }}</pre>
+        </v-card-text>
+      </v-card>
+
       <!-- Run selector + summary chips -->
       <div v-if="runs.length" class="d-flex flex-wrap align-center ga-2 mb-3">
         <v-select
@@ -394,7 +415,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { mdiClipboardCheckOutline } from "@mdi/js";
+import { mdiClipboardCheckOutline, mdiHelpCircleOutline } from "@mdi/js";
 import { getQa, getRequirement, rerunQaCases, runAction } from "@/api/client";
 import type { DocMeta, QaPage, QaReview, ShotItem } from "@/api/types";
 import CaseDetailDialog from "@/components/CaseDetailDialog.vue";
@@ -439,6 +460,10 @@ const changes = computed(() => {
 const runs = computed(() => payload.value?.runs || []);
 
 const review = computed<QaReview | null>(() => payload.value?.review || null);
+
+const openQuestions = computed(
+  () => payload.value?.open_questions || { count: 0, body: "", exists: false },
+);
 
 const reviewPanel = computed(
   () =>

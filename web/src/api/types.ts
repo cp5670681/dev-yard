@@ -275,6 +275,7 @@ export interface QaPage {
   } | null;
   cases: QaCase[];
   review?: QaReview | null;
+  open_questions?: { count: number; body: string; exists?: boolean; error?: string };
   runs: {
     run_id: string;
     env?: string;

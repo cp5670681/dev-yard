@@ -129,6 +129,19 @@ class ScriptExecutor:
     ) -> ExecResult:
         raise NotImplementedError
 
+    def logs(
+        self,
+        needle: str,
+        *,
+        tail: int = 2000,
+        timeout: int | None = None,
+        on_log: LogFn | None = None,
+    ) -> str:
+        raise TestRejected(
+            f"exec.use={self.use} 不支持日志查询；5xx 诊断需要 jms-k8s（test 环境）",
+            error_class=ExecErrorClass.CONFIG,
+        )
+
     def close(self) -> None:
         return None
 
@@ -706,6 +719,41 @@ class JmsK8sExecutor(ScriptExecutor):
         if r.code != 0:
             self._auth_fail(r)
 
+    def logs(
+        self,
+        needle: str,
+        *,
+        tail: int = 2000,
+        timeout: int | None = None,
+        on_log: LogFn | None = None,
+    ) -> str:
+        """Read-only `kubectl logs` lookup over the JMS channel, filtered locally.
+
+        Filtering on the host (not via a remote `grep`) keeps a failed
+        `kubectl logs` from being masked by grep's exit code.
+        """
+        t = timeout or self.spec.ping_timeout
+        pod = self._pick_pod(timeout=t)
+        parts = [
+            "kubectl",
+            "logs",
+            "-n",
+            self.spec.namespace,
+            pod,
+            "-c",
+            self.spec.k8s_container,
+            f"--tail={max(1, int(tail))}",
+        ]
+        remote = " ".join(shlex.quote(p) for p in parts)
+        r = self._ssh(remote, timeout=t, on_log=on_log)
+        if r.code != 0:
+            self._auth_fail(r)
+        text = r.stdout or ""
+        if needle:
+            low = needle.lower()
+            text = "\n".join(ln for ln in text.splitlines() if low in ln.lower())
+        return text
+
     def run(
         self,
         script: Path,
@@ -943,6 +991,32 @@ def hello_source(runner: str) -> tuple[str, str]:
     if "node" in text:
         return "hello.js", f'console.log("{HELLO}");\n'
     return "hello.rb", f'puts "{HELLO}"\n'
+
+
+def fetch_logs(
+    root: Path,
+    *,
+    env_name: str | None,
+    jira: str | None,
+    request_id: str = "",
+    grep: str = "",
+    tail: int = 2000,
+    timeout: int = 60,
+    on_log: LogFn | None = None,
+) -> tuple[str, str]:
+    """Host-side, read-only 5xx log lookup. Returns (exec.use, redacted text)."""
+    from dev_yard.qa_config import load_qa_config
+
+    needle = request_id.strip() or grep.strip()
+    if not needle:
+        raise TestRejected("需要 --request-id 或 --grep 指定要查的日志关键字")
+    cfg = load_qa_config(root, env_name, jira)
+    executor = resolve_executor(cfg.env, base_url=cfg.env.base_url, root=root)
+    try:
+        text = executor.logs(needle, tail=tail, timeout=timeout, on_log=on_log)
+        return executor.use, redact_qa_yaml(text)
+    finally:
+        executor.close()
 
 
 def check_env(

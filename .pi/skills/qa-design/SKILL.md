@@ -16,39 +16,83 @@ description: >
 - `reqs/CONTEXT.md`（若有：只读术语）
 - 每个 worktree：`git -C <path> diff <default_base>...HEAD`（HEAD 即 `req/<JIRA>`）
 
-不要调 MCP、不要重拉 Jira、不要访谈。缺细节用 SPEC 与常规默认，在用例里标注假设。
+不要调 MCP、不要重拉 Jira、不要交互式访谈。缺细节时：能按 SPEC + 常规默认决定的，写进用例并标注假设；**真正有歧义、答错会让用例判错的，逐条写进 `qa/OPEN-QUESTIONS.md`（见下节），不要卡住、也不要默认成常规值糊过去**。
+
+`context.md` 的 `## Notes` 是本次环境的注意事项，**必读且逐条遵守**（见「Notes」节）。
 
 `git` 只用 `diff` / `log`。不要 checkout、commit、push、switch。
+
+## 澄清与开放问题（qa/OPEN-QUESTIONS.md）
+
+非交互运行，不能当面提问。缺细节时：
+
+- 能按 SPEC + 常规默认决定的：直接写进用例，在备注标注「假设」。
+- 真正有歧义、答错会让用例判错的：逐条写进 `qa/OPEN-QUESTIONS.md`，格式
+  `Q1: <问题> | 默认取值: <x> | 影响: case-02,case-04 | 答错后果: <y>`。
+- 无歧义时也写一个**空文件**（保留文件，便于人审确认已想过）。
+
+人审会看到 `OPEN-QUESTIONS` 计数，可 `dev-yard req test <JIRA> --redesign --feedback "Q1: …"` 回答后重做。不要为了省一轮往返而把真歧义默认掉。
+
+## 权限账号与账号发现
+
+从 diff/SPEC 判断是否存在权限控制点（角色 / 数据可见范围 / 操作拦截）。有则：
+
+1. **先读后端代码确认权限的判定方式**（controller 的 `before_action`/策略类、模型上的角色谓词、权限表），不要猜。
+2. **主动发现候选账号**（不要只把活推给人）：
+   - 权限是简单表结构（user 表有 role 列 / 角色关联表）→ 写一条**只读**查询到 `qa/accounts-discover.sql`（单条 `SELECT`，返回列：`username` 列在第一位；可 `UNION` 多个角色）。宿主会跑
+     `dev-yard req accounts <JIRA> --discover`，把人只差填密码。
+   - 权限是应用内逻辑（如 Rails 谓词 `user.research_director?`）→ SQL 查不出，在 `qa/OPEN-QUESTIONS.md` 写明**所需角色 + 判定代码位置**，请人工提供账号。
+   - 表结构/列名从后端仓库 ORM/schema 定义读，禁止猜（踩坑：外键是 `right_role_id` 不是 `role_id`）。按「能覆盖全部权限差异的最少账号数」选号，账号名用语义化 key（如 admin/readonly）。
+3. 在 `qa/OPEN-QUESTIONS.md` 列出「需要哪些权限账号」。
+4. 按 `context.md ## Accounts`（来自 `dev-yard req accounts` / `.yard-qa/.../accounts.yaml`）为每个权限各写正/反向用例：该权限可见/可操作 + 无权限不可见/被拦截。
+5. 缺账号时**显式写「未覆盖（缺账号 X）」**，禁止静默省略（不要只在 meta.yaml 备注里提一句）。
 
 ## 做法
 
 1. 每个 worktree 做 `git diff <default_base>...HEAD`。空 diff：停止并说明，不要编改动。
 2. 改动点 D1..Dn 写入 `qa/meta.yaml`。`repo` 必须是 `repos.yaml` 别名（context 地图里的 alias），不要写 frontend/backend 泛称。`role` 只作阅读提示。
 3. **增量**更新 `meta.yaml`：改 `changes` / `base_branches` / `feature_branches` / `module` / `requirement`；保留已有 `routes:`，不要整文件覆盖。
-4. 覆盖：每个 D 至少 1 条 + 1 条正常流 + UI **可达**的后端错误分支（无权限/重复/超限）。控件 `disabled`/`maxlength`/无清空导致点不到的拦截，不要写成用例。**每条含 UI 预期的步骤还必须过「数据可达性审查」（见下节）**。
+4. 覆盖：每个 D 至少 1 条 + 1 条正常流 + UI **可达**的后端错误分支（无权限/重复/超限）。控件 `disabled`/`maxlength`/无清空导致点不到的拦截，不要写成用例。**每条含 UI 预期的步骤还必须过「预期可达性审查」（见下节）**。
 5. 步骤用业务语言，不要写 selector、不要写 `bin/rails runner` / usql。按钮/文案必须来自 worktree 代码，不来自想象。
 6. 预期写需求口径。实现与 SPEC 不符时仍写需求值，并备注「需求偏差」。
 7. 跨仓改动拆成多条 case，或 `covers` 只含一个主仓。每条 frontmatter 必有 `repo:`（yard alias）。
 8. `depends_on` 仅当共享可变数据或业务先后时写；无依赖省略，以便并发领取。
-9. 需要非默认账号的用例，在 frontmatter 写 `account: <名字>`；名字必须来自 `context.md` 的 Accounts 列表（宿主跑前校验，未配置会直接报错让你先跑 `dev-yard req accounts <JIRA>`）。不写就用 `account.default`。
+9. 需要非默认账号的用例，在 frontmatter 写 `account: <名字>`；名字必须来自 `context.md` 的 Accounts 列表（宿主跑前校验，未配置会直接报错让你先跑 `dev-yard req accounts <JIRA>`）。不写就用 `account.default`。若需新增账号，按「权限账号与账号发现」写 `qa/accounts-discover.sql`（只读单条 `SELECT`）并在 OPEN-QUESTIONS 注明。
 10. 造数优先 `.sql`（host usql 打 `qa.yaml` 的 db.url；`db.exec: inherit` 时走与脚本同一条 exec 管道）。非 SQL 脚本由宿主按本次 env 的 `exec` 配方执行（local = freeze worktree + stdin；remote = 已部署现场 + stdin）。脚本契约：
     - **单文件**，不要 `require` 邻居（多文件才用 payload bundle）。
     - 状态落 **DB**，禁止把 setup→cleanup 约定写到执行现场本地文件（pod 会换副本）。
     - 业务参数只读 `ENV['QA_ENV']` / `QA_JIRA` / `QA_CASE_ID` / `QA_SCRIPT_KIND`，**不要读 ARGV**（stdin 模式下 ARGV 是空的）。
     - stdout 是唯一回传通道（seed id 用 `puts`/`print`）。
     - 幂等，且不假设两次执行落在同一副本。
+    - **seed 自证**：见「预期可达性审查 §4」，缺口要在造数阶段暴露，不留到 run。
 
-## 数据可达性审查（强制）
+## 预期可达性审查（强制）
 
-UI 预期只有在「该区域的数据确实会被 setup 造出（或已被核实存在）」时才可判定。写用例时逐条自查：这个元素在哪个区域、由什么数据驱动、setup 是否覆盖了那笔数据。
+UI 预期只有在「该区域的数据确实会被 setup 造出（或已被核实存在）」时才可判定。每条含 UI 预期的用例都要过下面三段。
 
-重点——**关联行 / 展开行 / 子表格往往是独立实体，不会从主记录继承字段**：
+### 1. 控件可达
+
+对照改动组件确认 UI 上能触发：`disabled`/`readonly`/`maxlength`/无 `clearable`/默认值恒有 → 不可达的拦截分支**不要写成用例**，在 meta.yaml 或报告备注「防御性代码，UI 不可达」。
+
+### 2. 数据可达
+
+写用例时逐条自查：这个元素在哪个区域、由什么数据驱动、setup 是否覆盖那笔数据。**关联行 / 展开行 / 子表格往往是独立实体，不会从主记录继承字段**：
 
 - 公司/项目的「联系人列表」与「联系人-项目表格」数据源不同：后者只列**参与过项目**的联系人。期望某联系人出现在该表，setup 必须建好 项目↔联系人 关联（如 `pj_contacts`/`firmtender`），只 `INSERT contacts` 不够。
 - 查重页/重复电话子表格里的「重复联系人」是**同号码的其它 contacts 记录**（各自的字段独立）。期望子行展示某字段，setup 必须逐条设置这些子记录，不能只改主联系人并指望继承。
-- 每个断言对象都要能追到 setup：前置里逐条列出 setup 会创建/修改的实体及关联、键值，并确认表单现在 UI 预期引用的每个对象上。
+- **编辑/保存路径的必填字段**：种子记录必须带上保存时前端/后端会校验的字段（yard 实例：`l_salutation/province_id/city_id/l_address`），否则「更新」被校验拦住，断言根本执行不到。
+- 每个断言对象都要能追到 setup：前置里逐条列出 setup 会创建/修改的实体及关联、键值。
 
 **只读自检**：依赖「线上已有数据」的步骤（如"某项目已有重复电话数据"）不要只写"假设"。设计阶段用只读 SQL 先核实（只允许 `SELECT`/`SHOW`/`DESC`，禁止写库；连接串取 `qa.yaml` 的 `db.url`）；查不了（无 usql/无权限/remote 现场）就在前置里显式标注「未验证假设」，或改成自带 setup 造数。
+
+### 3. 文案溯源 + 量化口径
+
+- 按钮/提示语取自 worktree diff 原文，不来自需求文档想象。
+- 排序/Top-N/计数先写判定口径（按什么字段、什么顺序、取前几条），真值由 run 查库比对，不在设计期硬编码。
+
+### 4. seed 自证（硬护栏）
+
+只"逐条列必填字段"仍会漏。造数尽量走**应用内保存路径**（如 `Contacts::SaveCommand`）或让模型校验生效，使缺字段在造数阶段就报错；走不通时，seed 末尾 `puts` 一段自检（断言本 case 每条 UI 预期引用的实体/字段/关联确实就位），stdout 即证据。
 
 ## meta.yaml
 
@@ -93,6 +137,6 @@ data: { setup: setup.sql, cleanup: cleanup.sql }
 - DB: <预期含 DB 时>
 ```
 
-无 DB 则去掉 `data` 与 DB 预期。造数脚本与 case 同目录，幂等。**setup 必须覆盖该 case 每条 UI 预期引用的实体，含关联行/展开行/子表格里的独立实体；cleanup 对称恢复。** 不要在步骤里写执行器命令。
+无 DB 则去掉 `data` 与 DB 预期。造数脚本与 case 同目录，幂等。**setup 必须覆盖该 case 每条 UI 预期引用的实体，含关联行/展开行/子表格里的独立实体与编辑/保存路径的必填字段；cleanup 对称恢复；seed 要自证（见 §4）。** 不要在步骤里写执行器命令。
 
 写完后停。不要跑浏览器、不要改 STATUS.yaml。
