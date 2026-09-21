@@ -15,6 +15,8 @@ from pathlib import Path
 
 import yaml
 
+from dev_yard.qa_verify import verify_gate, verify_view
+
 REVIEW_FILE = "review.yaml"
 STATUS_AWAITING = "awaiting"
 STATUS_REJECTED = "rejected"
@@ -151,14 +153,26 @@ def review_payload(qa: Path) -> dict[str, object]:
         "feedback": state.feedback if state else "",
         "updated_at": state.updated_at if state else "",
         "fingerprint": current,
+        "verify": verify_view(qa, current),
     }
 
 
-def review_gate(qa: Path) -> tuple[bool, str]:
+def review_gate(
+    qa: Path,
+    *,
+    require_verify: bool = True,
+    allow_unverified: bool = False,
+) -> tuple[bool, str]:
     """`(can_run, reason)` for the current case set."""
     payload = review_payload(qa)
     if payload["approved"]:
-        return True, ""
+        ok, why = verify_gate(
+            qa,
+            str(payload["fingerprint"]),
+            required=require_verify,
+            allow_unverified=allow_unverified,
+        )
+        return (True, "") if ok else (False, why)
     status = payload["status"]
     if status == NO_CASES:
         return False, "还没有用例"

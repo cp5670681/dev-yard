@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -21,6 +22,18 @@ from dev_yard.qa_config import (
 from dev_yard.qa_schedule import CaseJob, normalize_status
 
 _ASSERT_TYPES = {"ui", "net", "db"}
+# Read-only statements a `data.verify` query may start with, and the write
+# keywords that disqualify one. Kept here (next to the SQL executor) so the
+# design-time verifier and any CLI discovery share one definition.
+READONLY_SQL_HEADS = frozenset(
+    {"select", "show", "desc", "describe", "explain", "with", "table"}
+)
+_WRITE_SQL = re.compile(
+    r"\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|merge"
+    r"|call|do|copy|vacuum|analyze|refresh|into|outfile|load_file|dblink"
+    r"|pg_read_file|lo_import|lo_export)\b",
+    re.I,
+)
 
 
 def state_path(root: Path, cfg: QaConfig, acct: QaAccount) -> Path:
@@ -204,6 +217,29 @@ def replay_path(job: CaseJob) -> Path | None:
     return path if path.is_file() else None
 
 
+def case_script_path(job: CaseJob, name: str, kind: str) -> Path:
+    """Resolve a case's setup/cleanup/verify file to a path inside its case dir.
+
+    Frontmatter is AI-authored; a bare filename only, and it must resolve inside
+    the case dir (no absolute path, no `../` escape).
+    """
+    if not job.path:
+        raise TestRejected(f"{job.id} has {kind} {name!r} but no case path")
+    if Path(name).name != name or name in {".", ".."}:
+        raise TestRejected(
+            f"{job.id} {kind} {name!r} must be a bare filename inside the case dir"
+        )
+    case_dir = Path(job.path).parent
+    script = case_dir / name
+    try:
+        script.resolve().relative_to(case_dir.resolve())
+    except ValueError as e:
+        raise TestRejected(f"{job.id} {kind} escapes the case dir: {name!r}") from e
+    if not script.is_file():
+        raise TestRejected(f"{job.id} {kind} file missing: {script}")
+    return script
+
+
 def run_case_script(
     root: Path,
     jira: str,
@@ -220,22 +256,7 @@ def run_case_script(
     name = job.setup if kind == "setup" else job.cleanup
     if not name:
         return ""
-    case_dir = Path(job.path).parent if job.path else None
-    if case_dir is None:
-        raise TestRejected(f"{job.id} has {kind} {name!r} but no case path")
-    # Frontmatter is AI-authored; a bare filename only, and it must resolve
-    # inside the case dir (no absolute path, no `../` escape).
-    if Path(name).name != name or name in {".", ".."}:
-        raise TestRejected(
-            f"{job.id} {kind} {name!r} must be a bare filename inside the case dir"
-        )
-    script = case_dir / name
-    try:
-        script.resolve().relative_to(case_dir.resolve())
-    except ValueError as e:
-        raise TestRejected(f"{job.id} {kind} escapes the case dir: {name!r}") from e
-    if not script.is_file():
-        raise TestRejected(f"{job.id} {kind} file missing: {script}")
+    script = case_script_path(job, name, kind)
     wt = paths.req_worktree(root, jira, job.repo) if job.repo else None
     # .sql 造数/清理一律在宿主用 usql 跑：无论 exec.use / db.exec 怎么配，
     # 都不把 SQL 丢进现场（pod 里既无 psql 也无 usql，且远端退出码会被吞）。
@@ -293,6 +314,65 @@ def _run_sql(cfg: QaConfig, script: Path, on_log: Any | None) -> str:
         err = redact_qa_yaml((r.stderr or r.stdout or "").strip()) or str(r.returncode)
         raise TestRejected(f"usql {script.name} failed: {err}")
     return redact_qa_yaml((r.stdout or "").strip())
+
+
+def assert_readonly_sql(text: str, *, what: str = "verify.sql") -> str:
+    """Validate a single read-only statement; return it without a trailing `;`."""
+    body = (text or "").strip()
+    if not body:
+        raise TestRejected(f"{what} is empty")
+    if ";" in body.rstrip(";"):
+        raise TestRejected(f"{what} must be a single statement (no `;`)")
+    head = body.split(None, 1)[0].lower()
+    if head not in READONLY_SQL_HEADS:
+        raise TestRejected(
+            f"{what} must be read-only (select/show/desc/describe/explain/with/table)"
+        )
+    # A write keyword inside a string literal / quoted identifier is data, not
+    # a statement.
+    scrubbed = re.sub(r"'(?:[^']|'')*'", "''", body)
+    scrubbed = re.sub(r'"(?:[^"]|"")*"', '""', scrubbed)
+    if _WRITE_SQL.search(scrubbed):
+        raise TestRejected(f"{what} must be read-only (no write keywords)")
+    return body.rstrip(";").rstrip()
+
+
+def run_sql_count(cfg: QaConfig, sql: str, on_log: Any | None = None) -> int:
+    """Row count of a read-only verify statement, run host-side via usql.
+
+    A `SELECT`/`WITH` is wrapped in `count(*)`, so the count is a real number
+    rather than a parse of the client's table rendering; the other read-only
+    heads report the number of output lines.
+    """
+    body = assert_readonly_sql(sql)
+    if not cfg.env.db_url:
+        raise TestRejected("qa.yaml has no db.url; cannot verify data")
+    binary = shutil.which("usql")
+    if not binary:
+        raise TestRejected("usql not found; cannot verify data")
+    head = body.split(None, 1)[0].lower()
+    query = f"SELECT count(*) FROM ({body}) AS qa_verify" if head in {"select", "with"} else body
+    if on_log is not None:
+        on_log(f"$ usql <db.url> -t -A -c {query[:200]}")
+    r = _run(
+        [binary, cfg.env.db_url, "-t", "-A", "-c", query],
+        timeout=120,
+        label="usql verify",
+    )
+    if r.returncode != 0:
+        err = redact_qa_yaml((r.stderr or r.stdout or "").strip()) or str(r.returncode)
+        raise TestRejected(f"verify query failed: {err}")
+    lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
+    if head in {"select", "with"}:
+        if not lines:
+            raise TestRejected("verify query returned no count")
+        try:
+            return int(lines[0])
+        except ValueError as e:
+            raise TestRejected(
+                f"verify query returned a non-numeric count: {lines[0]!r}"
+            ) from e
+    return len(lines)
 
 
 def _revert_new_paths(

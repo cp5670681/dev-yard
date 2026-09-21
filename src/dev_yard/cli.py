@@ -80,6 +80,26 @@ def _echo_blocked_hint(summary: dict, jira: str = "") -> None:
         )
 
 
+def _echo_verify_hint(view: dict | None) -> None:
+    """Show the design-time data-verification verdict, if one is on disk."""
+    if not isinstance(view, dict) or not view.get("present"):
+        return
+    summary = view.get("summary") or {}
+    total = summary.get("total")
+    state = "过期" if view.get("stale") else "最新"
+    typer.echo(
+        f"  数据核实（{state}）：passed={summary.get('passed', 0)} "
+        f"failed={summary.get('failed', 0)} skipped={summary.get('skipped', 0)}"
+        + (f" total={total}" if total is not None else "")
+    )
+    failed = view.get("failed") or []
+    if failed:
+        typer.echo(f"  未通过：{', '.join(failed)}（见 qa/design-verify/）")
+    exempt = view.get("empty") or []
+    if exempt:
+        typer.echo(f"  空转豁免（SELECT 1）：{', '.join(exempt)}")
+
+
 def _echo_account_hint(root: Path, jira: str) -> None:
     """Point at discovery only while accounts are still missing."""
     if not paths.qa_accounts_discover_sql(root, jira).is_file():
@@ -763,6 +783,17 @@ def req_test_cmd(
         "--rerun-case",
         help="Re-run only these case ids (repeatable); amends the run they belong to",
     ),
+    no_verify: bool = typer.Option(
+        False, "--no-verify", help="跳过设计期数据核实（verify.sql）"
+    ),
+    verify_only: bool = typer.Option(
+        False, "--verify-only", help="只跑设计期数据核实并落盘，不设计、不执行"
+    ),
+    allow_unverified: bool = typer.Option(
+        False,
+        "--allow-unverified",
+        help="显式越权：数据核实未通过也允许 --approve/执行（未通过用例会被跳过）",
+    ),
 ) -> None:
     """Design and run UI cases after submit-test. Ingests into the test slot."""
     from dev_yard.qa import req_test
@@ -773,6 +804,9 @@ def req_test_cmd(
     if resume and fresh:
         _die(ValueError("--resume and --fresh are mutually exclusive"))
         return
+    if verify_only and no_verify:
+        _die(ValueError("--verify-only and --no-verify are mutually exclusive"))
+        return
     if rerun_case and (
         resume
         or fresh
@@ -782,11 +816,13 @@ def req_test_cmd(
         or approve
         or feedback
         or feedback_file
+        or verify_only
     ):
         _die(
             ValueError(
                 "--rerun-case cannot be combined with "
-                "--resume/--fresh/--design-only/--run-only/--redesign/--approve/--feedback"
+                "--resume/--fresh/--design-only/--run-only/--redesign/--approve"
+                "/--feedback/--verify-only"
             )
         )
         return
@@ -814,6 +850,9 @@ def req_test_cmd(
             ingest=not no_ingest,
             resume=True if resume else False if fresh else None,
             rerun_cases=rerun_case or None,
+            verify=False if no_verify else None,
+            verify_only=verify_only,
+            allow_unverified=allow_unverified,
             on_log=lambda line: typer.echo(line.rstrip() if isinstance(line, str) else line),
         )
     except (ValueError, FileNotFoundError, TestRejected, ReportRejected, GitError) as e:
@@ -832,11 +871,16 @@ def req_test_cmd(
         typer.echo(
             f"{jira} 用例待审核 cases={result.get('cases')}（{result.get('reason') or ''}）{qline}"
         )
+        _echo_verify_hint(result.get("verify"))
         _echo_account_hint(root, jira)
         typer.echo(
             f"  通过：dev-yard req test {jira} --approve\n"
             f"  打回重做：dev-yard req test {jira} --redesign --feedback-file <path>"
         )
+        return
+    if result.get("verify_only"):
+        typer.echo(f"{jira} verify-only cases={result.get('cases')}")
+        _echo_verify_hint(result.get("verify"))
         return
     if result.get("design_only"):
         review = result.get("review") or {}
@@ -854,6 +898,7 @@ def req_test_cmd(
             f"{jira} design-only cases={result.get('cases')} "
             f"review={review.get('status') or '?'}{qline}"
         )
+        _echo_verify_hint(result.get("verify"))
         _echo_account_hint(root, jira)
         return
     summary = result.get("summary") or {}

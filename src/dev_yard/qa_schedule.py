@@ -76,6 +76,7 @@ class CaseJob:
     account: str = ""
     setup: str = ""
     cleanup: str = ""
+    verify: str = ""
     state: str = "pending"
     pool: str | None = None
     model: str | None = None

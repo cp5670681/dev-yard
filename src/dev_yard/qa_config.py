@@ -121,6 +121,11 @@ class QaConfig:
     serialize_accounts: bool = False
     design_provider: str | None = None
     design_model: str | None = None
+    # Design-time data verification (spec §M1/M3). `verify_attempts` bounds the
+    # automatic design→verify→redesign loop; `verify_required` lets the review
+    # gate refuse `--approve` while a case's data cannot be proven.
+    design_verify_attempts: int = 3
+    design_verify_required: bool = True
 
     @property
     def total_concurrency(self) -> int:
@@ -264,6 +269,18 @@ def _parse_design(raw: Any) -> tuple[str | None, str | None]:
     return _pair_or_none(raw.get("provider"), raw.get("model"), "qa.yaml design")
 
 
+def _parse_design_verify(raw: Any) -> tuple[int, bool]:
+    """qa.yaml `design` verify options: (verify_attempts, verify_required)."""
+    if raw is None:
+        return 3, True
+    if not isinstance(raw, dict):
+        raise TestRejected("qa.yaml design must be a mapping")
+    attempts = _int(raw.get("verify_attempts"), "design.verify_attempts", 3)
+    if attempts < 1:
+        raise TestRejected("qa.yaml design.verify_attempts must be >= 1")
+    return attempts, _as_bool(raw.get("verify_required"), True)
+
+
 def _parse_workers(root: Path, raw: Any) -> tuple[QaWorker, ...]:
     if raw is None:
         raw = [{}]
@@ -366,6 +383,7 @@ def _parse_config(root: Path, data: dict[str, Any], env: str | None = None) -> Q
     )
     workers = _parse_workers(root, data.get("workers"))
     design_provider, design_model = _parse_design(data.get("design"))
+    verify_attempts, verify_required = _parse_design_verify(data.get("design"))
     return QaConfig(
         active_env=env_name,
         env=env,
@@ -375,6 +393,8 @@ def _parse_config(root: Path, data: dict[str, Any], env: str | None = None) -> Q
         serialize_accounts=_as_bool(data.get("serialize_accounts"), False),
         design_provider=design_provider,
         design_model=design_model,
+        design_verify_attempts=verify_attempts,
+        design_verify_required=verify_required,
     )
 
 

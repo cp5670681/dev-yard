@@ -36,6 +36,7 @@ from dev_yard.qa_exec import (
 from dev_yard.qa_report import map_qa_result
 from dev_yard.qa_review import (
     approve_cases,
+    cases_fingerprint,
     clear_stale,
     reject_cases,
     review_gate,
@@ -52,6 +53,19 @@ from dev_yard.qa_schedule import (
     progress_line,
     progress_payload,
     run_schedule,
+)
+from dev_yard.qa_verify import (
+    VerifyResult,
+    describe,
+    failed_cases,
+    prior_defects,
+    render_feedback,
+    render_prior_defects,
+    verify_cases,
+    verify_gate,
+    verify_view,
+    write_blocked,
+    write_summary,
 )
 from dev_yard.runners import (
     JobCancelled,
@@ -253,6 +267,7 @@ def discover_cases(qa: Path) -> list[CaseJob]:
                 account=str(meta.get("account") or "").strip(),
                 setup=str(data.get("setup") or "").strip(),
                 cleanup=str(data.get("cleanup") or "").strip(),
+                verify=str(data.get("verify") or "").strip(),
             )
         )
     return out
@@ -572,8 +587,16 @@ def _duties(kind: str, jira: str) -> str:
             "When permissions are involved, discover accounts from the backend "
             "permission code and write the read-only discovery query to "
             "qa/accounts-discover.sql (host runs it via `req accounts --discover`).\n"
-            "Seeds must self-prove: every entity/field/link a case asserts must be "
-            "created by setup (or verified read-only)."
+            "Data prerequisites must be executable: declare `data.verify` "
+            "(single read-only SELECT; >=1 row means pass) for every case that "
+            "declares setup/cleanup or a DB expectation; the host runs it and "
+            "feeds failures back to you. A pure-UI case writes `SELECT 1` and is "
+            "flagged as an exemption.\n"
+            "seed must hard self-prove: every entity/field/link a case asserts must "
+            "be created by setup (or verified read-only), and setup must exit(1) "
+            "when its own assertion fails — not just print.\n"
+            "Enumerate ALL required fields from the target form's validators "
+            "(:rules/required/custom), not only the one an error message names."
         )
     return (
         "You are executing ONE UI test case. Do not repair product code.\n"
@@ -621,10 +644,17 @@ def _count_open_questions(qa: Path) -> int:
 
 
 def _design_prompt(
-    root: Path, jira: str, cfg: QaConfig, feedback: str | None = None
+    root: Path,
+    jira: str,
+    cfg: QaConfig,
+    feedback: str | None = None,
+    verify_feedback: str | None = None,
+    history: str | None = None,
 ) -> str:
     spec = load_registry(root)["qa-design"]
     extra = _duties("design", jira) + "\n\n" + _context_block(root, jira, cfg)
+    if history and history.strip():
+        extra += "\n\n# 历史数据缺口（上一轮 run 记录，本轮必须修掉）\n\n" + history.strip()
     if feedback and feedback.strip():
         extra += (
             "\n\n# 人工审核意见（必须据此修订用例）\n\n"
@@ -632,6 +662,14 @@ def _design_prompt(
             + "\n\n在保留仍然成立的用例的前提下，按上述意见修改 qa/cases/ 下的用例："
             "被指出缺失的覆盖补上，被指出错误或多余的改写或删除。"
             "不要为迎合意见而放宽预期；实现与需求不符时仍按需求口径写并标注「需求偏差」。"
+        )
+    if verify_feedback and verify_feedback.strip():
+        extra += (
+            "\n\n# 宿主数据核实失败清单（必须据此修订用例）\n\n"
+            + verify_feedback.strip()
+            + "\n\n在保留仍然成立的用例的前提下，按上述失败修正 qa/cases/ 下的用例："
+            "改 setup 让前置真的就位、把断言对象写进 verify.sql、或按真实数据重写前置。"
+            "不要为通过核实而放宽预期、删断言，也不要写空转的 SELECT 1 掩盖真断言。"
         )
     return session_prompt_for(spec, root, jira, extra=extra)
 
@@ -704,6 +742,84 @@ def _context_block(root: Path, jira: str, cfg: QaConfig) -> str:
     ctx = paths.qa_dir(root, jira) / "context.md"
     text = ctx.read_text(encoding="utf-8") if ctx.is_file() else ""
     return f"qa/context.md:\n{text}".strip()
+
+
+def _verify_loop(
+    root: Path,
+    jira: str,
+    cfg: QaConfig,
+    qa: Path,
+    cases: list[CaseJob],
+    *,
+    history_text: str,
+    design_runner: Callable[[], Runner],
+    on_log: LogFn | None,
+    cancel_check: CancelCheck | None,
+) -> dict[str, VerifyResult]:
+    """Verify, then feed failures back to design, up to `verify_attempts` times."""
+    attempts = max(1, cfg.design_verify_attempts)
+    results: dict[str, VerifyResult] = {}
+    for attempt in range(attempts):
+        _raise_if_cancelled(cancel_check, "qa-verify")
+        fingerprint = cases_fingerprint(qa)
+        results = verify_cases(
+            root,
+            jira,
+            cfg,
+            cases,
+            fingerprint=fingerprint,
+            on_log=on_log,
+            cancel_check=cancel_check,
+        )
+        failures = [r for r in results.values() if r.status == "failed"]
+        if not failures:
+            break
+        if attempt + 1 >= attempts:
+            if on_log is not None:
+                on_log(
+                    f"数据核实仍有 {len(failures)} 条未通过，已达上限 {attempts}；"
+                    "标 design-blocked，交人工\n"
+                )
+            break
+        if on_log is not None:
+            on_log(
+                f"数据核实 {len(failures)} 条未通过，回灌 design 重做"
+                f"（第 {attempt + 1}/{attempts - 1} 次）\n"
+            )
+        prompt = _design_prompt(
+            root,
+            jira,
+            cfg,
+            verify_feedback=render_feedback(results),
+            history=history_text or None,
+        )
+        result = design_runner().start(prompt, root, [qa, paths.req_dir(root, jira)])
+        _raise_if_cancelled(cancel_check, "qa-design")
+        if not result.ok:
+            raise TestRejected(
+                f"qa-design 数据核实回流失败: {result.summary or result.exit_code}"
+            )
+        cases = discover_cases(qa)
+        # Record the host's findings as the review state's feedback, so a human
+        # sees what the loop changed even when it ends green.
+        reject_cases(qa, render_feedback(results))
+    return results
+
+
+def _mark_design_blocked(cases: list[CaseJob], qa: Path, fingerprint: str) -> None:
+    """Skip cases whose data could not be verified, even when waived through."""
+    failed = set(failed_cases(qa, fingerprint))
+    if not failed:
+        return
+    stamp = now_iso()
+    for job in cases:
+        if job.id in failed and job.state in {"pending", "ready"}:
+            job.state = "skipped"
+            job.reason = (
+                "design-blocked: 数据核实未通过（--allow-unverified 越权放行，"
+                "仅跳过本用例）"
+            )
+            job.ended_at = stamp
 
 
 def _write_progress(
@@ -1103,6 +1219,9 @@ def req_test(
     ingest: bool = True,
     resume: bool | None = None,
     rerun_cases: list[str] | None = None,
+    verify: bool | None = None,
+    verify_only: bool = False,
+    allow_unverified: bool = False,
     runner: Runner | None = None,
     case_runner: Callable[[CaseJob, PoolSlot], dict[str, Any]] | None = None,
     on_progress: ProgressFn | None = None,
@@ -1126,6 +1245,9 @@ def req_test(
             ingest=ingest,
             resume=resume,
             rerun_cases=rerun_cases,
+            verify=verify,
+            verify_only=verify_only,
+            allow_unverified=allow_unverified,
             runner=runner,
             case_runner=case_runner,
             on_progress=on_progress,
@@ -1155,6 +1277,9 @@ def _req_test(
     ingest: bool = True,
     resume: bool | None = None,
     rerun_cases: list[str] | None = None,
+    verify: bool | None = None,
+    verify_only: bool = False,
+    allow_unverified: bool = False,
     runner: Runner | None = None,
     case_runner: Callable[[CaseJob, PoolSlot], dict[str, Any]] | None = None,
     on_progress: ProgressFn | None = None,
@@ -1168,6 +1293,13 @@ def _req_test(
     if approve and (design_only or run_only):
         raise TestRejected(
             "--approve cannot be combined with --design-only or --run-only"
+        )
+    if verify_only and (
+        design_only or run_only or redesign or approve or feedback or rerun_cases
+    ):
+        raise TestRejected(
+            "--verify-only cannot be combined with "
+            "--design-only/--run-only/--redesign/--approve/--feedback/--rerun-case"
         )
     rerun_ids = {str(c).strip() for c in (rerun_cases or []) if str(c).strip()}
     if rerun_ids and (design_only or run_only or redesign or approve or feedback):
@@ -1213,34 +1345,57 @@ def _req_test(
             f"{jira} has no cases to approve; run `dev-yard req test {jira}` "
             "first, review the cases, then --approve"
         )
-    need_design = (not run_only) and (redesign or not cases)
+    need_design = (not run_only) and not verify_only and (redesign or not cases)
     if feedback_text:
         if run_only:
             raise TestRejected("--feedback cannot be used with --run-only")
         if not need_design:
             raise TestRejected("--feedback requires --redesign")
+    verify_enabled = verify is not False
+    if verify_only and not cases:
+        raise TestRejected(f"{jira} has no qa/cases; cannot --verify-only")
+    history_text = ""
+    if cases:
+        try:
+            history_text = render_prior_defects(prior_defects(qa, cases))
+        except Exception:  # noqa: BLE001 — history is advisory, never block design
+            history_text = ""
+    design_runner: Runner | None = runner
+    if need_design and on_log is not None:
+        try:
+            warn = _permission_gap_warning(root, jira, cfg)
+        except Exception:  # noqa: BLE001 — advisory only, never block design
+            warn = None
+        if warn:
+            on_log(warn + "\n")
+
+    def _ensure_design_runner() -> Runner:
+        nonlocal design_runner
+        if design_runner is None:
+            design_runner = get_runner(
+                root,
+                "qa-design",
+                print_mode=print_mode,
+                spec=load_registry(root)["qa-design"],
+                provider=cfg.design_provider,
+                model=cfg.design_model,
+                on_spawn=on_spawn,
+                on_reap=on_reap,
+            )
+        return design_runner
+
     if need_design:
         _raise_if_cancelled(cancel_check, "qa-design")
-        if on_log is not None:
-            try:
-                warn = _permission_gap_warning(root, jira, cfg)
-            except Exception:  # noqa: BLE001 — advisory only, never block design
-                warn = None
-            if warn:
-                on_log(warn + "\n")
-        spec = load_registry(root)["qa-design"]
-        r = runner or get_runner(
+        prompt = _design_prompt(
             root,
-            "qa-design",
-            print_mode=print_mode,
-            spec=spec,
-            provider=cfg.design_provider,
-            model=cfg.design_model,
-            on_spawn=on_spawn,
-            on_reap=on_reap,
+            jira,
+            cfg,
+            feedback=feedback_text or None,
+            history=history_text or None,
         )
-        prompt = _design_prompt(root, jira, cfg, feedback=feedback_text or None)
-        result = r.start(prompt, root, [qa, paths.req_dir(root, jira)])
+        result = _ensure_design_runner().start(
+            prompt, root, [qa, paths.req_dir(root, jira)]
+        )
         _raise_if_cancelled(cancel_check, "qa-design")
         if not result.ok:
             raise TestRejected(
@@ -1253,6 +1408,48 @@ def _req_test(
             # A redesign supersedes a doc-change stale flag; the changed case
             # fingerprint still forces a fresh review.
             clear_stale(qa)
+
+    # M1/M3: prove each case's declared data prerequisites host-side. Failures
+    # loop back into design (bounded); the final verdict is written so the gate
+    # and the human can see exactly what was checked.
+    verify_results: dict[str, VerifyResult] = {}
+    verify_fingerprint = cases_fingerprint(qa) if cases else ""
+    pre_verify_fingerprint = verify_fingerprint
+    if verify_enabled and cases and not run_only and not rerun_ids:
+        if verify_only:
+            verify_results = verify_cases(
+                root,
+                jira,
+                cfg,
+                cases,
+                fingerprint=verify_fingerprint,
+                on_log=on_log,
+                cancel_check=cancel_check,
+            )
+        else:
+            verify_results = _verify_loop(
+                root,
+                jira,
+                cfg,
+                qa,
+                cases,
+                history_text=history_text,
+                design_runner=_ensure_design_runner,
+                on_log=on_log,
+                cancel_check=cancel_check,
+            )
+            cases = discover_cases(qa)
+            verify_fingerprint = cases_fingerprint(qa)
+        write_summary(root, jira, verify_results, verify_fingerprint)
+        if on_log is not None:
+            on_log(describe(verify_results) + "\n")
+        blocked_path = write_blocked(root, jira, verify_results)
+        if blocked_path is not None and on_log is not None:
+            on_log(f"数据核实未通过，design-blocked 清单：{blocked_path}\n")
+    verify_info = (
+        verify_view(qa, verify_fingerprint) if cases else {"present": False, "stale": False}
+    )
+
     if design_only:
         return {
             "jira": jira,
@@ -1261,13 +1458,49 @@ def _req_test(
             "questions": _count_open_questions(qa),
             "open_questions": open_questions_payload(qa),
             "review": review_payload(qa),
+            "verify": verify_info,
+        }
+    if verify_only:
+        return {
+            "jira": jira,
+            "verify_only": True,
+            "cases": len(cases),
+            "verify": verify_info,
         }
     if not cases:
         raise TestRejected(f"{jira} qa-design produced no cases")
+    require_verify = bool(cfg.design_verify_required and verify_enabled)
     if approve:
+        if verify_fingerprint != pre_verify_fingerprint:
+            # The verify loop redesigned cases in this invocation; approving them
+            # here would bless cases the person has not seen.
+            return {
+                "jira": jira,
+                "awaiting_review": True,
+                "cases": len(cases),
+                "questions": _count_open_questions(qa),
+                "open_questions": open_questions_payload(qa),
+                "reason": "数据核实失败已自动重做用例，请复核后重新 --approve",
+                "review": review_payload(qa),
+                "verify": verify_info,
+            }
+        ok, why = verify_gate(
+            qa,
+            cases_fingerprint(qa),
+            required=require_verify,
+            allow_unverified=allow_unverified,
+        )
+        if not ok:
+            raise TestRejected(
+                f"--approve 被拒绝：{why}；修好后重跑设计，或加 --allow-unverified 越权"
+            )
         approve_cases(qa)
     elif not run_only and not rerun_ids:
-        can_run, hold_reason = review_gate(qa)
+        can_run, hold_reason = review_gate(
+            qa,
+            require_verify=require_verify,
+            allow_unverified=allow_unverified,
+        )
         if not can_run:
             return {
                 "jira": jira,
@@ -1277,7 +1510,10 @@ def _req_test(
                 "open_questions": open_questions_payload(qa),
                 "reason": hold_reason,
                 "review": review_payload(qa),
+                "verify": verify_info,
             }
+    if allow_unverified:
+        _mark_design_blocked(cases, qa, cases_fingerprint(qa))
 
     evidence = qa / "evidence"
     case_ids = {c.id for c in cases}

@@ -66,6 +66,19 @@ def _questions_suffix(result: dict[str, Any]) -> str:
     return " OPEN-QUESTIONS=(缺失)"
 
 
+def _verify_suffix(result: dict[str, Any]) -> str:
+    """Design-time data-verification counts, if a run produced them."""
+    view = result.get("verify")
+    if not isinstance(view, dict) or not view.get("present"):
+        return "verify=(无)"
+    summary = view.get("summary") or {}
+    state = "过期" if view.get("stale") else "最新"
+    return (
+        f"verify({state}) passed={summary.get('passed', 0)} "
+        f"failed={summary.get('failed', 0)} skipped={summary.get('skipped', 0)}"
+    )
+
+
 @dataclass
 class Job:
     id: str
@@ -596,6 +609,9 @@ def default_execute(root: Path, job: Job) -> None:
                 ingest=not bool(extra.get("no_ingest")),
                 resume=extra.get("resume"),
                 rerun_cases=extra.get("rerun_cases"),
+                verify=False if extra.get("no_verify") else None,
+                verify_only=bool(extra.get("verify_only")),
+                allow_unverified=bool(extra.get("allow_unverified")),
                 on_log=job.append,
                 on_progress=job.set_qa_progress,
                 cancel_check=job.cancel_requested.is_set,
@@ -610,6 +626,12 @@ def default_execute(root: Path, job: Job) -> None:
                 f"{job.jira} 用例待审核 cases={result.get('cases')} "
                 f"review={review.get('status') or '?'} "
                 f"({result.get('reason') or ''})" + _questions_suffix(result)
+            )
+            return
+        if result.get("verify_only"):
+            job.append(
+                f"{job.jira} verify-only cases={result.get('cases')} "
+                + _verify_suffix(result)
             )
             return
         if result.get("design_only"):

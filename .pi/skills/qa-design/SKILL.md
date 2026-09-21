@@ -83,7 +83,16 @@ UI 预期只有在「该区域的数据确实会被 setup 造出（或已被核�
 - **编辑/保存路径的必填字段**：种子记录必须带上保存时前端/后端会校验的字段（yard 实例：`l_salutation/province_id/city_id/l_address`），否则「更新」被校验拦住，断言根本执行不到。
 - 每个断言对象都要能追到 setup：前置里逐条列出 setup 会创建/修改的实体及关联、键值。
 
-**只读自检**：依赖「线上已有数据」的步骤（如"某项目已有重复电话数据"）不要只写"假设"。设计阶段用只读 SQL 先核实（只允许 `SELECT`/`SHOW`/`DESC`，禁止写库；连接串取 `qa.yaml` 的 `db.url`）；查不了（无 usql/无权限/remote 现场）就在前置里显式标注「未验证假设」，或改成自带 setup 造数。
+**只读自检 → 写成可执行的 `verify.sql`（强制）**：依赖「线上已有数据」或自带种子的用例，都要在 frontmatter 声明 `data.verify: verify.sql`，内容是**单条只读查询**（`SELECT`/`SHOW`/`DESC`/`EXPLAIN`，连接串取 `qa.yaml` 的 `db.url`），语义为**返回 ≥1 行即通过**（写成 `SELECT ... WHERE <前置条件>`，0 行即失败）。宿主在设计期真跑它，失败会带着结果回灌给你重做。
+
+- 每个断言对象都要能追到 `verify.sql`：`verify.sql` 里的表/列名必须出现在用例正文里（宿主会 lint，命中不了直接判失败）。
+- 含 `setup`/`cleanup` 或 `## 预期` 里有 `- DB:` 的用例**必须**有 `data.verify`，否则判失败。
+- 纯 UI 用例无数据可断言时写 `SELECT 1`，会被标为「空转豁免」供人抽查；不要用它掩盖真断言。
+- 依赖线上既有数据的步骤（如"某项目已有重复电话数据"）不要只写"假设"：要么用 `verify.sql` 核实，要么改成自带 setup 造数。查不了（无 usql/无权限）就在前置里显式标注「未验证假设」。
+
+### 2b. 必填字段反查（保存路径）
+
+含提交/保存的用例，必须从**目标表单组件**反查校验规则（`:rules` / `required` / 自定义 validator），把**全部**必填字段写进种子的 `verify.sql` 断言（`... IS NOT NULL`），不要只补报错时冒出来的那一个。动态/条件必填读代码覆盖不到，照实标注「留给提交预检」。
 
 ### 3. 文案溯源 + 量化口径
 
@@ -92,7 +101,13 @@ UI 预期只有在「该区域的数据确实会被 setup 造出（或已被核�
 
 ### 4. seed 自证（硬护栏）
 
-只"逐条列必填字段"仍会漏。造数尽量走**应用内保存路径**（如 `Contacts::SaveCommand`）或让模型校验生效，使缺字段在造数阶段就报错；走不通时，seed 末尾 `puts` 一段自检（断言本 case 每条 UI 预期引用的实体/字段/关联确实就位），stdout 即证据。
+只"逐条列必填字段"仍会漏。三条硬要求：
+
+1. 走**应用内保存路径**（如 `Contacts::SaveCommand`）或显式带齐「目标表单保存时会校验的字段」，前端专属必填字段必须显式设置；
+2. seed 末尾**自检并硬失败**：断言本 case 每条 UI 预期引用的实体/关联/字段确实就位，**不满足就 `exit(1)`**（不是只 `puts` 打印后继续）；
+3. 反查必填：从提交被拦的错误文案定位 validator，一次枚举**全部**必填字段（含尚未触发的），写进种子与 `verify.sql`。
+
+`verify.sql` 是宿主执行的权威判据，seed 自证是 setup 内的快速失败，二者互补：seed 自证让缺口在造数阶段就炸，`verify.sql` 让宿主在 design 期替你把关。
 
 ## meta.yaml
 
@@ -121,12 +136,12 @@ repo: <alias>
 covers: [D1]
 depends_on: []
 account: <可选；context.md Accounts 里的账号名，缺省=default>
-data: { setup: setup.sql, cleanup: cleanup.sql }
+data: { setup: setup.sql, cleanup: cleanup.sql, verify: verify.sql }
 ---
 
 ## 前置
 - 已登录
-- <业务前置；逐条列出 setup 会创建/修改的实体及关联与键值，以及本 case 依赖的既有数据（已用只读 SQL 核实，或标注「未验证假设」）>
+- <业务前置；逐条列出 setup 会创建/修改的实体及关联与键值，以及本 case 依赖的既有数据（由 verify.sql 核实，或标注「未验证假设」）>
 
 ## 步骤
 1. <可在 UI 上执行的业务步骤>
@@ -137,6 +152,6 @@ data: { setup: setup.sql, cleanup: cleanup.sql }
 - DB: <预期含 DB 时>
 ```
 
-无 DB 则去掉 `data` 与 DB 预期。造数脚本与 case 同目录，幂等。**setup 必须覆盖该 case 每条 UI 预期引用的实体，含关联行/展开行/子表格里的独立实体与编辑/保存路径的必填字段；cleanup 对称恢复；seed 要自证（见 §4）。** 不要在步骤里写执行器命令。
+无 DB 则去掉 `data` 与 DB 预期。造数脚本与 case 同目录，幂等。**setup 必须覆盖该 case 每条 UI 预期引用的实体，含关联行/展开行/子表格里的独立实体与编辑/保存路径的必填字段；cleanup 对称恢复；seed 要自证（见 §4）。** 有 `setup`/`cleanup` 或 `- DB:` 预期的用例必须有 `data.verify`（见 §2）。不要在步骤里写执行器命令。
 
 写完后停。不要跑浏览器、不要改 STATUS.yaml。
