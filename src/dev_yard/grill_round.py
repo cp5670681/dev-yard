@@ -9,14 +9,21 @@ from typing import Any
 ROUND_FILE = ".grill-round.json"
 CUSTOM = "__custom__"
 WEB_GRILL_MARKER = "WEB_GRILL_ROUND"
-MAX_ROUNDS = 12
+# Hard cap on Q&A frontier rounds, aligned with grilling/SKILL.md (max 3).
+MAX_ROUNDS = 3
 
 
 def web_grill_extra(jira: str, note: str = "") -> str:
     extra = (
         f"{WEB_GRILL_MARKER}: follow grill-with-docs {WEB_GRILL_MARKER} "
         f"(read WEB-ROUND.md). Write `reqs/{jira}/{ROUND_FILE}` for this frontier, "
-        "then stop. Do not invent user answers."
+        "then stop. Do not invent user answers. "
+        "Do not ask about anything REQUIREMENT.md, GRILL.md 关键事实, or the source "
+        "code already answers — put those in 默认假设 instead. Every question must "
+        "carry `why_ask` (why it is a real blocker no research can settle) and "
+        "`evidence` (what docs/code you inspected and why they left it open); the "
+        "runner drops any question missing either. Zero questions and `done: true` "
+        "is the correct output for a well-specified small requirement."
     )
     if note:
         extra += (
@@ -43,6 +50,8 @@ class Question:
     options: list[Option] = field(default_factory=list)
     suggested: str | None = None
     suggested_text: str = ""
+    why_ask: str = ""
+    evidence: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -54,6 +63,10 @@ class Question:
         }
         if self.suggested:
             data["suggested"] = self.suggested
+        if self.why_ask:
+            data["why_ask"] = self.why_ask
+        if self.evidence:
+            data["evidence"] = self.evidence
         return data
 
 
@@ -104,8 +117,38 @@ def parse_round(data: Any) -> GrillRound:
     )
 
 
-def load_round_file(req: Path) -> GrillRound | None:
-    """Load `ROUND_FILE` only. No GRILL.md fallback — used to resume web rounds."""
+def justified(q: Question) -> bool:
+    """Whether a question proved it is a real blocker no research can settle."""
+    return bool(q.why_ask.strip() and q.evidence.strip())
+
+
+def unjustified(questions: list[Question]) -> list[Question]:
+    """Questions the gate would drop (missing `why_ask` and/or `evidence`)."""
+    return [q for q in questions if not justified(q)]
+
+
+def lint_round(rnd: GrillRound) -> GrillRound:
+    """Drop questions that do not justify why they are unanswerable facts.
+
+    A question is only worth a round when it is a real P0/P1 blocker that no
+    amount of reading (REQUIREMENT.md, GRILL.md facts, source code) can settle.
+    The model proves this with `why_ask` + `evidence`; a question missing either
+    is treated as knowable-from-research and removed. A round with no surviving
+    questions is converged (`done`), which lets a well-specified small
+    requirement skip straight to spec instead of being asked make-work questions.
+    """
+    kept = [q for q in rnd.questions if justified(q)]
+    done = rnd.done or not kept
+    return GrillRound(
+        done=done,
+        round=rnd.round,
+        intro=rnd.intro,
+        questions=[] if done else kept,
+    )
+
+
+def load_raw_round(req: Path) -> GrillRound | None:
+    """Load `ROUND_FILE` without the lint gate (observability only)."""
     path = round_path(req)
     if not path.is_file():
         return None
@@ -116,6 +159,14 @@ def load_round_file(req: Path) -> GrillRound | None:
     if data is None:
         return None
     return parse_round(data)
+
+
+def load_round_file(req: Path) -> GrillRound | None:
+    """Load `ROUND_FILE` only. No GRILL.md fallback — used to resume web rounds."""
+    rnd = load_raw_round(req)
+    if rnd is None:
+        return None
+    return lint_round(rnd)
 
 
 def load_round(req: Path) -> GrillRound | None:
@@ -200,6 +251,8 @@ def _parse_question(raw: dict[str, Any], index: int) -> Question:
         options=options,
         suggested=suggested_s,
         suggested_text=suggested_text,
+        why_ask=str(raw.get("why_ask") or ""),
+        evidence=str(raw.get("evidence") or ""),
     )
 
 

@@ -790,7 +790,15 @@ def test_create_app_resumes_pending_grill(tmp_path: Path, monkeypatch):
             {
                 "done": False,
                 "round": 2,
-                "questions": [{"id": "Q1", "title": "范围", "options": [{"id": "A", "label": "只这张票"}]}],
+                "questions": [
+                    {
+                        "id": "Q1",
+                        "title": "范围",
+                        "options": [{"id": "A", "label": "只这张票"}],
+                        "why_ask": "范围决定票的拆分，属产品意图级",
+                        "evidence": "REQUIREMENT.md 未写范围，代码里也查不到",
+                    }
+                ],
             }
         )
     )

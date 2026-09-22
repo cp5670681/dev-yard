@@ -22,6 +22,8 @@ export interface GrillQuestion {
   options?: { id: string; label: string }[];
   suggested?: string;
   suggested_text?: string;
+  why_ask?: string;
+  evidence?: string;
 }
 
 export interface GrillRound {

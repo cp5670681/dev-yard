@@ -467,6 +467,8 @@ def test_web_grill_waits_then_records_answers(tmp_path: Path, monkeypatch):
                                 ],
                                 "suggested": "A",
                                 "suggested_text": "只这张票",
+                                "why_ask": "范围会决定票的拆分，属产品意图级",
+                                "evidence": "REQUIREMENT.md 未写范围，代码里也查不到",
                             }
                         ],
                     }
@@ -500,6 +502,89 @@ def test_web_grill_waits_then_records_answers(tmp_path: Path, monkeypatch):
     assert "grill finished" in job.log
 
 
+def test_web_grill_drops_unjustified_questions(tmp_path: Path, monkeypatch):
+    import json
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    req_open(yard, "AB-52", source="none")
+    calls = {"n": 0}
+
+    class FakeLog:
+        def __init__(self, job, root, bundle):
+            self.job = job
+
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            self.job.append(f"pi-round-{calls['n']}")
+            return RunResult(ok=True, summary="ok")
+
+    def fake_launch(root, name, jira, dry_run=False, print_mode=False, runner=None, prompt_extra=""):
+        calls["n"] += 1
+        req = root / "reqs" / jira
+        (req / ".grill-round.json").write_text(
+            json.dumps(
+                {
+                    "done": False,
+                    "round": 1,
+                    "questions": [{"id": "Q1", "title": "明知故问"}],
+                }
+            )
+        )
+        return runner.start("p", root, [])
+
+    monkeypatch.setattr("dev_yard.web.jobs.JobLogRunner", FakeLog)
+    monkeypatch.setattr("dev_yard.web.jobs.service.run_stage", fake_launch)
+    runner = JobRunner(yard, execute=default_execute, sync=False)
+    job = runner.submit("grill", "AB-52")
+    assert job.done.wait(timeout=5)
+    assert job.state == "ok"
+    assert calls["n"] == 1
+    assert not (yard / "reqs" / "AB-52" / ".grill-round.json").exists()
+    assert "dropped 1 unjustified question(s): Q1 明知故问" in job.log
+    assert "grill finished" in job.log
+
+
+def test_web_grill_caps_rounds_without_error(tmp_path: Path, monkeypatch):
+    import json
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    d, _ = req_open(yard, "AB-54", source="none")
+    (d / "GRILL.md").write_text("# Grill — AB-54\n\n## Round 3 — answers\n\n- **Q1**：选 A\n")
+    (d / ".grill-round.json").write_text(
+        json.dumps(
+            {
+                "done": False,
+                "round": 4,
+                "questions": [
+                    {
+                        "id": "Q1",
+                        "title": "越界轮",
+                        "options": [{"id": "A", "label": "x"}],
+                        "why_ask": "产品意图级",
+                        "evidence": "查过需求与源码，均无",
+                    }
+                ],
+            }
+        )
+    )
+
+    def fake_launch(*args, **kwargs):
+        raise AssertionError("pi should not start when at the round cap")
+
+    monkeypatch.setattr("dev_yard.web.jobs.service.run_stage", fake_launch)
+    runner = JobRunner(yard, execute=default_execute, sync=False)
+    job = runner.submit("grill", "AB-54")
+    assert job.done.wait(timeout=5)
+    assert job.state == "ok"
+    assert "round cap reached" in job.log
+    assert not (d / ".grill-round.json").exists()
+
+
 def _write_pending_round(req: Path, round_n: int = 2) -> None:
     import json
 
@@ -517,6 +602,8 @@ def _write_pending_round(req: Path, round_n: int = 2) -> None:
                         "options": [{"id": "A", "label": "只这张票"}],
                         "suggested": "A",
                         "suggested_text": "只这张票",
+                        "why_ask": "范围会决定票的拆分，属产品意图级",
+                        "evidence": "REQUIREMENT.md 未写范围，代码里也查不到",
                     }
                 ],
             }

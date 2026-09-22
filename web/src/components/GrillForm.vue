@@ -12,6 +12,13 @@
       <div v-if="q.body" class="text-body-2 text-medium-emphasis mb-3" style="white-space: pre-wrap">
         {{ q.body }}
       </div>
+      <div
+        v-if="q.why_ask || q.evidence"
+        class="text-caption text-medium-emphasis mb-3 grill-basis"
+      >
+        <div v-if="q.why_ask"><span class="font-weight-medium">为何必须问：</span>{{ q.why_ask }}</div>
+        <div v-if="q.evidence"><span class="font-weight-medium">已查证：</span>{{ q.evidence }}</div>
+      </div>
       <GrillOptionList
         v-if="q.options?.length"
         v-model="picked[q.id]"
@@ -86,3 +93,11 @@ async function submit() {
   }
 }
 </script>
+
+<style scoped>
+.grill-basis {
+  border-left: 2px solid currentColor;
+  padding-left: 8px;
+  opacity: 0.75;
+}
+</style>

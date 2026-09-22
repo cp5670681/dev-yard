@@ -70,6 +70,10 @@ _GUIDANCE = {
         "Do not write workspace-root CONTEXT.md or docs/adr. "
         "Do not copy them into source clones or freeze worktrees. "
         "Do not write SPEC.md or TICKETS.md. "
+        "Ask only questions whose answers are NOT already in REQUIREMENT.md, in the "
+        "GRILL.md 关键事实 list, or in the source code; answer everything else from the "
+        "codebase and record it as a sensible default instead of asking. Zero questions "
+        "is a valid outcome for a well-specified requirement. "
         "Focus on P0/P1 decisions, apply sensible defaults for minor details, "
         "group questions by theme for large tasks, and cap grilling strictly within 1-3 rounds."
     ),

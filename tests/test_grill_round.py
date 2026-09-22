@@ -5,6 +5,8 @@ from dev_yard.grill_round import (
     CUSTOM,
     apply_answers,
     format_answers,
+    lint_round,
+    load_raw_round,
     load_round,
     load_round_file,
     parse_markdown,
@@ -59,6 +61,51 @@ def test_done_round_drops_questions():
     assert rnd.questions == []
 
 
+def test_lint_round_drops_unjustified_questions():
+    rnd = parse_round(
+        {
+            "round": 1,
+            "questions": [
+                {"id": "Q1", "title": "no evidence", "why_ask": "x"},
+                {"id": "Q2", "title": "ok", "why_ask": "产品意图级", "evidence": "查过源码"},
+            ],
+        }
+    )
+    linted = lint_round(rnd)
+    assert [q.id for q in linted.questions] == ["Q2"]
+    assert linted.awaiting()
+
+
+def test_lint_round_all_dropped_is_done():
+    rnd = parse_round({"round": 1, "questions": [{"id": "Q1", "title": "已知答案"}]})
+    linted = lint_round(rnd)
+    assert not linted.awaiting()
+    assert linted.done
+
+
+def test_load_round_file_lints_unjustified_questions(tmp_path: Path):
+    req = tmp_path / "reqs" / "AB-9"
+    req.mkdir(parents=True)
+    (req / ".grill-round.json").write_text(
+        json.dumps({"round": 1, "questions": [{"id": "Q1", "title": "已知答案"}]})
+    )
+    rnd = load_round_file(req)
+    assert rnd is not None
+    assert rnd.done
+    assert not rnd.awaiting()
+
+
+def test_load_raw_round_skips_lint(tmp_path: Path):
+    req = tmp_path / "reqs" / "AB-10"
+    req.mkdir(parents=True)
+    (req / ".grill-round.json").write_text(
+        json.dumps({"round": 1, "questions": [{"id": "Q1", "title": "已知答案"}]})
+    )
+    raw = load_raw_round(req)
+    assert raw is not None
+    assert len(raw.questions) == 1
+
+
 def test_load_round_prefers_json_file(tmp_path: Path):
     req = tmp_path / "reqs" / "AB-1"
     req.mkdir(parents=True)
@@ -73,6 +120,8 @@ def test_load_round_prefers_json_file(tmp_path: Path):
                         "title": "from json",
                         "options": [{"id": "A", "label": "yes"}],
                         "suggested": "A",
+                        "why_ask": "产品意图级，文档未写",
+                        "evidence": "查过 REQUIREMENT.md 与源码，均无",
                     }
                 ],
             }

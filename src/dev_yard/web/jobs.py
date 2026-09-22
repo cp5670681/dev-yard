@@ -719,12 +719,31 @@ def default_execute(root: Path, job: Job) -> None:
     job.append("contract: " + (", ".join(ran) if ran else "(none)"))
 
 
+def _log_dropped_questions(job: Job, req: Path) -> None:
+    """Surface questions the lint gate silently removed, so nothing vanishes."""
+    raw = grill_round.load_raw_round(req)
+    if raw is None:
+        return
+    dropped = grill_round.unjustified(raw.questions)
+    if dropped:
+        names = ", ".join(f"{q.id} {q.title}".strip() for q in dropped)
+        job.append(f"dropped {len(dropped)} unjustified question(s): {names}")
+
+
+def _finish_web_grill(job: Job, req: Path) -> None:
+    leftover = grill_round.round_path(req)
+    if leftover.exists():
+        leftover.unlink()
+    job.append("grill finished")
+
+
 def _run_web_grill(root: Path, job: Job, note: str = "") -> None:
     extra = grill_round.web_grill_extra(job.jira, note)
     req = paths.req_dir(root, job.jira)
-    for _ in range(grill_round.MAX_ROUNDS):
+    # MAX_ROUNDS Q&A rounds plus one final pass for the model to declare done.
+    for _ in range(grill_round.MAX_ROUNDS + 1):
         rnd = grill_round.load_round(req)
-        if rnd is None or not rnd.awaiting():
+        if rnd is None:
             runner = JobLogRunner(job, root, "grill")
             result = service.run_stage(
                 root,
@@ -736,13 +755,24 @@ def _run_web_grill(root: Path, job: Job, note: str = "") -> None:
             )
             if not result.ok:
                 raise RuntimeError("grill failed")
+            # load_round lints the round: questions without `why_ask`/`evidence`
+            # are dropped, and an all-dropped round reads as done, so a
+            # well-specified requirement converges here instead of looping.
             rnd = grill_round.load_round(req)
-            if rnd is None or not rnd.awaiting():
-                leftover = grill_round.round_path(req)
-                if leftover.exists():
-                    leftover.unlink()
-                job.append("grill finished")
-                return
+        if rnd is None or not rnd.awaiting():
+            _log_dropped_questions(job, req)
+            _finish_web_grill(job, req)
+            return
+        if rnd.round > grill_round.MAX_ROUNDS:
+            # A new frontier appeared after the Q&A budget: converge rather than
+            # showing a round whose answers would never be processed.
+            _log_dropped_questions(job, req)
+            job.append(
+                f"grill round cap reached ({grill_round.MAX_ROUNDS}); "
+                f"skipping round {rnd.round} and finishing"
+            )
+            _finish_web_grill(job, req)
+            return
         job.append(f"round {rnd.round}: {len(rnd.questions)} questions")
         job.set_waiting(rnd.to_dict())
         answers = job.wait_answers()
@@ -752,7 +782,10 @@ def _run_web_grill(root: Path, job: Job, note: str = "") -> None:
             grill_round.web_grill_extra(job.jira, note)
             + "\nPrevious round answers are in GRILL.md. Continue the frontier."
         )
-    raise RuntimeError("too many grill rounds")
+    # The model kept reusing round numbers past the budget: converge, don't crash.
+    _log_dropped_questions(job, req)
+    job.append(f"grill round budget exhausted ({grill_round.MAX_ROUNDS}); finishing")
+    _finish_web_grill(job, req)
 
 
 class BoardSse:
