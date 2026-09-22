@@ -312,6 +312,29 @@ def req_reset_phase(
     typer.echo(f"{jira} phase={data.get('phase')}")
 
 
+@req_app.command("reset-grill")
+def req_reset_grill(
+    jira: str = typer.Argument(..., help="Requirement key (e.g. PROJ-101)"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt"),
+) -> None:
+    """Drop the pending alignment round and reset GRILL.md.
+
+    The next `dev-yard grill` regenerates the frontier from scratch instead of
+    replaying a stale `.grill-round.json`. Phase/tickets/contract are kept.
+    """
+    root = root_opt()
+    if not yes:
+        typer.confirm(
+            f"Reset alignment for {jira} (drop pending round + clear GRILL.md)?",
+            abort=True,
+        )
+    try:
+        service.req_reset_grill(root, jira)
+    except (FileNotFoundError, OSError) as e:
+        _die(e)
+    typer.echo(f"{jira} 对齐已重置")
+
+
 @req_app.command("change")
 def req_change_cmd(
     jira: str = typer.Argument(..., help="Requirement key (e.g. PROJ-101)"),

@@ -213,6 +213,10 @@ class AppContext:
                 yard_service.restore_claim(root, jira, leftover)
                 raise
             return submitted
+        if action == "reset-grill":
+            # Preempt a waiting grill job first: it is blocked on the very round
+            # file this reset deletes, and would otherwise re-apply it on submit.
+            jobs.cancel_grill(jira)
         extra = {**extra, "label": self.action_labels().get(action, action)}
         return [jobs.submit(action, jira, ticket_ids=ids, extra=extra)]
 

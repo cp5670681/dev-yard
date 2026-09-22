@@ -1148,11 +1148,12 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
     return;
   }
   const resetPhase = action === "reset-phase";
+  const resetGrill = action === "reset-grill";
   const freeze = action === "freeze";
   const push = action === "push";
   const sync = action === "sync";
   const runTest = action === "run-test";
-  if (resetPhase || freeze || push || sync || runTest) {
+  if (resetPhase || resetGrill || freeze || push || sync || runTest) {
     confirm.action = action;
     confirm.ticketId = ticketId || "";
     const branch = detail.value?.branch || `req/${jira.value}`;
@@ -1164,6 +1165,8 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
       ? `冻结后会创建分支 ${branch} 并切 worktree。确认继续？`
       : runTest
       ? "将按 qa.yaml 设计并执行 UI 用例；失败会拆 B 票。确认继续？"
+      : resetGrill
+      ? "将停止正在等待的对齐任务，丢弃当前待答轮次，并把 GRILL.md 清回空白：下次「对齐」从头生成问题。阶段/票/契约保留。确认继续？"
       : "将把需求重置回 open 阶段：拆掉 worktree 和本地分支，清空票/契约/测试状态。文档与截图保留。确认继续？";
     if (runTest) {
       const envs = qaEnvs.value;

@@ -62,6 +62,7 @@ def test_list_and_detail_after_open(tmp_path: Path, monkeypatch):
     assert detail.tickets == []
     ids = {a.id: a for a in detail.actions}
     assert ids["grill"].enabled
+    assert ids["reset-grill"].enabled
     assert ids["spec"].enabled
     assert not ids["freeze"].enabled
     assert not ids["implement"].enabled
@@ -117,6 +118,8 @@ def test_frozen_ready_implement(tmp_path: Path, git_src: Path, monkeypatch):
     assert not ids["open"].enabled
     assert "重置阶段" in ids["open"].reason
     assert ids["reset-phase"].enabled
+    assert not ids["reset-grill"].enabled
+    assert "重置阶段" in ids["reset-grill"].reason
 
 
 def test_ready_for_submit_test_marks_testing_current(tmp_path: Path, git_src: Path, monkeypatch):

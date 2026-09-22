@@ -1103,6 +1103,22 @@ def test_default_execute_reset_phase(tmp_path: Path, monkeypatch):
     assert reloaded["phase"] == "open"
 
 
+def test_default_execute_reset_grill(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    d, _ = req_open(yard, "AB-33", source="none")
+    (d / ".grill-round.json").write_text("{}")
+
+    job = JobRunner(yard, execute=default_execute, sync=True).submit(
+        "reset-grill", "AB-33"
+    )
+    assert job.state == "ok"
+    assert "对齐已重置" in job.log
+    assert not (d / ".grill-round.json").exists()
+
+
 def test_job_cancel_kills_every_tracked_proc(monkeypatch):
     job = Job(id="abc", jira="AB-1", action="run-test")
     killed: list[object] = []

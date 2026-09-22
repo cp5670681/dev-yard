@@ -473,6 +473,10 @@ def default_execute(root: Path, job: Job) -> None:
         data = service.req_reset_phase(root, job.jira)
         job.append(f"{job.jira} phase={data.get('phase')}")
         return
+    if job.action == "reset-grill":
+        service.req_reset_grill(root, job.jira)
+        job.append(f"{job.jira} 对齐已重置（下一轮从零生成）")
+        return
     if job.action == "change":
         note = str(extra.get("note") or "")
         repo = str(extra.get("repo") or "")
@@ -742,6 +746,8 @@ def _run_web_grill(root: Path, job: Job, note: str = "") -> None:
     req = paths.req_dir(root, job.jira)
     # MAX_ROUNDS Q&A rounds plus one final pass for the model to declare done.
     for _ in range(grill_round.MAX_ROUNDS + 1):
+        if job.cancel_requested.is_set():
+            raise JobCancelled("grill cancelled")
         rnd = grill_round.load_round(req)
         if rnd is None:
             runner = JobLogRunner(job, root, "grill")
@@ -775,6 +781,10 @@ def _run_web_grill(root: Path, job: Job, note: str = "") -> None:
             return
         job.append(f"round {rnd.round}: {len(rnd.questions)} questions")
         job.set_waiting(rnd.to_dict())
+        # `set_waiting` clears the input event; re-check so a cancel that landed
+        # just before it is not swallowed (which would leave us blocked forever).
+        if job.cancel_requested.is_set():
+            raise JobCancelled("grill cancelled")
         answers = job.wait_answers()
         grill_round.apply_answers(req, rnd, answers)
         job.append(f"round {rnd.round} answers recorded")
@@ -852,6 +862,20 @@ class JobRunner:
         with self._lock:
             matches = [j for j in self._jobs.values() if j.jira == jira]
         return matches[-1] if matches else None
+
+    def cancel_grill(self, jira: str) -> int:
+        """Stop any active grill job for `jira` so a reset can preempt it.
+
+        `reset-grill` deletes the round file the waiting grill job is blocked on;
+        leaving that job alive lets it re-apply its stale round afterwards. Returns
+        how many jobs were signalled.
+        """
+        stopped = 0
+        for job in self.running():
+            if job.jira.upper() == jira.strip().upper() and job.action == "grill":
+                job.cancel()
+                stopped += 1
+        return stopped
 
     def busy_tickets(self, jira: str, action: str) -> set[str] | None:
         """Ticket ids occupied by any running ticket job. None means the whole Jira is busy."""
@@ -990,6 +1014,11 @@ def _jobs_conflict(
     extra: dict | None = None,
 ) -> bool:
     if running.jira != jira:
+        return False
+    # A job already asked to stop must not block the replacement that preempts it
+    # (e.g. reset-grill cancelling a waiting grill). Its worker thread is on its
+    # way out and will not write anything further.
+    if running.cancel_requested.is_set():
         return False
     # A re-run never serialises at the job layer: `req_test` holds a run lock, so
     # the job just queues behind whatever run is active.

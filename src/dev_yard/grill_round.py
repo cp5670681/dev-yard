@@ -217,14 +217,24 @@ def format_answers(rnd: GrillRound, answers: list[dict[str, Any]]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def clear_round(req: Path) -> bool:
+    """Drop the pending web round file so the next 对齐 regenerates from scratch.
+
+    Returns True when a round file was actually removed.
+    """
+    path = round_path(req)
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
+
+
 def apply_answers(req: Path, rnd: GrillRound, answers: list[dict[str, Any]]) -> None:
     md = req / "GRILL.md"
     existing = md.read_text(encoding="utf-8") if md.is_file() else ""
     block = format_answers(rnd, answers)
     md.write_text((existing.rstrip() + "\n\n" + block).strip() + "\n", encoding="utf-8")
-    path = round_path(req)
-    if path.exists():
-        path.unlink()
+    clear_round(req)
 
 
 def _parse_question(raw: dict[str, Any], index: int) -> Question:
