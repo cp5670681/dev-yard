@@ -22,8 +22,14 @@ def web_grill_extra(jira: str, note: str = "") -> str:
         "code already answers — put those in 默认假设 instead. Every question must "
         "carry `why_ask` (why it is a real blocker no research can settle) and "
         "`evidence` (what docs/code you inspected and why they left it open); the "
-        "runner drops any question missing either. Zero questions and `done: true` "
-        "is the correct output for a well-specified small requirement."
+        "runner drops any question missing either. Zero questions and `done: true` is "
+        "correct ONLY when the frontier is proven empty: append a `### Frontier 清点` "
+        "block to GRILL.md marking every design-tree branch 已问/默认/不适用 (an "
+        "instruction, not a machine-checked gate). A new AI/external function, "
+        "request/response schema, or callback contract is always a question, even if a "
+        "similar existing feature exists; a default that contradicts REQUIREMENT.md or an "
+        "acceptance criterion is not a default — raise it as a question. For a large or "
+        "cross-team requirement, treat a zero-question round as an under-explored frontier."
     )
     if note:
         extra += (

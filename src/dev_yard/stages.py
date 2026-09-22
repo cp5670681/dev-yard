@@ -72,10 +72,16 @@ _GUIDANCE = {
         "Do not write SPEC.md or TICKETS.md. "
         "Ask only questions whose answers are NOT already in REQUIREMENT.md, in the "
         "GRILL.md 关键事实 list, or in the source code; answer everything else from the "
-        "codebase and record it as a sensible default instead of asking. Zero questions "
-        "is a valid outcome for a well-specified requirement. "
-        "Focus on P0/P1 decisions, apply sensible defaults for minor details, "
-        "group questions by theme for large tasks, and cap grilling strictly within 1-3 rounds."
+        "codebase and record it as a sensible default instead of asking. But a new "
+        "external/cross-team contract (AI function, request/response schema, callback) or "
+        "a product-intent/scope call is always a question, never a default, and a default "
+        "that contradicts REQUIREMENT.md or an acceptance criterion is not a default — "
+        "raise it as a question. Zero questions is valid ONLY when the frontier is proven "
+        "empty via a `### Frontier 清点` block in GRILL.md (mark each design-tree branch "
+        "已问/默认/不适用); otherwise it is an under-explored frontier. "
+        "Focus on P0/P1 decisions, apply sensible defaults for minor implementation "
+        "details, group questions by theme for large tasks, and cap grilling strictly "
+        "within 1-3 rounds."
     ),
     "spec": "Write only SPEC.md from GRILL.md. Do not interview. Do not write TICKETS.md.",
     "tickets": "Write only TICKETS.md from SPEC.md.",
