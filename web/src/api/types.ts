@@ -276,6 +276,22 @@ export interface QaCaseDetail {
   } | null;
 }
 
+export interface QaVerifyLint {
+  ok?: boolean;
+  empty?: boolean;
+  detail?: string;
+  matched?: string[];
+}
+
+export interface QaReviewVerifyDetail {
+  case: string;
+  verify_sql?: string;
+  rows?: number | null;
+  reason?: string;
+  error?: string;
+  lint?: QaVerifyLint;
+}
+
 export interface QaReviewVerify {
   present: boolean;
   stale: boolean;
@@ -283,6 +299,7 @@ export interface QaReviewVerify {
   summary?: Record<string, number>;
   failed?: string[];
   empty?: string[];
+  details?: QaReviewVerifyDetail[];
 }
 
 export interface QaReview {
@@ -291,6 +308,7 @@ export interface QaReview {
   stale: boolean;
   stale_reason?: string;
   feedback: string;
+  feedback_html?: string;
   updated_at: string;
   fingerprint: string;
   verify?: QaReviewVerify | null;

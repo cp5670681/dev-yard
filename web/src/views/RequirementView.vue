@@ -262,7 +262,7 @@
               <template v-if="qaReview?.stale_reason">
                 需求已变更（{{ qaReview.stale_reason }}），请复核用例后重新审核。
               </template>
-              <template v-else-if="qaReview?.feedback">审核意见：{{ qaReview.feedback }}</template>
+              <QaFeedbackDetails v-else-if="qaReview?.feedback" :review="qaReview" />
               <template v-else-if="qaReview?.stale">用例在通过之后又改动过，需要重新审核。</template>
               <template v-else>通过后「自动测」才会开始执行；改预期等于洗白失败。</template>
             </div>
@@ -708,13 +708,16 @@
           <v-chip size="small" variant="tonal">{{ qaReviewLabel }}</v-chip>
         </v-card-title>
         <v-card-text>
-          <p class="text-body-2 mb-2">
-            <template v-if="qaReview?.feedback">
-              <strong>上一轮审核意见：</strong>{{ qaReview.feedback }}
-            </template>
-            <template v-else-if="qaReview?.stale">用例在通过之后又改动过，需要重新审核。</template>
-            <template v-else>通过后「自动测」才会开始执行；改预期等于洗白失败。</template>
+          <QaFeedbackDetails
+            v-if="qaReview?.feedback"
+            :review="qaReview"
+            label="上一轮审核意见"
+            class="mb-2"
+          />
+          <p v-else-if="qaReview?.stale" class="text-body-2 mb-2">
+            用例在通过之后又改动过，需要重新审核。
           </p>
+          <p v-else class="text-body-2 mb-2">通过后「自动测」才会开始执行；改预期等于洗白失败。</p>
           <v-textarea
             v-model="qaReviewFeedback"
             label="打回意见（打回时必填；会交给 qa-design 重做用例）"
@@ -802,6 +805,7 @@ import {
 import type { Action, JobSnapshot, QaProgress, ReqDetail, ShotItem, Ticket } from "@/api/types";
 import ContractReviewDialog from "@/components/ContractReviewDialog.vue";
 import JobPanel from "@/components/JobPanel.vue";
+import QaFeedbackDetails from "@/components/QaFeedbackDetails.vue";
 import ReqDocTabs from "@/components/ReqDocTabs.vue";
 import ScreenshotViewer from "@/components/ScreenshotViewer.vue";
 import TicketBoard from "@/components/TicketBoard.vue";

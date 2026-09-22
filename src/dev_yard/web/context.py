@@ -90,6 +90,14 @@ def render_markdown(text: str, jira: str) -> str:
     return _ASSET_REF.sub(repl, html)
 
 
+def attach_feedback_html(review: dict[str, Any] | None, jira: str) -> None:
+    """Render `review.feedback` markdown for the web; agents still read the raw text."""
+    if isinstance(review, dict):
+        feedback = review.get("feedback")
+        if isinstance(feedback, str) and feedback:
+            review["feedback_html"] = render_markdown(feedback, jira)
+
+
 @dataclass
 class AppContext:
     root: Path
@@ -225,6 +233,7 @@ class AppContext:
         qa = dict(detail.qa) if detail.qa else None
         if qa is not None:
             qa["active_jobs"] = active_qa
+            attach_feedback_html(qa.get("review"), detail.jira)
         actions = [
             {
                 "id": a.id,

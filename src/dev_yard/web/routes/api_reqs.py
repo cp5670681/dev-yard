@@ -11,7 +11,7 @@ from dev_yard import service as yard_service
 from dev_yard.gitops import GitError
 from dev_yard.service import extract_req_key
 from dev_yard.web.board import DOC_FILES, list_requirements
-from dev_yard.web.context import AppContext, render_markdown
+from dev_yard.web.context import AppContext, attach_feedback_html, render_markdown
 from dev_yard.web.schemas import (
     ActionIn,
     ContractReviewIn,
@@ -141,6 +141,7 @@ def build(ctx: AppContext) -> APIRouter:
             body = case.get("body") or ""
             case["html"] = render_markdown(body, jira) if body else ""
         payload["active_jobs"] = ctx.qa_active_jobs(jira)
+        attach_feedback_html(payload.get("review"), jira)
         return payload
 
     @router.get("/api/requirements/{jira}/qa/cases/{case_id}")

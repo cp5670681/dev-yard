@@ -47,23 +47,62 @@
           <v-chip size="small" variant="flat">{{ reviewLabel }}</v-chip>
         </v-card-title>
         <v-card-text>
-          <p v-if="review?.feedback" class="text-body-2 mb-2">
-            <strong>审核意见：</strong>{{ review.feedback }}
-          </p>
-          <p v-else-if="review?.stale" class="text-body-2 mb-2">
+          <p v-if="review?.stale && !review?.feedback" class="text-body-2 mb-2">
             用例在通过之后又改动过，需要重新审核。
           </p>
-          <p v-else class="text-body-2 mb-2 text-medium-emphasis">
+          <p v-else-if="!review?.feedback" class="text-body-2 mb-2 text-medium-emphasis">
             用例已生成，通过后才会开始执行。
           </p>
-          <p v-if="verifyBlocked.length" class="text-body-2 mb-2 text-warning">
+
+          <p v-if="verifyDetails.length" class="text-body-2 mb-1 text-warning">
             <strong>数据核实未通过（design-blocked，执行时会跳过）：</strong>
-            {{ verifyBlocked.join("、") }}。详见
-            <code>qa/design-verify/BLOCKED.md</code>，修好前置后打回重做。
+            共 {{ verifyDetails.length }} 条 —— {{ verifyCaseIds }}
+          </p>
+          <p v-if="verifyDetails.length" class="text-caption text-medium-emphasis mb-2">
+            详见 <code>qa/design-verify/BLOCKED.md</code>，修好前置后打回重做。
           </p>
           <p v-else-if="verifyStale" class="text-body-2 mb-2 text-medium-emphasis">
             数据核实结果已过期（用例改动过），需重新核实后再审核。
           </p>
+
+          <v-expansion-panels
+            v-if="verifyDetails.length"
+            variant="accordion"
+            flat
+            class="mb-2"
+          >
+            <v-expansion-panel v-for="d in verifyDetails" :key="d.case">
+              <v-expansion-panel-title class="text-body-2">
+                <code>{{ d.case }}</code>
+                <span class="ml-2 text-medium-emphasis">{{ d.reason || `${d.rows ?? 0} rows` }}</span>
+              </v-expansion-panel-title>
+              <v-expansion-panel-text>
+                <template v-if="d.verify_sql">
+                  <div class="text-caption text-medium-emphasis">verify.sql</div>
+                  <pre class="job-log">{{ d.verify_sql }}</pre>
+                </template>
+                <template v-if="d.lint?.detail">
+                  <div class="text-caption text-medium-emphasis mt-2">lint</div>
+                  <pre class="job-log">{{ d.lint.detail }}</pre>
+                </template>
+                <template v-if="d.error">
+                  <div class="text-caption text-medium-emphasis mt-2">错误</div>
+                  <pre class="job-log">{{ d.error }}</pre>
+                </template>
+              </v-expansion-panel-text>
+            </v-expansion-panel>
+          </v-expansion-panels>
+
+          <v-expansion-panels v-if="review?.feedback" variant="accordion" flat class="mb-2">
+            <v-expansion-panel>
+              <v-expansion-panel-title class="text-body-2">查看原始审核意见</v-expansion-panel-title>
+              <v-expansion-panel-text>
+                <div v-if="review.feedback_html" class="markdown" v-html="review.feedback_html" />
+                <pre v-else class="job-log">{{ review.feedback }}</pre>
+              </v-expansion-panel-text>
+            </v-expansion-panel>
+          </v-expansion-panels>
+
           <v-textarea
             v-model="feedbackText"
             label="审核意见（打回时必填；会交给 qa-design 重做用例）"
@@ -520,11 +559,13 @@ const reviewColor = computed(() =>
 
 // Cases the host proved unverifiable (`qa/design-verify/`). They are skipped at
 // run time, so the reviewer must see them here instead of approving blindly.
-const verifyBlocked = computed(() => {
+const verifyDetails = computed(() => {
   const verify = review.value?.verify;
   if (!verify?.present || verify.stale) return [];
-  return verify.failed ?? [];
+  return verify.details ?? [];
 });
+
+const verifyCaseIds = computed(() => verifyDetails.value.map((d) => d.case).join("、"));
 
 // Stale verify means the summary predates the current cases, so its verdict is
 // no longer authoritative — surface that instead of silently hiding blockers.
@@ -792,5 +833,18 @@ watch(jira, load);
 }
 .cursor-pointer {
   cursor: pointer;
+}
+.job-log {
+  background: rgba(var(--v-theme-surface-variant), 0.5);
+  color: rgb(var(--v-theme-on-surface));
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 4px;
+  padding: 0.8rem 1rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  margin: 0;
 }
 </style>

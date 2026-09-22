@@ -442,6 +442,7 @@ def summary_payload(
                 "reason": r.reason,
                 "error": r.error,
                 "rows": r.rows,
+                "verify_sql": r.verify_sql,
                 "lint": r.lint,
             }
             for cid, r in results.items()
@@ -564,12 +565,13 @@ def verify_view(qa: Path, fingerprint: str) -> dict[str, Any]:
         return {"present": False, "stale": False}
     stale = str(data.get("fingerprint") or "") != fingerprint
     cases = data.get("cases") if isinstance(data.get("cases"), dict) else {}
+    failed = _failed_ids(cases)
     return {
         "present": True,
         "stale": stale,
         "updated_at": str(data.get("updated_at") or ""),
         "summary": data.get("summary") if isinstance(data.get("summary"), dict) else {},
-        "failed": _failed_ids(cases),
+        "failed": failed,
         "empty": sorted(
             cid
             for cid, item in cases.items()
@@ -577,6 +579,20 @@ def verify_view(qa: Path, fingerprint: str) -> dict[str, Any]:
             and isinstance(item.get("lint"), dict)
             and item["lint"].get("empty")
         ),
+        "details": [_failed_detail(cid, cases.get(cid)) for cid in failed],
+    }
+
+
+def _failed_detail(cid: str, item: Any) -> dict[str, Any]:
+    """Per-case verify evidence for the review card's expandable rows."""
+    case = item if isinstance(item, dict) else {}
+    return {
+        "case": cid,
+        "verify_sql": str(case.get("verify_sql") or ""),
+        "rows": case.get("rows"),
+        "reason": str(case.get("reason") or ""),
+        "error": str(case.get("error") or ""),
+        "lint": case.get("lint") if isinstance(case.get("lint"), dict) else {},
     }
 
 

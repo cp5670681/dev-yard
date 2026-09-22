@@ -135,6 +135,46 @@ def test_qa_api_has_cases_and_run(tmp_path: Path, git_src: Path, monkeypatch):
     assert "qa" not in DOC_FILES
 
 
+def test_qa_review_exposes_feedback_html_and_verify_details(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard.qa_review import cases_fingerprint, reject_cases
+    from dev_yard.qa_verify import VerifyResult, write_summary
+
+    yard = _req(tmp_path, git_src, monkeypatch)
+    _seed_qa(yard, progress=False)
+    qa = yard / "reqs" / "QA-W1" / "qa"
+    verify_sql = "SELECT id FROM t WHERE id=1"
+    write_summary(
+        yard,
+        "QA-W1",
+        {
+            "case-01": VerifyResult(
+                case="case-01",
+                status="failed",
+                verify_sql=verify_sql,
+                rows=0,
+                error="0 rows",
+            ),
+            "case-02": VerifyResult(case="case-02", status="passed"),
+        },
+        cases_fingerprint(qa),
+    )
+    reject_cases(qa, f"## case-01\n- verify.sql: `{verify_sql}`\n- 实际行数: 0")
+
+    review = _client(yard).get("/api/requirements/QA-W1/qa").json()["review"]
+    assert review["status"] == "rejected"
+    # The card renders markdown, not the raw agent-facing text.
+    assert "<h2>case-01</h2>" in review["feedback_html"]
+    verify = review["verify"]
+    assert verify["present"] is True and verify["stale"] is False
+    assert verify["failed"] == ["case-01"]
+    detail = verify["details"][0]
+    assert detail["case"] == "case-01"
+    assert detail["verify_sql"] == verify_sql
+    assert detail["error"] == "0 rows"
+
+
 def test_qa_detail_case_carries_assertions(tmp_path: Path, git_src: Path, monkeypatch):
     yard = _req(tmp_path, git_src, monkeypatch)
     _seed_qa(yard, progress=False)
