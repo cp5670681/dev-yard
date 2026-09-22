@@ -402,6 +402,14 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
             ),
         ),
         Action("grill", ACTION_LABELS["grill"], True),
+        Action(
+            "reset-grill",
+            ACTION_LABELS["reset-grill"],
+            detail.phase == "open",
+            ""
+            if detail.phase == "open"
+            else "对齐只在 open 阶段；如需回到 open 用「重置阶段」",
+        ),
         Action("spec", ACTION_LABELS["spec"], True),
         Action("tickets", ACTION_LABELS["tickets"], True),
         Action(

@@ -1,3 +1,4 @@
+import json
 import re
 import threading
 from pathlib import Path
@@ -165,6 +166,66 @@ def test_requirement_page_and_api(tmp_path: Path, monkeypatch):
         Path(__file__).resolve().parents[1] / "web" / "src" / "views" / "RequirementView.vue"
     ).read_text()
     assert "query: { ...route.query, job }" in vue
+
+
+def test_reset_grill_from_web(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    d, _ = req_open(yard, "AB-37", source="none")
+    (d / ".grill-round.json").write_text(
+        json.dumps({"round": 1, "questions": [{"id": "Q1", "title": "x"}]})
+    )
+    client = _client(yard)
+    data = client.get("/api/requirements/AB-37").json()
+    assert any(a["id"] == "reset-grill" and a["enabled"] for a in data["actions"])
+    r = client.post("/api/requirements/AB-37/actions/reset-grill", json={})
+    assert r.status_code == 200
+    assert r.json()["jobs"][0]["state"] == "ok"
+    assert not (d / ".grill-round.json").exists()
+
+
+def test_reset_grill_preempts_waiting_grill(tmp_path: Path, monkeypatch):
+    import time
+
+    from dev_yard.service import GRILL_SKELETON
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    d, _ = req_open(yard, "AB-38", source="none")
+    round_payload = {
+        "done": False,
+        "round": 1,
+        "questions": [{"id": "Q1", "title": "范围", "options": [{"id": "A", "label": "只这张票"}]}],
+    }
+    (d / ".grill-round.json").write_text(json.dumps(round_payload))
+
+    # A non-sync runner resumes the pending round on startup into a waiting job,
+    # which is exactly the state a user hits after restarting the console.
+    runner = JobRunner(yard)
+    app = create_app(yard, job_runner=runner)
+    client = TestClient(app)
+    grill = next(j for j in runner.running() if j.action == "grill")
+    for _ in range(200):
+        if grill.state == "waiting":
+            break
+        time.sleep(0.01)
+    assert grill.state == "waiting"
+
+    r = client.post("/api/requirements/AB-38/actions/reset-grill", json={})
+    assert r.status_code == 200, r.text
+    reset_job = runner.get(r.json()["jobs"][0]["id"])
+    assert reset_job.done.wait(timeout=5)
+    assert reset_job.state == "ok"
+
+    # The waiting grill is preempted, not left to re-apply its stale round.
+    assert grill.done.wait(timeout=5)
+    assert runner.get(grill.id).state == "cancelled"
+    assert not (d / ".grill-round.json").exists()
+    assert (d / "GRILL.md").read_text() == GRILL_SKELETON.format(key="AB-38")
 
 
 def test_freeze_from_web(tmp_path: Path, git_src: Path, monkeypatch):

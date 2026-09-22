@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from dev_yard import gitops, paths
+from dev_yard import gitops, grill_round, paths
 from dev_yard import status as st
 from dev_yard.atlassian import collect_requirement
 from dev_yard.bug_tickets import (
@@ -524,6 +524,30 @@ def req_reset_phase(root: Path, jira: str) -> dict[str, Any]:
             data.pop(key, None)
         data["phase"] = "open"
         st.refresh_ready(data)
+        st.save(root, jira, data)
+    return data
+
+
+def req_reset_grill(root: Path, jira: str) -> dict[str, Any]:
+    """Drop the pending alignment round and rewind the grill stage.
+
+    Removes the web round file (`.grill-round.json`), resets GRILL.md to its
+    skeleton, and clears the `grill` stage bookkeeping so the next 对齐
+    regenerates the frontier from scratch instead of replaying a stale round.
+    Phase, tickets, contract and test state are untouched.
+    """
+    d = paths.req_dir(root, jira)
+    if not d.exists() or not paths.is_req_dir(d):
+        raise FileNotFoundError(f"no requirement {jira}")
+    with st.jira_lock(jira):
+        data = st.load(root, jira)
+        grill_round.clear_round(d)
+        (d / "GRILL.md").write_text(GRILL_SKELETON.format(key=jira), encoding="utf-8")
+        runs = data.get("stage_runs")
+        if isinstance(runs, dict):
+            runs.pop("grill", None)
+            if not runs:
+                data.pop("stage_runs", None)
         st.save(root, jira, data)
     return data
 

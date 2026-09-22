@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from dev_yard.grill_round import (
     CUSTOM,
     apply_answers,
@@ -199,3 +201,69 @@ def test_format_answers_uses_suggestion_when_blank():
     )
     text = format_answers(rnd, [])
     assert "选 A" in text
+
+
+def test_clear_round_removes_pending_file(tmp_path: Path):
+    from dev_yard.grill_round import clear_round
+
+    req = tmp_path / "AB-7"
+    req.mkdir()
+    assert clear_round(req) is False
+    (req / ".grill-round.json").write_text("{}")
+    assert clear_round(req) is True
+    assert not (req / ".grill-round.json").exists()
+
+
+def test_req_reset_grill_drops_round_and_doc(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    from dev_yard import status as st
+    from dev_yard.service import GRILL_SKELETON, init_yard, req_open, req_reset_grill
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    d, _ = req_open(yard, "AB-9", source="none")
+    (d / ".grill-round.json").write_text(
+        json.dumps({"round": 1, "questions": [{"id": "Q1", "title": "x"}]})
+    )
+    (d / "GRILL.md").write_text("# Grill — AB-9\n\n## Round 1 — answers\n\n- 选 A\n")
+    data = st.load(yard, "AB-9")
+    data["stage_runs"] = {"grill": {"ok": True}, "spec": {"ok": True}}
+    st.save(yard, "AB-9", data)
+
+    req_reset_grill(yard, "AB-9")
+
+    assert not (d / ".grill-round.json").exists()
+    assert (d / "GRILL.md").read_text() == GRILL_SKELETON.format(key="AB-9")
+    reloaded = st.load(yard, "AB-9")
+    assert "grill" not in (reloaded.get("stage_runs") or {})
+    assert reloaded["stage_runs"] == {"spec": {"ok": True}}
+    assert reloaded["phase"] == "open"
+
+
+def test_req_reset_grill_missing_requirement(tmp_path: Path):
+    from dev_yard.service import init_yard, req_reset_grill
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    with pytest.raises(FileNotFoundError):
+        req_reset_grill(yard, "AB-404")
+
+
+def test_cli_reset_grill(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    from typer.testing import CliRunner
+
+    from dev_yard.cli import app
+    from dev_yard.service import init_yard, req_open
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    d, _ = req_open(yard, "AB-10", source="none")
+    (d / ".grill-round.json").write_text("{}")
+    monkeypatch.chdir(yard)
+    res = CliRunner().invoke(app, ["req", "reset-grill", "AB-10", "-y"])
+    assert res.exit_code == 0
+    assert "对齐已重置" in res.stdout
+    assert not (d / ".grill-round.json").exists()
