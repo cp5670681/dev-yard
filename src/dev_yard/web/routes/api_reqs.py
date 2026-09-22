@@ -140,6 +140,7 @@ def build(ctx: AppContext) -> APIRouter:
         for case in payload.get("cases") or []:
             body = case.get("body") or ""
             case["html"] = render_markdown(body, jira) if body else ""
+        payload["active_jobs"] = ctx.qa_active_jobs(jira)
         return payload
 
     @router.get("/api/requirements/{jira}/qa/cases/{case_id}")

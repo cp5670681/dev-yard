@@ -230,9 +230,31 @@
       </v-alert>
       <ReqDocTabs :jira="jira" :docs="detail.docs" current="board" />
 
+      <!-- 设计中：用例还在生成/核实，先不亮审核门 -->
+      <v-alert
+        v-if="qaReviewPending && qaRunActive"
+        type="info"
+        variant="tonal"
+        border="start"
+        class="mb-4"
+        :icon="mdiProgressClock"
+      >
+        <div class="d-flex flex-column flex-sm-row justify-space-between align-sm-center ga-3">
+          <div>
+            <div class="text-subtitle-1 font-weight-bold">用例设计中（自动测进行中）</div>
+            <div class="text-body-2 text-medium-emphasis mt-0.5">
+              用例还在生成和数据核实，完成后会提示审核，当前审批会审到还在变动的用例。
+            </div>
+          </div>
+          <v-btn size="small" variant="outlined" :to="`/r/${jira}/qa`" class="flex-shrink-0">
+            查看进度
+          </v-btn>
+        </div>
+      </v-alert>
+
       <!-- 用例审核门：通过后「自动测」才会真正执行 -->
       <v-alert
-        v-if="qaReviewPending"
+        v-else-if="qaReviewPending"
         :type="qaReview?.stale || qaReview?.stale_reason || qaReview?.status === 'rejected' ? 'warning' : 'info'"
         variant="tonal"
         border="start"
@@ -770,6 +792,7 @@ import {
   mdiFileDocumentAlertOutline,
   mdiFileDocumentCheckOutline,
   mdiPaperclip,
+  mdiProgressClock,
   mdiRefresh,
   mdiWrench,
 } from "@mdi/js";
@@ -795,6 +818,7 @@ import TicketDiffDialog from "@/components/TicketDiffDialog.vue";
 import TicketReviewDialog from "@/components/TicketReviewDialog.vue";
 import { runningJobs, watchJobs } from "@/state/jobs";
 import { ACTION_LABELS, phaseColor, STEP_LABELS } from "@/composables/labels";
+import { isQaJobActive, QA_GATE_ACTIONS, useQaRunActive } from "@/composables/qa";
 import { forgetRecent } from "@/composables/recents";
 import { useSnack } from "@/composables/snack";
 
@@ -825,6 +849,12 @@ const confirm = reactive({
 const qaEnvs = computed(() => detail.value?.qa?.envs ?? []);
 const incompleteRun = computed(() => detail.value?.qa?.incomplete_run || null);
 const qaReview = computed(() => detail.value?.qa?.review || null);
+// While a design/run job is in flight the case set is still moving, so the
+// review gate must stay closed: approving now would bless unseen cases.
+const qaRunActive = useQaRunActive(
+  jira,
+  computed(() => detail.value?.qa?.active_jobs),
+);
 const qaReviewPending = computed(
   () => Boolean(detail.value?.qa?.has_cases) && !qaReview.value?.approved,
 );
@@ -991,10 +1021,8 @@ const liveReady = computed(
   () => liveProgress.value?.cases?.filter((c) => c.state === "ready") || [],
 );
 
-const RUN_TEST_ACTIONS = new Set(["run-test", "qa-review"]);
-
 function onJobUpdate(job: JobSnapshot) {
-  if (!RUN_TEST_ACTIONS.has(job.action)) return;
+  if (!QA_GATE_ACTIONS.has(job.action)) return;
   if (job.state === "ok" || job.state === "error" || job.state === "cancelled") {
     // Drop the last progress snapshot on terminal states — it can still show
     // active cases, which would pin liveHasActive (and the poll loop) forever.
@@ -1336,7 +1364,7 @@ async function onAction(
 }
 
 function onJobDone(job?: JobSnapshot) {
-  if (job && RUN_TEST_ACTIONS.has(job.action)) jobProgress.value = null;
+  if (job && QA_GATE_ACTIONS.has(job.action)) jobProgress.value = null;
   void load().then(() => {
     // `qa-review` never executes cases, so it must not surface a run banner.
     if (job?.action === "run-test") showRunEndBanner();
@@ -1374,8 +1402,14 @@ onUnmounted(() => {
   if (boardPoll) clearInterval(boardPoll);
 });
 watch(jira, () => void load());
-watch(runningJobs, () => {
-  if (!detail.value) void load();
+watch(runningJobs, (jobs, prev) => {
+  // A finished QA job invalidates the payload's `active_jobs`: refetch so the
+  // review gate (and the freshly designed cases) come back without a reload.
+  if (isQaJobActive(prev || [], jira.value) && !isQaJobActive(jobs, jira.value)) {
+    void load();
+  } else if (!detail.value) {
+    void load();
+  }
 });
 </script>
 

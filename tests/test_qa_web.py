@@ -1,3 +1,5 @@
+import threading
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -5,6 +7,7 @@ from fastapi.testclient import TestClient
 from dev_yard.service import init_yard, repo_add, req_open
 from dev_yard.web.app import create_app
 from dev_yard.web.board import DOC_FILES
+from dev_yard.web.jobs import JobRunner
 
 
 def _client(yard: Path) -> TestClient:
@@ -224,3 +227,38 @@ def test_qa_rerun_submits_job(tmp_path: Path, git_src: Path, monkeypatch):
     assert len(jobs) == 1
     assert jobs[0]["action"] == "run-test"
     assert jobs[0]["jira"] == "QA-W1"
+
+
+def _wait_state(job, state: str, timeout: float = 5.0) -> None:
+    deadline = time.time() + timeout
+    while job.state != state and time.time() < deadline:
+        time.sleep(0.01)
+    assert job.state == state
+
+
+def test_qa_active_jobs_hold_review_gate(tmp_path: Path, git_src: Path, monkeypatch):
+    """An in-flight design/run job is surfaced so the UI keeps the gate closed."""
+    yard = _req(tmp_path, git_src, monkeypatch)
+    _seed_qa(yard)
+    gate = threading.Event()
+
+    def execute(root: Path, job) -> None:
+        gate.wait(5)
+
+    runner = JobRunner(yard, execute=execute, sync=False)
+    client = TestClient(create_app(yard, job_runner=runner))
+    try:
+        job = runner.submit("run-test", "QA-W1")
+        _wait_state(job, "running")
+
+        detail = client.get("/api/requirements/QA-W1").json()
+        assert [j["id"] for j in detail["qa"]["active_jobs"]] == [job.id]
+
+        qa_page = client.get("/api/requirements/QA-W1/qa").json()
+        assert qa_page["active_jobs"][0]["action"] == "run-test"
+
+        gate.set()
+        _wait_state(job, "ok")
+        assert client.get("/api/requirements/QA-W1/qa").json()["active_jobs"] == []
+    finally:
+        gate.set()

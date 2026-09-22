@@ -57,6 +57,10 @@ from dev_yard.web.sanitize import sanitize_html
 
 _ASSET_REF = re.compile(r'(src|href)=(["\'])(?:\./)?(assets|uploads)/([^"\']+)\2')
 
+# Actions that (re)design or run the QA case set. While any is in flight the
+# cases are not reviewable yet.
+_QA_JOB_ACTIONS = frozenset({"run-test", "qa-review"})
+
 HERE = Path(__file__).parent
 SPA = HERE / "spa"
 STATIC = HERE / "static"
@@ -132,6 +136,18 @@ class AppContext:
     def jobs_out(self, submitted: list[Job]) -> dict[str, Any]:
         return {"jobs": [j.snapshot() for j in submitted]}
 
+    def qa_active_jobs(self, jira: str) -> list[dict[str, Any]]:
+        """In-flight QA jobs (design/run/review) for one requirement.
+
+        Their presence means the case set is still moving, so the board must
+        not advertise the human review gate yet.
+        """
+        return [
+            j.brief()
+            for j in self.jobs.running()
+            if j.jira == jira and j.action in _QA_JOB_ACTIONS
+        ]
+
     def submit_action(
         self,
         action: str,
@@ -201,6 +217,21 @@ class AppContext:
         return [jobs.submit(action, jira, ticket_ids=ids, extra=extra)]
 
     def requirement_payload(self, detail: ReqDetail) -> dict[str, Any]:
+        active_qa = self.qa_active_jobs(detail.jira)
+        qa = dict(detail.qa) if detail.qa else None
+        if qa is not None:
+            qa["active_jobs"] = active_qa
+        actions = [
+            {"id": a.id, "label": a.label, "enabled": a.enabled, "reason": a.reason}
+            for a in detail.actions
+        ]
+        if active_qa:
+            # The cases are still moving; gate the review action so a mid-design
+            # approval cannot slip through the actions row either.
+            for a in actions:
+                if a["id"] == "qa-review" and a["enabled"]:
+                    a["enabled"] = False
+                    a["reason"] = "用例设计中，完成后可审核"
         return {
             "jira": detail.jira,
             "title": detail.title,
@@ -242,10 +273,7 @@ class AppContext:
                 }
                 for t in detail.tickets
             ],
-            "actions": [
-                {"id": a.id, "label": a.label, "enabled": a.enabled, "reason": a.reason}
-                for a in detail.actions
-            ],
+            "actions": actions,
             "docs": [
                 {
                     "slug": d.slug,
@@ -256,7 +284,7 @@ class AppContext:
                 for d in detail.docs
             ],
             "stage_runs": detail.stage_runs,
-            "qa": detail.qa,
+            "qa": qa,
             "branch": detail.branch,
             "changes": detail.changes,
         }

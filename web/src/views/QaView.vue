@@ -27,8 +27,20 @@
     </v-empty-state>
 
     <template v-if="payload">
+      <!-- Design in flight: cases are still moving, hold the review gate -->
+      <v-card v-if="designRunning" variant="tonal" color="info" class="mb-4">
+        <v-card-title class="d-flex align-center ga-2 py-2">
+          <v-icon :icon="mdiClipboardCheckOutline" size="20" />
+          用例设计中
+          <v-progress-circular indeterminate size="16" width="2" />
+        </v-card-title>
+        <v-card-text class="text-body-2 text-medium-emphasis">
+          用例还在生成和数据核实，完成后这里会变成审核入口。当前审批会审到还在变动的用例。
+        </v-card-text>
+      </v-card>
+
       <!-- Human review gate: cases must be approved before running -->
-      <v-card v-if="reviewPanel" variant="tonal" :color="reviewColor" class="mb-4">
+      <v-card v-else-if="reviewPanel" variant="tonal" :color="reviewColor" class="mb-4">
         <v-card-title class="d-flex align-center ga-2 py-2">
           <v-icon :icon="mdiClipboardCheckOutline" size="20" />
           用例审核
@@ -421,7 +433,7 @@ import type { DocMeta, QaPage, QaReview, ShotItem } from "@/api/types";
 import CaseDetailDialog from "@/components/CaseDetailDialog.vue";
 import ReqDocTabs from "@/components/ReqDocTabs.vue";
 import ScreenshotViewer from "@/components/ScreenshotViewer.vue";
-import { assertionPassCount, caseShotItems } from "@/composables/qa";
+import { assertionPassCount, caseShotItems, isQaJobActive, useQaRunActive } from "@/composables/qa";
 import { useSnack } from "@/composables/snack";
 import { runningJobs, watchJobs } from "@/state/jobs";
 
@@ -465,11 +477,27 @@ const openQuestions = computed(
   () => payload.value?.open_questions || { count: 0, body: "", exists: false },
 );
 
+// A design/run job still in flight keeps the case set in motion, so the review
+// gate stays closed until it finishes.
+const qaRunActive = useQaRunActive(
+  jira,
+  computed(() => payload.value?.active_jobs),
+);
+
 const reviewPanel = computed(
   () =>
     Boolean(payload.value?.cases.length) &&
     Boolean(review.value) &&
-    !review.value?.approved,
+    !review.value?.approved &&
+    !qaRunActive.value,
+);
+
+const designRunning = computed(
+  () =>
+    Boolean(payload.value?.cases.length) &&
+    Boolean(review.value) &&
+    !review.value?.approved &&
+    qaRunActive.value,
 );
 
 const reviewLabel = computed(() => {
@@ -694,10 +722,12 @@ watch(
 let stopJobs: (() => void) | undefined;
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 
+// Reload when a QA job starts or finishes: the payload's `active_jobs` and the
+// freshly designed cases must not go stale (which would pin the design hint).
 watch(runningJobs, (jobs, prev) => {
-  const mine = (list: typeof jobs) =>
-    list.some((j) => j.jira === jira.value && j.action === "run-test");
-  if (mine(jobs) && !mine(prev || [])) void load();
+  const had = isQaJobActive(prev || [], jira.value);
+  const has = isQaJobActive(jobs, jira.value);
+  if (has !== had) void load();
 });
 
 watch(

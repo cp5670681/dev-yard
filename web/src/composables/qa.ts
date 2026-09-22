@@ -1,4 +1,34 @@
-import type { QaAssertion, ShotItem } from "@/api/types";
+import { computed, type ComputedRef, type Ref } from "vue";
+import type { JobBrief, QaAssertion, ShotItem } from "@/api/types";
+import { jobsReady, runningJobs } from "@/state/jobs";
+
+// QA actions that (re)design or run a case set: while one is in flight the case
+// files are still moving, so the review gate must stay closed. Keep in sync
+// with _QA_JOB_ACTIONS in src/dev_yard/web/context.py.
+export const QA_GATE_ACTIONS = new Set(["run-test", "qa-review"]);
+
+export function isQaJobActive(jobs: JobBrief[], jira: string): boolean {
+  return jobs.some((j) => j.jira === jira && QA_GATE_ACTIONS.has(j.action));
+}
+
+/**
+ * Whether a QA design/run job for `jira` is currently in flight.
+ *
+ * `snapshot` is the `active_jobs` list embedded in a fetched payload; it covers
+ * the window before the live stream connects. Once the stream has delivered a
+ * frame it is authoritative, so a job that just finished stops counting even
+ * though the payload still lists it.
+ */
+export function useQaRunActive(
+  jira: Ref<string>,
+  snapshot: ComputedRef<JobBrief[] | undefined>,
+): ComputedRef<boolean> {
+  return computed(() =>
+    jobsReady.value
+      ? isQaJobActive(runningJobs.value, jira.value)
+      : Boolean(snapshot.value?.length),
+  );
+}
 
 /** `"<report-timestamp>:<case-id>"` -> `"<case-id>"` (batch ids use `-`, not `:`). */
 export function findingCaseId(finding: string): string {

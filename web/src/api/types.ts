@@ -197,6 +197,7 @@ export interface ReqDetail {
     incomplete_run?: { run_id?: string; pending?: number } | null;
     cases?: QaCaseItem[];
     review?: QaReview | null;
+    active_jobs?: JobBrief[];
   } | null;
   changes?: ChangeEntry[];
 }
@@ -290,6 +291,7 @@ export interface QaPage {
   } | null;
   cases: QaCase[];
   review?: QaReview | null;
+  active_jobs?: JobBrief[];
   open_questions?: { count: number; body: string; exists?: boolean; error?: string };
   runs: {
     run_id: string;
