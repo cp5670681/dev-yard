@@ -8,6 +8,15 @@ CLI 入口是 `dev-yard`（或 `devyard`），不要用 `yard`（会撞上 Ruby 
 
 `dev-yard web` 是本机控制台（FastAPI），套同一套 `service`；agent 阶段走 `pi -p`。
 
+## 命令安全
+
+pi 的 `bash` 工具 `timeout` 是可选、**无默认值**，内置 `find`/`grep` 工具**根本没有 timeout**；一条挂死的命令会拖死整个阶段（web 里表现为 job 永远 `running`）。所有阶段遵守：
+
+- 一切搜索（`bash` 里的 `find`/`grep`，以及内置 `find`/`grep` 工具）都限定在当前 worktree / 仓库内，**绝不传 `/`**；优先 `rg`（自动跳过 `.gitignore`）。
+- `bash` 调用带 `timeout`（秒）。跑测试 / 构建给足下限（如 ≥300s，且小于 `YARD_PI_TIMEOUT`，默认 3600s）；慢套件不是跳过理由，别用短 timeout 误杀。
+- 确需跨盘扫描时（仅 `find`）用 `-xdev`，或 `-prune` 掉挂载点。WSL 下 `/mnt/*`、`/usr/lib/wsl/*` 是 9p，遍历会阻塞在 `p9_client_rpc`，连 kill 都不一定收得掉。
+- 起服务 / 连 DB / 装依赖等可能阻塞的命令，先想好超时与失败退出，不要裸跑。
+
 ## 路由（pi）
 
 | 命令 | 技能 |

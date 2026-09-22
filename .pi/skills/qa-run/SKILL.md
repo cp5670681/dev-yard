@@ -123,3 +123,7 @@ failure:
 | 两次结果不一致 | 大概率前端异步竞态：换一次性完整输入替代逐键输入，区分竞态与后端行为 |
 | local 环境服务没起 | 页面 5xx/连接拒绝 → `blocked`，提示起本地服务/看本地日志，不是用例失败 |
 | 截图/落库与快照冲突 | 以下层（网络/DB）为准，不凭快照判 passed |
+
+## 命令安全
+
+`playwright-cli` 无 timeout 选项，别用 shell `timeout` 包它（会杀掉常驻浏览器会话）；`bash` 调用带 `timeout`；搜索限定当前 worktree（优先 `rg`），绝不传 `/`；别遍历 `/mnt/*`、`/usr/lib/wsl/*`（WSL 的 9p 挂载会阻塞）。详见 AGENTS.md「命令安全」。

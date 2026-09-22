@@ -22,6 +22,8 @@ description: >
 
 `git` 只用 `diff` / `log`。不要 checkout、commit、push、switch。
 
+命令安全：搜索限定当前 worktree（优先 `rg`），绝不传 `/`；`bash`/`git` 调用带 `timeout`；别遍历 `/mnt/*`、`/usr/lib/wsl/*`（WSL 的 9p 挂载会阻塞）。详见 AGENTS.md「命令安全」。
+
 ## 澄清与开放问题（qa/OPEN-QUESTIONS.md）
 
 非交互运行，不能当面提问。缺细节时：

@@ -30,3 +30,7 @@ description: >
    套件慢不算跳过。免测或跳过跑测时直接实现业务代码并做静态走查/语法检查。
 3. 提交到**当前分支**（不要推，不要开 PR）。
 4. 停在实现完成。不要自己跑 code-review：CLI 只把票标成 `implemented`。提示用户下一步 `dev-yard review <JIRA>`。
+
+## 命令安全
+
+所有搜索（`find`/`grep`/`bash`，含内置 `find`/`grep` 工具）限定在当前 worktree，绝不传 `/`，优先 `rg`；`bash` 调用带 `timeout`，跑测试给足下限（≥300s，别误杀慢套件）；别遍历 `/mnt/*`、`/usr/lib/wsl/*`（WSL 的 9p 挂载会阻塞）。详见 AGENTS.md「命令安全」。
