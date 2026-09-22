@@ -404,6 +404,31 @@ export interface QaAccountCfg {
   state_file: string;
 }
 
+export interface ReqAccount {
+  name: string;
+  username: string;
+  has_password: boolean;
+  state_file: string;
+}
+
+export interface ReqAccounts {
+  env: string;
+  base_url: string;
+  default: string;
+  source: string;
+  discover_sql: boolean;
+  accounts: ReqAccount[];
+  added?: string[];
+  changed?: string[];
+  dropped?: string[];
+  written?: string;
+}
+
+export interface AccountCandidate {
+  key: string;
+  username: string;
+}
+
 export interface QaExecCfg {
   use: string;
   payload: string;

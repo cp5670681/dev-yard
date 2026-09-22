@@ -1077,7 +1077,7 @@ def test_permission_gap_warning_flags_single_account(tmp_path: Path):
     warn = _permission_gap_warning(yard, "J-1", cfg)
     assert warn is not None
     assert "权限" in warn
-    assert "--discover" in warn
+    assert "--auto" in warn
 
     (req / "REQUIREMENT.md").write_text("普通列表页加一列。", encoding="utf-8")
     assert _permission_gap_warning(yard, "J-1", cfg) is None

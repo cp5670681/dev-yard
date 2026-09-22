@@ -1,4 +1,5 @@
 import type {
+  AccountCandidate,
   AssistantContext,
   AssistantSession,
   ContractReviewIn,
@@ -15,6 +16,7 @@ import type {
   QaConfigState,
   QaPage,
   Repo,
+  ReqAccounts,
   ReqDetail,
   ReqDiff,
   ReqSummary,
@@ -73,6 +75,35 @@ export function deleteRequirement(jira: string) {
 
 export function getQa(jira: string) {
   return api<QaPage>(`/api/requirements/${encodeURIComponent(jira)}/qa`);
+}
+
+export function getReqAccounts(jira: string) {
+  return api<ReqAccounts>(
+    `/api/requirements/${encodeURIComponent(jira)}/accounts`,
+  );
+}
+
+export function discoverReqAccounts(jira: string) {
+  return api<{ jira: string; env: string; candidates: AccountCandidate[] }>(
+    `/api/requirements/${encodeURIComponent(jira)}/accounts/discover`,
+    { method: "POST" },
+  );
+}
+
+export function autoFillReqAccounts(jira: string, refresh = false) {
+  return api<ReqAccounts>(
+    `/api/requirements/${encodeURIComponent(jira)}/accounts/auto?refresh=${
+      refresh ? "true" : "false"
+    }`,
+    { method: "POST" },
+  );
+}
+
+export function refreshReqAccounts(jira: string) {
+  return api<ReqAccounts>(
+    `/api/requirements/${encodeURIComponent(jira)}/accounts/refresh`,
+    { method: "POST" },
+  );
 }
 
 export function getQaCase(jira: string, caseId: string) {

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import typer
@@ -119,58 +118,37 @@ def _echo_account_hint(root: Path, jira: str) -> None:
         return
     if len(accounts) > 1:
         return
-    typer.echo(f"  账号发现：dev-yard req accounts {jira} --discover")
-
-
-_READONLY_SQL = frozenset({"select", "show", "desc", "describe", "explain", "with", "table"})
-# Heuristic, not a real SQL parser: blocks obvious writes/exfiltration. The DB
-# account's own privileges remain the real guard.
-_WRITE_SQL = re.compile(
-    r"\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|merge"
-    r"|call|do|copy|vacuum|analyze|refresh|into|outfile|load_file|dblink"
-    r"|pg_read_file|lo_import|lo_export)\b",
-    re.I,
-)
+    typer.echo(f"  账号发现：dev-yard req accounts {jira} --auto")
 
 
 def _discover_usernames(dsn: str, sql: str) -> list[str]:
     """Run a read-only query and return the first column as candidate usernames."""
-    import shutil
-    import subprocess
+    from dev_yard.qa_accounts import discover
 
-    if not dsn:
-        raise ValueError("qa.yaml envs.<env>.db.url is not configured; cannot run --sql")
-    binary = shutil.which("usql")
-    if not binary:
-        raise ValueError("usql not found; install it to discover accounts")
-    text = sql.strip()
-    if not text:
-        raise ValueError("--sql must not be empty")
-    if ";" in text.rstrip(";"):
-        raise ValueError("--sql must be a single statement (no `;`)")
-    head = text.split(None, 1)[0].lower()
-    if head not in _READONLY_SQL:
-        raise ValueError("--sql must be read-only (select/show/desc/explain/table)")
-    if _WRITE_SQL.search(text):
-        raise ValueError("--sql must be read-only (no write keywords)")
-    try:
-        r = subprocess.run(
-            [binary, dsn, "-t", "-A", "-c", text],
-            capture_output=True,
-            text=True,
-            timeout=30,
+    return [cand.username for cand in discover(dsn, sql)]
+
+
+def _resolve_discovery_sql(root: Path, jira: str, sql: str) -> str | None:
+    """The discovery SQL to run: --sql, else qa/accounts-discover.sql.
+
+    Returns None after printing an error when neither source is available.
+    """
+    if sql.strip():
+        return sql
+    sql_path = paths.qa_accounts_discover_sql(root, jira)
+    if not sql_path.is_file():
+        _die(
+            ValueError(
+                f"缺少 {sql_path}（涉及权限时由 qa-design 产出只读查询）；"
+                "或改用 --sql 直接给查询"
+            )
         )
-    except subprocess.TimeoutExpired as e:
-        raise ValueError("discovery query timed out") from e
-    if r.returncode != 0:
-        err = (r.stderr or r.stdout or "").strip() or str(r.returncode)
-        raise ValueError(f"discovery query failed: {err}")
-    seen: list[str] = []
-    for line in r.stdout.splitlines():
-        value = line.strip()
-        if value and value not in seen:
-            seen.append(value)
-    return seen
+        return None
+    try:
+        return sql_path.read_text(encoding="utf-8")
+    except OSError as e:
+        _die(e)
+        return None
 
 
 @app.command()
@@ -597,7 +575,7 @@ def req_accounts(
     jira: str,
     env: str = typer.Option("", "--env", help="qa.yaml envs.<name>; default active_env"),
     sql: str = typer.Option(
-        "", "--sql", help="只读查询，返回用用户名的列（用于发现候选账号）"
+        "", "--sql", help="只读查询，返回 username[|account_key] 列（发现候选账号）"
     ),
     discover: bool = typer.Option(
         False,
@@ -607,11 +585,23 @@ def req_accounts(
     reset: bool = typer.Option(
         False, "--reset", help="清空本环境已配的需求账号，从零开始收集"
     ),
+    auto: bool = typer.Option(
+        False,
+        "--auto",
+        help="非交互：发现候选后按 account_key 一键写入本需求账号"
+        "（复用全局默认账号密码，不动全局 qa.yaml）",
+    ),
+    refresh: bool = typer.Option(
+        False,
+        "--refresh",
+        help="清掉本需求账号的缓存登录态强制重登；与 --auto 同用则发现后一并刷新",
+    ),
 ) -> None:
     """配置本需求要用的账号，写入 .yard-qa/requirements/<JIRA>/accounts.yaml。
 
     全局 qa.yaml 只留默认账号；需求要用多账号时在这里补，账号随需求变。
     默认在已配账号基础上追加，--reset 才清空重来。
+    --auto 发现即写入（权限会漂移，重跑即刷新）；--refresh 清缓存登录态。
     """
     from dev_yard.qa_config import (
         QaAccount,
@@ -632,6 +622,59 @@ def req_accounts(
     if gacct and gacct.username:
         typer.echo(f"全局默认账号: {cfg.env.auth_default} ({gacct.username})")
 
+    if discover and sql:
+        _die(ValueError("--discover and --sql are mutually exclusive"))
+        return
+
+    if refresh and not auto:
+        from dev_yard import qa_accounts
+
+        dropped = qa_accounts.invalidate_all(root, jira, cfg.active_env, cfg)
+        if dropped:
+            typer.echo(f"已清缓存登录态：{', '.join(dropped)}")
+        else:
+            typer.echo("无本需求账号或无可清缓存。")
+        return
+
+    if auto:
+        from dev_yard import qa_accounts
+
+        query = _resolve_discovery_sql(root, jira, sql)
+        if query is None:
+            return
+        try:
+            candidates = qa_accounts.discover(cfg.env.db_url, query)
+        except (ValueError, OSError) as e:
+            _die(e)
+            return
+        if not candidates:
+            _die(TestRejected("发现 0 个候选账号；检查 accounts-discover.sql 与被测权限点"))
+            return
+        typer.echo("发现候选账号（account_key: username）：")
+        for cand in candidates:
+            typer.echo(f"  - {cand.key or 'auto'}: {cand.username}")
+        try:
+            result = qa_accounts.autofill(
+                root, jira, cfg.active_env, cfg, candidates, force_relogin=refresh
+            )
+        except (ValueError, TestRejected) as e:
+            _die(e)
+            return
+        typer.echo(f"写入 {result.path}（default: {result.default}）")
+        typer.echo(
+            "  账号：" + "、".join(f"{n}({u})" for n, u in result.accounts.items())
+        )
+        if result.added:
+            typer.echo(f"  新增：{', '.join(result.added)}")
+        if result.changed:
+            typer.echo(f"  改绑：{', '.join(result.changed)}（缓存登录态已清）")
+        if refresh:
+            typer.echo("  已清本需求账号缓存登录态，下次运行会重新登录。")
+        typer.echo(
+            "  用例引用：frontmatter 写 account: <account_key>（不要动全局账号）"
+        )
+        return
+
     accounts: dict[str, QaAccount] = {}
     default = cfg.env.auth_default or "default"
     if not reset:
@@ -648,35 +691,12 @@ def req_accounts(
             typer.echo("直接回车可结束；输入新账号名继续追加。")
 
     candidates: list[str] = []
-    if discover and sql:
-        _die(ValueError("--discover and --sql are mutually exclusive"))
-        return
-    if discover:
-        sql_path = paths.qa_accounts_discover_sql(root, jira)
-        if not sql_path.is_file():
-            _die(
-                ValueError(
-                    f"缺少 {sql_path}（涉及权限时由 qa-design 产出只读查询）；"
-                    "或改用 --sql 直接给查询"
-                )
-            )
-            return
-        try:
-            query = sql_path.read_text(encoding="utf-8")
-        except OSError as e:
-            _die(e)
+    if discover or sql:
+        query = _resolve_discovery_sql(root, jira, sql)
+        if query is None:
             return
         try:
             candidates = _discover_usernames(cfg.env.db_url, query)
-        except (ValueError, OSError) as e:
-            _die(e)
-            return
-        typer.echo(f"发现候选用户名（{sql_path.name}）：")
-        for user in candidates:
-            typer.echo(f"  - {user}")
-    elif sql:
-        try:
-            candidates = _discover_usernames(cfg.env.db_url, sql)
         except (ValueError, OSError) as e:
             _die(e)
             return

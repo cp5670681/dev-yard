@@ -39,13 +39,14 @@ description: >
 
 1. **先读后端代码确认权限的判定方式**（controller 的 `before_action`/策略类、模型上的角色谓词、权限表），不要猜。
 2. **主动发现候选账号**（不要只把活推给人）：
-   - 权限是简单表结构（user 表有 role 列 / 角色关联表）→ 写一条**只读**查询到 `qa/accounts-discover.sql`（单条 `SELECT`，返回列：`username` 列在第一位；可 `UNION` 多个角色）。宿主会跑
-     `dev-yard req accounts <JIRA> --discover`，把人只差填密码。
+   - 权限是简单表结构（user 表有 role 列 / 角色关联表）→ 写一条**只读**查询到 `qa/accounts-discover.sql`（单条 `SELECT`：第一列 `username`，第二列 `account_key`；用 `UNION ALL` 覆盖每个权限桶）。`account_key` 是语义名（如 `has_perm` / `no_perm`），会直接成为账号名。宿主跑
+     `dev-yard req accounts <JIRA> --auto` 即按当前库一键发现并写入本需求 `accounts.yaml`（复用全局默认账号密码，不动全局账号）。
+   - 权限会漂移 → 不要写死账号；`--auto` 可反复重跑刷新候选，`--auto --refresh` 还会清缓存登录态强制重登。
    - 权限是应用内逻辑（如 Rails 谓词 `user.research_director?`）→ SQL 查不出，在 `qa/OPEN-QUESTIONS.md` 写明**所需角色 + 判定代码位置**，请人工提供账号。
-   - 表结构/列名从后端仓库 ORM/schema 定义读，禁止猜（踩坑：外键是 `right_role_id` 不是 `role_id`）。按「能覆盖全部权限差异的最少账号数」选号，账号名用语义化 key（如 admin/readonly）。
+   - 表结构/列名从后端仓库 ORM/schema 定义读，禁止猜（踩坑：外键是 `right_role_id` 不是 `role_id`）。按「能覆盖全部权限差异的最少账号数」选号，账号名用语义化 key（如 admin/readonly）。候选查询要过滤脏数据（如 `username ~ '^[a-z]'`、排除 `system`），否则 `--auto` 可能选中 `12.21` 这种非账号。
 3. 在 `qa/OPEN-QUESTIONS.md` 列出「需要哪些权限账号」。
 4. 按 `context.md ## Accounts`（来自 `dev-yard req accounts` / `.yard-qa/.../accounts.yaml`）为每个权限各写正/反向用例：该权限可见/可操作 + 无权限不可见/被拦截。
-5. 缺账号时**显式写「未覆盖（缺账号 X）」**，禁止静默省略（不要只在 meta.yaml 备注里提一句）。
+5. 缺账号时**先跑 `--auto`**；仍缺（如权限源查不到人）才**显式写「未覆盖（缺账号 X）」**，禁止静默省略（不要只在 meta.yaml 备注里提一句）。
 
 ## 做法
 
@@ -57,7 +58,7 @@ description: >
 6. 预期写需求口径。实现与 SPEC 不符时仍写需求值，并备注「需求偏差」。
 7. 跨仓改动拆成多条 case，或 `covers` 只含一个主仓。每条 frontmatter 必有 `repo:`（yard alias）。
 8. `depends_on` 仅当共享可变数据或业务先后时写；无依赖省略，以便并发领取。
-9. 需要非默认账号的用例，在 frontmatter 写 `account: <名字>`；名字必须来自 `context.md` 的 Accounts 列表（宿主跑前校验，未配置会直接报错让你先跑 `dev-yard req accounts <JIRA>`）。不写就用 `account.default`。若需新增账号，按「权限账号与账号发现」写 `qa/accounts-discover.sql`（只读单条 `SELECT`）并在 OPEN-QUESTIONS 注明。
+9. 需要非默认账号的用例，在 frontmatter 写 `account: <account_key>`；名字必须来自 `context.md` 的 Accounts 列表（宿主跑前校验，未配置会直接报错让你先跑 `dev-yard req accounts <JIRA> --auto`）。不写就用 `account.default`。若需新增账号，按「权限账号与账号发现」写 `qa/accounts-discover.sql`（只读单条 `SELECT`，`username | account_key` 两列）并在 OPEN-QUESTIONS 注明。
 10. 造数优先 `.sql`（host usql 打 `qa.yaml` 的 db.url；`db.exec: inherit` 时走与脚本同一条 exec 管道）。非 SQL 脚本由宿主按本次 env 的 `exec` 配方执行（local = freeze worktree + stdin；remote = 已部署现场 + stdin）。脚本契约：
     - **单文件**，不要 `require` 邻居（多文件才用 payload bundle）。
     - 状态落 **DB**，禁止把 setup→cleanup 约定写到执行现场本地文件（pod 会换副本）。

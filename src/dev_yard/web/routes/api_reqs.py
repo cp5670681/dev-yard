@@ -361,4 +361,79 @@ def build(ctx: AppContext) -> APIRouter:
             payload = payload.model_copy(update={"source": "api"})
         return _accept_report(ctx, jira, payload, "api")
 
+    def _accounts_cfg(jira: str):
+        """Requirement exists + global qa.yaml loads; 404/400 otherwise."""
+        from dev_yard.qa_config import load_qa_config
+
+        ctx.detail_or_404(jira)
+        try:
+            return load_qa_config(ctx.root)
+        except (ValueError, FileNotFoundError) as e:  # TestRejected subclasses ValueError
+            raise HTTPException(400, str(e)) from e
+
+    def _discovery_candidates(jira: str, cfg):
+        """Read-only candidates from qa/accounts-discover.sql; 404/422 otherwise."""
+        from dev_yard.qa_accounts import discover
+
+        sql_path = paths.qa_accounts_discover_sql(ctx.root, jira)
+        if not sql_path.is_file():
+            raise HTTPException(
+                404, f"缺少 {sql_path}（涉及权限时由 qa-design 产出只读查询）"
+            )
+        try:
+            return discover(cfg.env.db_url, sql_path.read_text(encoding="utf-8"))
+        except (ValueError, OSError) as e:
+            raise HTTPException(422, str(e)) from e
+
+    @router.get("/api/requirements/{jira}/accounts")
+    def api_accounts(jira: str):
+        from dev_yard.qa_accounts import accounts_overview
+
+        cfg = _accounts_cfg(jira)
+        return accounts_overview(ctx.root, jira, cfg)
+
+    @router.post("/api/requirements/{jira}/accounts/discover")
+    def api_accounts_discover(jira: str):
+        cfg = _accounts_cfg(jira)
+        candidates = _discovery_candidates(jira, cfg)
+        return {
+            "jira": jira,
+            "env": cfg.active_env,
+            "candidates": [
+                {"key": c.key or "auto", "username": c.username} for c in candidates
+            ],
+        }
+
+    @router.post("/api/requirements/{jira}/accounts/auto")
+    def api_accounts_auto(jira: str, refresh: bool = False):
+        from dev_yard.qa_accounts import accounts_overview, autofill
+
+        cfg = _accounts_cfg(jira)
+        candidates = _discovery_candidates(jira, cfg)
+        try:
+            result = autofill(
+                ctx.root, jira, cfg.active_env, cfg, candidates, force_relogin=refresh
+            )
+        except (ValueError, OSError) as e:  # TestRejected subclasses ValueError
+            raise HTTPException(422, str(e)) from e
+        payload = accounts_overview(ctx.root, jira, cfg)
+        payload.update(
+            {
+                "added": result.added,
+                "changed": result.changed,
+                "written": str(result.path),
+            }
+        )
+        return payload
+
+    @router.post("/api/requirements/{jira}/accounts/refresh")
+    def api_accounts_refresh(jira: str):
+        from dev_yard.qa_accounts import accounts_overview, invalidate_all
+
+        cfg = _accounts_cfg(jira)
+        dropped = invalidate_all(ctx.root, jira, cfg.active_env, cfg)
+        payload = accounts_overview(ctx.root, jira, cfg)
+        payload["dropped"] = dropped
+        return payload
+
     return router

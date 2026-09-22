@@ -399,7 +399,7 @@ def _permission_gap_warning(root: Path, jira: str, cfg: QaConfig) -> str | None:
         return None
     return (
         f"{jira} 改动疑似涉及权限控制，但只配了默认账号；"
-        f"跑 `dev-yard req accounts {jira} --discover` 发现候选账号后补权限账号"
+        f"跑 `dev-yard req accounts {jira} --auto` 一键发现并填入本需求账号"
         "（仅提示，不阻塞）。"
     )
 
@@ -653,7 +653,8 @@ def _duties(kind: str, jira: str) -> str:
             "or write 'not covered (missing account X)' explicitly.\n"
             "When permissions are involved, discover accounts from the backend "
             "permission code and write the read-only discovery query to "
-            "qa/accounts-discover.sql (host runs it via `req accounts --discover`).\n"
+            "qa/accounts-discover.sql (username|account_key; host runs it via "
+            "`req accounts --auto`).\n"
             "Data prerequisites must be executable: declare `data.verify` "
             "(single read-only SELECT; >=1 row means pass) for every case that "
             "declares setup/cleanup or a DB expectation; the host runs it and "

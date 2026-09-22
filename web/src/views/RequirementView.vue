@@ -421,6 +421,57 @@
           />
         </v-card-text>
       </v-card>
+      <v-card variant="outlined" class="mt-4">
+        <v-card-title class="text-subtitle-2 d-flex align-center ga-2">
+          测试账号
+          <v-spacer />
+          <v-btn
+            size="small"
+            variant="tonal"
+            color="primary"
+            :prepend-icon="mdiAccountSearch"
+            :loading="accountsBusy"
+            :disabled="!reqAccounts?.discover_sql"
+            @click="fillAccounts()"
+          >
+            发现并填充
+          </v-btn>
+          <v-btn
+            size="small"
+            variant="text"
+            :prepend-icon="mdiRefresh"
+            :loading="accountsBusy"
+            @click="refreshAccounts()"
+          >
+            刷新登录态
+          </v-btn>
+        </v-card-title>
+        <v-card-text>
+          <p class="text-caption text-medium-emphasis mb-2">
+            写入 <code>.yard-qa/requirements/{{ jira }}/accounts.yaml</code>（不动全局账号）。
+            按 <code>qa/accounts-discover.sql</code> 的
+            <code>username | account_key</code> 发现，用例 frontmatter 用
+            <code>account: &lt;account_key&gt;</code> 引用；权限漂移时重跑即改绑。
+          </p>
+          <div v-if="reqAccounts?.accounts.length" class="d-flex flex-wrap ga-2">
+            <v-chip
+              v-for="a in reqAccounts.accounts"
+              :key="a.name"
+              size="small"
+              :color="a.name === reqAccounts.default ? 'primary' : undefined"
+              variant="tonal"
+            >
+              {{ a.name }} · {{ a.username }}
+              <span v-if="a.name === reqAccounts.default" class="ml-1">default</span>
+            </v-chip>
+          </div>
+          <p v-else class="text-caption text-medium-emphasis">未配置账号，用全局默认。</p>
+          <p v-if="reqAccounts && !reqAccounts.discover_sql" class="text-caption text-warning mt-2">
+            缺少 <code>qa/accounts-discover.sql</code>（qa-design 产出），暂无法自动发现。
+          </p>
+          <p v-if="accountsMsg" class="text-caption text-success mt-2">{{ accountsMsg }}</p>
+        </v-card-text>
+      </v-card>
       <v-expansion-panels
         v-if="detail.worktrees.length || detail.contract_summary || detail.test"
         class="mt-4"
@@ -777,6 +828,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useDisplay } from "vuetify";
 import {
+  mdiAccountSearch,
   mdiAlertCircleOutline,
   mdiCheckCircleOutline,
   mdiClipboardCheckOutline,
@@ -793,16 +845,27 @@ import {
 } from "@mdi/js";
 import {
   attachmentUrl,
+  autoFillReqAccounts,
   deleteAttachment,
   deleteRequirement,
   deleteTicket,
+  getReqAccounts,
   getRequirement,
+  refreshReqAccounts,
   rerunQaCases,
   runAction,
   submitTestReport,
   uploadAttachments,
 } from "@/api/client";
-import type { Action, JobSnapshot, QaProgress, ReqDetail, ShotItem, Ticket } from "@/api/types";
+import type {
+  Action,
+  JobSnapshot,
+  QaProgress,
+  ReqAccounts,
+  ReqDetail,
+  ShotItem,
+  Ticket,
+} from "@/api/types";
 import ContractReviewDialog from "@/components/ContractReviewDialog.vue";
 import JobPanel from "@/components/JobPanel.vue";
 import QaFeedbackDetails from "@/components/QaFeedbackDetails.vue";
@@ -834,6 +897,9 @@ const error = ref("");
 const acting = ref("");
 const attachInput = ref<HTMLInputElement | null>(null);
 const uploading = ref(false);
+const reqAccounts = ref<ReqAccounts | null>(null);
+const accountsBusy = ref(false);
+const accountsMsg = ref("");
 const viewer = reactive({ open: false, index: 0, images: [] as ShotItem[] });
 const runEndBanner = reactive({
   show: false,
@@ -1105,6 +1171,50 @@ async function load() {
     if (!jobIds.value.length) {
       error.value = e instanceof Error ? e.message : String(e);
     }
+  }
+  await loadReqAccounts();
+}
+
+async function loadReqAccounts() {
+  try {
+    reqAccounts.value = await getReqAccounts(jira.value);
+  } catch {
+    reqAccounts.value = null;
+  }
+}
+
+async function fillAccounts() {
+  accountsBusy.value = true;
+  accountsMsg.value = "";
+  try {
+    const res = await autoFillReqAccounts(jira.value, false);
+    reqAccounts.value = res;
+    const bits: string[] = [];
+    if (res.added?.length) bits.push(`新增 ${res.added.join("、")}`);
+    if (res.changed?.length) bits.push(`改绑 ${res.changed.join("、")}`);
+    accountsMsg.value = bits.join("；") || "账号已刷新";
+    snack.notify(`已写入 ${res.accounts.length} 个账号`, "success");
+  } catch (err) {
+    snack.notify(err instanceof Error ? err.message : String(err), "error");
+  } finally {
+    accountsBusy.value = false;
+  }
+}
+
+async function refreshAccounts() {
+  accountsBusy.value = true;
+  accountsMsg.value = "";
+  try {
+    const res = await refreshReqAccounts(jira.value);
+    reqAccounts.value = res;
+    accountsMsg.value = res.dropped?.length
+      ? `已清缓存登录态：${res.dropped.join("、")}`
+      : "无可清缓存";
+    snack.notify("已刷新登录态", "success");
+  } catch (err) {
+    snack.notify(err instanceof Error ? err.message : String(err), "error");
+  } finally {
+    accountsBusy.value = false;
   }
 }
 
