@@ -36,3 +36,7 @@ When the shape of that interface is itself in question — how deep the module i
 - **Red before green.** Write the failing test first, then only enough code to pass it. Don't anticipate future tests or add speculative features.
 - **One slice at a time.** One seam, one test, one minimal implementation per cycle.
 - **Refactoring is not part of the loop.** It belongs to the review stage (see the `code-review` skill), not the red → green implementation cycle.
+
+## 命令安全
+
+跑测试/命令带 `timeout`，套件给足下限（≥300s，别用短 timeout 误杀慢套件）；搜索限定当前 worktree（优先 `rg`），绝不传 `/`；别遍历 `/mnt/*`、`/usr/lib/wsl/*`（WSL 的 9p 挂载会阻塞）。详见 AGENTS.md「命令安全」。
