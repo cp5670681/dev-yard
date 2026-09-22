@@ -271,3 +271,32 @@ def test_resolve_merge_prompt_follows_tdd(tmp_path: Path):
     save_dev_settings(yard, DevSettings(tdd=False))
     prompt = session_prompt_for(RESOLVE_MERGE_SPEC, yard, "AB-1")
     assert "TDD mode is OFF" in prompt
+
+
+def test_prompt_omits_uploads_hint_when_none(tmp_path: Path):
+    from dev_yard.service import req_open
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    req_open(yard, "AB-1", source="none")
+    p = session_prompt(yard, "spec", "AB-1")
+    assert "uploads/" not in p
+    assert "Human-added attachments" not in p
+
+
+def test_downstream_prompts_list_uploads(tmp_path: Path):
+    from dev_yard.service import req_attach, req_open
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    req_open(yard, "AB-1", source="none")
+    src = tmp_path / "原型.html"
+    src.write_text("<html>proto</html>")
+    req_attach(yard, "AB-1", [src])
+
+    for stage in ("grill", "spec", "tickets", "implement", "contract", "review"):
+        p = session_prompt(yard, stage, "AB-1")
+        assert "Human-added attachments" in p, stage
+        assert "Never delete or modify anything under uploads/" in p, stage
+        assert str(yard / "reqs" / "AB-1" / "uploads" / "原型.html") in p, stage
+

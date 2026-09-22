@@ -374,6 +374,44 @@ def req_changes(jira: str = typer.Argument(..., help="Requirement key (e.g. PROJ
         typer.echo(f"{c.get('id')} {c.get('at')} ({c.get('actor')}) {c.get('note')}{suffix}")
 
 
+@req_app.command("attach")
+def req_attach(
+    jira: str = typer.Argument(..., help="Requirement key (e.g. PG-12937)"),
+    files: list[Path] = typer.Argument(..., help="Local files to attach (e.g. HTML prototype)"),
+    name: list[str] | None = typer.Option(
+        None, "--name", "-n", help="Override stored name; repeat once per file"
+    ),
+) -> None:
+    """Attach local files (prototypes, docs) under reqs/<JIRA>/uploads/.
+
+    uploads/ is never wiped by `req open`, so attachments survive re-extraction.
+    REQUIREMENT.md gets a managed 补充附件 section pointing at them.
+    """
+    root = root_opt()
+    try:
+        added = service.req_attach(root, jira, list(files), names=name)
+    except (ValueError, FileNotFoundError) as e:
+        _die(e)
+        return
+    for stored in added:
+        typer.echo(f"attached {jira}/uploads/{stored}")
+
+
+@req_app.command("detach")
+def req_detach(
+    jira: str = typer.Argument(..., help="Requirement key (e.g. PG-12937)"),
+    names: list[str] = typer.Argument(..., help="Stored attachment names to remove"),
+) -> None:
+    """Remove attachments from reqs/<JIRA>/uploads/ and refresh REQUIREMENT.md."""
+    root = root_opt()
+    try:
+        remaining = service.req_detach(root, jira, list(names))
+    except (ValueError, FileNotFoundError) as e:
+        _die(e)
+        return
+    typer.echo(f"{jira} uploads: {', '.join(remaining) if remaining else '(none)'}")
+
+
 @req_app.command("delete")
 def req_delete(jira: str) -> None:
     """Remove this requirement's docs and worktrees. Does not touch Jira or shared glossary/ADR."""

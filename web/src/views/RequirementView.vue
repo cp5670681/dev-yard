@@ -346,6 +346,67 @@
           </div>
         </v-card-text>
       </v-card>
+      <v-card variant="outlined" class="mt-4">
+        <v-card-title class="text-subtitle-2 d-flex align-center ga-2">
+          附件
+          <v-spacer />
+          <v-btn
+            size="small"
+            variant="tonal"
+            color="primary"
+            :prepend-icon="mdiPaperclip"
+            :loading="uploading"
+            @click="pickAttachments"
+          >
+            上传附件
+          </v-btn>
+        </v-card-title>
+        <v-card-text>
+          <input
+            ref="attachInput"
+            type="file"
+            multiple
+            class="d-none"
+            @change="onAttachPicked"
+          />
+          <p class="text-caption text-medium-emphasis mb-2">
+            人工上传（HTML 原型、文档等）存到
+            <code>reqs/&lt;JIRA&gt;/uploads/</code>，重抽需求不会清空；文档里用
+            <code>uploads/&lt;名字&gt;</code> 引用。
+          </p>
+          <v-list v-if="detail.uploads.length" density="compact">
+            <v-list-item v-for="name in detail.uploads" :key="name">
+              <v-list-item-title class="text-break font-weight-regular">
+                <a :href="attachmentUrl(jira, name)" target="_blank" rel="noopener">{{ name }}</a>
+              </v-list-item-title>
+              <template #append>
+                <v-btn
+                  icon
+                  size="x-small"
+                  variant="text"
+                  @click="copy(`uploads/${name}`, '已复制相对路径')"
+                >
+                  <v-icon :icon="mdiContentCopy" size="16" />
+                </v-btn>
+                <v-btn
+                  icon
+                  size="x-small"
+                  variant="text"
+                  color="error"
+                  @click="removeAttachment(name)"
+                >
+                  <v-icon :icon="mdiDeleteOutline" size="16" />
+                </v-btn>
+              </template>
+            </v-list-item>
+          </v-list>
+          <v-empty-state
+            v-else
+            title="暂无附件"
+            text="点右上角上传，或在文档里用 uploads/<名字> 引用。"
+          />
+        </v-card-text>
+      </v-card>
       <v-expansion-panels
         v-if="detail.worktrees.length || detail.contract_summary || detail.test"
         class="mt-4"
@@ -708,16 +769,20 @@ import {
   mdiEyeOutline,
   mdiFileDocumentAlertOutline,
   mdiFileDocumentCheckOutline,
+  mdiPaperclip,
   mdiRefresh,
   mdiWrench,
 } from "@mdi/js";
 import {
+  attachmentUrl,
+  deleteAttachment,
   deleteRequirement,
   deleteTicket,
   getRequirement,
   rerunQaCases,
   runAction,
   submitTestReport,
+  uploadAttachments,
 } from "@/api/client";
 import type { Action, JobSnapshot, QaProgress, ReqDetail, ShotItem, Ticket } from "@/api/types";
 import ContractReviewDialog from "@/components/ContractReviewDialog.vue";
@@ -741,6 +806,8 @@ const jira = computed(() => String(route.params.jira || ""));
 const detail = ref<ReqDetail | null>(null);
 const error = ref("");
 const acting = ref("");
+const attachInput = ref<HTMLInputElement | null>(null);
+const uploading = ref(false);
 const viewer = reactive({ open: false, index: 0, images: [] as ShotItem[] });
 const runEndBanner = reactive({
   show: false,
@@ -996,6 +1063,37 @@ async function copy(text: string, msg = "已复制路径") {
     snack.notify(msg, "success");
   } catch {
     snack.notify("复制失败", "error");
+  }
+}
+
+function pickAttachments() {
+  attachInput.value?.click();
+}
+
+async function onAttachPicked(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const files = Array.from(input.files || []);
+  input.value = "";
+  if (!files.length) return;
+  uploading.value = true;
+  try {
+    const res = await uploadAttachments(jira.value, files);
+    snack.notify(`已上传 ${res.added.length} 个附件`, "success");
+    await load();
+  } catch (err) {
+    snack.notify(err instanceof Error ? err.message : String(err), "error");
+  } finally {
+    uploading.value = false;
+  }
+}
+
+async function removeAttachment(name: string) {
+  try {
+    await deleteAttachment(jira.value, name);
+    snack.notify("已删除附件", "success");
+    await load();
+  } catch (err) {
+    snack.notify(err instanceof Error ? err.message : String(err), "error");
   }
 }
 

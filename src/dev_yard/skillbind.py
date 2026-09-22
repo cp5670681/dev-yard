@@ -2,9 +2,29 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dev_yard import paths
+from dev_yard import attachments, paths
 from dev_yard.config import load_dev_settings
 from dev_yard.stages import StageSpec
+
+
+def _attachments_hint(root: Path, jira: str, req: Path) -> str:
+    """Point every downstream stage at human-added uploads/ files.
+
+    They are linked from REQUIREMENT.md, but nothing else makes the agent open
+    them; without this the prototype's encoded logic never reaches GRILL/SPEC/TICKETS.
+    """
+    names = attachments.list_names(root, jira)
+    if not names:
+        return ""
+    listing = "\n".join(f"- {req / attachments.UPLOADS_DIRNAME / n}" for n in names)
+    return (
+        "Human-added attachments are part of the requirement. Read each one "
+        "(HTML prototypes carry the real UI logic: state machines, field linkage, "
+        "validation) and fold decision-bearing behavior into your output, noting "
+        "that it came from an attachment. Large files: grep/skim instead of dumping. "
+        "Never delete or modify anything under uploads/.\n"
+        f"{listing}"
+    )
 
 
 def session_prompt_for(
@@ -82,6 +102,9 @@ def session_prompt_for(
         spec.guidance,
         "Do not dump unrelated historical documents. Do not use ~/.pi/agent/skills copies.",
     ]
+    hint = _attachments_hint(root, jira, req)
+    if hint:
+        parts.append(hint)
     if tdd_extra:
         parts.append(tdd_extra)
     if extra:

@@ -11,6 +11,16 @@ from dev_yard import paths
 from dev_yard.web.board import DOC_FILES
 from dev_yard.web.context import STATIC, AppContext, spa_index
 
+_SANDBOX_MEDIA = frozenset(
+    {
+        "text/html",
+        "application/xhtml+xml",
+        "image/svg+xml",
+        "text/xml",
+        "application/xml",
+    }
+)
+
 
 def build(ctx: AppContext) -> APIRouter:
     router = APIRouter()
@@ -64,6 +74,23 @@ def build(ctx: AppContext) -> APIRouter:
         except (ValueError, FileNotFoundError) as e:
             raise HTTPException(404, str(e)) from e
         return FileResponse(path)
+
+    @router.get("/r/{jira}/uploads/{name}")
+    def upload(jira: str, name: str):
+        try:
+            path = ctx.attachment_file(jira, name)
+        except (ValueError, FileNotFoundError) as e:
+            raise HTTPException(404, str(e)) from e
+        media = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        headers = {"X-Content-Type-Options": "nosniff"}
+        if media in _SANDBOX_MEDIA:
+            # Human-uploaded HTML/SVG prototypes may carry scripts. A sandboxed
+            # opaque origin lets them render, but they cannot reach the console's
+            # same-origin API (which can drive `pi --approve`).
+            headers["Content-Security-Policy"] = (
+                "sandbox allow-scripts allow-forms allow-popups allow-modals"
+            )
+        return FileResponse(path, media_type=media, headers=headers)
 
     @router.get("/r/{jira}/qa/evidence/{run_id}/{case_id}/screenshots/{name}")
     def qa_screenshot(jira: str, run_id: str, case_id: str, name: str):

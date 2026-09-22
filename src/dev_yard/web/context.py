@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import markdown
 from fastapi import HTTPException, Request
@@ -47,6 +47,7 @@ from dev_yard.web.board import (
     DOC_FILES,
     ReqDetail,
     asset_file,
+    attachment_file,
     list_repos,
     requirement_detail,
     save_doc,
@@ -54,7 +55,7 @@ from dev_yard.web.board import (
 from dev_yard.web.jobs import Job, JobRunner, _pi_run_until
 from dev_yard.web.sanitize import sanitize_html
 
-_ASSET_SRC = re.compile(r'src=(["\'])(?:\./)?assets/([^"\']+)\1')
+_ASSET_REF = re.compile(r'(src|href)=(["\'])(?:\./)?(assets|uploads)/([^"\']+)\2')
 
 HERE = Path(__file__).parent
 SPA = HERE / "spa"
@@ -79,10 +80,10 @@ def render_markdown(text: str, jira: str) -> str:
     quoted = quote(jira, safe="")
 
     def repl(m: re.Match[str]) -> str:
-        q, name = m.group(1), Path(m.group(2)).name
-        return f"src={q}/r/{quoted}/assets/{quote(name)}{q}"
+        attr, q, bucket, name = m.group(1), m.group(2), m.group(3), Path(m.group(4)).name
+        return f"{attr}={q}/r/{quoted}/{bucket}/{quote(unquote(name))}{q}"
 
-    return _ASSET_SRC.sub(repl, html)
+    return _ASSET_REF.sub(repl, html)
 
 
 @dataclass
@@ -216,6 +217,7 @@ class AppContext:
             "repos": detail.repos,
             "worktrees": detail.worktrees,
             "assets": detail.assets,
+            "uploads": detail.uploads,
             "steps": [
                 {"id": s.id, "done": s.done, "current": s.current} for s in detail.steps
             ],
@@ -366,6 +368,9 @@ class AppContext:
 
     def asset_file(self, jira: str, name: str) -> Path:
         return asset_file(self.root, jira, name)
+
+    def attachment_file(self, jira: str, name: str) -> Path:
+        return attachment_file(self.root, jira, name)
 
     def add_repo(self, payload: Any) -> Job:
         return self.jobs.submit(

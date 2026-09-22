@@ -15,6 +15,7 @@ export default defineConfig({
     proxy: {
       "/api": "http://127.0.0.1:8765",
       "^/r/.*/assets/": "http://127.0.0.1:8765",
+      "^/r/.*/uploads/": "http://127.0.0.1:8765",
     },
   },
   build: {

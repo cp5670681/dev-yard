@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from dev_yard import gitops, paths
+from dev_yard import attachments, gitops, paths
 from dev_yard import status as st
 from dev_yard.atlassian import collect_requirement
 from dev_yard.bug_tickets import (
@@ -290,10 +290,16 @@ def req_open(
         saved_assets = _stash_tree(assets)
         if assets.exists():
             shutil.rmtree(assets)
+        # uploads/ is human-owned: the agent must not be able to drop it, so
+        # snapshot it and put it back after the run (success or failure).
+        uploads = d / attachments.UPLOADS_DIRNAME
+        saved_uploads = _stash_tree(uploads)
         snap = _snapshot(d, load_registry(root)["open"].protects)
         r = runner or get_runner(root, "open", print_mode=True)
         prompt = session_prompt(root, "open", req_key, target=actual_target)
         result = r.start(prompt, root, [d])
+        if saved_uploads:
+            _unstash_tree(uploads, saved_uploads)
         restored = _restore(d, snap)
         if on_progress and result.summary:
             on_progress(result.summary)
@@ -338,12 +344,71 @@ def req_open(
         (d / "SPEC.md").write_text(SPEC_SKELETON.format(key=req_key), encoding="utf-8")
     if not (d / "TICKETS.md").exists():
         (d / "TICKETS.md").write_text(TICKETS_SKELETON.format(key=req_key), encoding="utf-8")
+    # uploads/ is never wiped above; re-point REQUIREMENT.md at whatever survives,
+    # so a re-extract does not silently drop the human-added attachments.
+    kept_uploads = attachments.list_names(root, req_key)
+    if kept_uploads:
+        attachments.sync_uploads_section(d, kept_uploads)
     data = st.load(root, req_key)
     data["phase"] = "open"
     st.save(root, req_key, data)
     if warning == "pi did not write REQUIREMENT.md; wrote skeleton":
         raise RuntimeError(warning)
     return d, warning
+
+
+# ---- human attachments (reqs/<JIRA>/uploads/) ---------------------------
+
+
+def req_attach(
+    root: Path, jira: str, sources: list[Path], names: list[str] | None = None
+) -> list[str]:
+    """Copy local files into reqs/<jira>/uploads/ and refresh REQUIREMENT.md."""
+    req = paths.req_dir(root, jira)
+    if not req.is_dir():
+        raise FileNotFoundError(f"missing {req}; run 'dev-yard req open' first")
+    if not sources:
+        raise ValueError("no files to attach")
+    if names and len(names) != len(sources):
+        raise ValueError("--name count must match the number of files")
+    added = [
+        attachments.add_file(root, jira, src, name)
+        for src, name in zip(sources, names or [None] * len(sources), strict=True)
+    ]
+    attachments.sync_doc(root, jira)
+    return added
+
+
+def req_attach_bytes(root: Path, jira: str, items: list[tuple[str, bytes]]) -> list[str]:
+    """Store already-read uploads (web form path); validates before any write."""
+    req = paths.req_dir(root, jira)
+    if not req.is_dir():
+        raise FileNotFoundError(f"missing {req}; run 'dev-yard req open' first")
+    if not items:
+        raise ValueError("no files uploaded")
+    limit = attachments.MAX_BYTES // (1024 * 1024)
+    for name, data in items:
+        attachments.safe_name(name)
+        if not data:
+            raise ValueError(f"{name} is empty")
+        if len(data) > attachments.MAX_BYTES:
+            raise ValueError(f"{name} too large (>{limit}MB)")
+    added = [attachments.add_bytes(root, jira, n, d) for n, d in items]
+    attachments.sync_doc(root, jira)
+    return added
+
+
+def req_detach(root: Path, jira: str, names: list[str]) -> list[str]:
+    """Remove attachments and refresh the REQUIREMENT.md uploads list."""
+    req = paths.req_dir(root, jira)
+    if not req.is_dir():
+        raise FileNotFoundError(f"missing {req}")
+    if not names:
+        raise ValueError("no attachments to remove")
+    for name in names:
+        attachments.remove(root, jira, name)
+    attachments.sync_doc(root, jira)
+    return attachments.list_names(root, jira)
 
 
 def _norm_git_url(url: str) -> str:

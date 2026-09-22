@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dev_yard import grill_round, paths
+from dev_yard import attachments, grill_round, paths
 from dev_yard import status as st
 from dev_yard.actions import ACTION_LABELS, BOARD_ACTION_IDS
 from dev_yard.config import load_repos, resolve_freeze_branch
@@ -107,6 +107,7 @@ class ReqDetail:
     steps: list[Step]
     worktrees: list[str]
     assets: list[str]
+    uploads: list[str]
     contract: str | None
     contract_summary: str | None
     test: dict | None = None
@@ -246,6 +247,7 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
         steps=steps,
         worktrees=worktrees,
         assets=assets,
+        uploads=attachments.list_names(root, jira),
         contract=data.get("contract_review"),
         contract_summary=data.get("contract_summary"),
         test=test,
@@ -542,6 +544,10 @@ def asset_file(root: Path, jira: str, name: str) -> Path:
     if not target.is_file():
         raise FileNotFoundError(name)
     return target
+
+
+def attachment_file(root: Path, jira: str, name: str) -> Path:
+    return attachments.resolve(root, jira, name)
 
 
 def list_repos(root: Path) -> list[dict[str, str]]:

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import os
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 
-from dev_yard import __version__, gitops, paths
+from dev_yard import __version__, attachments, gitops, paths
 from dev_yard import service as yard_service
 from dev_yard.gitops import GitError
 from dev_yard.service import extract_req_key
@@ -107,6 +107,29 @@ def build(ctx: AppContext) -> APIRouter:
         except (ValueError, FileNotFoundError) as e:
             raise HTTPException(400, str(e)) from e
         return ctx.doc_payload(ctx.detail_or_404(jira), slug)
+
+    @router.post("/api/requirements/{jira}/uploads")
+    async def api_upload(jira: str, files: list[UploadFile] = File(...)):
+        ctx.detail_or_404(jira)
+        items = [(f.filename or "attachment", await f.read()) for f in files]
+        try:
+            added = yard_service.req_attach_bytes(ctx.root, jira, items)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return {"jira": jira, "added": added, "uploads": attachments.list_names(ctx.root, jira)}
+
+    @router.delete("/api/requirements/{jira}/uploads/{name}")
+    def api_delete_upload(jira: str, name: str):
+        ctx.detail_or_404(jira)
+        try:
+            yard_service.req_detach(ctx.root, jira, [name])
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return {"ok": True, "jira": jira, "uploads": attachments.list_names(ctx.root, jira)}
 
     @router.get("/api/requirements/{jira}/qa")
     def api_qa(jira: str):

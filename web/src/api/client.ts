@@ -34,7 +34,7 @@ export class ApiError extends Error {
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
-  if (init?.body && !headers.has("Content-Type")) {
+  if (init?.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
   const res = await fetch(path, { ...init, headers });
@@ -99,6 +99,26 @@ export function saveDoc(jira: string, slug: string, body: string) {
     `/api/requirements/${encodeURIComponent(jira)}/docs/${encodeURIComponent(slug)}`,
     { method: "PUT", body: JSON.stringify({ body }) },
   );
+}
+
+export function uploadAttachments(jira: string, files: File[]) {
+  const form = new FormData();
+  for (const f of files) form.append("files", f, f.name);
+  return api<{ jira: string; added: string[]; uploads: string[] }>(
+    `/api/requirements/${encodeURIComponent(jira)}/uploads`,
+    { method: "POST", body: form },
+  );
+}
+
+export function deleteAttachment(jira: string, name: string) {
+  return api<{ ok: boolean; jira: string; uploads: string[] }>(
+    `/api/requirements/${encodeURIComponent(jira)}/uploads/${encodeURIComponent(name)}`,
+    { method: "DELETE" },
+  );
+}
+
+export function attachmentUrl(jira: string, name: string) {
+  return `/r/${encodeURIComponent(jira)}/uploads/${encodeURIComponent(name)}`;
 }
 
 export function openRequirement(

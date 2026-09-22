@@ -170,6 +170,7 @@ export interface ReqDetail {
   repos?: string[];
   worktrees: string[];
   assets: string[];
+  uploads: string[];
   steps: Step[];
   tickets: Ticket[];
   actions: Action[];
