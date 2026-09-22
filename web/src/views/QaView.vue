@@ -56,6 +56,14 @@
           <p v-else class="text-body-2 mb-2 text-medium-emphasis">
             用例已生成，通过后才会开始执行。
           </p>
+          <p v-if="verifyBlocked.length" class="text-body-2 mb-2 text-warning">
+            <strong>数据核实未通过（design-blocked，执行时会跳过）：</strong>
+            {{ verifyBlocked.join("、") }}。详见
+            <code>qa/design-verify/BLOCKED.md</code>，修好前置后打回重做。
+          </p>
+          <p v-else-if="verifyStale" class="text-body-2 mb-2 text-medium-emphasis">
+            数据核实结果已过期（用例改动过），需重新核实后再审核。
+          </p>
           <v-textarea
             v-model="feedbackText"
             label="审核意见（打回时必填；会交给 qa-design 重做用例）"
@@ -508,6 +516,20 @@ const reviewLabel = computed(() => {
 
 const reviewColor = computed(() =>
   review.value?.status === "rejected" || review.value?.stale ? "warning" : "info",
+);
+
+// Cases the host proved unverifiable (`qa/design-verify/`). They are skipped at
+// run time, so the reviewer must see them here instead of approving blindly.
+const verifyBlocked = computed(() => {
+  const verify = review.value?.verify;
+  if (!verify?.present || verify.stale) return [];
+  return verify.failed ?? [];
+});
+
+// Stale verify means the summary predates the current cases, so its verdict is
+// no longer authoritative — surface that instead of silently hiding blockers.
+const verifyStale = computed(
+  () => Boolean(review.value?.verify?.present && review.value?.verify?.stale),
 );
 
 async function approveCases() {

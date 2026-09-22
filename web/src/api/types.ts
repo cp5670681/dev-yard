@@ -275,6 +275,15 @@ export interface QaCaseDetail {
   } | null;
 }
 
+export interface QaReviewVerify {
+  present: boolean;
+  stale: boolean;
+  updated_at?: string;
+  summary?: Record<string, number>;
+  failed?: string[];
+  empty?: string[];
+}
+
 export interface QaReview {
   status: string;
   approved: boolean;
@@ -283,6 +292,7 @@ export interface QaReview {
   feedback: string;
   updated_at: string;
   fingerprint: string;
+  verify?: QaReviewVerify | null;
 }
 
 export interface QaPage {
