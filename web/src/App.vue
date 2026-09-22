@@ -131,7 +131,7 @@
           :key="jira"
           :to="`/r/${jira}`"
           :title="jira"
-          subtitle="回到需求页"
+          :subtitle="reqTitle(jira)"
           :prepend-icon="mdiClipboardTextOutline"
           active-class="jira-nav-active"
           @click="onNav"
@@ -200,6 +200,11 @@ const theme = useTheme();
 const route = useRoute();
 const drawer = ref(true);
 const meta = ref<Meta | null>(null);
+const reqTitles = ref<Record<string, string>>({});
+
+function reqTitle(jira: string) {
+  return reqTitles.value[jira] || "";
+}
 let stop: (() => void) | undefined;
 
 const isDark = computed(() => theme.global.current.value.dark);
@@ -267,6 +272,9 @@ onMounted(async () => {
   try {
     const items = await listRequirements();
     pruneRecents(items.map((i) => i.jira));
+    const titles: Record<string, string> = {};
+    for (const it of items) if (it.title) titles[it.jira] = it.title;
+    reqTitles.value = titles;
   } catch {
     /* keep recents if list fails */
   }
