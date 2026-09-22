@@ -796,6 +796,10 @@ def _run_prompt(root: Path, jira: str, cfg: QaConfig, job: CaseJob, run_id: str)
         f"Write case result to `{evidence / 'result.yaml'}` "
         + f"and screenshots to `{evidence / 'screenshots'}`.\n"
         + "result.yaml assertions: each item needs type (ui|net|db), expected, actual, status.\n"
+        + "result.yaml must be valid YAML: quote every free-text scalar (reason/expected/"
+        "actual/step_desc). An unquoted value bearing a colon+space — such as a "
+        "'case-defect:' prefix — makes the whole file unparseable, and the host then marks "
+        "this case blocked (unreadable case result.yaml).\n"
         + "This invocation runs only the case below.\n\n"
         + f"# Case {job.id}\n\n"
         + (Path(job.path).read_text(encoding="utf-8") if job.path else job.body)
