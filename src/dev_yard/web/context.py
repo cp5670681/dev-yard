@@ -226,7 +226,13 @@ class AppContext:
         if qa is not None:
             qa["active_jobs"] = active_qa
         actions = [
-            {"id": a.id, "label": a.label, "enabled": a.enabled, "reason": a.reason}
+            {
+                "id": a.id,
+                "label": a.label,
+                "enabled": a.enabled,
+                "reason": a.reason,
+                "stage": a.stage,
+            }
             for a in detail.actions
         ]
         if active_qa:

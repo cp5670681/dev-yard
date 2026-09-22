@@ -106,6 +106,7 @@ export interface Action {
   label: string;
   enabled: boolean;
   reason: string;
+  stage?: string;
 }
 
 export interface DocMeta {

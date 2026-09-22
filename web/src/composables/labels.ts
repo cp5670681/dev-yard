@@ -64,6 +64,35 @@ export const ACTION_LABELS: Record<string, string> = {
   repo_add: "仓库 · clone",
 };
 
+// Display order for the action groups on the requirement page. Mirrors the
+// pipeline steps, plus "utility" for cross-stage maintenance actions
+// (push/sync/change/reset-phase) and plugin stages with no builtin peer.
+export const STAGE_ORDER = [
+  "open",
+  "grill",
+  "spec",
+  "tickets",
+  "freeze",
+  "implement",
+  "review",
+  "testing",
+  "done",
+  "utility",
+];
+
+export const STAGE_LABELS: Record<string, string> = {
+  open: "抽取",
+  grill: "对齐",
+  spec: "规约",
+  tickets: "拆票",
+  freeze: "冻结",
+  implement: "实现",
+  review: "审查",
+  testing: "提测",
+  done: "完成",
+  utility: "工具",
+};
+
 export const QA_STATE_LABELS: Record<string, string> = {
   pending: "待测试",
   ready: "就绪",

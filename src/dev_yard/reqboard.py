@@ -48,6 +48,41 @@ class Action:
     label: str
     enabled: bool
     reason: str = ""
+    stage: str = ""
+
+
+# Which pipeline stage each board action belongs to, so the web UI can group the
+# action row instead of dumping every button in one flat list. Anything not
+# listed here (push/sync/change/reset-phase, plugin stages) falls back to
+# "utility": cross-stage actions that don't belong to one pipeline step.
+ACTION_STAGES = {
+    "open": "open",
+    "grill": "grill",
+    "reset-grill": "grill",
+    "spec": "spec",
+    "tickets": "tickets",
+    "freeze": "freeze",
+    "implement": "implement",
+    "review": "review",
+    "contract": "review",
+    "fix-contract": "review",
+    "submit-test": "testing",
+    "qa-review": "testing",
+    "run-test": "testing",
+    "fill-test-report": "testing",
+    "fix-test": "testing",
+}
+
+# Plugin stages gate on a *phase* (open/frozen/testing/done), which is a coarser
+# vocabulary than the pipeline stages above. Translate so plugin buttons group
+# with the matching builtin stage instead of spawning orphan buckets like
+# "frozen" that the UI has no label or ordering for.
+PHASE_TO_STAGE = {
+    "open": "open",
+    "frozen": "freeze",
+    "testing": "testing",
+    "done": "done",
+}
 
 
 @dataclass
@@ -515,6 +550,9 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
             ),
         ),
     ]
+    for a in builtin:
+        a.stage = ACTION_STAGES.get(a.id, "utility")
+
     from dev_yard.stages import load_registry
 
     for spec in sorted(load_registry(root).values(), key=lambda s: s.order):
@@ -526,7 +564,15 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
             if enabled
             else f"需要 phase={spec.requires_phase}（当前 {detail.phase}）"
         )
-        builtin.append(Action(spec.name, spec.title or spec.name, enabled, reason))
+        builtin.append(
+            Action(
+                spec.name,
+                spec.title or spec.name,
+                enabled,
+                reason,
+                PHASE_TO_STAGE.get(spec.requires_phase or "", "utility"),
+            )
+        )
     return builtin
 
 

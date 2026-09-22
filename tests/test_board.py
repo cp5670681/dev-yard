@@ -338,6 +338,7 @@ def test_plugin_action_appended(tmp_path: Path, monkeypatch):
     assert deploy.label == "部署"
     assert not deploy.enabled
     assert "frozen" in deploy.reason
+    assert deploy.stage == "freeze"
     from dev_yard.web.board import PIPELINE
 
     assert {s.id for s in detail.steps} == set(PIPELINE)
@@ -371,6 +372,21 @@ def test_plugin_without_phase_gate_always_enabled(tmp_path: Path, monkeypatch):
     actions = available_actions(detail, yard)
     scan = next(a for a in actions if a.id == "scan")
     assert scan.enabled
+    assert scan.stage == "utility"
+
+
+def test_builtin_actions_carry_pipeline_stage(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _yard(tmp_path)
+    req_open(yard, "AB-45", source="none")
+    detail = requirement_detail(yard, "AB-45")
+    stages = {a.id: a.stage for a in available_actions(detail, yard)}
+    assert stages["contract"] == "review"
+    assert stages["fix-contract"] == "review"
+    assert stages["run-test"] == "testing"
+    assert stages["push"] == "utility"
+    assert stages["change"] == "utility"
 
 
 @pytest.mark.parametrize("name,label", [("grill", "对齐"), ("spec", "写规约"), ("tickets", "拆票"), ("review", "审查")])

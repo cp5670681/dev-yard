@@ -75,7 +75,10 @@
         </template>
       </div>
 
-      <div class="d-flex flex-wrap align-center ga-2 mb-4">
+      <div
+        class="d-flex flex-wrap align-center ga-2"
+        :class="actionGroups.length > 1 ? 'mb-2' : 'mb-4'"
+      >
         <v-tooltip :text="nextAction?.reason || nextAction?.label || ''" :disabled="!nextAction?.reason">
           <template #activator="{ props: tip }">
             <span v-if="nextAction" v-bind="tip" class="d-inline-block">
@@ -92,61 +95,50 @@
             </span>
           </template>
         </v-tooltip>
-        <template v-if="mdAndUp">
-          <v-tooltip
-            v-for="a in otherActions"
-            :key="a.id"
-            :text="a.reason || ACTION_LABELS[a.id] || a.label"
-            :disabled="!a.reason"
-          >
-            <template #activator="{ props: tip }">
-              <span v-bind="tip" class="d-inline-block" @click="!a.enabled && confirmAction(a.id, undefined, a)">
-                <v-btn
-                  variant="tonal"
-                  :disabled="!a.enabled"
-                  :loading="acting === a.id"
-                  @click="confirmAction(a.id, undefined, a)"
-                >
-                  {{ ACTION_LABELS[a.id] || a.label }}
-                  <v-chip
-                    v-if="detail.stage_runs?.[a.id]"
-                    class="ml-2"
-                    size="x-small"
-                    :color="detail.stage_runs[a.id].ok ? 'success' : 'error'"
-                    variant="flat"
-                  >
-                    {{ detail.stage_runs[a.id].ok ? "ok" : "err" }}
-                  </v-chip>
-                </v-btn>
-              </span>
-            </template>
-          </v-tooltip>
-        </template>
-        <v-menu v-else>
-          <template #activator="{ props: menuProps }">
-            <v-btn v-bind="menuProps" variant="tonal" :block="!mdAndUp">更多操作</v-btn>
-          </template>
-          <v-list>
-            <v-list-item
-              v-for="a in otherActions"
-              :key="a.id"
-              :title="ACTION_LABELS[a.id] || a.label"
-              :disabled="!a.enabled"
-              :subtitle="a.reason || undefined"
-              @click="confirmAction(a.id, undefined, a)"
-            >
-              <template v-if="detail.stage_runs?.[a.id]" #append>
+        <v-tooltip
+          v-for="a in activeActions"
+          :key="a.id"
+          :text="a.reason || ACTION_LABELS[a.id] || a.label"
+          :disabled="!a.reason"
+        >
+          <template #activator="{ props: tip }">
+            <span v-bind="tip" class="d-inline-block" @click="!a.enabled && confirmAction(a.id, undefined, a)">
+              <v-btn
+                variant="tonal"
+                :disabled="!a.enabled"
+                :loading="acting === a.id"
+                @click="confirmAction(a.id, undefined, a)"
+              >
+                {{ ACTION_LABELS[a.id] || a.label }}
                 <v-chip
+                  v-if="detail.stage_runs?.[a.id]"
+                  class="ml-2"
                   size="x-small"
                   :color="detail.stage_runs[a.id].ok ? 'success' : 'error'"
                   variant="flat"
                 >
                   {{ detail.stage_runs[a.id].ok ? "ok" : "err" }}
                 </v-chip>
-              </template>
-            </v-list-item>
-          </v-list>
-        </v-menu>
+              </v-btn>
+            </span>
+          </template>
+        </v-tooltip>
+      </div>
+
+      <div v-if="actionGroups.length > 1" class="d-flex flex-wrap align-center ga-1 mb-4">
+        <span class="text-caption text-medium-emphasis mr-1">阶段</span>
+        <v-chip
+          v-for="g in actionGroups"
+          :key="g.stage"
+          size="small"
+          class="cursor-pointer"
+          :variant="g.stage === currentStage ? 'flat' : 'tonal'"
+          :color="g.stage === currentStage ? 'primary' : g.enabledCount ? undefined : 'grey'"
+          @click="pickedStage = g.stage"
+        >
+          {{ g.label }}
+          <span class="ml-1 text-caption font-weight-bold">{{ g.enabledCount }}</span>
+        </v-chip>
       </div>
 
       <!-- 契约审查状态显式横幅 -->
@@ -817,7 +809,13 @@ import CaseDetailDialog from "@/components/CaseDetailDialog.vue";
 import TicketDiffDialog from "@/components/TicketDiffDialog.vue";
 import TicketReviewDialog from "@/components/TicketReviewDialog.vue";
 import { runningJobs, watchJobs } from "@/state/jobs";
-import { ACTION_LABELS, phaseColor, STEP_LABELS } from "@/composables/labels";
+import {
+  ACTION_LABELS,
+  phaseColor,
+  STAGE_LABELS,
+  STAGE_ORDER,
+  STEP_LABELS,
+} from "@/composables/labels";
 import { isQaJobActive, QA_GATE_ACTIONS, useQaRunActive } from "@/composables/qa";
 import { forgetRecent } from "@/composables/recents";
 import { useSnack } from "@/composables/snack";
@@ -1000,9 +998,49 @@ const nextAction = computed(() => {
     null
   );
 });
-const otherActions = computed(() => {
-  if (!detail.value || !nextAction.value) return detail.value?.actions || [];
-  return detail.value.actions.filter((a) => a.id !== nextAction.value?.id);
+// Group every action by pipeline stage so the page shows one stage's buttons at
+// a time instead of a flat wall. The primary next-action is rendered separately
+// and stripped from its group's inline row to avoid showing it twice.
+const actionGroups = computed(() => {
+  const map = new Map<string, Action[]>();
+  for (const a of detail.value?.actions || []) {
+    const stage = a.stage || "utility";
+    const bucket = map.get(stage);
+    if (bucket) bucket.push(a);
+    else map.set(stage, [a]);
+  }
+  const order = [...STAGE_ORDER];
+  for (const stage of map.keys()) if (!order.includes(stage)) order.push(stage);
+  return order
+    .filter((stage) => map.has(stage))
+    .map((stage) => {
+      const all = map.get(stage) || [];
+      return {
+        stage,
+        label: STAGE_LABELS[stage] || stage,
+        actions: all.filter((a) => a.id !== nextAction.value?.id),
+        enabledCount: all.filter((a) => a.enabled).length,
+      };
+    });
+});
+
+const pickedStage = ref("");
+const currentStage = computed(() => {
+  const stages = actionGroups.value.map((g) => g.stage);
+  if (pickedStage.value && stages.includes(pickedStage.value)) return pickedStage.value;
+  const next = nextAction.value;
+  if (next?.stage && stages.includes(next.stage)) return next.stage;
+  const firstEnabled = actionGroups.value.find((g) => g.enabledCount > 0);
+  return firstEnabled?.stage || actionGroups.value[0]?.stage || "";
+});
+const activeActions = computed(
+  () => actionGroups.value.find((g) => g.stage === currentStage.value)?.actions || [],
+);
+
+// A stage pick belongs to the requirement it was made on; clear it on navigation
+// so the next requirement opens on its own current stage.
+watch(jira, () => {
+  pickedStage.value = "";
 });
 
 const liveProgress = computed(() => jobProgress.value || detail.value?.qa?.progress || null);
