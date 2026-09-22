@@ -840,6 +840,11 @@ def _verify_loop(
         if not failures:
             break
         if attempt + 1 >= attempts:
+            # Out of retries: this verdict is what the human has to act on, so
+            # it must land in the review state. Skipping this write would leave
+            # review.yaml holding an earlier iteration's already-fixed findings
+            # and hide the case that is still design-blocked.
+            reject_cases(qa, render_feedback(results))
             if on_log is not None:
                 on_log(
                     f"数据核实仍有 {len(failures)} 条未通过，已达上限 {attempts}；"

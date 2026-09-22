@@ -393,6 +393,39 @@ def test_design_loop_repairs_data_gap(tmp_path: Path, git_src: Path, monkeypatch
     assert "核实" in result["review"]["feedback"]
 
 
+def test_exhausted_verify_loop_records_final_failures(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None: 0
+    )
+    yard = _testing_req(tmp_path, git_src, "QA-V6")
+    _write_qa_yaml(yard, "\ndesign:\n  verify_attempts: 2\n")
+    writer = _CaseWriter(
+        yard,
+        "QA-V6",
+        bodies=[
+            "SELECT id FROM projects WHERE id=669215",
+            "SELECT id FROM projects WHERE id=1",
+        ],
+    )
+    result = req_test(yard, "QA-V6", print_mode=True, runner=writer)
+    assert result["awaiting_review"] is True
+    assert writer.called == 2  # initial design + one redesign after the failure
+    assert result["review"]["status"] == "rejected"
+    # The feedback must describe the verdict the human has to act on — the
+    # retry that is still failing — not the findings that triggered the (already
+    # applied) redesign.
+    assert "id=1" in result["review"]["feedback"]
+    assert "id=669215" not in result["review"]["feedback"]
+    # The UI only renders `failed` when the summary is present and fresh, so
+    # lock those fields down too.
+    verify = result["review"]["verify"]
+    assert verify["present"] is True
+    assert verify["stale"] is False
+    assert verify["failed"] == ["case-01"]
+
+
 def test_approve_refused_until_verified(tmp_path: Path, git_src: Path, monkeypatch):
     monkeypatch.setattr(
         "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None: 0
