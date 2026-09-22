@@ -126,16 +126,25 @@
       </v-list>
       <v-list-subheader v-if="idleRecents.length">最近</v-list-subheader>
       <v-list v-if="idleRecents.length" density="compact" nav>
-        <v-list-item
+        <v-tooltip
           v-for="jira in idleRecents"
           :key="jira"
-          :to="`/r/${jira}`"
-          :title="jira"
-          :subtitle="reqTitle(jira)"
-          :prepend-icon="mdiClipboardTextOutline"
-          active-class="jira-nav-active"
-          @click="onNav"
-        />
+          :text="reqTitle(jira)"
+          :disabled="!reqTitle(jira)"
+          location="end"
+        >
+          <template #activator="{ props: tip }">
+            <v-list-item
+              v-bind="tip"
+              :to="`/r/${jira}`"
+              :title="jira"
+              :subtitle="reqTitle(jira)"
+              :prepend-icon="mdiClipboardTextOutline"
+              active-class="jira-nav-active"
+              @click="onNav"
+            />
+          </template>
+        </v-tooltip>
       </v-list>
       <template #append>
         <v-divider />
