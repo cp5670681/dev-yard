@@ -386,6 +386,7 @@
         @fill-bug="confirmAction('fill-test-report')"
         @open-case="openCaseDetail"
         @rerun-case="rerunCase"
+        @rerun-cases="rerunCases"
       />
       <v-card v-if="detail.changes?.length" variant="outlined" class="mt-4">
         <v-card-title class="text-subtitle-2">需求变更记录</v-card-title>
@@ -901,7 +902,6 @@ import {
   getReqAccounts,
   getRequirement,
   refreshReqAccounts,
-  rerunQaCases,
   runAction,
   submitTestReport,
   uploadAttachments,
@@ -934,7 +934,7 @@ import {
   STEP_LABELS,
 } from "@/composables/labels";
 import { isQaJobActive, QA_GATE_ACTIONS, useQaActive } from "@/composables/qa";
-import { jobTail, settleJob } from "@/composables/qaRerun";
+import { jobTail, submitRerun, tallyStatuses, tallyKind, BATCH_RERUN_CASE } from "@/composables/qaRerun";
 import { useSnack } from "@/composables/snack";
 
 const { mdAndUp } = useDisplay();
@@ -1161,7 +1161,7 @@ const activeActions = computed(
 // so the next requirement opens on its own current stage.
 watch(jira, () => {
   pickedStage.value = "";
-  rerunBannerCase = "";
+  rerunBannerCases = [];
   suppressRunBanner = false;
   lastBannerRunId = "";
 });
@@ -1198,7 +1198,7 @@ function onJobUpdate(job: JobSnapshot) {
 let boardPoll: ReturnType<typeof setInterval> | undefined;
 // Held only for the rerun that is on screen. A later run, or another
 // requirement, must not keep painting that case.
-let rerunBannerCase = "";
+let rerunBannerCases: string[] = [];
 let suppressRunBanner = false;
 let lastBannerRunId = "";
 
@@ -1211,7 +1211,7 @@ watch(
     }
     if (now) {
       if (!rerunningCase.value) {
-        rerunBannerCase = "";
+        rerunBannerCases = [];
         suppressRunBanner = false;
       }
       boardPoll = setInterval(() => void load(), 5000);
@@ -1439,35 +1439,34 @@ async function rejectQa() {
 }
 
 async function rerunCase(caseId: string) {
-  if (!caseId || rerunningCase.value) return;
+  await rerunCases([caseId]);
+}
+
+async function rerunCases(caseIds: string[]) {
+  const ids = caseIds.map((c) => c.trim()).filter(Boolean);
+  if (!ids.length || rerunningCase.value) return;
   error.value = "";
-  rerunningCase.value = caseId;
-  rerunBannerCase = caseId;
+  rerunningCase.value = ids.length === 1 ? ids[0] : BATCH_RERUN_CASE;
+  rerunBannerCases = ids;
   try {
-    const out = await rerunQaCases(jira.value, [caseId]);
-    const jobId = out.jobs[0]?.id;
-    if (!jobId) throw new Error("重测没有返回任务");
-    await router.replace({ query: { ...route.query, job: jobId } });
-    const done = await settleJob(jobId);
+    const { ids: done, label, job } = await submitRerun(jira.value, ids, (jobId) =>
+      router.replace({ query: { ...route.query, job: jobId } }),
+    );
     await load();
-    if (done.state === "error" || done.state === "cancelled") {
-      rerunBannerCase = "";
+    if (job.state === "error" || job.state === "cancelled") {
+      rerunBannerCases = [];
       suppressRunBanner = true;
       runEndBanner.show = false;
       const msg =
-        jobTail(done.log) ||
-        `${caseId} 重测${done.state === "cancelled" ? "已取消" : "失败"}`;
+        jobTail(job.log) ||
+        `${label} 重测${job.state === "cancelled" ? "已取消" : "失败"}`;
       error.value = msg;
       snack.notify(msg, "error");
       return;
     }
-    showCaseBanner(caseId);
-    snack.notify(
-      runEndBanner.text,
-      runEndBanner.color === "error" ? "error" : "success",
-    );
+    snack.notify(runEndBanner.text, showRerunBanner(done));
   } catch (e) {
-    rerunBannerCase = "";
+    rerunBannerCases = [];
     suppressRunBanner = true;
     error.value = e instanceof Error ? e.message : String(e);
     snack.notify(error.value, "error");
@@ -1578,7 +1577,7 @@ async function onAction(
   error.value = "";
   acting.value = action;
   if (action === "qa-run" || action === "qa-design" || action === "qa-review") {
-    rerunBannerCase = "";
+    rerunBannerCases = [];
     suppressRunBanner = false;
   }
   try {
@@ -1616,20 +1615,36 @@ function onJobDone(job?: JobSnapshot) {
   });
 }
 
-function showCaseBanner(caseId: string) {
-  const row = detail.value?.qa?.latest_run?.cases?.find((c) => c.case === caseId);
-  const status = row?.status || "未知";
-  const reason = row?.reason ? `：${row.reason}` : "";
-  runEndBanner.text = `${caseId} 重测 ${status}${reason}`;
+// Paint the banner for the cases just re-run and return the matching snack kind.
+// A batch whose cases never produced a verdict must not read as a clean pass.
+function showRerunBanner(caseIds: string[]): "success" | "error" | "info" {
+  const cases = detail.value?.qa?.latest_run?.cases;
+  if (caseIds.length === 1) {
+    const row = cases?.find((c) => c.case === caseIds[0]);
+    const status = row?.status || "未知";
+    const reason = row?.reason ? `：${row.reason}` : "";
+    runEndBanner.text = `${caseIds[0]} 重测 ${status}${reason}`;
+    runEndBanner.color =
+      status === "passed" ? "success" : status === "failed" ? "error" : "warning";
+    runEndBanner.show = true;
+    return status === "passed" ? "success" : status === "failed" ? "error" : "info";
+  }
+  const tally = tallyStatuses(cases, caseIds);
+  const text = [
+    `重测 ${caseIds.length} 条：${tally.passed} 通过 / ${tally.failed} 失败 / ${tally.blocked} 阻塞`,
+  ];
+  if (tally.other) text.push(`${tally.other} 未出结果`);
+  runEndBanner.text = text.join("，");
   runEndBanner.color =
-    status === "passed" ? "success" : status === "failed" ? "error" : "warning";
+    tally.failed > 0 ? "error" : tally.blocked > 0 || tally.other > 0 ? "warning" : "success";
   runEndBanner.show = true;
+  return tallyKind(tally);
 }
 
 function showRunEndBanner() {
   if (suppressRunBanner) return;
-  if (rerunBannerCase) {
-    showCaseBanner(rerunBannerCase);
+  if (rerunBannerCases.length) {
+    showRerunBanner(rerunBannerCases);
     return;
   }
   const run = detail.value?.qa?.latest_run;

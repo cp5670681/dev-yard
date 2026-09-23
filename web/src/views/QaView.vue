@@ -215,6 +215,19 @@
           <v-progress-circular indeterminate size="10" width="2" class="mr-1" />
           执行中
         </v-chip>
+        <v-btn
+          v-if="rerunnableCases.length"
+          size="small"
+          variant="tonal"
+          color="warning"
+          :prepend-icon="mdiRefresh"
+          :loading="rerunningCase === BATCH_RERUN_CASE"
+          :disabled="rerunningCase !== ''"
+          :title="`一次性重测本轮失败/阻塞的 ${rerunnableCases.length} 条用例（按池并发执行）`"
+          @click="rerunCases(rerunnableCases.map((c) => c.case))"
+        >
+          重测失败/阻塞 ({{ rerunnableCases.length }})
+        </v-btn>
       </div>
 
       <v-alert
@@ -505,9 +518,17 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { mdiClipboardCheckOutline, mdiHelpCircleOutline } from "@mdi/js";
-import { getQa, getRequirement, rerunQaCases, runAction } from "@/api/client";
-import { jobTail, settleJob } from "@/composables/qaRerun";
+import { mdiClipboardCheckOutline, mdiHelpCircleOutline, mdiRefresh } from "@mdi/js";
+import { getQa, getRequirement, runAction } from "@/api/client";
+import {
+  jobTail,
+  submitRerun,
+  tallyStatuses,
+  tallyMessage,
+  tallyKind,
+  findRunWithCases,
+  BATCH_RERUN_CASE,
+} from "@/composables/qaRerun";
 import type { DocMeta, QaPage, QaReview, ShotItem } from "@/api/types";
 import CaseDetailDialog from "@/components/CaseDetailDialog.vue";
 import ReqDocTabs from "@/components/ReqDocTabs.vue";
@@ -669,6 +690,20 @@ const selectedRun = computed(() => {
   return list.find((r) => r.run_id === selectedRunId.value) || list[0] || null;
 });
 
+// One-click batch: everything that did not pass the selected round. Only
+// offered on the newest round, because `req_test` amends the newest run that
+// contains the ids — batching an older round would re-run a different one.
+const isNewestRun = computed(
+  () => Boolean(selectedRun.value) && selectedRun.value === runs.value[0],
+);
+const rerunnableCases = computed(() =>
+  isNewestRun.value
+    ? (selectedRun.value?.cases || []).filter(
+        (c) => c.status === "failed" || c.status === "blocked",
+      )
+    : [],
+);
+
 const summary = computed(() => selectedRun.value?.summary || {});
 
 const liveProgress = computed(() => selectedRun.value?.progress || null);
@@ -779,24 +814,28 @@ function canRerun(c: { status?: string }) {
 }
 
 async function rerunCase(caseId: string) {
-  if (!caseId || rerunningCase.value) return;
+  await rerunCases([caseId]);
+}
+
+async function rerunCases(caseIds: string[]) {
+  const ids = caseIds.map((c) => c.trim()).filter(Boolean);
+  if (!ids.length || rerunningCase.value) return;
   error.value = "";
-  rerunningCase.value = caseId;
+  rerunningCase.value = ids.length === 1 ? ids[0] : BATCH_RERUN_CASE;
   try {
-    const out = await rerunQaCases(jira.value, [caseId]);
-    const jobId = out.jobs[0]?.id;
-    if (!jobId) throw new Error("重测没有返回任务");
-    const done = await settleJob(jobId);
+    const { ids: done, label, job } = await submitRerun(jira.value, ids);
     await load();
-    if (done.state === "error" || done.state === "cancelled") {
+    if (job.state === "error" || job.state === "cancelled") {
       const msg =
-        jobTail(done.log) ||
-        `${caseId} 重测${done.state === "cancelled" ? "已取消" : "失败"}`;
+        jobTail(job.log) ||
+        `${label} 重测${job.state === "cancelled" ? "已取消" : "失败"}`;
       error.value = msg;
       snack.notify(msg, "error");
       return;
     }
-    snack.notify(`${caseId} 重测完成`, "success");
+    const run = findRunWithCases(payload.value?.runs, done);
+    const tally = tallyStatuses(run?.cases, done);
+    snack.notify(tallyMessage(done, tally), tallyKind(tally));
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
     snack.notify(error.value, "error");

@@ -162,6 +162,20 @@
 
         <div class="d-flex align-center ga-2">
           <v-btn
+            v-if="rerunnableCases.length"
+            variant="tonal"
+            size="x-small"
+            color="warning"
+            :prepend-icon="mdiRefresh"
+            :loading="rerunningCase === BATCH_RERUN_CASE"
+            :disabled="rerunningCase !== ''"
+            class="text-caption font-weight-medium"
+            :title="`一次性重测本轮失败/阻塞的 ${rerunnableCases.length} 条用例（按池并发执行）`"
+            @click.stop="$emit('rerun-cases', rerunnableCases.map((c) => c.id))"
+          >
+            重测失败/阻塞 ({{ rerunnableCases.length }})
+          </v-btn>
+          <v-btn
             v-if="allQaCases.length || jira"
             variant="text"
             size="x-small"
@@ -409,12 +423,14 @@ import {
   mdiBugOutline,
   mdiBugCheckOutline,
   mdiPlus,
+  mdiRefresh,
 } from "@mdi/js";
 import type { Ticket, QaCaseItem, QaProgress } from "@/api/types";
 import TicketCard from "./TicketCard.vue";
 import QaTestCard from "./QaTestCard.vue";
 import { TICKET_STATE_LABELS, QA_STATE_LABELS } from "@/composables/labels";
 import { findingCaseId } from "@/composables/qa";
+import { BATCH_RERUN_CASE } from "@/composables/qaRerun";
 
 const props = withDefaults(
   defineProps<{
@@ -443,6 +459,7 @@ defineEmits<{
   "fill-bug": [];
   "open-case": [caseId: string];
   "rerun-case": [caseId: string];
+  "rerun-cases": [caseIds: string[]];
 }>();
 
 const { mdAndUp } = useDisplay();
@@ -650,6 +667,12 @@ const filteredQaCases = computed(() => {
   if (qaFilter.value === "all") return allQaCases.value;
   return qaByState.value[qaFilter.value] || [];
 });
+
+// One-click batch: everything that did not pass this round. `passed` is left
+// alone so a batch never re-runs work that already succeeded.
+const rerunnableCases = computed(() =>
+  allQaCases.value.filter((c) => c.state === "failed" || c.state === "blocked"),
+);
 
 // -------------------------------------------------------------
 // 3. Bug Fix Tickets (B1..Bn)
