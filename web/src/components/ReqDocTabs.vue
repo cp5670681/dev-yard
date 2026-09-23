@@ -7,7 +7,7 @@
       :value="d.slug"
       :to="`/r/${jira}/docs/${d.slug}`"
     >
-      {{ d.filename }}
+      {{ docLabel(d.slug, d.filename) }}
       <v-chip v-if="!d.filled" size="x-small" class="ml-2" variant="text">骨架</v-chip>
     </v-tab>
     <v-tab value="qa" :to="`/r/${jira}/qa`">测试</v-tab>
@@ -16,6 +16,7 @@
 
 <script setup lang="ts">
 import type { DocMeta } from "@/api/types";
+import { docLabel } from "@/composables/labels";
 
 defineProps<{
   jira: string;

@@ -3,15 +3,27 @@
     <div class="d-flex flex-column flex-sm-row align-sm-start justify-space-between ga-3 mb-4">
       <div>
         <v-breadcrumbs :items="crumbs" density="compact" class="px-0 mb-1" />
-        <h1 class="text-h5 text-sm-h4">{{ doc?.filename }}</h1>
+        <h1 class="text-h5 text-sm-h4">{{ docLabel(slug, doc?.filename) }}</h1>
         <p class="text-medium-emphasis mb-0">
+          <span v-if="doc?.filename" class="font-weight-medium">{{ doc.filename }}</span>
+          <span v-if="doc?.filename"> · </span>
           {{ doc?.filled ? "已填写" : "还是骨架，可以让 agent 写，或在下面改" }}
         </p>
       </div>
-      <v-btn-toggle v-model="mode" mandatory density="comfortable" color="primary" divided>
-        <v-btn value="read">阅读</v-btn>
-        <v-btn value="edit">编辑</v-btn>
-      </v-btn-toggle>
+      <div class="d-flex align-center ga-2">
+        <v-btn
+          variant="tonal"
+          :disabled="!doc?.text"
+          :prepend-icon="mdiContentCopy"
+          @click="copyContent"
+        >
+          复制内容
+        </v-btn>
+        <v-btn-toggle v-model="mode" mandatory density="comfortable" color="primary" divided>
+          <v-btn value="read">阅读</v-btn>
+          <v-btn value="edit">编辑</v-btn>
+        </v-btn-toggle>
+      </div>
     </div>
     <v-alert v-if="error" type="error" class="mb-4" closable @click:close="error = ''">
       {{ error }}
@@ -38,9 +50,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
+import { mdiContentCopy } from "@mdi/js";
 import { getDoc, getRequirement, saveDoc } from "@/api/client";
 import type { DocMeta, DocPayload } from "@/api/types";
 import ReqDocTabs from "@/components/ReqDocTabs.vue";
+import { docLabel } from "@/composables/labels";
 import { useSnack } from "@/composables/snack";
 
 const route = useRoute();
@@ -58,7 +72,7 @@ const busy = ref(false);
 const crumbs = computed(() => [
   { title: "需求", to: "/" },
   { title: jira.value, to: `/r/${jira.value}` },
-  { title: doc.value?.filename || slug.value, disabled: true },
+  { title: docLabel(slug.value, doc.value?.filename), disabled: true },
 ]);
 
 async function load() {
@@ -87,6 +101,17 @@ async function save() {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
     busy.value = false;
+  }
+}
+
+async function copyContent() {
+  const value = editing.value ? text.value : doc.value?.text || "";
+  if (!value) return;
+  try {
+    await navigator.clipboard.writeText(value);
+    snack.notify(`已复制${docLabel(slug.value, doc.value?.filename)}`, "success");
+  } catch {
+    snack.notify("复制失败", "error");
   }
 }
 

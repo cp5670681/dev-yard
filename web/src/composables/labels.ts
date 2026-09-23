@@ -95,6 +95,17 @@ export const STAGE_LABELS: Record<string, string> = {
   utility: "工具",
 };
 
+export const DOC_LABELS: Record<string, string> = {
+  requirement: "需求文档",
+  grill: "对齐记录",
+  spec: "规格说明",
+  tickets: "任务拆分",
+};
+
+export function docLabel(slug: string, filename?: string) {
+  return DOC_LABELS[slug] || filename || slug;
+}
+
 export const QA_STATE_LABELS: Record<string, string> = {
   pending: "待测试",
   ready: "就绪",
