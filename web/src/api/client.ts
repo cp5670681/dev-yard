@@ -228,20 +228,34 @@ export function addRepo(payload: {
   default_base: string;
   role: string;
   path: string;
-  provider?: string;
-  model?: string;
-  test_branch?: string;
+  provider?: string | null;
+  model?: string | null;
+  test_branch?: string | null;
 }) {
   return api<JobsOut>("/api/repos", {
     method: "POST",
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      ...payload,
+      provider: payload.provider ?? "",
+      model: payload.model ?? "",
+      test_branch: payload.test_branch ?? "",
+    }),
   });
 }
 
-export function setRepoPi(alias: string, provider: string, model: string, test_branch: string) {
+export function setRepoPi(
+  alias: string,
+  provider: string | null,
+  model: string | null,
+  test_branch: string | null,
+) {
   return api<Repo[]>(`/api/repos/${encodeURIComponent(alias)}`, {
     method: "PUT",
-    body: JSON.stringify({ provider, model, test_branch }),
+    body: JSON.stringify({
+      provider: provider ?? "",
+      model: model ?? "",
+      test_branch: test_branch ?? "",
+    }),
   });
 }
 

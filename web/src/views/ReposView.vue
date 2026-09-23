@@ -148,6 +148,7 @@
                   density="comfortable"
                   hide-details
                   clearable
+                  @update:model-value="onAddModelChange"
                 />
               </v-col>
             </v-row>
@@ -188,6 +189,7 @@
             class="mb-3"
             hide-details
             clearable
+            @update:model-value="onEditModelChange"
           />
           <v-text-field
             v-model="editTestBranch"
@@ -290,6 +292,10 @@ function onAddProviderChange(next: string | null) {
   }
 }
 
+function onAddModelChange(next: string | null) {
+  if (!next) addProvider.value = "";
+}
+
 function onEditProviderChange(next: string | null) {
   const pid = next || "";
   if (!pid) {
@@ -297,6 +303,10 @@ function onEditProviderChange(next: string | null) {
   } else if (editModel.value && !modelItems(pid).includes(editModel.value)) {
     editModel.value = "";
   }
+}
+
+function onEditModelChange(next: string | null) {
+  if (!next) editProvider.value = "";
 }
 
 async function reload() {
