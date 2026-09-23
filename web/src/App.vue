@@ -100,45 +100,54 @@
       <v-divider class="my-2" />
       <v-list-subheader v-if="reqRows.length">需求</v-list-subheader>
       <v-list v-if="reqRows.length" density="compact" nav>
-        <v-list-item
+        <v-tooltip
           v-for="row in reqRows"
           :key="row.jira"
-          :to="`/r/${row.jira}`"
-          :title="row.jira"
-          :subtitle="row.subtitle"
-          active-class="jira-nav-active"
-          @click="onNav"
+          :text="row.subtitle"
+          :disabled="!row.subtitle"
+          location="end"
         >
-          <template #prepend>
-            <v-progress-circular
-              v-if="row.job && row.job.state !== 'waiting'"
-              indeterminate
-              size="18"
-              width="2"
-              color="primary"
-            />
-            <v-icon v-else-if="row.job" :icon="mdiProgressClock" color="error" size="18" />
-            <v-icon v-else :icon="mdiClipboardTextOutline" size="18" />
-          </template>
-          <template #append>
-            <v-chip
-              v-if="row.phase"
-              size="x-small"
-              variant="tonal"
-              :color="phaseColor(row.phase)"
-              class="jira-lozenge"
+          <template #activator="{ props: tip }">
+            <v-list-item
+              v-bind="tip"
+              :to="`/r/${row.jira}`"
+              :title="row.jira"
+              :subtitle="row.subtitle"
+              active-class="jira-nav-active"
+              @click="onNav"
             >
-              {{ row.phase }}
-            </v-chip>
-            <v-badge
-              v-if="row.job && row.job.state === 'waiting'"
-              color="error"
-              content="待答"
-              inline
-              class="ml-1"
-            />
+              <template #prepend>
+                <v-progress-circular
+                  v-if="row.job && row.job.state !== 'waiting'"
+                  indeterminate
+                  size="18"
+                  width="2"
+                  color="primary"
+                />
+                <v-icon v-else-if="row.job" :icon="mdiProgressClock" color="error" size="18" />
+                <v-icon v-else :icon="mdiClipboardTextOutline" size="18" />
+              </template>
+              <template #append>
+                <v-chip
+                  v-if="row.phase"
+                  size="x-small"
+                  variant="tonal"
+                  :color="phaseColor(row.phase)"
+                  class="jira-lozenge"
+                >
+                  {{ row.phase }}
+                </v-chip>
+                <v-badge
+                  v-if="row.job && row.job.state === 'waiting'"
+                  color="error"
+                  content="待答"
+                  inline
+                  class="ml-1"
+                />
+              </template>
+            </v-list-item>
           </template>
-        </v-list-item>
+        </v-tooltip>
       </v-list>
       <template #append>
         <v-divider />
