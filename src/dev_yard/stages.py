@@ -46,6 +46,10 @@ PLUGIN_YAML_KEYS = frozenset(
 _NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 # Pi extension that mechanically enforces AGENTS.md「命令安全」(no `/` scans).
 GUARD_EXTENSION = "yard-guard.ts"
+# Pi extension that registers submit_review for the review and contract stages.
+REVIEW_EXTENSION = "yard-review.ts"
+REVIEW_VERDICT_TOOL = "submit_review"
+STRUCTURED_REVIEW_STAGES = frozenset({"review", "contract"})
 
 
 @dataclass(frozen=True)
@@ -187,14 +191,14 @@ BUILTIN_STAGES: dict[str, StageSpec] = {
             "review",
             "code-review",
             ("code-review",),
-            ("read", "grep", "find", "ls"),
+            ("read", "grep", "find", "ls", REVIEW_VERDICT_TOOL),
             order=55,
         ),
         _spec(
             "contract",
             "code-review",
             ("code-review",),
-            ("read", "grep", "find", "ls"),
+            ("read", "grep", "find", "ls", REVIEW_VERDICT_TOOL),
             order=56,
         ),
         _spec(
@@ -392,19 +396,28 @@ def plugin_root(spec: StageSpec) -> Path | None:
     return spec.skill_dir.parent
 
 
+def _resolve_named_extension(root: Path, name: str) -> Path | None:
+    ws = root / ".pi" / "extensions" / name
+    if ws.is_file():
+        return ws
+    pkg = _packaged_root("extensions") / name
+    if pkg.is_file():
+        return pkg
+    return None
+
+
 def resolve_extension_path(root: Path) -> Path | None:
     """Safety extension: workspace .pi/extensions -> packaged dev_yard/extensions.
 
     Loaded for every pi run, so the guard cannot be lost to a workspace that
     simply lacks a `.pi/extensions` directory.
     """
-    ws = root / ".pi" / "extensions" / GUARD_EXTENSION
-    if ws.is_file():
-        return ws
-    pkg = _packaged_root("extensions") / GUARD_EXTENSION
-    if pkg.is_file():
-        return pkg
-    return None
+    return _resolve_named_extension(root, GUARD_EXTENSION)
+
+
+def resolve_review_extension_path(root: Path) -> Path | None:
+    """Verdict tool extension for the review and contract stages."""
+    return _resolve_named_extension(root, REVIEW_EXTENSION)
 
 
 def resolve_skill_dir(root: Path, name: str) -> Path | None:

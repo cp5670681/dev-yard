@@ -179,6 +179,7 @@ def test_reset_phase_tears_down_worktrees_and_state(
     data["tickets"]["T1"]["state"] = "done"
     data["tickets"]["T1"]["head_sha"] = "abcdef123456"
     data["tickets"]["T1"]["last_summary"] = "implemented feature"
+    data["tickets"]["T1"]["last_verdict"] = "failed"
     data["contract_review"] = "passed"
     data["contract_summary"] = "all contracts aligned"
     data["contract_findings"] = [{"id": "F1", "title": "test"}]
@@ -194,6 +195,7 @@ def test_reset_phase_tears_down_worktrees_and_state(
     assert "child_worktree" not in out["tickets"]["T1"]
     assert "head_sha" not in out["tickets"]["T1"]
     assert "last_summary" not in out["tickets"]["T1"]
+    assert "last_verdict" not in out["tickets"]["T1"]
     assert "branch" not in out
     assert "base_shas" not in out
     assert "contract_review" not in out

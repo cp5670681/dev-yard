@@ -158,11 +158,15 @@ def test_pi_argv_print_mode(monkeypatch):
     root = Path(__file__).resolve().parents[1]
     argv = pi_argv(root=root, bundle="review", prompt="r", print_mode=True, binary="pi")
     assert "-p" in argv
+    assert argv[argv.index("--mode") + 1] == "json"
     tools = argv[argv.index("--tools") + 1]
     assert "read" in tools
     assert "grep" in tools
+    assert "submit_review" in tools
     assert "edit" not in tools
     assert "bash" not in tools
+    extensions = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--extension"]
+    assert any(path.endswith("yard-review.ts") for path in extensions)
 
 
 def test_run_pi_print_sends_prompt_on_stdin(tmp_path, monkeypatch):
@@ -208,7 +212,8 @@ def test_pi_argv_print_mode_can_omit_prompt(monkeypatch):
     monkeypatch.delenv("YARD_PI_MODEL", raising=False)
     root = Path(__file__).resolve().parents[1]
     argv = pi_argv(root=root, bundle="contract", prompt=None, print_mode=True, binary="pi")
-    assert argv[-1] == "-p"
+    assert "-p" in argv
+    assert argv[-1] == "json"
     assert "huge" not in argv
 
 
@@ -283,9 +288,11 @@ def test_pi_argv_contract_bundle(monkeypatch):
     root = Path(__file__).resolve().parents[1]
     argv = pi_argv(root=root, bundle="contract", prompt="c", print_mode=True, binary="pi")
     assert "-p" in argv
+    assert argv[argv.index("--mode") + 1] == "json"
     tools = argv[argv.index("--tools") + 1]
     assert "read" in tools
     assert "grep" in tools
+    assert "submit_review" in tools
     assert "edit" not in tools
     assert "bash" not in tools
     joined = " ".join(argv)
@@ -346,7 +353,7 @@ def test_review_prompt_tdd_disabled(tmp_path: Path):
     p = session_prompt(tmp_path, "review", "AB-1")
     assert "TDD mode is OFF (dev.tdd=false)" in p
     assert "must not become findings" in p
-    assert "must not produce REVIEW_FAILED" in p
+    assert "submit_review with verdict passed" in p
     assert "not Spec gaps" in p
     assert "unless SPEC.md explicitly demands testing" not in p
 

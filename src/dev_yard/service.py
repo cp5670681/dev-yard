@@ -14,6 +14,7 @@ from dev_yard import status as st
 from dev_yard.atlassian import collect_requirement
 from dev_yard.bug_tickets import (
     fix_ticket_ids,
+    normalize_findings,
     parse_findings_from_summary,
     spawn_fix_tickets,
     spawn_fix_tickets_result,
@@ -575,6 +576,7 @@ def req_reset_phase(root: Path, jira: str) -> dict[str, Any]:
             slot.pop("child_worktree", None)
             slot.pop("head_sha", None)
             slot.pop("last_summary", None)
+            slot.pop("last_verdict", None)
             slot["state"] = "pending"
         data["tickets"] = tickets
         for key in (
@@ -1017,7 +1019,11 @@ def ticket_done(root: Path, jira: str, ticket_id: str) -> None:
 
 
 def _ticket_done_locked(
-    root: Path, jira: str, ticket_id: str, summary: str | None = None
+    root: Path,
+    jira: str,
+    ticket_id: str,
+    summary: str | None = None,
+    verdict: str | None = None,
 ) -> None:
     data = st.load(root, jira)
     slot = (data.get("tickets") or {}).get(ticket_id) or {}
@@ -1050,6 +1056,8 @@ def _ticket_done_locked(
             slot["head_sha"] = sha
     if summary is not None:
         slot["last_summary"] = summary
+    if verdict is not None:
+        slot["last_verdict"] = verdict
     slot["state"] = "done"
     st.refresh_ready(data)
     st.save(root, jira, data)
@@ -1361,10 +1369,24 @@ def _ticket_base_sha(
     return _previous_head_sha(data, parsed, tid, repo)
 
 
-def _review_blocked(result: RunResult) -> bool:
-    if not result.ok:
+def _legacy_review_failed(summary: str | None) -> bool:
+    """Older reports encoded failure as its own line, or as human-review notes.
+
+    A mention inside a sentence is not a verdict. New reviews use submit_review.
+    """
+    if not summary:
+        return False
+    if "[Human Review" in summary:
         return True
-    return "REVIEW_FAILED" in (result.summary or "")
+    return any(line.strip() == "REVIEW_FAILED" for line in summary.splitlines())
+
+
+def _review_blocked(result: RunResult) -> bool:
+    if result.verdict == "passed":
+        return False
+    if result.verdict == "failed":
+        return True
+    return not result.ok
 
 
 _CLAIM = {
@@ -1399,6 +1421,7 @@ def _implement_prompt_extra(
     test_report: str | None = None,
     finding: str = "",
     sync_conflict: str | None = None,
+    prior_verdict: str | None = None,
 ) -> str:
     extra = f"Ticket: {tid} — {title}\nRepo alias: {repo}\nStay in this worktree."
     if sync_conflict:
@@ -1413,7 +1436,9 @@ def _implement_prompt_extra(
             f" Fix only {scope}; do not implement sibling bug tickets. "
             "The defect text is this ticket's section in TICKETS.md."
         )
-    if last_summary and ("REVIEW_FAILED" in last_summary or "[Human Review" in last_summary):
+    if last_summary and (
+        prior_verdict == "failed" or _legacy_review_failed(last_summary)
+    ):
         extra += (
             "\n\nPrevious review failed / feedback provided. Fix hard violations, Spec gaps, and review feedback "
             "in this report; do not expand scope; optional smells may stay.\n"
@@ -1662,6 +1687,11 @@ def implement(
             if not skip_state_check and slot.get("state") not in allowed:
                 continue
             last_summary = slot.get("last_summary")
+            if not isinstance(last_summary, str):
+                last_summary = None
+            prior_verdict = slot.get("last_verdict")
+            if not isinstance(prior_verdict, str):
+                prior_verdict = None
             was_blocked = slot.get("state") == "blocked"
             was_fix_ticket = slot.get("source") in {"contract", "test"}
             slot["state"] = "implementing"
@@ -1698,6 +1728,7 @@ def implement(
                 test_report=test_body if from_test else None,
                 finding=t.finding,
                 sync_conflict=sync_conflict,
+                prior_verdict=prior_verdict,
             ),
         )
         try:
@@ -1719,6 +1750,7 @@ def implement(
                     + "\n\nSYNC_CONFLICT: 合并父分支的冲突尚未解决：\n"
                     + "\n".join(f"- {f}" for f in pending_merge)
                 ).strip()
+                slot.pop("last_verdict", None)
                 st.save(root, jira, data)
                 ran.append(tid)
                 continue
@@ -1729,27 +1761,25 @@ def implement(
                     or from_test
                     or was_blocked
                     or was_fix_ticket
-                    or (
-                        bool(last_summary)
-                        and (
-                            "REVIEW_FAILED" in last_summary
-                            or "[Human Review" in last_summary
-                        )
-                    )
+                    or prior_verdict == "failed"
+                    or _legacy_review_failed(last_summary)
                 )
                 prefix = "fix" if is_fix else "feat"
                 sha = gitops.commit_all(cwd, f"{prefix}({tid}): {t.title or tid}")
                 if sha:
                     slot["head_sha"] = sha
                     slot["state"] = "implemented"
+                    slot.pop("last_verdict", None)
                 else:
                     slot["state"] = "blocked"
                     slot["last_summary"] = (
                         (result.summary or "").rstrip() + "\ncommit failed"
                     ).strip()
+                    slot.pop("last_verdict", None)
             else:
                 slot["state"] = "blocked"
                 slot["last_summary"] = result.summary
+                slot.pop("last_verdict", None)
             st.save(root, jira, data)
         ran.append(tid)
     return ran
@@ -1887,15 +1917,15 @@ def review(
                 "this requirement, confirm with `git log <base>..HEAD -- <file>` "
                 "(base shown per worktree) that its commits are in that range; code "
                 "inherited from the branch base is not scope creep.\n"
-                "If there are contract gaps, end the report with a YAML block:\n"
-                "findings:\n"
-                "  - id: F1\n"
-                "    title: short title\n"
-                "    repo: <repos.yaml alias>\n"
-                "    detail: what is missing\n"
-                "    files: [<path>, ...]  # files whose diff lines you cite; omit for missing/not-yet-written code\n"
-                "    depends_on: []  # other finding ids, if this fix must wait\n"
-                "One finding per independent gap; same-repo gaps may be separate findings.\n"
+                "After the written report, call submit_review exactly once. "
+                "verdict is passed or failed. That call is the only pass/fail signal; "
+                "do not encode it in the report text.\n"
+                "If there are contract gaps, pass them as submit_review findings "
+                "(one object per independent gap):\n"
+                "  id, title, repo (<repos.yaml alias>), detail,\n"
+                "  files (paths whose diff lines you cite; omit for missing code),\n"
+                "  depends_on (other finding ids, if this fix must wait).\n"
+                "Same-repo gaps may be separate findings.\n"
                 f"Worktrees:\n{listed}\n\n"
                 + "\n\n".join(diffs)
             ),
@@ -1908,9 +1938,14 @@ def review(
             data = st.load(root, jira)
             data["contract_review"] = "failed" if blocked else "passed"
             data["contract_summary"] = result.summary
-            parsed_findings = parse_findings_from_summary(result.summary or "")
-            if parsed_findings:
-                data["contract_findings"] = parsed_findings
+            if result.verdict is not None:
+                # The tool supplied the list, including an empty one. Do not
+                # scan the report for a findings block.
+                data["contract_findings"] = normalize_findings(result.findings or [])
+            else:
+                parsed_findings = parse_findings_from_summary(result.summary or "")
+                if parsed_findings:
+                    data["contract_findings"] = parsed_findings
             st.save(root, jira, data)
         if blocked:
             spawn_fix_tickets(root, jira, "contract")
@@ -1972,7 +2007,10 @@ def review(
             extra=(
                 f"Ticket: {tid} — {t.title}\nRepo alias: {t.repo}\n"
                 f"Diff vs {label} (this ticket only; working tree included):\n"
-                f"{_diff_vs_base(cwd, base, since)}"
+                f"{_diff_vs_base(cwd, base, since)}\n\n"
+                "After the written report, call submit_review exactly once "
+                "with verdict passed or failed. That call is the only pass/fail "
+                "signal; do not encode the verdict in the report text."
             ),
         )
         result = _run_review_or_cancel(root, jira, runner, prompt, cwd, extra, tid)
@@ -1987,7 +2025,9 @@ def review(
                     # `done`; a conflicted merge must not strand a half-done state.
                     parent = slot.get("worktree")
                     try:
-                        _ticket_done_locked(root, jira, tid, summary=result.summary)
+                        _ticket_done_locked(
+                            root, jira, tid, summary=result.summary, verdict="passed"
+                        )
                     except gitops.GitError as e:
                         if parent:
                             gitops.merge_abort(Path(parent))
@@ -2008,6 +2048,7 @@ def review(
                     if sha:
                         slot["head_sha"] = sha
                     slot["state"] = "done"
+                    slot["last_verdict"] = "passed"
                     st.save(root, jira, data)
                 data = st.load(root, jira)
                 st.refresh_ready(data)
@@ -2015,6 +2056,10 @@ def review(
             else:
                 slot["state"] = "blocked"
                 slot["last_summary"] = result.summary
+                if result.verdict == "failed":
+                    slot["last_verdict"] = "failed"
+                else:
+                    slot.pop("last_verdict", None)
                 st.save(root, jira, data)
         ran.append(tid)
     return ran
@@ -2050,7 +2095,9 @@ def ticket_review_override(
         if norm_verdict == "passed":
             parent = slot.get("worktree")
             try:
-                _ticket_done_locked(root, jira, ticket_id, summary=summary)
+                _ticket_done_locked(
+                    root, jira, ticket_id, summary=summary, verdict="passed"
+                )
             except gitops.GitError as e:
                 if parent:
                     gitops.merge_abort(Path(parent))
@@ -2066,15 +2113,9 @@ def ticket_review_override(
                 st.save(root, jira, data)
                 raise ValueError(f"merge conflict into {parent}: {e}") from e
         else:
-            text = (summary or "").strip()
-            if text:
-                if "REVIEW_FAILED" not in text:
-                    formatted = f"REVIEW_FAILED\n\n{text}"
-                else:
-                    formatted = text
-            else:
-                formatted = "REVIEW_FAILED\n\nRejected by reviewer."
-            slot["last_summary"] = formatted
+            text = (summary or "").strip() or "Rejected by reviewer."
+            slot["last_summary"] = text
+            slot["last_verdict"] = "failed"
             slot["state"] = "blocked"
             st.refresh_ready(data)
             st.save(root, jira, data)
@@ -2102,10 +2143,7 @@ def contract_review_override(
         data = st.load(root, jira)
         data["contract_review"] = norm_verdict
         if summary is not None:
-            text = summary.strip()
-            if norm_verdict == "failed" and text and "REVIEW_FAILED" not in text:
-                text = f"{text}\n\nREVIEW_FAILED"
-            data["contract_summary"] = text
+            data["contract_summary"] = summary.strip()
         if findings:
             from dev_yard.bug_tickets import normalize_findings
 

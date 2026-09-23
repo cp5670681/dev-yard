@@ -77,8 +77,8 @@ def test_review_override_fail_and_reimplement(tmp_path: Path, git_src: Path, mon
         summary="Please add null check and unit test for error case.",
     )
     assert res["state"] == "blocked"
-    assert "REVIEW_FAILED" in res["last_summary"]
-    assert "Please add null check" in res["last_summary"]
+    assert res["last_verdict"] == "failed"
+    assert res["last_summary"] == "Please add null check and unit test for error case."
 
     # Now verify implement picks it up when targeted and runs
     ran = implement(yard, "PROJ-101", ["T1"], runner=DryRunRunner())
@@ -145,8 +145,7 @@ def test_contract_review_override(tmp_path: Path, git_src: Path, monkeypatch):
         summary="Missing auth header in RPC call.",
     )
     assert res["contract_review"] == "failed"
-    assert "Missing auth header" in res["contract_summary"]
-    assert "REVIEW_FAILED" in res["contract_summary"]
+    assert res["contract_summary"] == "Missing auth header in RPC call."
 
     data = st.load(yard, "PROJ-101")
     assert data["contract_review"] == "failed"

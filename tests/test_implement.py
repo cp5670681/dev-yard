@@ -138,7 +138,12 @@ def test_skeleton_cannot_freeze(tmp_path: Path, monkeypatch):
 
 class _FailReview(DryRunRunner):
     def start(self, prompt: str, cwd: Path, extra_read_paths: list[Path], repo=None) -> RunResult:
-        return RunResult(ok=True, summary="nits\nREVIEW_FAILED\n", exit_code=0)
+        return RunResult(
+            ok=False,
+            summary="nits\nREVIEW_FAILED\n",
+            exit_code=0,
+            verdict="failed",
+        )
 
 
 def test_same_repo_ready_ticket_gets_child_while_sibling_implementing(
@@ -192,7 +197,33 @@ def test_review_marker_blocks_even_on_exit_zero(tmp_path: Path, git_src: Path, m
     yard = _ready_req(tmp_path, git_src, "AB-15")
     implement(yard, "AB-15", None, runner=DryRunRunner())
     review(yard, "AB-15", None, runner=_FailReview())
-    assert st.load(yard, "AB-15")["tickets"]["T1"]["state"] == "blocked"
+    slot = st.load(yard, "AB-15")["tickets"]["T1"]
+    assert slot["state"] == "blocked"
+    assert slot["last_verdict"] == "failed"
+
+
+class _PassReviewDespitePhrase(DryRunRunner):
+    def start(self, prompt, cwd, extra_read_paths, repo=None) -> RunResult:
+        return RunResult(
+            ok=True,
+            summary="汇总结论：通过（不写 REVIEW_FAILED）。",
+            exit_code=0,
+            verdict="passed",
+        )
+
+
+def test_review_verdict_ignores_marker_inside_prose(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-15B")
+    implement(yard, "AB-15B", None, runner=DryRunRunner())
+    review(yard, "AB-15B", None, runner=_PassReviewDespitePhrase())
+    slot = st.load(yard, "AB-15B")["tickets"]["T1"]
+    assert slot["state"] == "done"
+    assert slot["last_verdict"] == "passed"
+    assert "REVIEW_FAILED" in slot["last_summary"]
 
 
 def test_implement_and_review_attach_requirement_images(
@@ -620,12 +651,16 @@ def test_commit_failure_blocks_ticket(tmp_path: Path, git_src: Path, monkeypatch
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)
     yard = _ready_req(tmp_path, git_src, "AB-72")
+    data = st.load(yard, "AB-72")
+    data["tickets"]["T1"]["last_verdict"] = "failed"
+    st.save(yard, "AB-72", data)
     monkeypatch.setattr("dev_yard.service.gitops.commit_all", lambda *a, **k: None)
     ran = implement(yard, "AB-72", None, runner=DryRunRunner())
     assert ran == ["T1"]
     slot = st.load(yard, "AB-72")["tickets"]["T1"]
     assert slot["state"] == "blocked"
     assert "commit failed" in (slot["last_summary"] or "")
+    assert "last_verdict" not in slot
 
 
 def test_sequential_tickets_auto_commit_and_diff_isolation(

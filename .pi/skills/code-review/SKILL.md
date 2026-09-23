@@ -17,7 +17,7 @@ description: >
 - 用户若指定 commit/branch，用用户的。
 - 仅当提示里是 `(no changes vs …)` 或 `(could not diff …)` 才停。同仓上一张票的改动不在本票 diff 里是正常的；要用 `read` 打开本票涉及的文件核对是否已实现，不要把「本票窗口里没有某文件」直接写成整仓未实现。
 
-契约审查（`dev-yard review --contract`）：cwd 是 yard 根。启动提示已内联每个需求 worktree 相对 `default_base` 的 diff。对照 `SPEC.md` 跨仓契约。不跑 Fowler 气味轴也可以，但必须列出契约缺口。提示含 `TDD mode is OFF` 时，测试文件缺失、跑不起来或未执行不是契约缺口，不要写成 `findings`。不要在 yard 仓库根上 `git diff`。失败时在报告末尾输出 YAML `findings:` 列表（每条独立缺口一条，含 `id` / `title` / `repo` / `detail` / 可选 `depends_on`），yard 会按条拆成 B 票。
+契约审查（`dev-yard review --contract`）：cwd 是 yard 根。启动提示已内联每个需求 worktree 相对 `default_base` 的 diff。对照 `SPEC.md` 跨仓契约。不跑 Fowler 气味轴也可以，但必须列出契约缺口。提示含 `TDD mode is OFF` 时，测试文件缺失、跑不起来或未执行不是契约缺口，不要放进 `submit_review` 的 `findings`。不要在 yard 仓库根上 `git diff`。缺口写在 `submit_review` 的 `findings` 里（每条独立缺口一条，含 `id` / `title` / `repo` / `detail` / 可选 `depends_on`），yard 会按条拆成 B 票。
 
 pi 没有子 agent。两轴都自己做，先 Spec 再 Standards（契约模式可只做 Spec）。工具：`read` 参数是 `path`。
 
@@ -46,7 +46,7 @@ pi 没有子 agent。两轴都自己做，先 Spec 再 Standards（契约模式�
 
 ## 4. 两轴（同一会话，顺序做）
 
-**Spec**：diff + `SPEC.md`（契约模式）或该票正文（票级）。报告 (a) spec 有但缺/残 (b) 没要的 scope creep (c) 看起来做了但做错。每条引用 spec。少于 400 字。若提示中注明 `TDD mode is OFF`：`SPEC.md` 任何位置要求测试文件的句子（含 Testing Decisions）和票里「验收：spec / 单测」都不是 Spec 缺口。缺少测试、测试文件跑不起来、或未执行测试，不得写入 Spec 轴，不得因此写 `REVIEW_FAILED`。只审生产代码是否满足业务行为。
+**Spec**：diff + `SPEC.md`（契约模式）或该票正文（票级）。报告 (a) spec 有但缺/残 (b) 没要的 scope creep (c) 看起来做了但做错。每条引用 spec。少于 400 字。若提示中注明 `TDD mode is OFF`：`SPEC.md` 任何位置要求测试文件的句子（含 Testing Decisions）和票里「验收：spec / 单测」都不是 Spec 缺口。缺少测试、测试文件跑不起来、或未执行测试，不得写入 Spec 轴，也不得因此把 `submit_review` 的 `verdict` 设为 `failed`。只审生产代码是否满足业务行为。
 
 **Standards**（票级；契约模式可省略）：完整 diff、commit 列表、标准文件。报告每处 (a) 违反成文标准（引用文件+规则）(b) 气味（点名+摘 hunk）。硬违规 vs 判断题分开。少于 400 字。若提示中注明 `TDD mode is OFF`：测试文件缺失、跑不起来或未执行同样不是违规或缺陷。
 
@@ -54,6 +54,8 @@ pi 没有子 agent。两轴都自己做，先 Spec 再 Standards（契约模式�
 
 `## Standards` 与 `## Spec` 分开贴。末行：每轴发现数 + 该轴最严重问题。
 
-- 有硬违规或 Spec 缺需求 → 审查失败：报告里写 `REVIEW_FAILED`，并以非零退出（yard 据此把票标 `blocked`）。提示含 `TDD mode is OFF` 时，测试文件缺失、跑不起来或未执行既不是硬违规，也不是 Spec 缺需求
-- 契约模式失败：在 `REVIEW_FAILED` 之后附 YAML `findings:`（`repo` 必须是 `repos.yaml` alias；同仓互不依赖的缺口分开写，有先后的用 `depends_on` 指向其它 finding id）
-- 仅判断题气味 → 通过，但写在报告里
+报告写完后调用一次 `submit_review`。`verdict` 只能是 `passed` 或 `failed`。这次调用是唯一的通过/失败信号，正文里不要写结论标记。
+
+- 有硬违规或 Spec 缺需求 → `submit_review` 的 `verdict` 为 `failed`。提示含 `TDD mode is OFF` 时，测试文件缺失、跑不起来或未执行既不是硬违规，也不是 Spec 缺需求
+- 契约模式失败：`findings` 放在同一次 `submit_review` 里（`repo` 必须是 `repos.yaml` alias；同仓互不依赖的缺口分开写，有先后的用 `depends_on` 指向其它 finding id）
+- 仅判断题气味 → `verdict` 为 `passed`，气味仍写在报告里

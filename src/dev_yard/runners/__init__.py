@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import json
 import os
 import shutil
 import signal
@@ -9,13 +10,16 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from dev_yard.attachments import is_prompt_image
 from dev_yard.config import resolve_pi_choice
 from dev_yard.stages import (
+    STRUCTURED_REVIEW_STAGES,
     StageSpec,
     load_registry,
     resolve_extension_path,
+    resolve_review_extension_path,
     resolve_skill_dir,
     spec_skill_dirs,
 )
@@ -29,6 +33,9 @@ class RunResult:
     ok: bool
     summary: str
     exit_code: int = 0
+    # Set by submit_review. None means the process never produced a verdict.
+    verdict: str | None = None
+    findings: list[Any] | None = None
 
 
 class JobCancelled(RuntimeError):
@@ -42,7 +49,8 @@ def clip_summary(raw: str, bundle: str = "") -> str:
     limit = _REVIEW_SUMMARY_MAX if bundle in {"review", "contract"} else _SUMMARY_MAX
     if len(text) <= limit:
         return text
-    # Findings and REVIEW_FAILED sit at the end of pi -p output.
+    # Review prose is already separated from the verdict event. Keep the tail
+    # so a long report's closing section is what the board shows.
     if bundle in {"review", "contract"}:
         return text[-limit:]
     return text[:limit]
@@ -67,6 +75,184 @@ def guard_args(root: Path) -> list[str]:
     """`--extension <yard-guard.ts>` when the safety extension is available."""
     guard = resolve_extension_path(root)
     return ["--extension", str(guard)] if guard is not None else []
+
+
+def extension_args(root: Path, bundle: str) -> list[str]:
+    """Safety extension, plus the review verdict tool on review/contract."""
+    args = guard_args(root)
+    if bundle in STRUCTURED_REVIEW_STAGES:
+        review = resolve_review_extension_path(root)
+        if review is not None:
+            args.extend(["--extension", str(review)])
+    return args
+
+
+class ReviewStream:
+    """Split a `pi --mode json` review into prose and a submit_review verdict.
+
+    Assistant text is the report. The verdict is taken only from a successful
+    `submit_review` tool event. Report text is never inspected for a marker.
+    """
+
+    def __init__(self) -> None:
+        self._log_buf = ""
+        self._texts: list[str] = []
+        self._noise: list[str] = []
+        self._pending: dict[str, dict[str, Any]] = {}
+        self.verdict: str | None = None
+        self.findings: list[Any] = []
+        # Set when an assistant turn ends in error/aborted. JSON mode still
+        # exits 0 for those, so the process code alone cannot see them.
+        self.failure: str | None = None
+
+    def feed(self, line: str) -> str:
+        """Consume one stdout line. Return human text to show, or empty."""
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            if stripped:
+                self._noise.append(line if line.endswith("\n") else line + "\n")
+            return line
+        try:
+            event = json.loads(stripped)
+        except json.JSONDecodeError:
+            self._noise.append(line if line.endswith("\n") else line + "\n")
+            return line
+        if not isinstance(event, dict):
+            return ""
+        kind = event.get("type")
+        if kind == "message_update":
+            inner = event.get("assistantMessageEvent") or {}
+            if isinstance(inner, dict) and inner.get("type") == "text_delta":
+                return self._push_delta(str(inner.get("delta") or ""))
+            return ""
+        if kind == "message_end":
+            self._take_message(event.get("message"))
+            return ""
+        if kind == "tool_execution_start" and event.get("toolName") == "submit_review":
+            args = event.get("args")
+            if isinstance(args, dict):
+                self._pending[str(event.get("toolCallId") or "")] = args
+            return ""
+        if kind == "tool_execution_end" and event.get("toolName") == "submit_review":
+            call_id = str(event.get("toolCallId") or "")
+            started = self._pending.pop(call_id, None)
+            if event.get("isError"):
+                return ""
+            result = event.get("result")
+            details = result.get("details") if isinstance(result, dict) else None
+            # details is what the tool executed. Start args are only a fallback
+            # when an older event omitted them.
+            self._accept(details if isinstance(details, dict) else started)
+            return ""
+        return ""
+
+    def flush_log(self) -> str:
+        text = self._log_buf
+        self._log_buf = ""
+        return text
+
+    @property
+    def prose(self) -> str:
+        text = "\n\n".join(part for part in self._texts if part.strip())
+        if text:
+            return text
+        return "".join(self._noise).strip()
+
+    def _push_delta(self, delta: str) -> str:
+        self._log_buf += delta
+        if "\n" not in self._log_buf:
+            return ""
+        done, _, self._log_buf = self._log_buf.rpartition("\n")
+        return done + "\n"
+
+    def _take_message(self, message: Any) -> None:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            return
+        parts: list[str] = []
+        for block in message.get("content") or []:
+            if isinstance(block, str) and block.strip():
+                parts.append(block.strip())
+                continue
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text" and str(block.get("text") or "").strip():
+                parts.append(str(block["text"]).strip())
+        if parts:
+            self._texts.append("\n".join(parts))
+        # A tool call in the message has not run yet. pi can then emit
+        # tool_execution_end with isError (truncated args, validation) and
+        # still leave the process exit code at 0 in JSON mode.
+        stop = message.get("stopReason")
+        if stop in {"error", "aborted"}:
+            self.failure = str(message.get("errorMessage") or f"Request {stop}")
+
+    def _accept(self, args: Any) -> None:
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                return
+        if not isinstance(args, dict):
+            return
+        verdict = str(args.get("verdict") or "").strip().lower()
+        if verdict not in {"passed", "failed"}:
+            return
+        self.verdict = verdict
+        findings = args.get("findings")
+        self.findings = findings if isinstance(findings, list) else []
+
+
+def finish_pi_run(bundle: str, code: int, raw: str) -> RunResult:
+    """Build a RunResult from a finished `pi -p` stream.
+
+    Review and contract runs use `--mode json`. Their pass/fail comes from
+    `submit_review`. Other stages still follow the process exit code.
+    """
+    if bundle in STRUCTURED_REVIEW_STAGES:
+        stream = ReviewStream()
+        for line in raw.splitlines(keepends=True):
+            stream.feed(line)
+        prose = clip_summary(stream.prose, bundle)
+        if stream.verdict == "passed":
+            return RunResult(
+                ok=True,
+                summary=prose,
+                exit_code=0,
+                verdict="passed",
+                findings=stream.findings,
+            )
+        if stream.verdict == "failed":
+            return RunResult(
+                ok=False,
+                summary=prose,
+                exit_code=code or 1,
+                verdict="failed",
+                findings=stream.findings,
+            )
+        if code != 0 or stream.failure:
+            # Provider errors and aborts are not a review rejection. Leaving
+            # verdict unset keeps the next implement run from treating them
+            # as a failed review.
+            summary = prose
+            if stream.failure:
+                summary = f"{prose}\n\n{stream.failure}".strip() if prose else stream.failure
+            return RunResult(
+                ok=False,
+                summary=summary or f"pi exit {code}",
+                exit_code=code or 1,
+                verdict=None,
+            )
+        note = "评审没有调用 submit_review，没有单独结论，按未通过处理。"
+        summary = f"{prose}\n\n{note}".strip() if prose else note
+        return RunResult(
+            ok=False,
+            summary=summary,
+            exit_code=1,
+            verdict="failed",
+            findings=[],
+        )
+    summary = clip_summary(raw, bundle) or f"pi exit {code}"
+    return RunResult(ok=code == 0, summary=summary, exit_code=code)
 
 
 def attachment_args(paths: list[Path]) -> list[str]:
@@ -113,9 +299,11 @@ def pi_argv(
     argv.extend(["--tools", ",".join(spec.tools)])
     for d in spec_skill_dirs(root, spec):
         argv.extend(["--skill", str(d)])
-    argv.extend(guard_args(root))
+    argv.extend(extension_args(root, bundle))
     if print_mode:
         argv.append("-p")
+        if bundle in STRUCTURED_REVIEW_STAGES:
+            argv.extend(["--mode", "json"])
     if attach:
         argv.extend(attachment_args(attach))
     if prompt is not None:
@@ -356,9 +544,15 @@ class PiRunner(Runner):
                 attach=extra_read_paths,
             )
 
+            stream = (
+                ReviewStream() if self.bundle in STRUCTURED_REVIEW_STAGES else None
+            )
+
             def _echo(line: str) -> None:
-                sys.stdout.write(line)
-                sys.stdout.flush()
+                shown = stream.feed(line) if stream is not None else line
+                if shown:
+                    sys.stdout.write(shown)
+                    sys.stdout.flush()
 
             code, raw = run_pi_print_tracked(
                 argv,
@@ -368,13 +562,12 @@ class PiRunner(Runner):
                 on_spawn=self.on_spawn,
                 on_reap=self.on_reap,
             )
-            blocked = code != 0 or "REVIEW_FAILED" in raw
-            summary = clip_summary(raw, self.bundle)
-            return RunResult(
-                ok=not blocked,
-                summary=summary,
-                exit_code=code if code else (1 if blocked else 0),
-            )
+            if stream is not None:
+                tail = stream.flush_log()
+                if tail:
+                    sys.stdout.write(tail if tail.endswith("\n") else tail + "\n")
+                    sys.stdout.flush()
+            return finish_pi_run(self.bundle, code, raw)
         argv = pi_argv(
             root=self.root,
             bundle=self.bundle,

@@ -18,13 +18,15 @@ from dev_yard.pi_session import load_conversation
 from dev_yard.qa_schedule import format_blocked_kind
 from dev_yard.runners import (
     JobCancelled,
+    ReviewStream,
     Runner,
     RunResult,
-    clip_summary,
+    finish_pi_run,
     kill_proc_group,
     pi_argv,
     run_pi_print_tracked,
 )
+from dev_yard.stages import STRUCTURED_REVIEW_STAGES
 
 __all__ = [
     "BoardSse",
@@ -413,9 +415,13 @@ class JobLogRunner(Runner):
             return RunResult(ok=False, summary=msg, exit_code=127)
         self.job.record_pi_run(cwd)
         self.job.append(f"$ {binary} -p …  cwd={cwd}")
+        stream = ReviewStream() if self.bundle in STRUCTURED_REVIEW_STAGES else None
 
         def _log(line: str) -> None:
-            self.job.append(line if line.endswith("\n") else line + "\n")
+            shown = stream.feed(line) if stream is not None else line
+            if not shown:
+                return
+            self.job.append(shown if shown.endswith("\n") else shown + "\n")
 
         code, raw = run_pi_print_tracked(
             argv,
@@ -425,15 +431,13 @@ class JobLogRunner(Runner):
             on_spawn=self.job.track_proc,
             on_reap=self.job.untrack_proc,
         )
+        if stream is not None:
+            tail = stream.flush_log()
+            if tail:
+                self.job.append(tail if tail.endswith("\n") else tail + "\n")
         if self.job.cancel_requested.is_set():
             raise JobCancelled(f"{self.bundle} cancelled (pi exit {code})")
-        blocked = code != 0 or "REVIEW_FAILED" in raw
-        summary = clip_summary(raw, self.bundle) or f"pi exit {code}"
-        return RunResult(
-            ok=not blocked,
-            summary=summary,
-            exit_code=code if code else (1 if blocked else 0),
-        )
+        return finish_pi_run(self.bundle, code, raw)
 
 
 def default_execute(root: Path, job: Job) -> None:

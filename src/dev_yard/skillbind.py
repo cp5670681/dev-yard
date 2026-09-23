@@ -63,8 +63,9 @@ def session_prompt_for(
             tdd_extra = (
                 "TDD mode is OFF (dev.tdd=false). This overrides any earlier instruction in this prompt. "
                 "Test-file demands anywhere in SPEC.md or TICKETS.md are not Spec gaps and must not "
-                "become findings. A missing, broken, or unrun test is NOT a defect and must not "
-                "produce REVIEW_FAILED. Judge production behavior only."
+                "become findings. A missing, broken, or unrun test is NOT a defect. "
+                "Call submit_review with verdict passed unless production behavior is wrong. "
+                "Judge production behavior only."
             )
         elif spec.name == "resolve-merge":
             tdd_extra = (

@@ -237,8 +237,12 @@ def _findings_for_kind(
         slot = data.get("test") if isinstance(data.get("test"), dict) else {}
         raw = normalize_findings(slot.get("findings") or [])
     else:
-        raw = normalize_findings(data.get("contract_findings") or [])
-        if not raw:
+        stored = data.get("contract_findings")
+        if isinstance(stored, list):
+            # Present list, including empty, is the structured verdict. The
+            # report text is not scanned for a findings block.
+            raw = normalize_findings(stored)
+        else:
             raw = parse_findings_from_summary(data.get("contract_summary") or "")
     findings = raw
     if kind != "test" and findings and root is not None and jira:

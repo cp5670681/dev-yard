@@ -25,8 +25,8 @@ EXPECTED_TOOLS = {
     "spec": "read,grep,find,ls,edit,write",
     "tickets": "read,grep,find,ls,edit,write",
     "implement": "read,bash,grep,find,ls,edit,write",
-    "review": "read,grep,find,ls",
-    "contract": "read,grep,find,ls",
+    "review": "read,grep,find,ls,submit_review",
+    "contract": "read,grep,find,ls,submit_review",
     "qa-design": "read,bash,grep,find,ls,edit,write",
     "qa-run": "read,bash,grep,find,ls,edit,write",
 }
