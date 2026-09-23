@@ -114,7 +114,6 @@ import { mdiClipboardTextOffOutline, mdiDeleteOutline, mdiPlus } from "@mdi/js";
 import { deleteRequirement, listRequirements } from "@/api/client";
 import type { ReqSummary } from "@/api/types";
 import { phaseColor, STEP_LABELS } from "@/composables/labels";
-import { forgetRecent, pruneRecents } from "@/composables/recents";
 import { useSnack } from "@/composables/snack";
 
 const items = ref<ReqSummary[]>([]);
@@ -127,7 +126,6 @@ async function load() {
   error.value = "";
   try {
     items.value = await listRequirements();
-    pruneRecents(items.value.map((i) => i.jira));
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   }
@@ -142,7 +140,6 @@ async function doDelete() {
   confirm.busy = true;
   try {
     await deleteRequirement(confirm.jira);
-    forgetRecent(confirm.jira);
     confirm.open = false;
     snack.notify(`已删除 ${confirm.jira}`, "success");
     await load();

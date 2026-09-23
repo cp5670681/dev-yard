@@ -98,53 +98,47 @@
         />
       </v-list>
       <v-divider class="my-2" />
-      <v-list-subheader v-if="runningJobs.length">进行中</v-list-subheader>
-      <v-list v-if="runningJobs.length" density="compact" nav>
+      <v-list-subheader v-if="reqRows.length">需求</v-list-subheader>
+      <v-list v-if="reqRows.length" density="compact" nav>
         <v-list-item
-          v-for="job in runningJobs"
-          :key="job.id"
-          :to="jobHref(job)"
-          :title="jobLabel(job)"
-          :subtitle="job.state"
+          v-for="row in reqRows"
+          :key="row.jira"
+          :to="`/r/${row.jira}`"
+          :title="row.jira"
+          :subtitle="row.subtitle"
           active-class="jira-nav-active"
           @click="onNav"
         >
           <template #prepend>
             <v-progress-circular
-              v-if="job.state !== 'waiting'"
+              v-if="row.job && row.job.state !== 'waiting'"
               indeterminate
               size="18"
               width="2"
               color="primary"
             />
-            <v-icon v-else :icon="mdiProgressClock" color="error" size="18" />
+            <v-icon v-else-if="row.job" :icon="mdiProgressClock" color="error" size="18" />
+            <v-icon v-else :icon="mdiClipboardTextOutline" size="18" />
           </template>
-          <template v-if="job.state === 'waiting'" #append>
-            <v-badge color="error" content="待答" inline />
-          </template>
-        </v-list-item>
-      </v-list>
-      <v-list-subheader v-if="idleRecents.length">最近</v-list-subheader>
-      <v-list v-if="idleRecents.length" density="compact" nav>
-        <v-tooltip
-          v-for="jira in idleRecents"
-          :key="jira"
-          :text="reqTitle(jira)"
-          :disabled="!reqTitle(jira)"
-          location="end"
-        >
-          <template #activator="{ props: tip }">
-            <v-list-item
-              v-bind="tip"
-              :to="`/r/${jira}`"
-              :title="jira"
-              :subtitle="reqTitle(jira)"
-              :prepend-icon="mdiClipboardTextOutline"
-              active-class="jira-nav-active"
-              @click="onNav"
+          <template #append>
+            <v-chip
+              v-if="row.phase"
+              size="x-small"
+              variant="tonal"
+              :color="phaseColor(row.phase)"
+              class="jira-lozenge"
+            >
+              {{ row.phase }}
+            </v-chip>
+            <v-badge
+              v-if="row.job && row.job.state === 'waiting'"
+              color="error"
+              content="待答"
+              inline
+              class="ml-1"
             />
           </template>
-        </v-tooltip>
+        </v-list-item>
       </v-list>
       <template #append>
         <v-divider />
@@ -194,11 +188,10 @@ import {
   mdiWeatherSunny,
 } from "@mdi/js";
 import { getMeta, listRequirements } from "@/api/client";
-import type { JobBrief, Meta } from "@/api/types";
-import { ACTION_LABELS } from "@/composables/labels";
+import type { JobBrief, Meta, ReqSummary } from "@/api/types";
+import { ACTION_LABELS, phaseColor } from "@/composables/labels";
 import { jobHref, runningJobs, watchJobs } from "@/state/jobs";
 import { provideSnack } from "@/composables/snack";
-import { pruneRecents, recentJiras, touchRecent } from "@/composables/recents";
 import AssistantDrawer from "@/components/AssistantDrawer.vue";
 import PiDrawer from "@/components/PiDrawer.vue";
 import { openAssistant } from "@/state/assistant";
@@ -209,11 +202,8 @@ const theme = useTheme();
 const route = useRoute();
 const drawer = ref(true);
 const meta = ref<Meta | null>(null);
-const reqTitles = ref<Record<string, string>>({});
+const reqItems = ref<ReqSummary[]>([]);
 
-function reqTitle(jira: string) {
-  return reqTitles.value[jira] || "";
-}
 let stop: (() => void) | undefined;
 
 const isDark = computed(() => theme.global.current.value.dark);
@@ -239,27 +229,49 @@ watch(
   () => route.fullPath,
   () => {
     if (!mdAndUp.value) drawer.value = false;
+    void loadRequirements();
   },
 );
 
 const waitingJobs = computed(() => runningJobs.value.filter((j) => j.state === "waiting"));
 
-const idleRecents = computed(() => {
-  const live = new Set(
-    runningJobs.value.filter((j) => j.action !== "repo_add").map((j) => j.jira),
-  );
-  return recentJiras.value.filter((j) => !live.has(j));
-});
+interface ReqRow {
+  jira: string;
+  subtitle: string;
+  phase: string;
+  job: JobBrief | null;
+}
 
-watch(
-  () => [route.name, route.params.jira] as const,
-  ([name, jira]) => {
-    if ((name === "requirement" || name === "doc") && typeof jira === "string") {
-      touchRecent(jira);
-    }
-  },
-  { immediate: true },
-);
+function jiraRank(jira: string) {
+  const m = /(\d+)\s*$/.exec(jira);
+  return m ? Number(m[1]) : 0;
+}
+
+const reqRows = computed<ReqRow[]>(() => {
+  const live = new Map<string, JobBrief>();
+  for (const j of runningJobs.value) {
+    if (j.action === "repo_add") continue;
+    live.set(j.jira.toUpperCase(), j);
+  }
+  const rows: ReqRow[] = reqItems.value
+    .map((it) => ({
+      jira: it.jira,
+      subtitle: it.title || "",
+      phase: it.phase,
+      job: live.get(it.jira.toUpperCase()) ?? null,
+    }))
+    .sort((a, b) => jiraRank(b.jira) - jiraRank(a.jira) || b.jira.localeCompare(a.jira));
+  const known = new Set(reqItems.value.map((i) => i.jira.toUpperCase()));
+  const extras: ReqRow[] = runningJobs.value
+    .filter((j) => j.action !== "repo_add" && !known.has(j.jira.toUpperCase()))
+    .map((j) => ({
+      jira: j.jira,
+      subtitle: ACTION_LABELS[j.action] || j.action,
+      phase: "",
+      job: j,
+    }));
+  return [...extras, ...rows];
+});
 
 const barTitle = computed(() => {
   const name = String(route.name || "");
@@ -271,6 +283,14 @@ const barTitle = computed(() => {
   return "需求";
 });
 
+async function loadRequirements() {
+  try {
+    reqItems.value = await listRequirements();
+  } catch {
+    /* keep the previous list if the fetch fails */
+  }
+}
+
 onMounted(async () => {
   stop = watchJobs();
   try {
@@ -278,27 +298,12 @@ onMounted(async () => {
   } catch {
     meta.value = null;
   }
-  try {
-    const items = await listRequirements();
-    pruneRecents(items.map((i) => i.jira));
-    const titles: Record<string, string> = {};
-    for (const it of items) if (it.title) titles[it.jira] = it.title;
-    reqTitles.value = titles;
-  } catch {
-    /* keep recents if list fails */
-  }
+  await loadRequirements();
 });
 onUnmounted(() => stop?.());
 
 function onNav() {
   if (!mdAndUp.value) drawer.value = false;
-}
-
-function jobLabel(job: JobBrief) {
-  const action = job.label || ACTION_LABELS[job.action] || job.action;
-  if (job.action === "repo_add") return action;
-  const tickets = (job.ticket_ids || []).join(",");
-  return `${job.jira} · ${action}${tickets ? " " + tickets : ""}`;
 }
 </script>
 
