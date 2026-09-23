@@ -161,20 +161,47 @@
         </div>
 
         <div class="d-flex align-center ga-2">
-          <v-btn
-            v-if="rerunnableCases.length"
-            variant="tonal"
-            size="x-small"
-            color="warning"
-            :prepend-icon="mdiRefresh"
-            :loading="rerunningCase === BATCH_RERUN_CASE"
-            :disabled="rerunningCase !== ''"
-            class="text-caption font-weight-medium"
-            :title="`一次性重测本轮失败/阻塞的 ${rerunnableCases.length} 条用例（按池并发执行）`"
-            @click.stop="$emit('rerun-cases', rerunnableCases.map((c) => c.id))"
-          >
-            重测失败/阻塞 ({{ rerunnableCases.length }})
-          </v-btn>
+          <v-menu v-if="rerunnableCases.length" location="bottom end">
+            <template #activator="{ props: menu }">
+              <v-btn
+                v-bind="menu"
+                variant="tonal"
+                size="x-small"
+                color="warning"
+                :prepend-icon="mdiRefresh"
+                :append-icon="mdiMenuDown"
+                :loading="rerunningCase === BATCH_RERUN_CASE"
+                :disabled="rerunningCase !== ''"
+                class="text-caption font-weight-medium"
+                title="按池并发重测本轮用例"
+                @click.stop
+              >
+                重测 ({{ rerunnableCases.length }})
+              </v-btn>
+            </template>
+            <v-list density="compact" min-width="200">
+              <v-list-item
+                v-if="blockedCases.length"
+                :disabled="rerunningCase !== ''"
+                @click="$emit('rerun-cases', blockedCases.map((c) => c.id))"
+              >
+                <v-list-item-title>仅重测阻塞 ({{ blockedCases.length }})</v-list-item-title>
+              </v-list-item>
+              <v-list-item
+                v-if="failedCases.length"
+                :disabled="rerunningCase !== ''"
+                @click="$emit('rerun-cases', failedCases.map((c) => c.id))"
+              >
+                <v-list-item-title>仅重测失败 ({{ failedCases.length }})</v-list-item-title>
+              </v-list-item>
+              <v-list-item
+                :disabled="rerunningCase !== ''"
+                @click="$emit('rerun-cases', rerunnableCases.map((c) => c.id))"
+              >
+                <v-list-item-title>失败 + 阻塞 ({{ rerunnableCases.length }})</v-list-item-title>
+              </v-list-item>
+            </v-list>
+          </v-menu>
           <v-btn
             v-if="allQaCases.length || jira"
             variant="text"
@@ -424,6 +451,7 @@ import {
   mdiBugCheckOutline,
   mdiPlus,
   mdiRefresh,
+  mdiMenuDown,
 } from "@mdi/js";
 import type { Ticket, QaCaseItem, QaProgress } from "@/api/types";
 import TicketCard from "./TicketCard.vue";
@@ -670,9 +698,9 @@ const filteredQaCases = computed(() => {
 
 // One-click batch: everything that did not pass this round. `passed` is left
 // alone so a batch never re-runs work that already succeeded.
-const rerunnableCases = computed(() =>
-  allQaCases.value.filter((c) => c.state === "failed" || c.state === "blocked"),
-);
+const failedCases = computed(() => allQaCases.value.filter((c) => c.state === "failed"));
+const blockedCases = computed(() => allQaCases.value.filter((c) => c.state === "blocked"));
+const rerunnableCases = computed(() => [...failedCases.value, ...blockedCases.value]);
 
 // -------------------------------------------------------------
 // 3. Bug Fix Tickets (B1..Bn)

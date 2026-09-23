@@ -215,19 +215,45 @@
           <v-progress-circular indeterminate size="10" width="2" class="mr-1" />
           执行中
         </v-chip>
-        <v-btn
-          v-if="rerunnableCases.length"
-          size="small"
-          variant="tonal"
-          color="warning"
-          :prepend-icon="mdiRefresh"
-          :loading="rerunningCase === BATCH_RERUN_CASE"
-          :disabled="rerunningCase !== ''"
-          :title="`一次性重测本轮失败/阻塞的 ${rerunnableCases.length} 条用例（按池并发执行）`"
-          @click="rerunCases(rerunnableCases.map((c) => c.case))"
-        >
-          重测失败/阻塞 ({{ rerunnableCases.length }})
-        </v-btn>
+        <v-menu v-if="rerunnableCases.length" location="bottom end">
+          <template #activator="{ props: menu }">
+            <v-btn
+              v-bind="menu"
+              size="small"
+              variant="tonal"
+              color="warning"
+              :prepend-icon="mdiRefresh"
+              :append-icon="mdiMenuDown"
+              :loading="rerunningCase === BATCH_RERUN_CASE"
+              :disabled="rerunningCase !== ''"
+              title="按池并发重测本轮用例"
+            >
+              重测 ({{ rerunnableCases.length }})
+            </v-btn>
+          </template>
+          <v-list density="compact" min-width="200">
+            <v-list-item
+              v-if="blockedCases.length"
+              :disabled="rerunningCase !== ''"
+              @click="rerunCases(blockedCases.map((c) => c.case))"
+            >
+              <v-list-item-title>仅重测阻塞 ({{ blockedCases.length }})</v-list-item-title>
+            </v-list-item>
+            <v-list-item
+              v-if="failedCases.length"
+              :disabled="rerunningCase !== ''"
+              @click="rerunCases(failedCases.map((c) => c.case))"
+            >
+              <v-list-item-title>仅重测失败 ({{ failedCases.length }})</v-list-item-title>
+            </v-list-item>
+            <v-list-item
+              :disabled="rerunningCase !== ''"
+              @click="rerunCases(rerunnableCases.map((c) => c.case))"
+            >
+              <v-list-item-title>失败 + 阻塞 ({{ rerunnableCases.length }})</v-list-item-title>
+            </v-list-item>
+          </v-list>
+        </v-menu>
       </div>
 
       <v-alert
@@ -518,7 +544,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { mdiClipboardCheckOutline, mdiHelpCircleOutline, mdiRefresh } from "@mdi/js";
+import { mdiClipboardCheckOutline, mdiHelpCircleOutline, mdiRefresh, mdiMenuDown } from "@mdi/js";
 import { getQa, getRequirement, runAction } from "@/api/client";
 import {
   jobTail,
@@ -696,13 +722,13 @@ const selectedRun = computed(() => {
 const isNewestRun = computed(
   () => Boolean(selectedRun.value) && selectedRun.value === runs.value[0],
 );
-const rerunnableCases = computed(() =>
-  isNewestRun.value
-    ? (selectedRun.value?.cases || []).filter(
-        (c) => c.status === "failed" || c.status === "blocked",
-      )
-    : [],
+const failedCases = computed(() =>
+  isNewestRun.value ? (selectedRun.value?.cases || []).filter((c) => c.status === "failed") : [],
 );
+const blockedCases = computed(() =>
+  isNewestRun.value ? (selectedRun.value?.cases || []).filter((c) => c.status === "blocked") : [],
+);
+const rerunnableCases = computed(() => [...failedCases.value, ...blockedCases.value]);
 
 const summary = computed(() => selectedRun.value?.summary || {});
 
