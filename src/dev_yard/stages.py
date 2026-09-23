@@ -42,6 +42,8 @@ PLUGIN_YAML_KEYS = frozenset(
     }
 )
 _NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+# Pi extension that mechanically enforces AGENTS.md「命令安全」(no `/` scans).
+GUARD_EXTENSION = "yard-guard.ts"
 
 
 @dataclass(frozen=True)
@@ -366,13 +368,17 @@ def _load_plugin_spec(plugin_dir: Path) -> StageSpec:
     )
 
 
-def _packaged_skills_root() -> Path:
-    # Installed wheel: force-include maps .pi/skills into dev_yard/skills/.
-    pkg = Path(__file__).resolve().parent / "skills"
+def _packaged_root(subdir: str) -> Path:
+    # Installed wheel: force-include maps .pi/<subdir> into dev_yard/<subdir>/.
+    pkg = Path(__file__).resolve().parent / subdir
     if pkg.is_dir():
         return pkg
-    # Source checkout: src/dev_yard/stages.py -> repo root/.pi/skills.
-    return Path(__file__).resolve().parents[2] / ".pi" / "skills"
+    # Source checkout: src/dev_yard/stages.py -> repo root/.pi/<subdir>.
+    return Path(__file__).resolve().parents[2] / ".pi" / subdir
+
+
+def _packaged_skills_root() -> Path:
+    return _packaged_root("skills")
 
 
 def plugin_root(spec: StageSpec) -> Path | None:
@@ -382,6 +388,21 @@ def plugin_root(spec: StageSpec) -> Path | None:
     if (spec.skill_dir / "plugin.yaml").is_file():
         return spec.skill_dir
     return spec.skill_dir.parent
+
+
+def resolve_extension_path(root: Path) -> Path | None:
+    """Safety extension: workspace .pi/extensions -> packaged dev_yard/extensions.
+
+    Loaded for every pi run, so the guard cannot be lost to a workspace that
+    simply lacks a `.pi/extensions` directory.
+    """
+    ws = root / ".pi" / "extensions" / GUARD_EXTENSION
+    if ws.is_file():
+        return ws
+    pkg = _packaged_root("extensions") / GUARD_EXTENSION
+    if pkg.is_file():
+        return pkg
+    return None
 
 
 def resolve_skill_dir(root: Path, name: str) -> Path | None:

@@ -11,7 +11,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dev_yard.config import resolve_pi_choice
-from dev_yard.stages import StageSpec, load_registry, resolve_skill_dir, spec_skill_dirs
+from dev_yard.stages import (
+    StageSpec,
+    load_registry,
+    resolve_extension_path,
+    resolve_skill_dir,
+    spec_skill_dirs,
+)
 
 _SUMMARY_MAX = 4000
 _REVIEW_SUMMARY_MAX = 32000
@@ -56,6 +62,12 @@ def agent_binary() -> str:
     return os.environ.get("YARD_PI") or "pi"
 
 
+def guard_args(root: Path) -> list[str]:
+    """`--extension <yard-guard.ts>` when the safety extension is available."""
+    guard = resolve_extension_path(root)
+    return ["--extension", str(guard)] if guard is not None else []
+
+
 def pi_argv(
     *,
     root: Path,
@@ -87,6 +99,7 @@ def pi_argv(
     argv.extend(["--tools", ",".join(spec.tools)])
     for d in spec_skill_dirs(root, spec):
         argv.extend(["--skill", str(d)])
+    argv.extend(guard_args(root))
     if print_mode:
         argv.append("-p")
     if prompt is not None:
@@ -118,6 +131,7 @@ def assistant_pi_argv(
     skill = resolve_skill_dir(root, "assistant")
     if skill is not None:
         argv.extend(["--skill", str(skill)])
+    argv.extend(guard_args(root))
     argv.extend(
         [
             "--session-dir",

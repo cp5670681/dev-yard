@@ -17,6 +17,8 @@ pi 的 `bash` 工具 `timeout` 是可选、**无默认值**，内置 `find`/`gre
 - 确需跨盘扫描时（仅 `find`）用 `-xdev`，或 `-prune` 掉挂载点。WSL 下 `/mnt/*`、`/usr/lib/wsl/*` 是 9p，遍历会阻塞在 `p9_client_rpc`，连 kill 都不一定收得掉。
 - 起服务 / 连 DB / 装依赖等可能阻塞的命令，先想好超时与失败退出，不要裸跑。
 
+上面不只是约定：每个 pi run 都自动加载 `.pi/extensions/yard-guard.ts`（打包在 `dev_yard/extensions/`，见 `resolve_extension_path`）。它在 `tool_call` 层拦下扫 `/`、`/mnt/*`、`/usr/lib/wsl/*`、`/proc`、`/sys`、`/dev`、`/run` 的递归搜索：`find`/`fd`/`du`/`tree`/`rg`/`ag`/`ack`，以及带 `-r` 的 `grep`、含 `R` 的 `ls -lR`。引号内的 `&&` 不会误拆（`rg 'foo && bar' /` 照样拦），`bash -c "..."`、`sudo` 前缀、`cd / && find .`、`pushd / && find .` 都会拆开解析；`find /tmp -o -path /mnt -prune` 这种 `-prune` 写法不拦，`cd` 只在 `&&`/`;` 链内传播（`||`、`)` 后复位）。纯搜索类 `bash` 没带 `timeout` 时补 300s（`rg foo && bundle exec rspec` 这类混跑不补，免得压掉慢套件的下限）。prompt 里的规则模型可能不听，这道是机械的；改拦截规则改那个 TS 文件即可（`tests/test_yard_guard.py` 有正反用例）。
+
 ## 路由（pi）
 
 | 命令 | 技能 |

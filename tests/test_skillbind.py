@@ -2,7 +2,7 @@ import subprocess
 from pathlib import Path
 
 from dev_yard.config import DevSettings, save_dev_settings
-from dev_yard.runners import pi_argv, run_pi_print
+from dev_yard.runners import assistant_pi_argv, pi_argv, run_pi_print
 from dev_yard.service import init_yard
 from dev_yard.skillbind import session_prompt
 
@@ -60,6 +60,41 @@ def test_pi_argv_binds_skills(monkeypatch):
     tools = argv[argv.index("--tools") + 1]
     assert "edit" in tools
     assert "bash" not in tools
+
+
+def test_pi_argv_loads_safety_extension(monkeypatch):
+    monkeypatch.delenv("YARD_PI_PROVIDER", raising=False)
+    monkeypatch.delenv("YARD_PI_MODEL", raising=False)
+    root = Path(__file__).resolve().parents[1]
+    argv = pi_argv(root=root, bundle="implement", prompt="go", binary="pi")
+    assert "--extension" in argv
+    guard = Path(argv[argv.index("--extension") + 1])
+    assert guard.is_file()
+    assert guard.name == "yard-guard.ts"
+    assert "/mnt" in guard.read_text()
+    assert argv[-1] == "go"
+
+
+def test_pi_argv_guard_survives_bare_workspace(tmp_path: Path, monkeypatch):
+    """A workspace without .pi/extensions still gets the packaged guard."""
+    monkeypatch.delenv("YARD_PI_PROVIDER", raising=False)
+    monkeypatch.delenv("YARD_PI_MODEL", raising=False)
+    (tmp_path / "repos.yaml").write_text("repos: {}\n")
+    argv = pi_argv(root=tmp_path, bundle="review", prompt="r", binary="pi")
+    guard = Path(argv[argv.index("--extension") + 1])
+    assert guard.is_file()
+    assert guard.name == "yard-guard.ts"
+
+
+def test_assistant_pi_argv_loads_safety_extension(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("YARD_PI_PROVIDER", raising=False)
+    monkeypatch.delenv("YARD_PI_MODEL", raising=False)
+    (tmp_path / "repos.yaml").write_text("repos: {}\n")
+    argv = assistant_pi_argv(
+        root=tmp_path, session_id="s", session_dir=tmp_path / "sessions"
+    )
+    assert "--extension" in argv
+    assert Path(argv[argv.index("--extension") + 1]).name == "yard-guard.ts"
 
 
 def test_pi_argv_open_includes_mcp(monkeypatch):
