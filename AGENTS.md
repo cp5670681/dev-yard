@@ -27,7 +27,7 @@ pi 的 `bash` 工具 `timeout` 是可选、**无默认值**，内置 `find`/`gre
 | `dev-yard grill` | grill-with-docs + grilling + domain-modeling |
 | `dev-yard spec` | to-spec |
 | `dev-yard tickets` | to-tickets |
-| `dev-yard implement` | implement + tdd + codebase-design |
+| `dev-yard implement` | implement + tdd + codebase-design（`dev.tdd=false` 时不加载 tdd） |
 | `dev-yard review` | code-review |
 | `dev-yard run <stage>` | 插件阶段，以及 grill/spec/tickets（`dev-yard stages` 可查）。`open` / `implement` / `review` / `contract` / `qa-design` / `qa-run` / `test` 走专用命令 |
 | `dev-yard req submit-test` | 提测：把冻结分支 push 到远端，再 merge 进各仓 `test_branch` 并 push（缺 `test_branch` 的仓跳过）；幂等可重入，冲突时默认用 implement 模型消解（`--no-resolve` 关闭，`--all` 全量重推） |
@@ -38,7 +38,7 @@ pi 的 `bash` 工具 `timeout` 是可选、**无默认值**，内置 `find`/`gre
 | `dev-yard req change <JIRA> --note ... --repo ...` | 轻量变更：追加变更记录到 REQUIREMENT.md →（可选 grill）→ 更新 SPEC → 追加一张 `source: light` 票；不重跑 tickets、不改 phase、不动契约。仅 frozen/testing，不涉及契约 |
 | `dev-yard req reset-grill <JIRA>` | 不跑 agent；丢弃待答的对齐轮次（`.grill-round.json`）+ 把 GRILL.md 清回空白 + 清 `stage_runs.grill`，下次「对齐」从头生成；不改 phase/票/契约。web 需求页有对应「重置对齐」按钮 |
 | `dev-yard implement --from-test` | 修就绪的测试 bug 票（B 票） |
-| `dev-yard tdd [on\|off\|status]` | 开/关 TDD（写 `repos.yaml` 的 `dev.tdd`，默认 on）；不跑 agent。关掉后 implement/review 不再要求写跑测试 |
+| `dev-yard tdd [on\|off\|status]` | 开/关 TDD（写 `repos.yaml` 的 `dev.tdd`，默认 on）；不跑 agent。关掉后 spec/tickets 不写测试验收，implement 不写不跑测试，review 不因测试文件缺失或跑不起来打回 |
 
 ## 产物
 

@@ -15,7 +15,9 @@ description: >
 
 ## 模块与测试缝
 
-列出会动的仓（`repos.yaml` alias）和模块。优先已有测试缝。向用户确认缝之后再落盘。
+启动提示若含 `TDD mode is OFF`：跳过本节。不要列测试缝，也不要为测试缝向用户确认。
+
+否则：列出会动的仓（`repos.yaml` alias）和模块。优先已有测试缝。向用户确认缝之后再落盘。
 
 ## SPEC.md 模板
 
@@ -51,5 +53,7 @@ description: >
 
 ## Further Notes
 ```
+
+启动提示若含 `TDD mode is OFF`：上面这条是指令，不要抄进 `SPEC.md`。Testing Decisions 只写一句「本需求不要求测试文件（dev.tdd=false）」。不要列 RSpec、Jest、单测用例，不要指定 spec 路径，也不要抄模板里的测试条目。
 
 写完后告诉用户下一步跑 `dev-yard tickets <JIRA>`。

@@ -23,8 +23,8 @@
       <v-card-text>
         <div class="text-subtitle-2 mb-2">TDD 开发与审查模式</div>
         <p class="text-body-2 text-medium-emphasis mb-4">
-          控制实现（<code>implement</code>）和代码审查（<code>review</code>）阶段是否使用测试驱动开发（TDD）。
-          写入 <code>repos.yaml</code> 的 <code>dev.tdd</code>。
+          控制方案（<code>spec</code>）、拆票（<code>tickets</code>）、实现（<code>implement</code>）和审查（<code>review</code>）是否要求测试文件。
+          写入 <code>repos.yaml</code> 的 <code>dev.tdd</code>。关闭后实现阶段不再加载 <code>tdd</code> 技能。
         </p>
         <v-switch
           v-model="tdd"
@@ -43,7 +43,7 @@
             当前处于 <strong>TDD 模式</strong>：Agent 实现每张票时将编写测试并运行测试套件（如 RSpec / Jest）。
           </span>
           <span v-else>
-            当前处于 <strong>免测模式</strong>：Agent 实现阶段直接编写业务代码并进行静态走查，审查阶段不会因缺少测试文件打回。
+            当前处于 <strong>免测模式</strong>：方案与拆票不写测试验收；实现直接编写业务代码并做静态走查，不写不跑测试；审查不会因测试文件缺失或跑不起来打回。
           </span>
         </v-alert>
       </v-card-text>

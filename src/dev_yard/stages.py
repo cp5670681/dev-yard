@@ -6,6 +6,8 @@ from pathlib import Path
 
 import yaml
 
+from dev_yard.config import load_dev_settings
+
 RESERVED_STAGE_NAMES = frozenset(
     {
         "init",
@@ -417,11 +419,14 @@ def resolve_skill_dir(root: Path, name: str) -> Path | None:
 
 
 def spec_skill_dirs(root: Path, spec: StageSpec) -> list[Path]:
-    """Skill dirs to pass to pi --skill: the plugin's own dir first, then bundles."""
+    """Skill dirs for pi --skill: plugin dir first, then bundles. Omit `tdd` when dev.tdd is false."""
+    bundles = spec.bundles
+    if not load_dev_settings(root).tdd:
+        bundles = tuple(name for name in bundles if name != "tdd")
     out: list[Path] = []
     if spec.skill_dir is not None:
         out.append(spec.skill_dir)
-    for name in spec.bundles:
+    for name in bundles:
         d = resolve_skill_dir(root, name)
         if d is not None and d not in out:
             out.append(d)

@@ -307,6 +307,28 @@ def test_resolve_unknown_returns_none(tmp_path):
     assert stages.resolve_skill_dir(root, "no-such-skill") is None
 
 
+def test_spec_skill_dirs_drops_tdd_when_disabled(tmp_path):
+    from dev_yard.config import DevSettings, save_dev_settings
+
+    root = _workspace(tmp_path)
+    save_dev_settings(root, DevSettings(tdd=False))
+    _make_skills(root, ["implement", "tdd", "codebase-design"])
+    spec = stages.load_registry(root)["implement"]
+    names = [p.name for p in stages.spec_skill_dirs(root, spec)]
+    assert names == ["implement", "codebase-design"]
+    argv = pi_argv(root=root, bundle="implement", prompt="go", binary="pi")
+    skills = [argv[i + 1] for i, a in enumerate(argv) if a == "--skill"]
+    assert all(not s.endswith("/tdd") for s in skills)
+
+
+def test_spec_skill_dirs_keeps_tdd_by_default(tmp_path):
+    root = _workspace(tmp_path)
+    _make_skills(root, ["implement", "tdd", "codebase-design"])
+    spec = stages.load_registry(root)["implement"]
+    names = [p.name for p in stages.spec_skill_dirs(root, spec)]
+    assert names == ["implement", "tdd", "codebase-design"]
+
+
 def test_spec_skill_dirs_plugin_first(tmp_path):
     root = _workspace(tmp_path)
     p = _plugin(root, "deploy", bundles=["to-spec"])

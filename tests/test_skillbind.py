@@ -318,6 +318,26 @@ def test_implement_prompt_tdd_disabled(tmp_path: Path):
     p = session_prompt(tmp_path, "implement", "AB-1")
     assert "TDD mode is OFF (dev.tdd=false)" in p
     assert "Do NOT write test files" in p
+    assert "anywhere in SPEC.md" in p
+    assert "unless SPEC.md explicitly demands testing" not in p
+
+
+def test_spec_and_tickets_prompts_tdd_disabled(tmp_path: Path):
+    init_yard(tmp_path)
+    save_dev_settings(tmp_path, DevSettings(tdd=False))
+    spec = session_prompt(tmp_path, "spec", "AB-1")
+    tickets = session_prompt(tmp_path, "tickets", "AB-1")
+    assert "does not require test files" in spec
+    assert "Skip test-seam planning" in spec
+    assert "Do not list RSpec" in spec
+    assert "observable behavior only" in tickets
+    assert "验收：spec" in tickets
+
+
+def test_spec_and_tickets_prompts_omit_tdd_off_by_default(tmp_path: Path):
+    init_yard(tmp_path)
+    assert "TDD mode is OFF" not in session_prompt(tmp_path, "spec", "AB-1")
+    assert "TDD mode is OFF" not in session_prompt(tmp_path, "tickets", "AB-1")
 
 
 def test_review_prompt_tdd_disabled(tmp_path: Path):
@@ -325,7 +345,20 @@ def test_review_prompt_tdd_disabled(tmp_path: Path):
     save_dev_settings(tmp_path, DevSettings(tdd=False))
     p = session_prompt(tmp_path, "review", "AB-1")
     assert "TDD mode is OFF (dev.tdd=false)" in p
-    assert "Do NOT require test files" in p
+    assert "must not become findings" in p
+    assert "must not produce REVIEW_FAILED" in p
+    assert "not Spec gaps" in p
+    assert "unless SPEC.md explicitly demands testing" not in p
+
+
+def test_tdd_off_prompt_follows_stage_extra(tmp_path: Path):
+    init_yard(tmp_path)
+    save_dev_settings(tmp_path, DevSettings(tdd=False))
+    extra = "Report a gap when the code omits something SPEC.md requires."
+    for name in ("review", "contract", "implement"):
+        p = session_prompt(tmp_path, name, "AB-1", extra=extra)
+        assert p.rindex("TDD mode is OFF") > p.rindex(extra)
+        assert "overrides any earlier instruction" in p
 
 
 

@@ -37,4 +37,6 @@ description: >
 
 在标题下可用普通段落写「做什么 / 验收」。`parallel: true` 仅当同仓两张无依赖票要同时开子 worktree。
 
+启动提示若含 `TDD mode is OFF`：验收只写可观察的业务行为。不要写「验收：spec」「补单测」，也不要要求新增测试文件。
+
 用户批准后写入 `TICKETS.md`，提示 `dev-yard req freeze <JIRA>`，然后 `dev-yard implement`。

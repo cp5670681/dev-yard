@@ -40,16 +40,31 @@ def session_prompt_for(
     dev_settings = load_dev_settings(root)
     tdd_extra = ""
     if not dev_settings.tdd:
-        if spec.name == "implement":
+        if spec.name == "spec":
             tdd_extra = (
-                "TDD mode is OFF (dev.tdd=false). Do NOT write test files (e.g. RSpec, Jest, unit tests) "
-                "and do NOT run test suites unless SPEC.md explicitly demands testing. "
-                "Directly implement the business logic and verify via static code walkthrough/syntax checking."
+                "TDD mode is OFF (dev.tdd=false). Skip test-seam planning. "
+                "In Testing Decisions write only that this requirement does not require test files. "
+                "Do not list RSpec, Jest, or unit-test cases, and do not copy test-seam bullets into SPEC.md."
+            )
+        elif spec.name == "tickets":
+            tdd_extra = (
+                "TDD mode is OFF (dev.tdd=false). Acceptance describes observable behavior only. "
+                "Do not require spec files, unit tests, or phrases like 验收：spec."
+            )
+        elif spec.name == "implement":
+            tdd_extra = (
+                "TDD mode is OFF (dev.tdd=false). This overrides any earlier instruction in this prompt. "
+                "Do NOT write test files (e.g. RSpec, Jest, unit tests) and do NOT run test suites. "
+                "Ignore test-file demands anywhere in SPEC.md or TICKETS.md, including previous-review "
+                "or contract text that calls them Spec gaps. Directly implement the business logic and "
+                "verify via static code walkthrough/syntax checking."
             )
         elif spec.name in {"review", "contract"}:
             tdd_extra = (
-                "TDD mode is OFF (dev.tdd=false). Do NOT require test files or test execution in review; "
-                "missing tests is NOT a defect or violation unless SPEC.md explicitly demands testing."
+                "TDD mode is OFF (dev.tdd=false). This overrides any earlier instruction in this prompt. "
+                "Test-file demands anywhere in SPEC.md or TICKETS.md are not Spec gaps and must not "
+                "become findings. A missing, broken, or unrun test is NOT a defect and must not "
+                "produce REVIEW_FAILED. Judge production behavior only."
             )
         elif spec.name == "resolve-merge":
             tdd_extra = (
@@ -108,10 +123,10 @@ def session_prompt_for(
     hint = _attachments_hint(root, jira, req)
     if hint:
         parts.append(hint)
-    if tdd_extra:
-        parts.append(tdd_extra)
     if extra:
         parts.append(extra)
+    if tdd_extra:
+        parts.append(tdd_extra)
     return "\n".join(parts).strip()
 
 
