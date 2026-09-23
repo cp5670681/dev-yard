@@ -224,7 +224,7 @@
 
       <!-- 设计中：用例还在生成/核实，先不亮审核门 -->
       <v-alert
-        v-if="qaReviewPending && qaRunActive"
+        v-if="qaReviewPending && qaActive"
         type="info"
         variant="tonal"
         border="start"
@@ -233,9 +233,9 @@
       >
         <div class="d-flex flex-column flex-sm-row justify-space-between align-sm-center ga-3">
           <div>
-            <div class="text-subtitle-1 font-weight-bold">用例设计中（自动测进行中）</div>
+            <div class="text-subtitle-1 font-weight-bold">用例处理中</div>
             <div class="text-body-2 text-medium-emphasis mt-0.5">
-              用例还在生成和数据核实，完成后会提示审核，当前审批会审到还在变动的用例。
+              用例生成 / 审核进行中，完成后这里会更新；此期间的审批会审到还在变动的用例。
             </div>
           </div>
           <v-btn size="small" variant="outlined" :to="`/r/${jira}/qa`" class="flex-shrink-0">
@@ -244,7 +244,7 @@
         </div>
       </v-alert>
 
-      <!-- 用例审核门：通过后「自动测」才会真正执行 -->
+      <!-- 用例审核门：通过后「执行用例」才会真正执行 -->
       <v-alert
         v-else-if="qaReviewPending"
         :type="qaReview?.stale || qaReview?.stale_reason || qaReview?.status === 'rejected' ? 'warning' : 'info'"
@@ -264,7 +264,7 @@
               </template>
               <QaFeedbackDetails v-else-if="qaReview?.feedback" :review="qaReview" />
               <template v-else-if="qaReview?.stale">用例在通过之后又改动过，需要重新审核。</template>
-              <template v-else>通过后「自动测」才会开始执行；改预期等于洗白失败。</template>
+              <template v-else>通过后「执行用例」才会开始执行；改预期等于洗白失败。</template>
             </div>
           </div>
           <div class="d-flex flex-wrap align-center ga-2 flex-shrink-0">
@@ -295,7 +295,7 @@
         variant="tonal"
         color="warning"
       >
-        <v-card-title class="text-subtitle-1">自动测试</v-card-title>
+        <v-card-title class="text-subtitle-1">测试执行中</v-card-title>
         <v-card-text>
           <p class="text-caption mb-2">
             <span v-for="(p, i) in livePools" :key="p.id">
@@ -532,7 +532,7 @@
               · 来源 {{ detail.test.source || "-" }}
             </p>
             <p v-if="detail.qa?.latest_run" class="mb-2">
-              自动测
+              最近执行
               passed {{ detail.qa.latest_run.summary?.passed || 0 }} /
               failed {{ detail.qa.latest_run.summary?.failed || 0 }} /
               blocked {{ detail.qa.latest_run.summary?.blocked || 0 }} /
@@ -663,7 +663,7 @@
         <v-card-text>
           <p class="mb-2">{{ confirm.text }}</p>
           <v-select
-            v-if="confirm.action === 'run-test' && qaEnvs.length"
+            v-if="confirm.action === 'qa-run' && qaEnvs.length"
             v-model="confirm.env"
             :items="qaEnvs"
             label="环境（qa.yaml envs）"
@@ -673,7 +673,7 @@
             class="mb-2"
           />
           <v-checkbox
-            v-if="confirm.action === 'run-test' && incompleteRun"
+            v-if="confirm.action === 'qa-run' && incompleteRun"
             v-model="confirm.resume"
             hide-details
             density="compact"
@@ -768,7 +768,7 @@
           <p v-else-if="qaReview?.stale" class="text-body-2 mb-2">
             用例在通过之后又改动过，需要重新审核。
           </p>
-          <p v-else class="text-body-2 mb-2">通过后「自动测」才会开始执行；改预期等于洗白失败。</p>
+          <p v-else class="text-body-2 mb-2">通过后「执行用例」才会开始执行；改预期等于洗白失败。</p>
           <v-textarea
             v-model="qaReviewFeedback"
             label="打回意见（打回时必填；会交给 qa-design 重做用例）"
@@ -883,7 +883,7 @@ import {
   STAGE_ORDER,
   STEP_LABELS,
 } from "@/composables/labels";
-import { isQaJobActive, QA_GATE_ACTIONS, useQaRunActive } from "@/composables/qa";
+import { isQaJobActive, QA_GATE_ACTIONS, useQaActive } from "@/composables/qa";
 import { useSnack } from "@/composables/snack";
 
 const { mdAndUp } = useDisplay();
@@ -918,7 +918,7 @@ const incompleteRun = computed(() => detail.value?.qa?.incomplete_run || null);
 const qaReview = computed(() => detail.value?.qa?.review || null);
 // While a design/run job is in flight the case set is still moving, so the
 // review gate must stay closed: approving now would bless unseen cases.
-const qaRunActive = useQaRunActive(
+const qaActive = useQaActive(
   jira,
   computed(() => detail.value?.qa?.active_jobs),
 );
@@ -1290,6 +1290,10 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
     changeOpen.value = true;
     return;
   }
+  if (action === "qa-review") {
+    openQaReview();
+    return;
+  }
   if (action === "fill-test-report") {
     reportForm.verdict = "failed";
     reportForm.summary = "";
@@ -1303,8 +1307,9 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
   const freeze = action === "freeze";
   const push = action === "push";
   const sync = action === "sync";
-  const runTest = action === "run-test";
-  if (resetPhase || resetGrill || freeze || push || sync || runTest) {
+  const runTest = action === "qa-run";
+  const designTest = action === "qa-design";
+  if (resetPhase || resetGrill || freeze || push || sync || runTest || designTest) {
     confirm.action = action;
     confirm.ticketId = ticketId || "";
     const branch = detail.value?.branch || `req/${jira.value}`;
@@ -1314,8 +1319,10 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
       ? "将 fetch 远端，并把已冻结 worktree 更新到 origin/<default_base>（默认快进）。确认继续？"
       : freeze
       ? `冻结后会创建分支 ${branch} 并切 worktree。确认继续？`
+      : designTest
+      ? "将按 qa.yaml 设计 UI 用例并做数据核实；完成后停下等审核。确认继续？"
       : runTest
-      ? "将按 qa.yaml 设计并执行 UI 用例；失败会拆 B 票。确认继续？"
+      ? "将执行已审核的 UI 用例；失败会拆 B 票。确认继续？"
       : resetGrill
       ? "将停止正在等待的对齐任务，丢弃当前待答轮次，并把 GRILL.md 清回空白：下次「对齐」从头生成问题。阶段/票/契约保留。确认继续？"
       : "将把需求重置回 open 阶段：拆掉 worktree 和本地分支，清空票/契约/测试状态。文档与截图保留。确认继续？";
@@ -1333,8 +1340,8 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
 
 function runConfirmed() {
   confirm.open = false;
-  const env = confirm.action === "run-test" ? confirm.env : undefined;
-  const resume = confirm.action === "run-test" ? confirm.resume : undefined;
+  const env = confirm.action === "qa-run" ? confirm.env : undefined;
+  const resume = confirm.action === "qa-run" ? confirm.resume : undefined;
   void onAction(confirm.action, confirm.ticketId || undefined, env, resume);
 }
 
@@ -1494,7 +1501,7 @@ async function onAction(
     const out = await runAction(jira.value, action, {
       ticket_id: ticketId,
       env: env || undefined,
-      resume: action === "run-test" ? Boolean(resume) : undefined,
+      resume: action === "qa-run" ? Boolean(resume) : undefined,
       approve: extra?.approve,
       redesign: extra?.redesign,
       feedback: extra?.feedback,
@@ -1519,8 +1526,9 @@ async function onAction(
 function onJobDone(job?: JobSnapshot) {
   if (job && QA_GATE_ACTIONS.has(job.action)) jobProgress.value = null;
   void load().then(() => {
-    // `qa-review` never executes cases, so it must not surface a run banner.
-    if (job?.action === "run-test") showRunEndBanner();
+    // `qa-review` and `qa-design` never execute cases, so they must not
+    // surface a run banner.
+    if (job?.action === "qa-run") showRunEndBanner();
   });
 }
 

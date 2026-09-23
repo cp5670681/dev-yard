@@ -144,9 +144,11 @@ dev-yard req accounts PROJ-101 --env test   # 本需求要多账号时先配：�
 dev-yard req accounts PROJ-101 --auto        # 权限会漂移：按 qa/accounts-discover.sql（username | account_key）一键发现并改绑本需求账号，复用全局默认账号密码，不动全局账号
 dev-yard req accounts PROJ-101 --refresh     # 清本需求账号的缓存登录态强制重登；--auto --refresh 发现后一并刷新
 # 需求页「测试账号」卡片也有「发现并填充 / 刷新登录态」按钮（同一个接口）
-dev-yard req test PROJ-101          # 设计用例后暂停，等人工审核；通过后执行，失败拆 B 票，通过则 phase=done
+dev-yard req test PROJ-101 --design-only   # 只设计用例（qa-design + 数据核实），停下等人工审核
+dev-yard req test PROJ-101          # 执行已审核用例，失败拆 B 票，通过则 phase=done
 dev-yard req test PROJ-101 --env test   # 指定环境；缺省用 qa.yaml 的 active_env
-dev-yard req test PROJ-101 --approve    # 人工审核通过当前用例并开始执行
+dev-yard req test PROJ-101 --approve    # 人工审核通过当前用例（只标记，不执行）
+dev-yard req test PROJ-101 --run-only   # 执行已审核用例（与「执行用例」同义）
 dev-yard req test PROJ-101 --redesign --feedback "补齐权限拦截用例"   # 打回：带意见让 qa-design 重做用例
 # 用例 frontmatter 的 account: 选需求账号；不写用需求 default（需求无则回退全局默认）
 # 需求页「测试」Tab（/r/:key/qa）可看用例、改动点、run 与截图，并通过/打回用例
@@ -224,7 +226,7 @@ dev-yard req changes PROJ-101            # 查看变更记录（只读）
 
 ### 自动化测试（`req test`）
 
-- **人工审核门**：qa-design 产出用例后暂停，需 `--approve` 才执行；审核绑定用例指纹，改动用例即失效。`--run-only` 跳过审核时必须显式 `--unsafe-skip-review`。
+- **分段执行**：`--design-only`（或 Web「设计用例」）只出用例；`--approve`（Web「审核用例」）只标记通过，不再触发执行；真正跑用例是 `--run-only`（Web「执行用例」）。审核绑定用例指纹，改动用例即失效；未审核直接 `--run-only` 时必须显式加 `--unsafe-skip-review`。
 - **数据核实**：设计期由宿主真跑每条用例的 `data.verify`（单条只读 SQL，≥1 行通过），失败自动回灌 qa-design 重做，最多 `design.verify_attempts` 次；配 `db.verify_url` 可让核实走只读账号。
 - **宿主独立复核**：run 期 worker 对带 `sql` 的 db 断言自报 passed，宿主会重跑该 SQL 比对 `expected`，不一致降级为 `failed`。
 - **阻塞分类**：worker 在 result.yaml 写 `blocked_class`（`case-defect`/`env`/`undeployed`/`auth`/`other`），宿主据此决策；无法归类的原因不再触发整轮中断。
@@ -272,7 +274,7 @@ dev-yard web --host 0.0.0.0 --allow-remote
 | `dev-yard req delete <key>` | 删除需求产物与 Worktree | |
 | `dev-yard req push <key> [repos..]` | 推送各仓 Worktree 分支到远端 | `--remote`, `--force` |
 | `dev-yard req submit-test <key>` | 标记提测 | |
-| `dev-yard req test <key>` | 提测后设计用例（暂停等人工审核）+ 执行 | `--env`, `--print`, `--design-only`, `--run-only`, `--unsafe-skip-review`, `--redesign`, `--approve`, `--feedback`, `--feedback-file`, `--verify-only`, `--no-verify`, `--allow-unverified`, `--resume`, `--fresh`, `--rerun-case`, `--no-ingest` |
+| `dev-yard req test <key>` | `--design-only` 出用例 → `--approve` 只标记通过 → `--run-only` 执行 | `--env`, `--print`, `--design-only`, `--run-only`, `--unsafe-skip-review`, `--redesign`, `--approve`, `--feedback`, `--feedback-file`, `--verify-only`, `--no-verify`, `--allow-unverified`, `--resume`, `--fresh`, `--rerun-case`, `--no-ingest` |
 | `dev-yard req change <key>` | 轻量变更：追加变更记录 + 更新 SPEC + 建一张轻量票 | `--note`, `--repo`, `--grill`, `--run`, `--print` |
 | `dev-yard req changes <key>` | 打印该需求的变更记录 | |
 | `dev-yard qa check-env` | 解析 exec 配方、ping、hello 回显 | `--env`, `--jira` |

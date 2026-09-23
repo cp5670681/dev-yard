@@ -1,5 +1,10 @@
 # 需求级自动测试环（yard-qa）
 
+> 注（2026-09-23）：看板动作 id `run-test`（本文「阶段命名最终决定」一节）已拆为
+> `qa-design` / `qa-review` / `qa-run`；`--approve` 只标记审核通过，执行改由
+> `--run-only` / 「执行用例」负责。本文其余设计（专用 service、审核门、worker 池、
+> 证据四态等）仍适用。
+
 - 日期：2026-09-16
 - 状态：已落地
 - 实现：`dev-yard req test`、`.pi/skills/qa-design`、`.pi/skills/qa-run`、需求页「测试」Tab `/r/:jira/qa`

@@ -851,7 +851,9 @@ def req_test_cmd(
     run_only: bool = typer.Option(False, "--run-only"),
     redesign: bool = typer.Option(False, "--redesign"),
     approve: bool = typer.Option(
-        False, "--approve", help="人工审核通过当前用例并开始执行"
+        False,
+        "--approve",
+        help="人工审核通过当前用例（只标记，不执行；执行用 --run-only 或直接 req test）",
     ),
     feedback: str = typer.Option(
         "", "--feedback", help="审核意见；配合 --redesign 让 qa-design 重做用例"
@@ -969,9 +971,18 @@ def req_test_cmd(
         _echo_uncovered_hint(result)
         _echo_account_hint(root, jira)
         typer.echo(
-            f"  通过：dev-yard req test {jira} --approve\n"
+            f"  通过（只标记）：dev-yard req test {jira} --approve\n"
+            f"  通过后执行：dev-yard req test {jira} --run-only\n"
             f"  打回重做：dev-yard req test {jira} --redesign --feedback-file <path>"
         )
+        return
+    if result.get("approved"):
+        review = result.get("review") or {}
+        typer.echo(
+            f"{jira} 用例已审核通过 cases={result.get('cases')} "
+            f"review={review.get('status') or '?'}"
+        )
+        typer.echo(f"  执行：dev-yard req test {jira} --run-only")
         return
     if result.get("verify_only"):
         typer.echo(f"{jira} verify-only cases={result.get('cases')}")

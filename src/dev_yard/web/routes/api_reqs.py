@@ -174,7 +174,7 @@ def build(ctx: AppContext) -> APIRouter:
         ctx.detail_or_404(jira)
         try:
             submitted = ctx.submit_action(
-                "run-test",
+                "qa-run",
                 jira,
                 None,
                 {"rerun_cases": ids, "env": payload.env},

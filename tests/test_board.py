@@ -384,7 +384,9 @@ def test_builtin_actions_carry_pipeline_stage(tmp_path: Path, monkeypatch):
     stages = {a.id: a.stage for a in available_actions(detail, yard)}
     assert stages["contract"] == "review"
     assert stages["fix-contract"] == "review"
-    assert stages["run-test"] == "testing"
+    assert stages["qa-design"] == "testing"
+    assert stages["qa-review"] == "testing"
+    assert stages["qa-run"] == "testing"
     assert stages["push"] == "utility"
     assert stages["change"] == "utility"
 

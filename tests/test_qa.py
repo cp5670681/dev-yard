@@ -206,11 +206,22 @@ def test_design_skipped_when_cases_exist(tmp_path: Path, git_src: Path, monkeypa
             "provider": pool.provider,
         }
 
-    result = req_test(
+    approved = req_test(
         yard,
         "QA-4",
         print_mode=True,
         approve=True,
+        ingest=False,
+        runner=design,
+        case_runner=case_runner,
+    )
+    assert approved["approved"] is True
+    assert design.called == 0
+    result = req_test(
+        yard,
+        "QA-4",
+        print_mode=True,
+        run_only=True,
         ingest=False,
         runner=design,
         case_runner=case_runner,
@@ -383,12 +394,13 @@ def test_mutation_gate_skips_ingest(tmp_path: Path, git_src: Path, monkeypatch):
         return {"status": "passed", "repo": "backend"}
 
     req_test(yard, "QA-6", print_mode=True, design_only=True, runner=design)
+    req_test(yard, "QA-6", print_mode=True, approve=True)
     with pytest.raises(TestRejected, match="mutated"):
         req_test(
             yard,
             "QA-6",
             print_mode=True,
-            approve=True,
+            run_only=True,
             case_runner=mutate,
         )
     assert called["accept"] == 0
@@ -405,8 +417,9 @@ def test_passed_ingests_and_sets_done(tmp_path: Path, git_src: Path, monkeypatch
         return {"status": "passed", "repo": "backend", "model": pool.model}
 
     req_test(yard, "QA-7", print_mode=True, design_only=True, runner=design)
+    req_test(yard, "QA-7", print_mode=True, approve=True)
     result = req_test(
-        yard, "QA-7", print_mode=True, approve=True, case_runner=ok
+        yard, "QA-7", print_mode=True, run_only=True, case_runner=ok
     )
     assert result["ingested"] is True
     data = st.load(yard, "QA-7")
@@ -415,15 +428,19 @@ def test_passed_ingests_and_sets_done(tmp_path: Path, git_src: Path, monkeypatch
     assert data["test"]["source"] == "yard"
 
 
-def test_board_run_test_enabled(tmp_path: Path, git_src: Path, monkeypatch):
+def test_board_qa_design_enabled(tmp_path: Path, git_src: Path, monkeypatch):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)
     yard = _testing_req(tmp_path, git_src, "QA-8")
     detail = requirement_detail(yard, "QA-8")
     ids = {a.id: a for a in detail.actions}
-    assert ids["run-test"].enabled
-    assert detail.next_label == "run-test"
-    assert "run-test" not in PIPELINE
+    assert ids["qa-design"].enabled
+    assert ids["qa-run"].enabled is False
+    assert "设计用例" in ids["qa-run"].reason
+    assert ids["qa-review"].enabled is False
+    assert detail.next_label == "qa-design"
+    assert "qa-design" not in PIPELINE
+    assert "qa-run" not in PIPELINE
     assert {s.id for s in detail.steps} == set(PIPELINE)
     assert detail.qa is not None
     assert detail.qa["envs"] == ["local"]
@@ -475,12 +492,13 @@ def test_req_test_uses_the_selected_env(tmp_path: Path, git_src: Path, monkeypat
         design_only=True,
         runner=_Design(yard, "QA-E2"),
     )
+    req_test(yard, "QA-E2", env="test", print_mode=True, approve=True)
     result = req_test(
         yard,
         "QA-E2",
         env="test",
         print_mode=True,
-        approve=True,
+        run_only=True,
         case_runner=ok,
     )
     assert result["ingested"] is True
@@ -717,9 +735,10 @@ def test_worktree_png_is_mutation(tmp_path: Path, git_src: Path, monkeypatch):
         return {"status": "passed", "repo": "backend"}
 
     req_test(yard, "QA-9", print_mode=True, design_only=True, runner=design)
+    req_test(yard, "QA-9", print_mode=True, approve=True)
     with pytest.raises(TestRejected, match="mutated"):
         req_test(
-            yard, "QA-9", print_mode=True, approve=True, case_runner=mutate
+            yard, "QA-9", print_mode=True, run_only=True, case_runner=mutate
         )
     assert called["accept"] == 0
 
@@ -737,8 +756,9 @@ def test_only_new_root_png_is_moved(tmp_path: Path, git_src: Path, monkeypatch):
         return {"status": "passed", "repo": "backend"}
 
     req_test(yard, "QA-10", print_mode=True, design_only=True, runner=design)
+    req_test(yard, "QA-10", print_mode=True, approve=True)
     result = req_test(
-        yard, "QA-10", print_mode=True, approve=True, case_runner=drop
+        yard, "QA-10", print_mode=True, run_only=True, case_runner=drop
     )
     assert keep.is_file()
     assert keep.read_bytes().endswith(b"keep")
@@ -767,11 +787,12 @@ def test_preload_auth_runs_when_account_configured(tmp_path: Path, git_src: Path
     monkeypatch.setattr("dev_yard.qa._preload_auth", fake)
     design = _DesignRunner(yard, "QA-11")
     req_test(yard, "QA-11", print_mode=True, design_only=True, runner=design)
+    req_test(yard, "QA-11", print_mode=True, approve=True)
     req_test(
         yard,
         "QA-11",
         print_mode=True,
-        approve=True,
+        run_only=True,
         case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
         ingest=False,
     )
@@ -1971,7 +1992,8 @@ def test_req_test_holds_for_review_until_approved(
     assert ran == []
     assert not (yard / "reqs" / "QA-RV1" / "qa" / "evidence").exists()
 
-    done = req_test(
+    # Approval only marks the cases reviewed; it must not execute them.
+    approved = req_test(
         yard,
         "QA-RV1",
         print_mode=True,
@@ -1981,6 +2003,21 @@ def test_req_test_holds_for_review_until_approved(
         ingest=False,
     )
     assert design.called == 1  # cases already exist; approval does not redesign
+    assert approved["approved"] is True
+    assert approved["review"]["approved"] is True
+    assert ran == []
+    assert not (yard / "reqs" / "QA-RV1" / "qa" / "evidence").exists()
+
+    # Execution is a separate, explicit step.
+    done = req_test(
+        yard,
+        "QA-RV1",
+        print_mode=True,
+        run_only=True,
+        runner=design,
+        case_runner=case_runner,
+        ingest=False,
+    )
     assert ran == ["case-01"]
     assert done["summary"]["passed"] == 1
 
@@ -2040,6 +2077,16 @@ def test_review_approval_is_invalidated_by_case_change(
         case_runner=case_runner,
         ingest=False,
     )
+    # Approval alone does not execute; the explicit run does.
+    assert ran == []
+    req_test(
+        yard,
+        "QA-RV3",
+        print_mode=True,
+        run_only=True,
+        case_runner=case_runner,
+        ingest=False,
+    )
     assert ran == ["case-01"]
 
     # Editing a case after approval must force a re-review.
@@ -2061,7 +2108,7 @@ def test_review_approval_is_invalidated_by_case_change(
     assert ran == ["case-01"]
 
 
-def test_board_run_test_reason_when_cases_await_review(
+def test_board_qa_run_reason_when_cases_await_review(
     tmp_path: Path, git_src: Path, monkeypatch
 ):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
@@ -2075,8 +2122,12 @@ def test_board_run_test_reason_when_cases_await_review(
     )
     detail = requirement_detail(yard, "QA-RV4")
     ids = {a.id: a for a in detail.actions}
-    assert ids["run-test"].enabled
-    assert "待审核" in ids["run-test"].reason
+    assert ids["qa-run"].enabled is False
+    assert "待审核" in ids["qa-run"].reason
+    assert ids["qa-review"].enabled
+    # 设计用例 is a no-cases entry point; re-design goes through 打回重做.
+    assert ids["qa-design"].enabled is False
+    assert detail.next_label == "qa-review"
     assert detail.qa is not None
     assert detail.qa["review"]["status"] == "awaiting"
     assert detail.qa["review"]["approved"] is False
@@ -2537,23 +2588,23 @@ def test_reset_cases_rejects_unknown_id(tmp_path: Path, git_src: Path, monkeypat
 
 
 def test_rerun_queues_behind_active_run(tmp_path: Path, git_src: Path, monkeypatch):
-    """A re-run job does not conflict with an active run-test; full runs do."""
+    """A re-run job does not conflict with an active qa-run; full runs do."""
     from dev_yard.web.jobs import Job, _jobs_conflict
 
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)
-    active = Job(id="a", jira="QA-Q", action="run-test")
+    active = Job(id="a", jira="QA-Q", action="qa-run")
 
-    # A plain run-test still conflicts (one full run at a time).
-    assert _jobs_conflict(active, "QA-Q", "run-test", None, {"label": "自动测"}) is True
+    # A plain qa-run still conflicts (one full run at a time).
+    assert _jobs_conflict(active, "QA-Q", "qa-run", None, {"label": "执行用例"}) is True
     # A re-run is allowed to queue behind it (req_test serialises on the lock).
     assert (
-        _jobs_conflict(active, "QA-Q", "run-test", None, {"rerun_cases": ["case-01"]})
+        _jobs_conflict(active, "QA-Q", "qa-run", None, {"rerun_cases": ["case-01"]})
         is False
     )
     # Re-runs for a different requirement never conflict.
     assert (
-        _jobs_conflict(active, "QA-OTHER", "run-test", None, {"rerun_cases": ["case-01"]})
+        _jobs_conflict(active, "QA-OTHER", "qa-run", None, {"rerun_cases": ["case-01"]})
         is False
     )
 
@@ -2573,9 +2624,9 @@ def test_rerun_dedupes_identical_jobs(tmp_path: Path, git_src: Path, monkeypatch
     )
     runner = JobRunner(yard, sync=False)
     try:
-        runner.submit("run-test", "QA-Q2", extra={"rerun_cases": ["case-01"]})
+        runner.submit("qa-run", "QA-Q2", extra={"rerun_cases": ["case-01"]})
         with pytest.raises(ValueError, match="已有重测在排队"):
-            runner.submit("run-test", "QA-Q2", extra={"rerun_cases": ["case-01"]})
+            runner.submit("qa-run", "QA-Q2", extra={"rerun_cases": ["case-01"]})
     finally:
         for job in runner.running():
             job.cancel()

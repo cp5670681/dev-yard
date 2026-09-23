@@ -1120,7 +1120,7 @@ def test_default_execute_reset_grill(tmp_path: Path, monkeypatch):
 
 
 def test_job_cancel_kills_every_tracked_proc(monkeypatch):
-    job = Job(id="abc", jira="AB-1", action="run-test")
+    job = Job(id="abc", jira="AB-1", action="qa-run")
     killed: list[object] = []
     monkeypatch.setattr("dev_yard.web.jobs._kill_proc", killed.append)
     first, second = object(), object()
@@ -1143,7 +1143,7 @@ def test_default_execute_run_test_passes_cancel_hooks(tmp_path: Path, monkeypatc
         return {"run_id": "r", "summary": {}, "cases": 0}
 
     monkeypatch.setattr("dev_yard.qa.req_test", fake_req_test)
-    job = Job(id="abc", jira="AB-1", action="run-test")
+    job = Job(id="abc", jira="AB-1", action="qa-run")
     default_execute(tmp_path, job)
     assert seen["cancel_check"] == job.cancel_requested.is_set
     assert seen["on_spawn"] == job.track_proc
@@ -1164,7 +1164,7 @@ def test_run_test_job_cancel_marks_cancelled(tmp_path: Path, monkeypatch):
     yard = tmp_path / "yard"
     init_yard(yard)
     runner = JobRunner(yard, execute=default_execute, sync=False)
-    job = runner.submit("run-test", "AB-9")
+    job = runner.submit("qa-run", "AB-9")
     deadline = time.time() + 2
     while job.state != "running" and time.time() < deadline:
         time.sleep(0.01)

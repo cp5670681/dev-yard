@@ -59,7 +59,7 @@ _ASSET_REF = re.compile(r'(src|href)=(["\'])(?:\./)?(assets|uploads)/([^"\']+)\2
 
 # Actions that (re)design or run the QA case set. While any is in flight the
 # cases are not reviewable yet.
-_QA_JOB_ACTIONS = frozenset({"run-test", "qa-review"})
+_QA_JOB_ACTIONS = frozenset({"qa-design", "qa-review", "qa-run"})
 
 HERE = Path(__file__).parent
 SPA = HERE / "spa"
@@ -245,12 +245,13 @@ class AppContext:
             for a in detail.actions
         ]
         if active_qa:
-            # The cases are still moving; gate the review action so a mid-design
-            # approval cannot slip through the actions row either.
+            # A QA job (design/review/run) is in flight; gate the review action
+            # so an approval cannot slip through the actions row while the case
+            # set is still moving.
             for a in actions:
                 if a["id"] == "qa-review" and a["enabled"]:
                     a["enabled"] = False
-                    a["reason"] = "用例设计中，完成后可审核"
+                    a["reason"] = "用例处理中，完成后可审核"
         return {
             "jira": detail.jira,
             "title": detail.title,

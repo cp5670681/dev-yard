@@ -67,8 +67,9 @@ ACTION_STAGES = {
     "contract": "review",
     "fix-contract": "review",
     "submit-test": "testing",
+    "qa-design": "testing",
     "qa-review": "testing",
-    "run-test": "testing",
+    "qa-run": "testing",
     "fill-test-report": "testing",
     "fix-test": "testing",
 }
@@ -269,6 +270,10 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
         data.get("contract_review"),
         test,
         has_qa_run=bool(qa.get("latest_run")),
+        has_cases=bool(qa.get("has_cases")),
+        review_pending=bool(
+            qa.get("has_cases") and not ((qa.get("review") or {}).get("approved"))
+        ),
     )
     steps = _steps(phase, docs, tickets, awaiting, data.get("contract_review"), test)
     detail = ReqDetail(
@@ -339,62 +344,58 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
     qa_reason = qa_config_reason(root)
     qa_summary = detail.qa or {}
     review = qa_summary.get("review") or {}
-    review_pending = bool(qa_summary.get("has_cases") and not review.get("approved"))
-    # Same gates as run-test minus the review gate itself: the review action is
-    # exactly what clears `review_pending`, so it must not require it.
-    can_review_qa = (
-        can_fill
-        and has_worktrees
-        and not qa_reason
-        and detail.phase == "testing"
-        and tickets_done
-        and review_pending
-    )
-    if not can_fill:
-        review_qa_reason = (
-            "测试已通过"
-            if st.test_passed({"test": detail.test})
-            else "需要契约审查 passed，且已 freeze 或提测"
-        )
-    elif detail.phase != "testing":
-        review_qa_reason = "先提测（dev-yard req submit-test）"
-    elif not has_worktrees:
-        review_qa_reason = "需要 freeze worktree"
-    elif qa_reason:
-        review_qa_reason = qa_reason
-    elif not tickets_done:
-        review_qa_reason = "还有未完成的票，先处理测试 bug"
-    elif not qa_summary.get("has_cases"):
-        review_qa_reason = "还没有用例，先点「自动测」设计"
-    elif not review_pending:
-        review_qa_reason = "用例已审核通过，可直接「自动测」"
-    else:
-        review_qa_reason = ""
-    can_run_test = (
+    has_cases = bool(qa_summary.get("has_cases"))
+    review_approved = bool(review.get("approved"))
+    review_pending = has_cases and not review_approved
+    # Gates shared by 设计用例 / 审核用例 / 执行用例, minus each action's own
+    # precondition: the review gate must not require itself, and run must not
+    # require what review clears.
+    qa_ready = (
         can_fill
         and has_worktrees
         and not qa_reason
         and detail.phase == "testing"
         and tickets_done
     )
-    if not can_fill:
-        run_reason = (
-            "测试已通过"
-            if st.test_passed({"test": detail.test})
-            else "需要契约审查 passed，且已 freeze 或提测"
-        )
-    elif detail.phase != "testing":
-        run_reason = "先提测（dev-yard req submit-test）"
-    elif not has_worktrees:
-        run_reason = "需要 freeze worktree"
-    elif qa_reason:
-        run_reason = qa_reason
-    elif not tickets_done:
-        run_reason = "还有未完成的票，先处理测试 bug"
-    elif review_pending:
-        run_reason = "用例待审核：去测试页通过，或 dev-yard req test --approve"
-    else:
-        run_reason = ""
+
+    def _qa_base_reason() -> str:
+        if not can_fill:
+            return (
+                "测试已通过"
+                if st.test_passed({"test": detail.test})
+                else "需要契约审查 passed，且已 freeze 或提测"
+            )
+        if detail.phase != "testing":
+            return "先提测（dev-yard req submit-test）"
+        if not has_worktrees:
+            return "需要 freeze worktree"
+        if qa_reason:
+            return qa_reason
+        if not tickets_done:
+            return "还有未完成的票，先处理测试 bug"
+        return ""
+
+    # 设计用例 is the entry point while there are no cases. Once cases exist,
+    # re-designing goes through 审核用例 → 打回重做: leaving it enabled would let
+    # the data-verify loop silently redesign and invalidate a given approval.
+    can_design_qa = qa_ready and not has_cases
+    design_qa_reason = _qa_base_reason()
+    if not design_qa_reason and has_cases:
+        design_qa_reason = "已有用例；要重做请在「审核用例」里打回重做"
+    can_review_qa = qa_ready and has_cases and review_pending
+    review_qa_reason = _qa_base_reason()
+    if not review_qa_reason:
+        if not has_cases:
+            review_qa_reason = "还没有用例，先点「设计用例」"
+        elif not review_pending:
+            review_qa_reason = "用例已审核通过，可直接「执行用例」"
+    can_run_qa = qa_ready and has_cases and review_approved
+    run_qa_reason = _qa_base_reason()
+    if not run_qa_reason:
+        if not has_cases:
+            run_qa_reason = "还没有用例，先点「设计用例」"
+        elif review_pending:
+            run_qa_reason = "用例待审核：先通过「审核用例」"
     can_fix_contract = frozen and (
         detail.contract == "failed"
         or any(t.source == "contract" and t.can_implement for t in detail.tickets)
@@ -504,16 +505,22 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
             ),
         ),
         Action(
-            "run-test",
-            ACTION_LABELS["run-test"],
-            can_run_test,
-            run_reason,
+            "qa-design",
+            ACTION_LABELS["qa-design"],
+            can_design_qa,
+            design_qa_reason,
         ),
         Action(
             "qa-review",
             ACTION_LABELS["qa-review"],
             can_review_qa,
             review_qa_reason,
+        ),
+        Action(
+            "qa-run",
+            ACTION_LABELS["qa-run"],
+            can_run_qa,
+            run_qa_reason,
         ),
         Action(
             "fill-test-report",
@@ -654,6 +661,8 @@ def _next_label(
     contract: str | None = None,
     test: dict | None = None,
     has_qa_run: bool = False,
+    has_cases: bool = False,
+    review_pending: bool = False,
 ) -> str:
     by_slug = {d.slug: d for d in docs}
     if st.pipeline_complete({"phase": phase, "test": test}):
@@ -667,8 +676,12 @@ def _next_label(
     if open_bugs:
         return "implement"
     if phase == "testing":
+        if not has_cases:
+            return "qa-design"
+        if review_pending:
+            return "qa-review"
         if not has_qa_run:
-            return "run-test"
+            return "qa-run"
         return "fill-test-report"
     if tickets and all(t.state == "done" for t in tickets):
         return "submit-test" if contract == "passed" else "contract"

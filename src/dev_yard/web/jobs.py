@@ -595,22 +595,39 @@ def default_execute(root: Path, job: Job) -> None:
             job.append(line)
         job.append(f"{job.jira} phase={data.get('phase')}")
         return
-    if job.action in {"run-test", "qa-review"}:
+    if job.action in {"qa-design", "qa-review", "qa-run"}:
         from dev_yard.qa import req_test
         from dev_yard.qa_config import TestRejected
 
         extra = job.extra or {}
+        rerun_cases = extra.get("rerun_cases")
+        # 设计用例 → design only; 执行用例 → run only (a re-run amends an
+        # existing run, so it must not also force --run-only); 审核用例 → only
+        # records the approval, never executes.
+        design_only = bool(extra.get("design_only")) or job.action == "qa-design"
+        run_only = bool(extra.get("run_only")) or (
+            job.action == "qa-run" and not rerun_cases
+        )
+        approve = bool(extra.get("approve"))
+        feedback = (extra.get("feedback") or "").strip() or None
+        if (
+            job.action == "qa-review"
+            and not approve
+            and not extra.get("redesign")
+            and not feedback
+        ):
+            raise RuntimeError("qa-review 需要 approve 或 redesign/feedback")
         try:
             result = req_test(
                 root,
                 job.jira,
                 env=(extra.get("env") or "").strip() or None,
                 print_mode=True,
-                design_only=bool(extra.get("design_only")),
-                run_only=bool(extra.get("run_only")),
+                design_only=design_only,
+                run_only=run_only,
                 redesign=bool(extra.get("redesign")),
-                approve=bool(extra.get("approve")),
-                feedback=(extra.get("feedback") or "").strip() or None,
+                approve=approve,
+                feedback=feedback,
                 ingest=not bool(extra.get("no_ingest")),
                 resume=extra.get("resume"),
                 rerun_cases=extra.get("rerun_cases"),
@@ -644,6 +661,13 @@ def default_execute(root: Path, job: Job) -> None:
             job.append(
                 f"{job.jira} design-only cases={result.get('cases')} "
                 f"review={review.get('status') or '?'}" + _questions_suffix(result)
+            )
+            return
+        if result.get("approved"):
+            review = result.get("review") or {}
+            job.append(
+                f"{job.jira} 用例已审核通过 cases={result.get('cases')} "
+                f"review={review.get('status') or '?'}"
             )
             return
         summary = result.get("summary") or {}
@@ -928,13 +952,13 @@ class JobRunner:
             # its own run lock, so the second one simply waits its turn instead
             # of being rejected. Identical re-runs are deduped so a double click
             # cannot stack two jobs that would each reset and run the same case.
-            if action == "run-test":
+            if action == "qa-run":
                 wanted = {c for c in extra.get("rerun_cases") or [] if c}
                 if wanted:
                     for existing in self._jobs.values():
                         if existing.state not in {"queued", "running", "waiting"}:
                             continue
-                        if existing.jira != jira or existing.action != "run-test":
+                        if existing.jira != jira or existing.action != "qa-run":
                             continue
                         pending = {
                             c for c in (existing.extra or {}).get("rerun_cases") or [] if c
@@ -1023,8 +1047,8 @@ def _jobs_conflict(
         return False
     # A re-run never serialises at the job layer: `req_test` holds a run lock, so
     # the job just queues behind whatever run is active.
-    if action == "run-test" and extra is not None and extra.get("rerun_cases"):
-        if running.action == "run-test":
+    if action == "qa-run" and extra is not None and extra.get("rerun_cases"):
+        if running.action == "qa-run":
             return False
     running_scope = _ticket_scope(running)
     incoming_scope = (

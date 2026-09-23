@@ -254,7 +254,7 @@ def test_qa_rerun_unknown_jira_404(tmp_path: Path, git_src: Path, monkeypatch):
 
 
 def test_qa_rerun_submits_job(tmp_path: Path, git_src: Path, monkeypatch):
-    """The endpoint fans out into a run-test job."""
+    """The endpoint fans out into a qa-run job."""
     yard = _req(tmp_path, git_src, monkeypatch)
     _seed_qa(yard)
     client = _client(yard)
@@ -265,7 +265,7 @@ def test_qa_rerun_submits_job(tmp_path: Path, git_src: Path, monkeypatch):
     assert r.status_code == 200
     jobs = r.json()["jobs"]
     assert len(jobs) == 1
-    assert jobs[0]["action"] == "run-test"
+    assert jobs[0]["action"] == "qa-run"
     assert jobs[0]["jira"] == "QA-W1"
 
 
@@ -288,14 +288,14 @@ def test_qa_active_jobs_hold_review_gate(tmp_path: Path, git_src: Path, monkeypa
     runner = JobRunner(yard, execute=execute, sync=False)
     client = TestClient(create_app(yard, job_runner=runner))
     try:
-        job = runner.submit("run-test", "QA-W1")
+        job = runner.submit("qa-run", "QA-W1")
         _wait_state(job, "running")
 
         detail = client.get("/api/requirements/QA-W1").json()
         assert [j["id"] for j in detail["qa"]["active_jobs"]] == [job.id]
 
         qa_page = client.get("/api/requirements/QA-W1/qa").json()
-        assert qa_page["active_jobs"][0]["action"] == "run-test"
+        assert qa_page["active_jobs"][0]["action"] == "qa-run"
 
         gate.set()
         _wait_state(job, "ok")

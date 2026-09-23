@@ -435,12 +435,22 @@ def test_approve_refused_until_verified(tmp_path: Path, git_src: Path, monkeypat
     req_test(yard, "QA-V3", print_mode=True, design_only=True, runner=writer)
     with pytest.raises(TestRejected, match="被拒绝"):
         req_test(yard, "QA-V3", print_mode=True, approve=True, runner=writer)
-    # Explicit override proceeds, but the unverified case is skipped, not run.
-    result = req_test(
+    # Explicit override approves, but the unverified case is skipped at run time.
+    approved = req_test(
         yard,
         "QA-V3",
         print_mode=True,
         approve=True,
+        allow_unverified=True,
+        runner=writer,
+        ingest=False,
+    )
+    assert approved["approved"] is True
+    result = req_test(
+        yard,
+        "QA-V3",
+        print_mode=True,
+        run_only=True,
         allow_unverified=True,
         runner=writer,
         ingest=False,

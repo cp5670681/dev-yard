@@ -17,10 +17,19 @@
     <v-empty-state
       v-if="empty"
       title="还没有用例"
-      text="提测后点自动测，或 `dev-yard req test --design-only`。撞到缺 qa.yaml 就先配测试环境。"
+      text="提测后点「设计用例」，或 `dev-yard req test --design-only`。撞到缺 qa.yaml 就先配测试环境。"
     >
       <template #actions>
-        <v-btn to="/qa-config" variant="tonal" :prepend-icon="mdiClipboardCheckOutline">
+        <v-btn
+          color="primary"
+          variant="tonal"
+          :prepend-icon="mdiClipboardCheckOutline"
+          :loading="acting === 'design'"
+          @click="designCases"
+        >
+          设计用例
+        </v-btn>
+        <v-btn to="/qa-config" variant="text">
           去配置测试环境
         </v-btn>
       </template>
@@ -31,11 +40,11 @@
       <v-card v-if="designRunning" variant="tonal" color="info" class="mb-4">
         <v-card-title class="d-flex align-center ga-2 py-2">
           <v-icon :icon="mdiClipboardCheckOutline" size="20" />
-          用例设计中
+          用例处理中
           <v-progress-circular indeterminate size="16" width="2" />
         </v-card-title>
         <v-card-text class="text-body-2 text-medium-emphasis">
-          用例还在生成和数据核实，完成后这里会变成审核入口。当前审批会审到还在变动的用例。
+          用例生成 / 审核进行中，完成后这里会变成审核入口。此期间的审批会审到还在变动的用例。
         </v-card-text>
       </v-card>
 
@@ -129,9 +138,31 @@
             :loading="acting === 'approve'"
             @click="approveCases"
           >
-            通过并开始测试
+            通过审核
           </v-btn>
         </v-card-actions>
+      </v-card>
+
+      <!-- Approved: execution is a separate, explicit step -->
+      <v-card
+        v-else-if="hasCases && reviewApproved && !liveActive"
+        variant="tonal"
+        color="success"
+        class="mb-4"
+      >
+        <v-card-text class="d-flex flex-wrap align-center ga-3">
+          <v-icon :icon="mdiClipboardCheckOutline" size="20" />
+          <span class="text-body-2">用例已审核通过，可以执行。</span>
+          <v-spacer />
+          <v-btn
+            color="success"
+            variant="flat"
+            :loading="acting === 'run'"
+            @click="executeCases"
+          >
+            执行用例
+          </v-btn>
+        </v-card-text>
       </v-card>
 
       <!-- Design-time ambiguities the agent could not resolve (qa/OPEN-QUESTIONS.md) -->
@@ -480,7 +511,7 @@ import type { DocMeta, QaPage, QaReview, ShotItem } from "@/api/types";
 import CaseDetailDialog from "@/components/CaseDetailDialog.vue";
 import ReqDocTabs from "@/components/ReqDocTabs.vue";
 import ScreenshotViewer from "@/components/ScreenshotViewer.vue";
-import { assertionPassCount, caseShotItems, isQaJobActive, useQaRunActive } from "@/composables/qa";
+import { assertionPassCount, caseShotItems, isQaJobActive, useQaActive } from "@/composables/qa";
 import { useSnack } from "@/composables/snack";
 import { runningJobs, watchJobs } from "@/state/jobs";
 
@@ -520,13 +551,16 @@ const runs = computed(() => payload.value?.runs || []);
 
 const review = computed<QaReview | null>(() => payload.value?.review || null);
 
+const hasCases = computed(() => Boolean(payload.value?.cases.length));
+const reviewApproved = computed(() => Boolean(review.value?.approved));
+
 const openQuestions = computed(
   () => payload.value?.open_questions || { count: 0, body: "", exists: false },
 );
 
 // A design/run job still in flight keeps the case set in motion, so the review
 // gate stays closed until it finishes.
-const qaRunActive = useQaRunActive(
+const qaActive = useQaActive(
   jira,
   computed(() => payload.value?.active_jobs),
 );
@@ -536,7 +570,7 @@ const reviewPanel = computed(
     Boolean(payload.value?.cases.length) &&
     Boolean(review.value) &&
     !review.value?.approved &&
-    !qaRunActive.value,
+    !qaActive.value,
 );
 
 const designRunning = computed(
@@ -544,7 +578,7 @@ const designRunning = computed(
     Boolean(payload.value?.cases.length) &&
     Boolean(review.value) &&
     !review.value?.approved &&
-    qaRunActive.value,
+    qaActive.value,
 );
 
 const reviewLabel = computed(() => {
@@ -573,11 +607,38 @@ const verifyStale = computed(
   () => Boolean(review.value?.verify?.present && review.value?.verify?.stale),
 );
 
+async function designCases() {
+  acting.value = "design";
+  error.value = "";
+  try {
+    await runAction(jira.value, "qa-design", {});
+    await load();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    acting.value = "";
+  }
+}
+
+async function executeCases() {
+  acting.value = "run";
+  error.value = "";
+  try {
+    await runAction(jira.value, "qa-run", {});
+    await load();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    acting.value = "";
+  }
+}
+
 async function approveCases() {
   acting.value = "approve";
   error.value = "";
   try {
-    await runAction(jira.value, "run-test", { approve: true });
+    // Approval only marks the cases reviewed; running is a separate 执行用例.
+    await runAction(jira.value, "qa-review", { approve: true });
     await load();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -592,7 +653,7 @@ async function rejectCases() {
   acting.value = "reject";
   error.value = "";
   try {
-    await runAction(jira.value, "run-test", { redesign: true, feedback });
+    await runAction(jira.value, "qa-review", { redesign: true, feedback });
     feedbackText.value = "";
     await load();
   } catch (e) {

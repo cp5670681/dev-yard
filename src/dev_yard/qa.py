@@ -1411,7 +1411,7 @@ def _req_test(
         rerun_run = find_run_for_rerun(qa, rerun_ids)
         if rerun_run is None:
             raise TestRejected(
-                f"no run contains {', '.join(sorted(rerun_ids))}; run `自动测` first"
+                f"no run contains {', '.join(sorted(rerun_ids))}; run `执行用例` first"
             )
         if not env and rerun_run[2]:
             env = rerun_run[2]
@@ -1591,6 +1591,16 @@ def _req_test(
                 f"--approve 被拒绝：{why}；修好后重跑设计，或加 --allow-unverified 越权"
             )
         approve_cases(qa)
+        # Approval is a marker, never an execution: running the cases is a
+        # separate `--run-only` / `qa-run` step so a review cannot silently
+        # trigger a run (and so accounts can be configured in between).
+        return {
+            "jira": jira,
+            "approved": True,
+            "cases": len(cases),
+            "review": review_payload(qa),
+            "verify": verify_info,
+        }
     elif not rerun_ids:
         can_run, hold_reason = review_gate(
             qa,

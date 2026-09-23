@@ -253,7 +253,7 @@
           </template>
           <div v-else class="empty-section-placeholder text-center py-6 text-medium-emphasis">
             <v-icon :icon="mdiFlaskOutline" size="28" class="mb-1 text-disabled" />
-            <div class="text-caption">尚未生成测试用例。提测后点击「自动测」将自动设计并执行测试票。</div>
+            <div class="text-caption">尚未生成测试用例。提测后点「设计用例」生成，审核后再「执行用例」。</div>
           </div>
         </div>
       </v-expand-transition>
