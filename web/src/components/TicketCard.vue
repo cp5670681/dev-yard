@@ -253,6 +253,43 @@
             </v-btn>
           </div>
 
+          <!-- inconclusive (review produced no verdict) -->
+          <div v-else-if="ticket.state === 'inconclusive'" class="d-flex flex-column ga-1.5 w-100">
+            <div class="d-flex ga-1.5 w-100">
+              <v-btn
+                size="small"
+                density="compact"
+                color="warning"
+                class="flex-grow-1"
+                title="评审未交回结论，重新触发 AI 审查"
+                @click="$emit('review', ticket.id)"
+              >
+                重新审查
+              </v-btn>
+              <v-btn
+                size="small"
+                density="compact"
+                variant="outlined"
+                class="flex-grow-1"
+                title="查看代码改动"
+                @click="$emit('diff', ticket.id)"
+              >
+                改动
+              </v-btn>
+            </div>
+            <v-btn
+              size="small"
+              density="compact"
+              variant="tonal"
+              color="secondary"
+              class="w-100"
+              title="人工复核 / 直接给出结论"
+              @click="$emit('feedback', ticket)"
+            >
+              复核
+            </v-btn>
+          </div>
+
           <!-- blocked (review failed or execution blocked) -->
           <div v-else-if="ticket.state === 'blocked'" class="d-flex flex-column ga-1.5 w-100">
             <div class="d-flex ga-1.5 w-100">

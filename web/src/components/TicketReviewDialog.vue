@@ -39,7 +39,7 @@
           <div class="text-caption font-weight-bold text-medium-emphasis mb-1.5">审查结论</div>
           <v-btn-toggle
             v-model="verdict"
-            mandatory
+            :mandatory="ticket.state !== 'inconclusive'"
             color="primary"
             density="comfortable"
             class="d-flex"
@@ -73,6 +73,15 @@
           class="mb-3 text-caption"
         >
           可在此修改 AI 审查意见或追加你的人工审查要求。AI 修复时将严格遵循这些意见。
+        </v-alert>
+        <v-alert
+          v-else-if="!verdict"
+          type="warning"
+          variant="tonal"
+          density="compact"
+          class="mb-3 text-caption"
+        >
+          这次评审没有结论。请先选择通过或不通过。选择不通过后才会启动修复。
         </v-alert>
         <v-alert
           v-else
@@ -144,12 +153,21 @@
           取消
         </v-btn>
         <v-btn
-          :color="verdict === 'failed' ? (autoImplement ? 'primary' : 'warning') : 'success'"
+          :color="verdict === 'failed' ? (autoImplement ? 'primary' : 'warning') : verdict === 'passed' ? 'success' : 'grey'"
           :loading="loading"
+          :disabled="!verdict"
           :prepend-icon="verdict === 'failed' && autoImplement ? mdiAutoFix : undefined"
           @click="submit"
         >
-          {{ verdict === "failed" ? (autoImplement ? "提交并启动修复" : "保存审查意见") : "确认通过" }}
+          {{
+            !verdict
+              ? "请选择结论"
+              : verdict === "failed"
+                ? autoImplement
+                  ? "提交并启动修复"
+                  : "保存审查意见"
+                : "确认通过"
+          }}
         </v-btn>
       </v-card-actions>
     </v-card>
@@ -183,7 +201,7 @@ const emit = defineEmits<{
 }>();
 const snack = useSnack();
 
-const verdict = ref<"failed" | "passed">("failed");
+const verdict = ref<"failed" | "passed" | null>("failed");
 const summary = ref("");
 const autoImplement = ref(true);
 const loading = ref(false);
@@ -208,12 +226,17 @@ watch(
       summary.value = props.ticket.last_summary || "";
       if (props.ticket.state === "blocked") {
         verdict.value = "failed";
+        autoImplement.value = true;
       } else if (props.ticket.state === "done") {
         verdict.value = "passed";
+        autoImplement.value = false;
+      } else if (props.ticket.state === "inconclusive") {
+        verdict.value = null;
+        autoImplement.value = false;
       } else {
         verdict.value = "failed";
+        autoImplement.value = true;
       }
-      autoImplement.value = true;
       error.value = "";
       mode.value = props.ticket.last_summary ? "preview" : "edit";
     }
@@ -221,8 +244,14 @@ watch(
   { immediate: true },
 );
 
+watch(verdict, (value) => {
+  if (props.ticket?.state === "inconclusive" && value === "failed") {
+    autoImplement.value = true;
+  }
+});
+
 async function submit() {
-  if (!props.ticket) return;
+  if (!props.ticket || !verdict.value) return;
   loading.value = true;
   error.value = "";
   try {

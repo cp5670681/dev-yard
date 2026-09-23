@@ -24,6 +24,7 @@ from dev_yard.runners import (
     finish_pi_run,
     kill_proc_group,
     pi_argv,
+    retry_missing_verdict,
     run_pi_print_tracked,
 )
 from dev_yard.stages import STRUCTURED_REVIEW_STAGES
@@ -397,17 +398,25 @@ class JobLogRunner(Runner):
     ) -> RunResult:
         if self.job.cancel_requested.is_set():
             raise JobCancelled(f"{self.bundle} cancelled before pi run")
-        argv = pi_argv(
-            root=self.root,
-            bundle=self.bundle,
-            prompt=None,
-            print_mode=True,
-            repo=repo,
-            spec=self.spec,
-            provider=self.provider,
-            model=self.model,
-            attach=extra_read_paths,
-        )
+        session_id: str | None = None
+        if self.bundle in STRUCTURED_REVIEW_STAGES:
+            session_id = f"yard{self.bundle.replace('-', '')}{uuid.uuid4().hex[:12]}"
+
+        def _argv(attach: list[Path] | None) -> list[str]:
+            return pi_argv(
+                root=self.root,
+                bundle=self.bundle,
+                prompt=None,
+                print_mode=True,
+                repo=repo,
+                spec=self.spec,
+                provider=self.provider,
+                model=self.model,
+                attach=attach,
+                session_id=session_id,
+            )
+
+        argv = _argv(extra_read_paths)
         binary = argv[0]
         if not shutil.which(binary) and not Path(binary).exists():
             msg = f"pi not found (`{binary}`). Install pi or set YARD_PI to its path."
@@ -435,9 +444,27 @@ class JobLogRunner(Runner):
             tail = stream.flush_log()
             if tail:
                 self.job.append(tail if tail.endswith("\n") else tail + "\n")
+        result = finish_pi_run(self.bundle, code, raw)
+        if stream is not None and result.verdict_missing and session_id:
+            if self.job.cancel_requested.is_set():
+                raise JobCancelled(f"{self.bundle} cancelled before review retry")
+            self.job.record_pi_run(cwd)
+            result = retry_missing_verdict(
+                self.bundle,
+                cwd,
+                result,
+                _argv(None),
+                sink=self.job.append,
+                on_spawn=self.job.track_proc,
+                on_reap=self.job.untrack_proc,
+            )
+            # A verdict recovered by the retry must be returned. Raising here
+            # would reset the slot from reviewing back to implemented.
+            if result.verdict is not None:
+                return result
         if self.job.cancel_requested.is_set():
             raise JobCancelled(f"{self.bundle} cancelled (pi exit {code})")
-        return finish_pi_run(self.bundle, code, raw)
+        return result
 
 
 def default_execute(root: Path, job: Job) -> None:

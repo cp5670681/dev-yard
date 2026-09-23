@@ -226,6 +226,59 @@ def test_review_verdict_ignores_marker_inside_prose(
     assert "REVIEW_FAILED" in slot["last_summary"]
 
 
+class _MissingVerdictReview(DryRunRunner):
+    """Simulates a review that ended without calling submit_review."""
+
+    def start(self, prompt, cwd, extra_read_paths, repo=None) -> RunResult:
+        return RunResult(
+            ok=False,
+            summary="两轴报告：无阻断。\n\n评审没有调用 submit_review，没有单独结论。",
+            exit_code=1,
+            verdict=None,
+            findings=[],
+            verdict_missing=True,
+        )
+
+
+def test_review_without_verdict_is_inconclusive_not_blocked(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-80")
+    implement(yard, "AB-80", None, runner=DryRunRunner())
+    review(yard, "AB-80", None, runner=_MissingVerdictReview())
+
+    slot = st.load(yard, "AB-80")["tickets"]["T1"]
+    # Not a rejection: the change was never judged.
+    assert slot["state"] == "inconclusive"
+    assert "last_verdict" not in slot
+    assert "submit_review" in slot["last_summary"]
+
+    # Re-reviewable, and a real pass unblocks it.
+    ran = review(yard, "AB-80", None, runner=_PassReviewDespitePhrase())
+    assert ran == ["T1"]
+    assert st.load(yard, "AB-80")["tickets"]["T1"]["state"] == "done"
+
+
+def test_contract_review_without_verdict_skips_fix_tickets(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-81")
+    spawned: list[tuple] = []
+    monkeypatch.setattr(
+        "dev_yard.service.spawn_fix_tickets", lambda *a, **k: spawned.append(a)
+    )
+
+    review(yard, "AB-81", None, contract=True, runner=_MissingVerdictReview())
+
+    data = st.load(yard, "AB-81")
+    assert data["contract_review"] == "inconclusive"
+    assert spawned == []
+
+
 def test_implement_and_review_attach_requirement_images(
     tmp_path: Path, git_src: Path, monkeypatch
 ):

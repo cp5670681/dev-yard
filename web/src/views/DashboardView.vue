@@ -54,11 +54,11 @@
                   <v-chip
                     v-if="item.contract"
                     size="small"
-                    :color="item.contract === 'passed' ? 'success' : 'error'"
+                    :color="contractTone(item.contract).color"
                     variant="tonal"
                     class="jira-lozenge font-weight-bold"
                   >
-                    {{ item.contract === 'passed' ? '契约通过' : '契约未通过' }}
+                    {{ contractTone(item.contract).short }}
                   </v-chip>
                   <v-chip size="small" :color="phaseColor(item.phase)" variant="tonal" class="jira-lozenge">
                     {{ item.phase }}
@@ -113,7 +113,7 @@ import { onMounted, reactive, ref } from "vue";
 import { mdiClipboardTextOffOutline, mdiDeleteOutline, mdiPlus } from "@mdi/js";
 import { deleteRequirement, listRequirements } from "@/api/client";
 import type { ReqSummary } from "@/api/types";
-import { phaseColor, STEP_LABELS } from "@/composables/labels";
+import { contractTone, phaseColor, STEP_LABELS } from "@/composables/labels";
 import { useSnack } from "@/composables/snack";
 
 const items = ref<ReqSummary[]>([]);

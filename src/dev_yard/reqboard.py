@@ -38,8 +38,8 @@ _SKELETONS = {
 }
 
 _IMPLEMENT_STATES = {"ready", "blocked", "implementing"}
-_REVIEW_STATES = {"implemented", "reviewing", "blocked"}
-_BEYOND_IMPLEMENT = {"implemented", "reviewing", "done"}
+_REVIEW_STATES = {"implemented", "reviewing", "inconclusive", "blocked"}
+_BEYOND_IMPLEMENT = {"implemented", "reviewing", "inconclusive", "done"}
 
 
 @dataclass

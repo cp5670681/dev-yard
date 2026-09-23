@@ -499,13 +499,14 @@ watch(
   },
 );
 
-// Standard Ticket Columns (7 columns)
+// Standard Ticket Columns (8 columns)
 const columns = [
   "pending",
   "ready",
   "implementing",
   "implemented",
   "reviewing",
+  "inconclusive",
   "blocked",
   "done",
 ];
@@ -799,7 +800,7 @@ function qaStateLabel(col: string) {
 .ghx-column-headers,
 .ghx-columns {
   display: grid;
-  grid-template-columns: repeat(7, minmax(180px, 1fr));
+  grid-template-columns: repeat(8, minmax(180px, 1fr));
   column-gap: 10px;
 }
 

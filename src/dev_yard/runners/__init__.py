@@ -7,6 +7,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,17 @@ from dev_yard.stages import (
 _SUMMARY_MAX = 4000
 _REVIEW_SUMMARY_MAX = 32000
 
+# Sent when a review ends cleanly without calling submit_review. The session is
+# resumed so the model only needs to emit the missing verdict tool call.
+REVIEW_NUDGE_PROMPT = (
+    "你没有调用 submit_review，所以本次评审还没有结论。"
+    "请立刻调用一次 submit_review 提交结论：verdict 只能是 passed 或 failed，"
+    "不要重复输出报告。若有契约缺口，把它们放在同一次调用的 findings 里。"
+)
+# Appended by finish_pi_run when the review yielded no verdict; stripped again
+# if the retry recovers one so the record does not claim there was no verdict.
+MISSING_VERDICT_NOTE = "评审没有调用 submit_review，没有单独结论。"
+
 
 @dataclass
 class RunResult:
@@ -36,6 +48,10 @@ class RunResult:
     # Set by submit_review. None means the process never produced a verdict.
     verdict: str | None = None
     findings: list[Any] | None = None
+    # True when a structured review ended cleanly (exit 0, no provider error)
+    # yet never called submit_review. `verdict` stays None so callers do not
+    # read it as a rejection; the ticket is inconclusive, not failed.
+    verdict_missing: bool = False
 
 
 class JobCancelled(RuntimeError):
@@ -109,6 +125,10 @@ class ReviewStream:
         """Consume one stdout line. Return human text to show, or empty."""
         stripped = line.strip()
         if not stripped.startswith("{"):
+            # pi prints this on the first --session-id, before the session
+            # exists. It is not review prose, and stderr is merged into stdout.
+            if _session_create_warning(stripped):
+                return ""
             if stripped:
                 self._noise.append(line if line.endswith("\n") else line + "\n")
             return line
@@ -202,6 +222,101 @@ class ReviewStream:
         self.findings = findings if isinstance(findings, list) else []
 
 
+def _stdout_sink(text: str) -> None:
+    sys.stdout.write(text)
+    sys.stdout.flush()
+
+
+def _session_create_warning(text: str) -> bool:
+    return (
+        "No project session found with id" in text
+        and "creating a new session" in text
+    )
+
+
+def recovered_summary(first: RunResult, retry: RunResult) -> str:
+    """Report text after a retry actually submitted a verdict.
+
+    The first turn's missing-verdict note is not a report. When that note was
+    the whole summary, keep the retry prose instead of putting the note back.
+    """
+    report = first.summary.replace(MISSING_VERDICT_NOTE, "").strip()
+    if report:
+        return report
+    retry_text = (retry.summary or "").replace(MISSING_VERDICT_NOTE, "").strip()
+    return retry_text or "结论已在重试时提交。"
+
+
+def retry_missing_verdict(
+    bundle: str,
+    cwd: Path,
+    first: RunResult,
+    argv: list[str],
+    *,
+    sink: Callable[[str], None],
+    on_spawn: Callable[[subprocess.Popen], None] | None = None,
+    on_reap: Callable[[subprocess.Popen], None] | None = None,
+) -> RunResult:
+    """Re-ask once for submit_review on an already-open session.
+
+    `argv` must reuse the first turn's `--session-id`. A verdict from the retry
+    wins; a still-missing verdict stays inconclusive rather than failed.
+    """
+    sink("\n[评审未交回结论，自动重试一次]\n")
+    stream = ReviewStream()
+
+    def _echo(line: str) -> None:
+        shown = stream.feed(line)
+        if shown:
+            sink(shown)
+
+    code, raw = run_pi_print_tracked(
+        argv,
+        cwd,
+        REVIEW_NUDGE_PROMPT,
+        on_line=_echo,
+        on_spawn=on_spawn,
+        on_reap=on_reap,
+    )
+    tail = stream.flush_log()
+    if tail:
+        sink(tail if tail.endswith("\n") else tail + "\n")
+    retry = finish_pi_run(bundle, code, raw)
+    if retry.verdict is not None:
+        return RunResult(
+            ok=retry.ok,
+            summary=recovered_summary(first, retry),
+            exit_code=retry.exit_code,
+            verdict=retry.verdict,
+            findings=retry.findings,
+        )
+    if not retry.verdict_missing:
+        summary = first.summary
+        if retry.summary:
+            summary = (summary.rstrip() + "\n\n" + retry.summary).strip()
+        return RunResult(ok=False, summary=summary, exit_code=retry.exit_code)
+    summary = (
+        first.summary.rstrip()
+        + "\n\n自动重试一次后仍未调用 submit_review，本次评审没有结论。"
+    ).strip()
+    return RunResult(
+        ok=False,
+        summary=summary,
+        exit_code=1,
+        verdict=None,
+        findings=[],
+        verdict_missing=True,
+    )
+
+
+def _flush_stream_log(stream: ReviewStream) -> None:
+    """Write any buffered partial text line so live output is not swallowed."""
+    tail = stream.flush_log()
+    if tail:
+        sys.stdout.write(tail if tail.endswith("\n") else tail + "\n")
+        sys.stdout.flush()
+
+
 def finish_pi_run(bundle: str, code: int, raw: str) -> RunResult:
     """Build a RunResult from a finished `pi -p` stream.
 
@@ -242,14 +357,15 @@ def finish_pi_run(bundle: str, code: int, raw: str) -> RunResult:
                 exit_code=code or 1,
                 verdict=None,
             )
-        note = "评审没有调用 submit_review，没有单独结论，按未通过处理。"
+        note = MISSING_VERDICT_NOTE
         summary = f"{prose}\n\n{note}".strip() if prose else note
         return RunResult(
             ok=False,
             summary=summary,
             exit_code=1,
-            verdict="failed",
+            verdict=None,
             findings=[],
+            verdict_missing=True,
         )
     summary = clip_summary(raw, bundle) or f"pi exit {code}"
     return RunResult(ok=code == 0, summary=summary, exit_code=code)
@@ -279,6 +395,7 @@ def pi_argv(
     provider: str | None = None,
     model: str | None = None,
     attach: list[Path] | None = None,
+    session_id: str | None = None,
 ) -> list[str]:
     cmd = binary or agent_binary()
     # --no-skills: skip ~/.pi/agent/skills and extra project skills.
@@ -306,6 +423,10 @@ def pi_argv(
             argv.extend(["--mode", "json"])
     if attach:
         argv.extend(attachment_args(attach))
+    if session_id:
+        # Reusing the id on a later run resumes that session, which is how the
+        # review retry only asks for the missing submit_review call.
+        argv.extend(["--session-id", session_id])
     if prompt is not None:
         argv.append(prompt)
     return argv
@@ -531,18 +652,25 @@ class PiRunner(Runner):
                 exit_code=127,
             )
         if self.print_mode:
-            argv = pi_argv(
-                root=self.root,
-                bundle=self.bundle,
-                prompt=None,
-                print_mode=True,
-                binary=self.binary,
-                repo=repo,
-                spec=self.spec,
-                provider=self.provider,
-                model=self.model,
-                attach=extra_read_paths,
-            )
+            session_id: str | None = None
+            if self.bundle in STRUCTURED_REVIEW_STAGES:
+                # Unique per run; reused by the retry below to resume the session.
+                session_id = f"yard{self.bundle.replace('-', '')}{uuid.uuid4().hex[:12]}"
+
+            def _argv(attach: list[Path] | None) -> list[str]:
+                return pi_argv(
+                    root=self.root,
+                    bundle=self.bundle,
+                    prompt=None,
+                    print_mode=True,
+                    binary=self.binary,
+                    repo=repo,
+                    spec=self.spec,
+                    provider=self.provider,
+                    model=self.model,
+                    attach=attach,
+                    session_id=session_id,
+                )
 
             stream = (
                 ReviewStream() if self.bundle in STRUCTURED_REVIEW_STAGES else None
@@ -555,7 +683,7 @@ class PiRunner(Runner):
                     sys.stdout.flush()
 
             code, raw = run_pi_print_tracked(
-                argv,
+                _argv(extra_read_paths),
                 cwd,
                 prompt,
                 on_line=_echo,
@@ -563,11 +691,19 @@ class PiRunner(Runner):
                 on_reap=self.on_reap,
             )
             if stream is not None:
-                tail = stream.flush_log()
-                if tail:
-                    sys.stdout.write(tail if tail.endswith("\n") else tail + "\n")
-                    sys.stdout.flush()
-            return finish_pi_run(self.bundle, code, raw)
+                _flush_stream_log(stream)
+            result = finish_pi_run(self.bundle, code, raw)
+            if stream is not None and result.verdict_missing and session_id:
+                result = retry_missing_verdict(
+                    self.bundle,
+                    cwd,
+                    result,
+                    _argv(None),
+                    sink=_stdout_sink,
+                    on_spawn=self.on_spawn,
+                    on_reap=self.on_reap,
+                )
+            return result
         argv = pi_argv(
             root=self.root,
             bundle=self.bundle,
@@ -586,7 +722,6 @@ class PiRunner(Runner):
             summary=f"pi exit {r.returncode}",
             exit_code=r.returncode,
         )
-
 
 class DryRunRunner(Runner):
     def __init__(self, argv: list[str] | None = None) -> None:

@@ -617,6 +617,25 @@ def test_job_panel_can_cancel_running_jobs():
     assert '"cancelled"' in req_view, "RequirementView must treat cancelled as terminal"
 
 
+def test_inconclusive_review_is_not_presented_as_failed():
+    root = Path(__file__).resolve().parents[1]
+    web = root / "web" / "src"
+    board = (web / "components" / "TicketBoard.vue").read_text()
+    ticket_dialog = (web / "components" / "TicketReviewDialog.vue").read_text()
+    contract_dialog = (web / "components" / "ContractReviewDialog.vue").read_text()
+    req = (web / "views" / "RequirementView.vue").read_text()
+    dash = (web / "views" / "DashboardView.vue").read_text()
+    labels = (web / "composables" / "labels.ts").read_text()
+    assert "repeat(8, minmax(180px, 1fr))" in board
+    assert 'ticket.state === "inconclusive"' in ticket_dialog
+    assert "verdict.value = null" in ticket_dialog
+    assert 'props.contract === "inconclusive"' in contract_dialog
+    assert "contractTone" in req
+    assert "重跑契约审查" in req
+    assert "契约审查无结论" in labels
+    assert "contractTone" in dash
+
+
 def test_app_js_uses_event_source():
     from dev_yard.web.app import HERE
 

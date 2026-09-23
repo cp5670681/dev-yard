@@ -1391,7 +1391,7 @@ def _review_blocked(result: RunResult) -> bool:
 
 _CLAIM = {
     "implement": ("implementing", {"ready", "blocked", "implementing"}),
-    "review": ("reviewing", {"implemented", "reviewing", "blocked"}),
+    "review": ("reviewing", {"implemented", "reviewing", "inconclusive", "blocked"}),
     "fix-contract": (
         "implementing",
         {"ready", "blocked", "implementing"},
@@ -1933,10 +1933,16 @@ def review(
         result = runner.start(prompt, root, extra + wt_paths)
         if dry_run:
             return ["__contract__"]
-        blocked = _review_blocked(result)
+        rejected = result.verdict == "failed"
         with st.jira_lock(jira):
             data = st.load(root, jira)
-            data["contract_review"] = "failed" if blocked else "passed"
+            if not _review_blocked(result):
+                data["contract_review"] = "passed"
+            elif rejected:
+                data["contract_review"] = "failed"
+            else:
+                # No verdict: not a rejection, so no fix tickets — just re-runnable.
+                data["contract_review"] = "inconclusive"
             data["contract_summary"] = result.summary
             if result.verdict is not None:
                 # The tool supplied the list, including an empty one. Do not
@@ -1947,11 +1953,11 @@ def review(
                 if parsed_findings:
                     data["contract_findings"] = parsed_findings
             st.save(root, jira, data)
-        if blocked:
+        if rejected:
             spawn_fix_tickets(root, jira, "contract")
         return ["__contract__"]
 
-    _REVIEWABLE = {"implemented", "reviewing", "blocked"}
+    _REVIEWABLE = {"implemented", "reviewing", "inconclusive", "blocked"}
     parsed = list(tickets.values())
     targets = ids or [
         tid
@@ -2054,11 +2060,16 @@ def review(
                 st.refresh_ready(data)
                 st.save(root, jira, data)
             else:
-                slot["state"] = "blocked"
                 slot["last_summary"] = result.summary
                 if result.verdict == "failed":
+                    # submit_review rejected the change: needs an implement pass.
+                    slot["state"] = "blocked"
                     slot["last_verdict"] = "failed"
                 else:
+                    # No verdict (provider error, abort, or the model never
+                    # called submit_review). The change was not judged, so it is
+                    # re-reviewable rather than blocked for a fix.
+                    slot["state"] = "inconclusive"
                     slot.pop("last_verdict", None)
                 st.save(root, jira, data)
         ran.append(tid)

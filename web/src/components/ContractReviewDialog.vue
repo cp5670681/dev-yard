@@ -8,18 +8,24 @@
     <v-card class="contract-review-card">
       <v-card-title class="d-flex align-center flex-wrap ga-2 py-3 px-4 bg-surface-variant">
         <v-icon
-          :icon="verdict === 'passed' ? mdiFileDocumentCheckOutline : mdiFileDocumentAlertOutline"
-          :color="verdict === 'passed' ? 'success' : 'error'"
+          :icon="
+            verdict === 'passed'
+              ? mdiFileDocumentCheckOutline
+              : verdict === 'failed'
+                ? mdiFileDocumentAlertOutline
+                : mdiHelpCircleOutline
+          "
+          :color="verdict === 'passed' ? 'success' : verdict === 'failed' ? 'error' : 'warning'"
         />
         <span class="text-subtitle-1 font-weight-bold text-primary">{{ jira }}</span>
         <span class="text-subtitle-1 font-weight-medium">跨仓契约审查</span>
         <v-chip
           size="small"
-          :color="verdict === 'passed' ? 'success' : 'error'"
+          :color="verdict === 'passed' ? 'success' : verdict === 'failed' ? 'error' : 'warning'"
           variant="tonal"
           class="font-weight-bold"
         >
-          {{ verdict === 'passed' ? '通过 PASSED' : '未通过 FAILED' }}
+          {{ verdict === 'passed' ? '通过 PASSED' : verdict === 'failed' ? '未通过 FAILED' : '待选择' }}
         </v-chip>
         <v-spacer />
         <v-btn
@@ -60,7 +66,7 @@
         <div class="mb-3">
           <v-btn-toggle
             v-model="verdict"
-            mandatory
+            :mandatory="contract !== 'inconclusive'"
             color="primary"
             density="comfortable"
             class="d-flex"
@@ -94,6 +100,15 @@
           class="mb-3 text-caption"
         >
           可在此修改 AI 契约审查意见或追加人工契约要求。后续点击「按契约修」时，AI 修复将严格遵循这些意见。
+        </v-alert>
+        <v-alert
+          v-else-if="!verdict"
+          type="warning"
+          variant="tonal"
+          density="compact"
+          class="mb-3 text-caption"
+        >
+          这次契约审查没有结论。请先选择通过或不通过，再提交。选择不通过才会启动按契约修复。
         </v-alert>
         <v-alert
           v-else
@@ -158,17 +173,20 @@
           取消
         </v-btn>
         <v-btn
-          :color="verdict === 'failed' ? (autoImplement ? 'primary' : 'warning') : 'success'"
+          :color="verdict === 'failed' ? (autoImplement ? 'primary' : 'warning') : verdict === 'passed' ? 'success' : 'grey'"
           :loading="loading"
+          :disabled="!verdict"
           :prepend-icon="verdict === 'failed' && autoImplement ? mdiAutoFix : undefined"
           @click="submit"
         >
           {{
-            verdict === "failed"
-              ? autoImplement
-                ? "提交并启动按契约修复"
-                : "保存契约意见"
-              : "确认契约通过"
+            !verdict
+              ? "请选择结论"
+              : verdict === "failed"
+                ? autoImplement
+                  ? "提交并启动按契约修复"
+                  : "保存契约意见"
+                : "确认契约通过"
           }}
         </v-btn>
       </v-card-actions>
@@ -187,6 +205,7 @@ import {
   mdiEyeOutline,
   mdiFileDocumentAlertOutline,
   mdiFileDocumentCheckOutline,
+  mdiHelpCircleOutline,
   mdiPencilOutline,
 } from "@mdi/js";
 import { submitContractReview } from "@/api/client";
@@ -207,7 +226,7 @@ const emit = defineEmits<{
 }>();
 
 const snack = useSnack();
-const verdict = ref<string>("failed");
+const verdict = ref<string | null>("failed");
 const summaryText = ref("");
 const autoImplement = ref(true);
 const loading = ref(false);
@@ -225,8 +244,16 @@ watch(
   ([open]) => {
     if (open) {
       summaryText.value = props.summary || "";
-      verdict.value = props.contract === "passed" ? "passed" : "failed";
-      autoImplement.value = true;
+      if (props.contract === "passed") {
+        verdict.value = "passed";
+        autoImplement.value = false;
+      } else if (props.contract === "inconclusive") {
+        verdict.value = null;
+        autoImplement.value = false;
+      } else {
+        verdict.value = "failed";
+        autoImplement.value = true;
+      }
       error.value = "";
       mode.value = props.summary ? "preview" : "edit";
     }
@@ -243,7 +270,14 @@ async function copyReport() {
   }
 }
 
+watch(verdict, (value) => {
+  if (props.contract === "inconclusive" && value === "failed") {
+    autoImplement.value = true;
+  }
+});
+
 async function submit() {
+  if (!verdict.value) return;
   loading.value = true;
   error.value = "";
   try {

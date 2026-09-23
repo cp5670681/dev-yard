@@ -111,7 +111,7 @@ def test_findings_come_from_the_tool_call():
     ]
 
 
-def test_missing_tool_on_clean_exit_is_a_failed_review():
+def test_missing_tool_on_clean_exit_is_inconclusive_not_rejected():
     raw = _event(
         {
             "type": "message_end",
@@ -123,7 +123,9 @@ def test_missing_tool_on_clean_exit_is_a_failed_review():
     )
     result = finish_pi_run("review", 0, raw)
     assert result.ok is False
-    assert result.verdict == "failed"
+    # No verdict: not a rejection, so it must not be recorded as one.
+    assert result.verdict is None
+    assert result.verdict_missing is True
     assert "submit_review" in result.summary
 
 
@@ -178,6 +180,7 @@ def test_provider_error_is_not_a_failed_review():
     result = finish_pi_run("review", 0, raw)
     assert result.ok is False
     assert result.verdict is None
+    assert result.verdict_missing is False
     assert "rate limit" in result.summary
     assert "submit_review" not in result.summary
 
@@ -186,6 +189,7 @@ def test_process_failure_without_verdict_stays_unstructured():
     result = finish_pi_run("review", 1, "pi blew up\n")
     assert result.ok is False
     assert result.verdict is None
+    assert result.verdict_missing is False
     assert "pi blew up" in result.summary
 
 

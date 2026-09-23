@@ -30,6 +30,7 @@ STATES = (
     "implementing",
     "implemented",
     "reviewing",
+    "inconclusive",
     "done",
     "blocked",
 )
@@ -129,7 +130,7 @@ def refresh_ready(data: dict[str, Any]) -> dict[str, Any]:
     data["tickets"] = tickets
     for _tid, slot in tickets.items():
         deps = slot.get("depends_on") or []
-        if slot.get("state") in {"done", "implementing", "implemented", "reviewing", "blocked"}:
+        if slot.get("state") in {"done", "implementing", "implemented", "reviewing", "inconclusive", "blocked"}:
             continue
         if all((tickets.get(d) or {}).get("state") == "done" for d in deps):
             slot["state"] = "ready"

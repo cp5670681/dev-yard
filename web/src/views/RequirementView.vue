@@ -11,13 +11,19 @@
           <v-chip
             v-if="detail?.contract"
             size="small"
-            :color="detail.contract === 'passed' ? 'success' : 'error'"
+            :color="contractTone(detail.contract).color"
             variant="tonal"
             class="jira-lozenge font-weight-bold cursor-pointer"
-            :prepend-icon="detail.contract === 'passed' ? mdiCheckCircleOutline : mdiAlertCircleOutline"
+            :prepend-icon="
+              detail.contract === 'passed'
+                ? mdiCheckCircleOutline
+                : detail.contract === 'inconclusive'
+                  ? mdiHelpCircleOutline
+                  : mdiAlertCircleOutline
+            "
             @click="contractDialog = true"
           >
-            {{ detail.contract === 'passed' ? '契约审查通过' : '契约审查未通过' }}
+            {{ contractTone(detail.contract).label }}
           </v-chip>
           <v-chip v-if="detail" :color="phaseColor(detail.phase)" variant="tonal" class="jira-lozenge">
             {{ detail.phase }}
@@ -184,6 +190,48 @@
               size="small"
               variant="text"
               color="error"
+              :prepend-icon="mdiRefresh"
+              :loading="acting === 'contract'"
+              @click="confirmAction('contract')"
+            >
+              重跑契约审查
+            </v-btn>
+          </div>
+        </div>
+      </v-alert>
+
+      <v-alert
+        v-else-if="detail.contract === 'inconclusive'"
+        type="warning"
+        variant="tonal"
+        border="start"
+        class="mb-4"
+        :icon="mdiHelpCircleOutline"
+      >
+        <div class="d-flex flex-column flex-sm-row justify-space-between align-sm-center ga-3">
+          <div>
+            <div class="text-subtitle-1 font-weight-bold">
+              跨仓契约审查没有结论
+            </div>
+            <div class="text-body-2 text-medium-emphasis mt-0.5">
+              这次没有交回审查结论，没有判定通过或失败，也不会派生修复票。可以重跑契约审查。
+            </div>
+          </div>
+          <div class="d-flex flex-wrap align-center ga-2 flex-shrink-0">
+            <v-btn
+              v-if="detail.contract_summary"
+              size="small"
+              variant="outlined"
+              color="warning"
+              :prepend-icon="mdiEyeOutline"
+              @click="contractDialog = true"
+            >
+              查看契约报告
+            </v-btn>
+            <v-btn
+              size="small"
+              color="warning"
+              variant="flat"
               :prepend-icon="mdiRefresh"
               :loading="acting === 'contract'"
               @click="confirmAction('contract')"
@@ -511,11 +559,11 @@
               <span>契约审查摘要</span>
               <v-chip
                 size="x-small"
-                :color="detail.contract === 'passed' ? 'success' : 'error'"
+                :color="contractTone(detail.contract).color"
                 variant="tonal"
                 class="font-weight-bold"
               >
-                {{ detail.contract === 'passed' ? '通过 passed' : '未通过 failed' }}
+                {{ contractTone(detail.contract).summary }}
               </v-chip>
             </div>
           </v-expansion-panel-title>
@@ -838,6 +886,7 @@ import {
   mdiEyeOutline,
   mdiFileDocumentAlertOutline,
   mdiFileDocumentCheckOutline,
+  mdiHelpCircleOutline,
   mdiPaperclip,
   mdiProgressClock,
   mdiRefresh,
@@ -878,6 +927,7 @@ import TicketReviewDialog from "@/components/TicketReviewDialog.vue";
 import { runningJobs, watchJobs } from "@/state/jobs";
 import {
   ACTION_LABELS,
+  contractTone,
   phaseColor,
   STAGE_LABELS,
   STAGE_ORDER,

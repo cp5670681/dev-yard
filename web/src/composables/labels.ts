@@ -17,9 +17,40 @@ export const TICKET_COLOR: Record<string, string> = {
   implementing: "primary",
   implemented: "secondary",
   reviewing: "secondary",
+  inconclusive: "warning",
   blocked: "error",
   done: "success",
 };
+
+export function contractTone(contract: string | null | undefined): {
+  color: string;
+  label: string;
+  short: string;
+  summary: string;
+} {
+  if (contract === "passed") {
+    return {
+      color: "success",
+      label: "契约审查通过",
+      short: "契约通过",
+      summary: "通过 passed",
+    };
+  }
+  if (contract === "inconclusive") {
+    return {
+      color: "warning",
+      label: "契约审查无结论",
+      short: "契约无结论",
+      summary: "无结论",
+    };
+  }
+  return {
+    color: "error",
+    label: "契约审查未通过",
+    short: "契约未通过",
+    summary: "未通过 failed",
+  };
+}
 
 export const TICKET_STATE_LABELS: Record<string, string> = {
   pending: "待办",
@@ -27,6 +58,7 @@ export const TICKET_STATE_LABELS: Record<string, string> = {
   implementing: "实现中",
   implemented: "已实现",
   reviewing: "审查中",
+  inconclusive: "评审无结论",
   blocked: "阻塞",
   done: "完成",
 };
