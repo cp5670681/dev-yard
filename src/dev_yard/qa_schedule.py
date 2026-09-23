@@ -87,6 +87,9 @@ class CaseJob:
     blocked_class: str = ""
     failure: dict[str, Any] | None = None
     assertions: list[Any] = field(default_factory=list)
+    writes: list[str] = field(default_factory=list)
+    identity: str = ""
+    defect_class: str = ""
 
 
 RunCase = Callable[[CaseJob, PoolSlot], dict[str, Any]]
@@ -201,8 +204,13 @@ def blocked_kind(reason: str, blocked_class: str = "") -> str:
     return "env" if _env_signal(low) else "other"
 
 
-def pick_pool(pools: list[PoolSlot]) -> PoolSlot | None:
-    free = [p for p in pools if p.inflight < p.concurrency]
+def pick_pool(
+    pools: list[PoolSlot], tripped: set[str] | None = None
+) -> PoolSlot | None:
+    blocked = tripped or set()
+    free = [
+        p for p in pools if p.id not in blocked and p.inflight < p.concurrency
+    ]
     if not free:
         return None
     return min(free, key=lambda p: (p.priority, p.id))
@@ -326,14 +334,18 @@ def run_schedule(
     validate_dag(cases)
     refresh_ready(cases)
     max_workers = max(1, sum(p.concurrency for p in pools))
-    breaker = False
-    breaker_reason = ""
-    last_block_class: str | None = None
+    # A tripped pool stops receiving work. Other pools keep draining the queue.
+    # Remaining cases are stamped only once every pool has tripped.
+    tripped: dict[str, str] = {}
+    last_block_class: dict[str, str | None] = {}
     cancelled = False
 
     def ping() -> None:
         if on_progress is not None:
             on_progress()
+
+    def pools_open() -> bool:
+        return any(p.id not in tripped for p in pools)
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         inflight: dict[Any, tuple[CaseJob, PoolSlot]] = {}
@@ -345,12 +357,12 @@ def run_schedule(
                 # so draining can still take as long as that script.
                 cancelled = True
             refresh_ready(cases)
-            if not breaker and not cancelled:
+            if pools_open() and not cancelled:
                 while True:
                     if cancel_check is not None and cancel_check():
                         cancelled = True
                         break
-                    slot = pick_pool(pools)
+                    slot = pick_pool(pools, set(tripped))
                     job = pick_case(
                         cases, inflight_accounts if serialize_accounts else None
                     )
@@ -381,6 +393,7 @@ def run_schedule(
                 job.state = status
                 job.reason = str(result.get("reason") or "")
                 job.blocked_class = str(result.get("blocked_class") or "")
+                job.defect_class = str(result.get("defect_class") or "")
                 job.failure = (
                     result.get("failure")
                     if isinstance(result.get("failure"), dict)
@@ -393,20 +406,21 @@ def run_schedule(
                 if result.get("provider"):
                     job.provider = str(result.get("provider"))
                 job.ended_at = now_iso()
+                pid = slot.id
                 if status == "blocked":
                     klass = env_block_class(job.reason, job.blocked_class)
                     if klass is None:
-                        pass
-                    elif last_block_class == klass:
-                        breaker = True
-                        breaker_reason = job.reason or "environment blocked"
+                        last_block_class[pid] = None
+                    elif last_block_class.get(pid) == klass:
+                        tripped[pid] = job.reason or "environment blocked"
                     else:
-                        last_block_class = klass
+                        last_block_class[pid] = klass
                 else:
-                    last_block_class = None
+                    last_block_class[pid] = None
                 ping()
-        if breaker:
+        if not pools_open() and tripped:
             stamp = now_iso()
+            breaker_reason = next(iter(tripped.values()))
             for job in cases:
                 if job.state in {"pending", "ready"}:
                     job.state = "blocked"

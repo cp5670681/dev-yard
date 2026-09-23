@@ -507,6 +507,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { mdiClipboardCheckOutline, mdiHelpCircleOutline } from "@mdi/js";
 import { getQa, getRequirement, rerunQaCases, runAction } from "@/api/client";
+import { jobTail, settleJob } from "@/composables/qaRerun";
 import type { DocMeta, QaPage, QaReview, ShotItem } from "@/api/types";
 import CaseDetailDialog from "@/components/CaseDetailDialog.vue";
 import ReqDocTabs from "@/components/ReqDocTabs.vue";
@@ -783,14 +784,22 @@ async function rerunCase(caseId: string) {
   rerunningCase.value = caseId;
   try {
     const out = await rerunQaCases(jira.value, [caseId]);
-    const queued = out.jobs[0]?.state === "queued";
-    snack.notify(
-      queued ? `${caseId} 已提交重测，将排队执行` : `已重测 ${caseId}`,
-      "success",
-    );
+    const jobId = out.jobs[0]?.id;
+    if (!jobId) throw new Error("重测没有返回任务");
+    const done = await settleJob(jobId);
     await load();
+    if (done.state === "error" || done.state === "cancelled") {
+      const msg =
+        jobTail(done.log) ||
+        `${caseId} 重测${done.state === "cancelled" ? "已取消" : "失败"}`;
+      error.value = msg;
+      snack.notify(msg, "error");
+      return;
+    }
+    snack.notify(`${caseId} 重测完成`, "success");
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
+    snack.notify(error.value, "error");
   } finally {
     rerunningCase.value = "";
   }

@@ -29,6 +29,9 @@ class Finding:
     repo: str = ""
     depends_on: list[str] = field(default_factory=list)
     parallel: bool | None = None
+    # product spawns a fix ticket. case / unclassified are recorded only.
+    # Empty means a hand-submitted finding, which still spawns.
+    defect_class: str = ""
 
 
 @dataclass
@@ -172,6 +175,8 @@ def namespace_findings(batch_id: str, findings: list[Finding]) -> list[dict[str,
         }
         if f.parallel is not None:
             item["parallel"] = f.parallel
+        if f.defect_class:
+            item["defect_class"] = f.defect_class
         out.append(item)
     return out
 

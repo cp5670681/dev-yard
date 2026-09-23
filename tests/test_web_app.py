@@ -606,6 +606,20 @@ def test_board_has_no_assets_thumbnail_card():
     assert "detail.assets" not in src, "board still renders the assets thumbnail card"
 
 
+def test_rerun_waits_for_the_job_before_claiming_success():
+    root = Path(__file__).resolve().parents[1] / "web" / "src"
+    req = (root / "views" / "RequirementView.vue").read_text()
+    qa = (root / "views" / "QaView.vue").read_text()
+    helper = (root / "composables" / "qaRerun.ts").read_text()
+    assert "settleJob" in req
+    assert "settleJob" in qa
+    assert "settleJob" in helper
+    assert 'addEventListener("state"' not in helper
+    assert "已重测 ${caseId}" not in req
+    assert "已重测 ${caseId}" not in qa
+    assert "showCaseBanner" in req
+
+
 def test_job_panel_can_cancel_running_jobs():
     root = Path(__file__).resolve().parents[1]
     panel = (root / "web" / "src" / "components" / "JobPanel.vue").read_text()

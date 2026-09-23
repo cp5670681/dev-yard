@@ -405,18 +405,69 @@ def recheck_db_assertions(
             )
             continue
         recorded = item.get("actual")
-        if _db_recheck_ok(expected, recorded, got):
+        kind = _db_recheck_kind(expected, recorded, got)
+        if kind == "ok":
             continue
         problems.append(
             {
                 "case": job.id,
                 "expected": expected,
                 "actual": got,
+                "recorded": recorded,
                 "sql": sql,
-                "kind": "mismatch",
+                "kind": kind,
             }
         )
     return problems
+
+
+def diagnose_pi_exit(code: int, output: str) -> tuple[str, str]:
+    """Return `(reason, detail)` for a worker that exited without a result.
+
+    `reason` is what the scheduler classifies. It stays a `worker exit` plus a
+    fixed hint, so a raw log line like `context canceled` cannot look like a
+    user cancel and skip the pool breaker. `detail` is the last output line
+    for the run log only.
+    """
+    text = (output or "").strip()
+    low = text.lower()
+    hint = ""
+    if any(
+        s in low
+        for s in (
+            "unauthorized",
+            "invalid api key",
+            "authentication failed",
+            "auth failed",
+        )
+    ) or re.search(r"\b401\b", low):
+        hint = "疑似鉴权失败，检查该 pool 的 provider 凭据"
+    elif any(
+        s in low
+        for s in ("429", "rate limit", "quota", "insufficient_quota", "billing")
+    ):
+        hint = "疑似额度或限流，检查该 pool 的配额"
+    elif any(
+        s in low
+        for s in (
+            "input_too_large",
+            "context length",
+            "maximum context",
+            "too many tokens",
+            "context window",
+        )
+    ):
+        hint = "疑似上下文超限，缩短 prompt 或换更大窗口的模型"
+    tail = ""
+    for line in reversed(text.splitlines()):
+        line = " ".join(line.split())
+        if line:
+            tail = line[:180]
+            break
+    reason = f"worker exit: pi exit {code}"
+    if hint:
+        reason += f"; {hint}"
+    return reason, tail
 
 
 def _is_prose_expected(value: Any) -> bool:
@@ -429,17 +480,28 @@ def _is_prose_expected(value: Any) -> bool:
     return len(text.split(" ")) > 2
 
 
-def _db_recheck_ok(expected: Any, recorded: Any, sql_value: str) -> bool:
-    """True when the host's SQL cell confirms the assertion.
+def _db_recheck_kind(expected: Any, recorded: Any, sql_value: str) -> str:
+    """`ok`, `mismatch`, or `unverified`.
 
-    Anything that can itself be a cell ("0", "Jane Doe") must equal the cell.
-    Only obvious prose falls back to the cell the worker recorded in `actual`.
+    A cell-shaped expected must equal the SQL cell. Obvious prose falls back
+    to the cell the worker recorded in `actual`. When that recorded value is
+    itself prose, the host cannot check it: keep the worker verdict and mark
+    the assertion unverified instead of failing the case.
     """
     if _scalar_eq(expected, sql_value):
-        return True
+        return "ok"
     if not _is_prose_expected(expected):
-        return False
-    return _scalar_eq(recorded, sql_value)
+        return "mismatch"
+    if _is_prose_expected(recorded):
+        return "unverified"
+    if _scalar_eq(recorded, sql_value):
+        return "ok"
+    return "mismatch"
+
+
+def _db_recheck_ok(expected: Any, recorded: Any, sql_value: str) -> bool:
+    """True when the host's SQL cell confirms the assertion."""
+    return _db_recheck_kind(expected, recorded, sql_value) == "ok"
 
 
 def _scalar_eq(expected: Any, got: str) -> bool:
@@ -555,10 +617,13 @@ def normalize_case_result(
             return None
     raw_class = str(data.get("blocked_class") or "").strip().lower()
     blocked_class = raw_class if status == "blocked" and raw_class in BLOCKED_CLASSES else ""
+    raw_defect = str(data.get("defect_class") or "").strip().lower()
+    defect_class = raw_defect if raw_defect in {"product", "case", "unclassified"} else ""
     return {
         "status": status,
         "reason": str(data.get("reason") or ""),
         "blocked_class": blocked_class,
+        "defect_class": defect_class,
         "repo": str(data.get("repo") or job.repo),
         "title": str(data.get("title") or job.title),
         "covers": data.get("covers") or job.covers,

@@ -8,6 +8,23 @@ from dev_yard.qa_schedule import blocked_kind, format_blocked_kind
 from dev_yard.test_report import Finding, InboundReport, ReportRejected
 
 DESIGN_BLOCKED_PREFIX = "design-blocked:"
+DEFECT_CLASSES = ("product", "case", "unclassified")
+
+
+def classify_defect(item: dict[str, Any]) -> str:
+    """product opens a B ticket. case and unclassified do not.
+
+    An explicit `defect_class` wins. A `case-defect:` reason is a case bug
+    even when the worker marked the row failed. Anything else is unclassified:
+    the run failed, but that is not evidence of a product defect.
+    """
+    explicit = str(item.get("defect_class") or "").strip().lower()
+    if explicit in DEFECT_CLASSES:
+        return explicit
+    reason = str(item.get("reason") or "").strip().lower()
+    if reason.startswith("case-defect:"):
+        return "case"
+    return "unclassified"
 
 
 def has_design_blocked_skip(cases: list[dict[str, Any]]) -> bool:
@@ -62,12 +79,16 @@ def map_qa_result(run: dict[str, Any], cases: list[dict[str, Any]]) -> InboundRe
             reason = str(item.get("reason") or "").strip()
             evidence = str(failure.get("evidence") or "").strip()
             detail = " ".join(p for p in (step_desc, reason, evidence) if p)
+            klass = classify_defect(item)
+            if klass != "product":
+                detail = f"[{klass}] {detail}".strip()
             findings.append(
                 Finding(
                     id=cid or f"F{len(findings) + 1}",
                     title=str(item.get("title") or cid),
                     detail=detail,
                     repo=repo,
+                    defect_class=klass,
                 )
             )
         if not findings:
@@ -145,7 +166,8 @@ def _body(run: dict[str, Any], cases: list[dict[str, Any]]) -> str:
             cid = md_cell(c.get("case") or c.get("id"))
             title = md_cell(c.get("title"))
             reason = md_cell(c.get("reason"))
-            lines.append(f"- `{cid}` {title}: {reason}".rstrip())
+            klass = classify_defect(c)
+            lines.append(f"- `{cid}` [{klass}] {title}: {reason}".rstrip())
         lines.extend(_blocked_lines(cases))
         return "\n".join(lines)
     dumped = yaml.safe_dump(run, sort_keys=False, allow_unicode=True)

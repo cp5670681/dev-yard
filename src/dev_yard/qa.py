@@ -28,6 +28,7 @@ from dev_yard.qa_config import (
     redact_url,
 )
 from dev_yard.qa_exec import (
+    diagnose_pi_exit,
     ensure_auth,
     normalize_case_result,
     recheck_db_assertions,
@@ -255,6 +256,14 @@ def discover_cases(qa: Path) -> list[CaseJob]:
         covers = as_name_list(meta.get("covers"))
         module = path.parent.name
         data = meta.get("data") if isinstance(meta.get("data"), dict) else {}
+        if "writes" in data and data.get("writes") is not None and not isinstance(
+            data.get("writes"), list
+        ):
+            raise TestRejected(
+                f"case {cid} data.writes must be a list of table.column"
+            )
+        writes_raw = data.get("writes") or []
+        writes = [str(w).strip() for w in writes_raw if str(w).strip()]
         out.append(
             CaseJob(
                 id=cid,
@@ -270,6 +279,8 @@ def discover_cases(qa: Path) -> list[CaseJob]:
                 setup=str(data.get("setup") or "").strip(),
                 cleanup=str(data.get("cleanup") or "").strip(),
                 verify=str(data.get("verify") or "").strip(),
+                writes=writes,
+                identity=str(data.get("identity") or "").strip(),
             )
         )
     return out
@@ -404,7 +415,7 @@ def _permission_gap_warning(root: Path, jira: str, cfg: QaConfig) -> str | None:
     )
 
 
-def _gate(root: Path, jira: str) -> None:
+def _gate(root: Path, jira: str, *, waive_open_tickets: bool = False) -> None:
     req = paths.req_dir(root, jira)
     if not req.is_dir():
         raise TestRejected(f"missing {req}; run: dev-yard req open {jira}")
@@ -420,7 +431,9 @@ def _gate(root: Path, jira: str) -> None:
         )
     if st.test_passed(data):
         raise TestRejected(f"{jira} already has a passed test report")
-    if not st.all_done(data):
+    # A single-case rerun and a case redesign are diagnostic. Open product
+    # tickets must not lock them; a fresh full run still waits for those tickets.
+    if not waive_open_tickets and not st.all_done(data):
         raise TestRejected(
             f"{jira} still has open tickets; finish the test bug tickets before re-testing"
         )
@@ -663,6 +676,11 @@ def _duties(kind: str, jira: str) -> str:
             "seed must hard self-prove: every entity/field/link a case asserts must "
             "be created by setup (or verified read-only), and setup must exit(1) "
             "when its own assertion fails — not just print.\n"
+            "When setup mutates a shared row, declare `data.writes` "
+            "(list of `table.column`) and `data.identity` (one read-only SELECT "
+            "returning that row's id). Two cases must not write the same column "
+            "of the same row. Read-only cases omit `writes`; sharing a row to read "
+            "it is fine.\n"
             "Enumerate ALL required fields from the target form's validators "
             "(:rules/required/custom), not only the one an error message names."
         )
@@ -681,6 +699,11 @@ def _duties(kind: str, jira: str) -> str:
         "checked via `dev-yard qa logs <JIRA> --request-id <id>` (host read-only log "
         "lookup; do not ssh/kubectl yourself) before deciding env vs product; "
         "cancellation -> `cancelled:`.\n"
+        "A failed result.yaml must set `defect_class`: `product` when the "
+        "implementation contradicts the requirement; `case` when the assertion, "
+        "seed, or expected wording is wrong. Omit it when unsure (locale-dependent "
+        "copy, HTTP 201 vs 200, anything that might be a spec question). Omitted "
+        "means unclassified and does not open a product ticket.\n"
         "Assertions in result.yaml must use type (ui|net|db) plus expected and actual."
     )
 
@@ -797,6 +820,8 @@ def _run_prompt(root: Path, jira: str, cfg: QaConfig, job: CaseJob, run_id: str)
         f"Write case result to `{evidence / 'result.yaml'}` "
         + f"and screenshots to `{evidence / 'screenshots'}`.\n"
         + "result.yaml assertions: each item needs type (ui|net|db), expected, actual, status.\n"
+        + "On status failed, set defect_class to product or case. Omit it when the "
+        "failure might be the case wording or the environment rather than the product.\n"
         + "result.yaml must be valid YAML: quote every free-text scalar (reason/expected/"
         "actual/step_desc). An unquoted value bearing a colon+space — such as a "
         "'case-defect:' prefix — makes the whole file unparseable, and the host then marks "
@@ -1284,15 +1309,25 @@ def persist_case_verdict(path: Path, got: dict[str, Any]) -> None:
         and str(item.get("status") or "") == "failed"
         and str(item.get("sql") or "").strip()
     }
+    unverified_sql = {
+        str(item.get("sql") or "").strip()
+        for item in got.get("assertions") or []
+        if isinstance(item, dict)
+        and item.get("host_recheck") == "unverified"
+        and str(item.get("sql") or "").strip()
+    }
     changed = str(data.get("status") or "") != status or str(data.get("reason") or "") != reason
     assertions = data.get("assertions")
-    if failed_sql and isinstance(assertions, list):
+    if isinstance(assertions, list):
         for item in assertions:
             if not isinstance(item, dict):
                 continue
             sql = str(item.get("sql") or "").strip()
             if sql in failed_sql and str(item.get("status") or "") != "failed":
                 item["status"] = "failed"
+                changed = True
+            if sql in unverified_sql and item.get("host_recheck") != "unverified":
+                item["host_recheck"] = "unverified"
                 changed = True
     if not changed:
         return
@@ -1523,7 +1558,7 @@ def _req_test(
         raise TestRejected(
             "rerun_cases cannot be combined with design/run-only/redesign/approve/feedback"
         )
-    _gate(root, jira)
+    _gate(root, jira, waive_open_tickets=bool(rerun_ids or redesign))
     qa = paths.qa_dir(root, jira)
     qa.mkdir(parents=True, exist_ok=True)
     cases = discover_cases(qa)
@@ -1547,6 +1582,10 @@ def _req_test(
         if not env and rerun_run[2]:
             env = rerun_run[2]
     cfg = load_qa_config(root, env, jira)
+    try:
+        qa_yaml_mtime = paths.qa_yaml(root).stat().st_mtime
+    except OSError:
+        qa_yaml_mtime = None
     write_context_md(root, jira, cfg)
     if run_only and not cases:
         raise TestRejected(f"{jira} has no qa/cases; cannot --run-only")
@@ -1863,6 +1902,8 @@ def _req_test(
                 job.ended_at = stamp
 
     pools = [PoolSlot.from_worker(w) for w in cfg.workers]
+    if on_log is not None:
+        on_log("本轮使用启动时的 worker 配置\n")
     progress_path = run_dir / "progress.yaml"
     script_lock = Lock()
     env_fault: dict[str, Any] | None = None
@@ -2015,9 +2056,12 @@ def _req_test(
             )
             _raise_if_cancelled(cancel_check, f"qa-run {job.id}")
             if code != 0 and not result_path.is_file():
+                reason, detail = diagnose_pi_exit(code, raw)
+                if detail and on_log is not None:
+                    on_log(f"pi exit {code} ({job.id}): {detail}\n")
                 got = {
                     "status": "blocked",
-                    "reason": f"worker exit: pi exit {code}",
+                    "reason": reason,
                     "blocked_class": "env",
                     "repo": job.repo,
                     "model": slot.model,
@@ -2032,6 +2076,7 @@ def _req_test(
                 if normalize_status(got.get("status")) == "passed":
                     problems = recheck_db_assertions(cfg, job, got, on_log=on_log)
                     mismatches = [p for p in problems if p.get("kind") == "mismatch"]
+                    unverified = [p for p in problems if p.get("kind") == "unverified"]
                     if mismatches:
                         detail = "; ".join(
                             f"expected={p.get('expected')!r} actual={p.get('actual')!r}"
@@ -2039,6 +2084,8 @@ def _req_test(
                         )
                         got["status"] = "failed"
                         got["reason"] = f"host-recheck-mismatch: {detail}"
+                        if not got.get("defect_class"):
+                            got["defect_class"] = "unclassified"
                         bad_sql = {
                             str(p.get("sql") or "").strip()
                             for p in mismatches
@@ -2050,6 +2097,23 @@ def _req_test(
                                 and str(item.get("sql") or "").strip() in bad_sql
                             ):
                                 item["status"] = "failed"
+                    if unverified:
+                        soft_sql = {
+                            str(p.get("sql") or "").strip()
+                            for p in unverified
+                            if str(p.get("sql") or "").strip()
+                        }
+                        for item in got.get("assertions") or []:
+                            if (
+                                isinstance(item, dict)
+                                and str(item.get("sql") or "").strip() in soft_sql
+                            ):
+                                item["host_recheck"] = "unverified"
+                        if on_log is not None:
+                            on_log(
+                                f"db 断言未复核（{job.id}）：expected 与 worker actual "
+                                "都是句子，保留 worker 结论\n"
+                            )
                     for p in problems:
                         if p.get("kind") == "error" and on_log is not None:
                             on_log(
@@ -2157,12 +2221,22 @@ def _req_test(
                 "model": c.model,
                 "reason": c.reason,
                 "blocked_class": c.blocked_class,
+                "defect_class": c.defect_class,
                 "assertions": c.assertions,
             }
             for c in cases
         ],
         "summary": summary,
     }
+    if qa_yaml_mtime is not None:
+        try:
+            changed_mtime = paths.qa_yaml(root).stat().st_mtime != qa_yaml_mtime
+        except OSError:
+            changed_mtime = False
+        if changed_mtime:
+            run_doc["config_snapshot"] = "startup"
+            if on_log is not None:
+                on_log("qa.yaml 在本轮运行中被修改，本轮仍使用启动时的 pool 配置\n")
     if env_fault:
         run_doc["env_fault"] = env_fault
     if extra:
@@ -2193,6 +2267,8 @@ def _req_test(
             "status": c.state,
             "reason": c.reason,
         }
+        if c.defect_class:
+            item["defect_class"] = c.defect_class
         if c.failure:
             item["failure"] = c.failure
         if c.assertions:
@@ -2210,6 +2286,8 @@ def _req_test(
                     item["failure"] = raw.get("failure")
                 if raw.get("title"):
                     item["title"] = raw.get("title")
+                if raw.get("defect_class") and not item.get("defect_class"):
+                    item["defect_class"] = str(raw.get("defect_class"))
                 if isinstance(raw.get("assertions"), list):
                     item["assertions"] = raw["assertions"]
         case_payloads.append(item)

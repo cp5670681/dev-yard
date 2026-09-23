@@ -45,6 +45,7 @@ def normalize_findings(raw: list[dict[str, Any]] | None) -> list[dict[str, Any]]
                 "files": as_list(raw_files),
                 "depends_on": as_list(item.get("depends_on")),
                 "parallel": parallel,
+                "defect_class": str(item.get("defect_class") or "").strip().lower(),
             }
         )
     return out
@@ -295,6 +296,15 @@ def _render_ticket(
     return "\n".join(lines)
 
 
+def _is_product_defect(finding: dict[str, Any]) -> bool:
+    """Hand-submitted findings have no class and still open a ticket.
+
+    `case` and `unclassified` are recorded on the report and do not lock retest.
+    """
+    klass = str(finding.get("defect_class") or "").strip().lower()
+    return klass in {"", "product"}
+
+
 def spawn_fix_tickets(
     root: Path, jira: str, kind: str, persist: bool = True
 ) -> list[str]:
@@ -322,6 +332,8 @@ def spawn_fix_tickets_result(
         pending: list[dict[str, Any]] = []
         for f in findings:
             if not f.get("repo"):
+                continue
+            if kind == "test" and not _is_product_defect(f):
                 continue
             if (kind, f["id"]) in known:
                 continue

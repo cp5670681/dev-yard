@@ -934,6 +934,7 @@ import {
   STEP_LABELS,
 } from "@/composables/labels";
 import { isQaJobActive, QA_GATE_ACTIONS, useQaActive } from "@/composables/qa";
+import { jobTail, settleJob } from "@/composables/qaRerun";
 import { useSnack } from "@/composables/snack";
 
 const { mdAndUp } = useDisplay();
@@ -1160,6 +1161,9 @@ const activeActions = computed(
 // so the next requirement opens on its own current stage.
 watch(jira, () => {
   pickedStage.value = "";
+  rerunBannerCase = "";
+  suppressRunBanner = false;
+  lastBannerRunId = "";
 });
 
 const liveProgress = computed(() => jobProgress.value || detail.value?.qa?.progress || null);
@@ -1192,6 +1196,11 @@ function onJobUpdate(job: JobSnapshot) {
 // While a run is in flight, poll so CLI-started runs (no web job) still update
 // the board; when it settles, surface the run-end banner once.
 let boardPoll: ReturnType<typeof setInterval> | undefined;
+// Held only for the rerun that is on screen. A later run, or another
+// requirement, must not keep painting that case.
+let rerunBannerCase = "";
+let suppressRunBanner = false;
+let lastBannerRunId = "";
 
 watch(
   liveHasActive,
@@ -1201,6 +1210,10 @@ watch(
       boardPoll = undefined;
     }
     if (now) {
+      if (!rerunningCase.value) {
+        rerunBannerCase = "";
+        suppressRunBanner = false;
+      }
       boardPoll = setInterval(() => void load(), 5000);
       return;
     }
@@ -1429,18 +1442,35 @@ async function rerunCase(caseId: string) {
   if (!caseId || rerunningCase.value) return;
   error.value = "";
   rerunningCase.value = caseId;
+  rerunBannerCase = caseId;
   try {
     const out = await rerunQaCases(jira.value, [caseId]);
-    const job = out.jobs[0]?.id;
-    if (job) await router.replace({ query: { ...route.query, job } });
-    const queued = out.jobs[0]?.state === "queued";
-    snack.notify(
-      queued ? `${caseId} 已提交重测，将排队执行` : `已重测 ${caseId}`,
-      "success",
-    );
+    const jobId = out.jobs[0]?.id;
+    if (!jobId) throw new Error("重测没有返回任务");
+    await router.replace({ query: { ...route.query, job: jobId } });
+    const done = await settleJob(jobId);
     await load();
+    if (done.state === "error" || done.state === "cancelled") {
+      rerunBannerCase = "";
+      suppressRunBanner = true;
+      runEndBanner.show = false;
+      const msg =
+        jobTail(done.log) ||
+        `${caseId} 重测${done.state === "cancelled" ? "已取消" : "失败"}`;
+      error.value = msg;
+      snack.notify(msg, "error");
+      return;
+    }
+    showCaseBanner(caseId);
+    snack.notify(
+      runEndBanner.text,
+      runEndBanner.color === "error" ? "error" : "success",
+    );
   } catch (e) {
+    rerunBannerCase = "";
+    suppressRunBanner = true;
     error.value = e instanceof Error ? e.message : String(e);
+    snack.notify(error.value, "error");
   } finally {
     rerunningCase.value = "";
   }
@@ -1547,6 +1577,10 @@ async function onAction(
 ) {
   error.value = "";
   acting.value = action;
+  if (action === "qa-run" || action === "qa-design" || action === "qa-review") {
+    rerunBannerCase = "";
+    suppressRunBanner = false;
+  }
   try {
     const out = await runAction(jira.value, action, {
       ticket_id: ticketId,
@@ -1582,9 +1616,22 @@ function onJobDone(job?: JobSnapshot) {
   });
 }
 
-let lastBannerRunId = "";
+function showCaseBanner(caseId: string) {
+  const row = detail.value?.qa?.latest_run?.cases?.find((c) => c.case === caseId);
+  const status = row?.status || "未知";
+  const reason = row?.reason ? `：${row.reason}` : "";
+  runEndBanner.text = `${caseId} 重测 ${status}${reason}`;
+  runEndBanner.color =
+    status === "passed" ? "success" : status === "failed" ? "error" : "warning";
+  runEndBanner.show = true;
+}
 
 function showRunEndBanner() {
+  if (suppressRunBanner) return;
+  if (rerunBannerCase) {
+    showCaseBanner(rerunBannerCase);
+    return;
+  }
   const run = detail.value?.qa?.latest_run;
   if (!run?.run_id || run.run_id === lastBannerRunId) return;
   lastBannerRunId = run.run_id;

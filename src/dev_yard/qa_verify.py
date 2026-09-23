@@ -28,6 +28,7 @@ from dev_yard.qa_exec import (
     case_script_path,
     run_case_script,
     run_sql_count,
+    run_sql_value,
 )
 from dev_yard.qa_schedule import CaseJob, now_iso
 from dev_yard.runners import JobCancelled
@@ -84,6 +85,10 @@ class VerifyResult:
     error: str = ""
     # sha1 of the case set this result belongs to; the gate ignores stale ones.
     fingerprint: str = ""
+    # Row id this case's setup bound, plus the columns it writes. Empty when
+    # the case does not declare `data.writes`.
+    identity: str = ""
+    writes: list[str] = field(default_factory=list)
 
     def to_payload(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -286,9 +291,73 @@ def verify_case(
     else:
         result.status = "passed"
         result.reason = "数据前置已核实"
+        _bind_identity(verify_cfg, job, result, on_log)
 
     _cleanup(root, jira, cfg, job, result, on_log, executor)
     return finish()
+
+
+def _bind_identity(
+    cfg: QaConfig,
+    job: CaseJob,
+    result: VerifyResult,
+    on_log: Callable[[str], None] | None,
+) -> None:
+    """Record the row a mutating case bound, before cleanup releases it."""
+    if result.status != "passed" or not job.writes:
+        return
+    if not job.identity:
+        _fail_bind(
+            result,
+            "data.writes 需要配套的 data.identity（只读 SQL，返回这一行的 id）",
+        )
+        return
+    try:
+        assert_readonly_sql(job.identity)
+        cell = run_sql_value(cfg, job.identity, on_log=on_log).strip()
+    except TestRejected as e:
+        _fail_bind(result, f"identity query failed: {e}")
+        return
+    if not cell:
+        _fail_bind(result, "data.identity 没有返回行 id")
+        return
+    result.identity = cell
+    result.writes = list(job.writes)
+
+
+def _fail_bind(result: VerifyResult, error: str) -> None:
+    result.status = "failed"
+    result.error = error
+    result.reason = error
+    result.identity = ""
+    result.writes = []
+
+
+def write_collisions(results: dict[str, VerifyResult]) -> dict[str, str]:
+    """Cases that write the same column of the same row.
+
+    Read-only cases have no `writes` and may share a row. Different columns of
+    one row are not a collision.
+    """
+    owners: dict[tuple[str, str], str] = {}
+    errors: dict[str, str] = {}
+    ordered = sorted(results.values(), key=lambda r: r.case)
+    for result in ordered:
+        if result.status != "passed" or not result.identity:
+            continue
+        for column in result.writes:
+            key = (result.identity, column)
+            prev = owners.get(key)
+            if prev and prev != result.case:
+                msg = (
+                    f"seed write collision: {prev} 与 {result.case} "
+                    f"写同一行 {result.identity} 的 {column}"
+                )
+                errors[prev] = msg
+                errors[result.case] = msg
+            else:
+                owners[key] = result.case
+    return errors
 
 
 def _cleanup(
@@ -418,6 +487,13 @@ def verify_cases(
         finally:
             if executor is not None:
                 executor.close()
+    qa = paths.qa_dir(root, jira)
+    for cid, msg in write_collisions(results).items():
+        result = results[cid]
+        result.status = "failed"
+        result.error = msg
+        result.reason = msg
+        _write_result(qa, result)
     return results
 
 

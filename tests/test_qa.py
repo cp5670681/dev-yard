@@ -3059,3 +3059,254 @@ def test_run_prompt_hides_password(tmp_path: Path, git_src: Path, monkeypatch):
     assert "YARD_QA_PASSWORD" in prompt
     env = _case_auth_env(cfg, job)
     assert env["YARD_QA_PASSWORD"] == "s3cret"
+
+
+def test_rerun_and_redesign_waive_open_ticket_gate(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard.test_report import accept_test_report, parse_inbound
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-GATE")
+    accept_test_report(
+        yard,
+        "QA-GATE",
+        parse_inbound(
+            {
+                "verdict": "failed",
+                "body": "x",
+                "findings": [{"id": "F1", "title": "x", "repo": "backend"}],
+            },
+            "api",
+        ),
+    )
+    with pytest.raises(TestRejected, match="open tickets"):
+        req_test(
+            yard,
+            "QA-GATE",
+            print_mode=True,
+            run_only=True,
+            unsafe_skip_review=True,
+            ingest=False,
+            case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
+        )
+    with pytest.raises(TestRejected, match="unknown case"):
+        req_test(yard, "QA-GATE", print_mode=True, rerun_cases=["case-01"])
+
+    class _Reached(Runner):
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            return RunResult(ok=False, summary="redesign-reached")
+
+    with pytest.raises(TestRejected, match="redesign-reached"):
+        req_test(
+            yard,
+            "QA-GATE",
+            print_mode=True,
+            redesign=True,
+            feedback="fix the seed",
+            runner=_Reached(),
+        )
+
+
+def test_only_product_failures_spawn_tickets(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.test_report import accept_test_report
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-DF")
+    run = {"summary": {"total": 2, "passed": 0, "failed": 2, "blocked": 0, "skipped": 0}}
+    soft = map_qa_result(
+        run,
+        [
+            {
+                "case": "case-01",
+                "title": "locale",
+                "repo": "backend",
+                "status": "failed",
+                "reason": "OK vs 确定",
+                "failure": {"step_desc": "button"},
+            },
+            {
+                "case": "case-02",
+                "title": "seed",
+                "repo": "backend",
+                "status": "failed",
+                "reason": "case-defect: shared row",
+                "failure": {"step_desc": "seed"},
+            },
+        ],
+    )
+    assert soft is not None
+    assert [f.defect_class for f in soft.findings] == ["unclassified", "case"]
+    accept_test_report(yard, "QA-DF", soft)
+    tickets = (yard / "reqs" / "QA-DF" / "TICKETS.md").read_text(encoding="utf-8")
+    assert "## B1" not in tickets
+
+    product = map_qa_result(
+        {"summary": {"total": 1, "passed": 0, "failed": 1, "blocked": 0, "skipped": 0}},
+        [
+            {
+                "case": "case-03",
+                "title": "missing checkbox",
+                "repo": "backend",
+                "status": "failed",
+                "reason": "checkbox absent",
+                "defect_class": "product",
+                "failure": {"step_desc": "not rendered"},
+            }
+        ],
+    )
+    assert product is not None
+    assert product.findings[0].defect_class == "product"
+    accept_test_report(yard, "QA-DF", product)
+    tickets = (yard / "reqs" / "QA-DF" / "TICKETS.md").read_text(encoding="utf-8")
+    assert "## B1" in tickets
+
+
+def test_recheck_leaves_bilateral_prose_unverified(tmp_path: Path, monkeypatch):
+    from dev_yard.qa_exec import recheck_db_assertions
+
+    _write_qa_yaml(tmp_path, "    db:\n      url: postgres://u:p@h/db\n")
+    cfg = load_qa_config(tmp_path)
+    job = CaseJob(id="case-08", title="t", repo="front")
+    result = {
+        "status": "passed",
+        "assertions": [
+            {
+                "type": "db",
+                "expected": "刷新前后 projects.auto_fetch_ai_nav 始终保持 1",
+                "actual": "点击 Checkbox 之后查询为 1，刷新之后仍为 1",
+                "status": "passed",
+                "sql": "SELECT auto_fetch_ai_nav FROM projects WHERE id = 1",
+            }
+        ],
+    }
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None: "1")
+    problems = recheck_db_assertions(cfg, job, result)
+    assert len(problems) == 1
+    assert problems[0]["kind"] == "unverified"
+    assert problems[0]["actual"] == "1"
+
+
+def test_diagnose_pi_exit_names_a_cause():
+    from dev_yard.qa_exec import diagnose_pi_exit
+    from dev_yard.qa_schedule import env_block_class
+
+    auth, _detail = diagnose_pi_exit(1, "provider returned 401 unauthorized\n")
+    assert auth.startswith("worker exit: pi exit 1")
+    assert "鉴权" in auth
+    quota, _detail = diagnose_pi_exit(1, "429 rate limit exceeded\n")
+    assert "额度" in quota
+    bare, detail = diagnose_pi_exit(1, "")
+    assert bare == "worker exit: pi exit 1"
+    assert detail == ""
+    # A provider line like "context canceled" must stay out of the breaker reason.
+    reason, detail = diagnose_pi_exit(1, "rpc error: context canceled\n")
+    assert "cancel" not in reason.lower()
+    assert detail == "rpc error: context canceled"
+    assert env_block_class(reason, "env") == "env"
+
+
+def test_breaker_is_per_pool_and_stamps_only_when_every_pool_trips():
+    healthy = [
+        CaseJob(id=f"c{i}", title="t", repo="be") for i in range(1, 6)
+    ]
+    pools = [
+        PoolSlot(id="bad", provider="rcc", model="m", concurrency=1, priority=1),
+        PoolSlot(id="ok", provider="rcc", model="m", concurrency=1, priority=2),
+    ]
+
+    def run(job: CaseJob, slot: PoolSlot) -> dict:
+        if slot.id == "bad":
+            return {
+                "status": "blocked",
+                "reason": "worker exit: pi exit 1",
+                "blocked_class": "env",
+            }
+        return {"status": "passed"}
+
+    run_schedule(healthy, pools, run)
+    bad_ran = [c for c in healthy if c.pool == "bad"]
+    assert len(bad_ran) == 2
+    assert all(c.state == "blocked" for c in bad_ran)
+    rest = [c for c in healthy if c.pool != "bad"]
+    assert rest
+    assert all(c.state == "passed" and c.pool == "ok" for c in rest)
+
+    alone = [CaseJob(id=f"c{i}", title="t", repo="be") for i in range(1, 4)]
+    run_schedule(
+        alone,
+        [PoolSlot(id="bad", provider="rcc", model="m", concurrency=1, priority=1)],
+        run,
+    )
+    assert [c.state for c in alone] == ["blocked", "blocked", "blocked"]
+    assert alone[2].pool is None
+    assert alone[2].reason == "worker exit: pi exit 1"
+
+
+def test_blank_identity_fails_the_mutating_case(monkeypatch):
+    from dev_yard.qa_verify import VerifyResult, _bind_identity
+
+    monkeypatch.setattr("dev_yard.qa_verify.run_sql_value", lambda *a, **k: "")
+    job = CaseJob(
+        id="case-01",
+        title="t",
+        repo="be",
+        writes=["projects.auto_fetch_ai_nav"],
+        identity="SELECT entity_id FROM seeds WHERE case_id = 'case-01'",
+    )
+    result = VerifyResult(case="case-01", status="passed", reason="数据前置已核实")
+    _bind_identity(None, job, result, None)  # type: ignore[arg-type]
+    assert result.status == "failed"
+    assert result.identity == ""
+    assert result.reason == result.error
+    assert "没有返回行 id" in result.error
+
+
+def test_scalar_writes_is_rejected(tmp_path: Path):
+    from dev_yard.qa import discover_cases
+
+    qa = tmp_path / "qa" / "cases" / "mod"
+    qa.mkdir(parents=True)
+    (qa / "case-01.md").write_text(
+        "---\nid: case-01\ntitle: t\nrepo: backend\n"
+        "data:\n  writes: projects.auto_fetch_ai_nav\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TestRejected, match="data.writes must be a list"):
+        discover_cases(tmp_path / "qa")
+
+
+def test_write_collisions_flag_same_row_and_column():
+    from dev_yard.qa_verify import VerifyResult, write_collisions
+
+    results = {
+        "case-01": VerifyResult(
+            case="case-01",
+            status="passed",
+            identity="10009268",
+            writes=["projects.auto_fetch_ai_nav"],
+        ),
+        "case-02": VerifyResult(
+            case="case-02",
+            status="passed",
+            identity="10009268",
+            writes=["projects.auto_fetch_ai_nav"],
+        ),
+        "case-03": VerifyResult(
+            case="case-03",
+            status="passed",
+            identity="10009268",
+            writes=["projects.name"],
+        ),
+        "case-04": VerifyResult(
+            case="case-04",
+            status="passed",
+            identity="10009269",
+            writes=["projects.auto_fetch_ai_nav"],
+        ),
+    }
+    errors = write_collisions(results)
+    assert set(errors) == {"case-01", "case-02"}
+    assert "projects.auto_fetch_ai_nav" in errors["case-01"]
