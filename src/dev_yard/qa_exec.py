@@ -404,7 +404,8 @@ def recheck_db_assertions(
                 }
             )
             continue
-        if _scalar_eq(expected, got):
+        recorded = item.get("actual")
+        if _db_recheck_ok(expected, recorded, got):
             continue
         problems.append(
             {
@@ -416,6 +417,29 @@ def recheck_db_assertions(
             }
         )
     return problems
+
+
+def _is_prose_expected(value: Any) -> bool:
+    """Case prose ("col = 0", a full sentence), not a value the cell can equal."""
+    if value is None:
+        return False
+    text = " ".join(str(value).split())
+    if not text or "=" in text:
+        return bool(text)
+    return len(text.split(" ")) > 2
+
+
+def _db_recheck_ok(expected: Any, recorded: Any, sql_value: str) -> bool:
+    """True when the host's SQL cell confirms the assertion.
+
+    Anything that can itself be a cell ("0", "Jane Doe") must equal the cell.
+    Only obvious prose falls back to the cell the worker recorded in `actual`.
+    """
+    if _scalar_eq(expected, sql_value):
+        return True
+    if not _is_prose_expected(expected):
+        return False
+    return _scalar_eq(recorded, sql_value)
 
 
 def _scalar_eq(expected: Any, got: str) -> bool:

@@ -1191,6 +1191,119 @@ def find_run_for_rerun(
     return None
 
 
+def reconcile_case_verdict(
+    progress_state: str,
+    progress_reason: str,
+    file_status: str,
+    file_reason: str,
+) -> tuple[str, str]:
+    """One status for a case that has both a progress row and a result file.
+
+    Queued or running rows stay as progress. A finished disagreement adopts
+    the file only when the progress reason is a copy of the file reason — the
+    resume merge that pasted pass text onto a stale failed row. A later
+    verdict (cancel, auth, worker exit, host recheck) keeps the progress row.
+    """
+    state = str(progress_state or "")
+    reason = str(progress_reason or "")
+    fstatus = str(file_status or "")
+    freason = str(file_reason or "")
+    if state in {"pending", "ready", "running"}:
+        return state, reason
+    if (
+        state in TERMINAL
+        and fstatus in TERMINAL
+        and state != fstatus
+        and reason
+        and reason == freason
+    ):
+        return fstatus, freason
+    if state in TERMINAL:
+        return state, reason or freason
+    if fstatus in TERMINAL:
+        return fstatus, freason or reason
+    return state or fstatus or "pending", reason or freason
+
+
+def _file_verdict(path: Path) -> tuple[str, str]:
+    if not path.is_file():
+        return "", ""
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return "", ""
+    if not isinstance(data, dict):
+        return "", ""
+    return str(data.get("status") or ""), str(data.get("reason") or "")
+
+
+def reconcile_progress_doc(run_dir: Path, doc: dict[str, Any]) -> bool:
+    """Rewrite terminal progress rows that only disagree by a copied file reason."""
+    changed = False
+    for item in doc.get("cases") or []:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        state = str(item.get("state") or "")
+        if state not in TERMINAL:
+            continue
+        reason = str(item.get("reason") or "")
+        file_status, file_reason = _file_verdict(run_dir / str(item["id"]) / "result.yaml")
+        new_state, new_reason = reconcile_case_verdict(
+            state, reason, file_status, file_reason
+        )
+        if new_state != state or new_reason != reason:
+            item["state"] = new_state
+            item["reason"] = new_reason
+            changed = True
+    return changed
+
+
+def persist_case_verdict(path: Path, got: dict[str, Any]) -> None:
+    """Write the host verdict back into the case result file.
+
+    The scheduler records status in progress.yaml from memory. Leaving the
+    worker file untouched makes the board show the file while the run is idle
+    and the progress row while any other case is active.
+    """
+    if not path.is_file():
+        return
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return
+    if not isinstance(data, dict):
+        return
+    status = str(got.get("status") or "")
+    if not status:
+        return
+    reason = str(got.get("reason") or "")
+    failed_sql = {
+        str(item.get("sql") or "").strip()
+        for item in got.get("assertions") or []
+        if isinstance(item, dict)
+        and str(item.get("status") or "") == "failed"
+        and str(item.get("sql") or "").strip()
+    }
+    changed = str(data.get("status") or "") != status or str(data.get("reason") or "") != reason
+    assertions = data.get("assertions")
+    if failed_sql and isinstance(assertions, list):
+        for item in assertions:
+            if not isinstance(item, dict):
+                continue
+            sql = str(item.get("sql") or "").strip()
+            if sql in failed_sql and str(item.get("status") or "") != "failed":
+                item["status"] = "failed"
+                changed = True
+    if not changed:
+        return
+    data["status"] = status
+    data["reason"] = reason
+    path.write_text(
+        yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+
 def _apply_resume(cases: list[CaseJob], run_dir: Path) -> int:
     """Mark finished cases so the scheduler will not dispatch them. Returns skip count.
 
@@ -1208,6 +1321,7 @@ def _apply_resume(cases: list[CaseJob], run_dir: Path) -> int:
         }
     dummy = PoolSlot(id="resume", provider=None, model=None, concurrency=1, priority=1)
     skipped = 0
+    changed_doc = False
     for job in cases:
         prev = prev_by_id.get(job.id) or {}
         state = str(prev.get("state") or "")
@@ -1215,11 +1329,22 @@ def _apply_resume(cases: list[CaseJob], run_dir: Path) -> int:
             continue
         path = run_dir / job.id / "result.yaml"
         got = _read_case_result(path, job, dummy, strict=False) if path.is_file() else {}
-        status = state if state in TERMINAL else str(got.get("status") or "")
+        status, reason = reconcile_case_verdict(
+            state,
+            str(prev.get("reason") or ""),
+            str(got.get("status") or ""),
+            str(got.get("reason") or ""),
+        )
         if status not in TERMINAL:
             continue
+        if job.id in prev_by_id and (
+            state != status or str(prev.get("reason") or "") != reason
+        ):
+            prev["state"] = status
+            prev["reason"] = reason
+            changed_doc = True
         job.state = status
-        job.reason = str(got.get("reason") or prev.get("reason") or "")
+        job.reason = reason
         job.blocked_class = str(
             got.get("blocked_class") or prev.get("blocked_class") or ""
         )
@@ -1232,6 +1357,11 @@ def _apply_resume(cases: list[CaseJob], run_dir: Path) -> int:
         job.started_at = prev.get("started_at") or job.started_at
         job.ended_at = prev.get("ended_at") or job.ended_at
         skipped += 1
+    if doc is not None and changed_doc:
+        (run_dir / "progress.yaml").write_text(
+            yaml.safe_dump(doc, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
     return skipped
 
 
@@ -1281,6 +1411,7 @@ def reset_cases_in_run(
     # The run's aggregate summary still counts the reset case as its old outcome
     # until the re-run finishes, so drop it to keep the page honest ("执行中").
     (run_dir / "result.yaml").unlink(missing_ok=True)
+    reconcile_progress_doc(run_dir, doc)
     (run_dir / "progress.yaml").write_text(
         yaml.safe_dump(doc, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
@@ -1908,6 +2039,17 @@ def _req_test(
                         )
                         got["status"] = "failed"
                         got["reason"] = f"host-recheck-mismatch: {detail}"
+                        bad_sql = {
+                            str(p.get("sql") or "").strip()
+                            for p in mismatches
+                            if str(p.get("sql") or "").strip()
+                        }
+                        for item in got.get("assertions") or []:
+                            if (
+                                isinstance(item, dict)
+                                and str(item.get("sql") or "").strip() in bad_sql
+                            ):
+                                item["status"] = "failed"
                     for p in problems:
                         if p.get("kind") == "error" and on_log is not None:
                             on_log(
@@ -1936,6 +2078,8 @@ def _req_test(
                 got["reason"] = (
                     (got.get("reason") or "") + f" cleanup failed: {e}"
                 ).strip()
+        if result_path.is_file():
+            persist_case_verdict(result_path, got)
         return got
 
     runner_fn = case_runner or default_case_runner

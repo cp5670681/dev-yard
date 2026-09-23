@@ -11,6 +11,8 @@ from dev_yard.qa import (
     discover_cases,
     incomplete_run_payload,
     open_questions_payload,
+    reconcile_case_verdict,
+    reconcile_progress_doc,
     split_frontmatter,
 )
 from dev_yard.qa_config import TestRejected, load_qa_config, qa_env_choices
@@ -51,6 +53,8 @@ def latest_progress(qa: Path) -> dict[str, Any] | None:
             isinstance(c, dict) and str(c.get("state") or "") in {"pending", "ready", "running"}
             for c in cases
         ):
+            # The requirement board overlays this document onto every card.
+            reconcile_progress_doc(run_dir, data)
             return data
         return None
     return None
@@ -117,9 +121,17 @@ def qa_detail_summary(root: Path, jira: str) -> dict[str, Any]:
         screenshots: list[str] = []
 
         if prog:
-            state = str(prog.get("state") or "pending")
-            model = str(prog.get("model") or "")
-            reason = str(prog.get("reason") or "")
+            state, reason = reconcile_case_verdict(
+                str(prog.get("state") or ""),
+                str(prog.get("reason") or ""),
+                str((rc or {}).get("status") or ""),
+                str((rc or {}).get("reason") or ""),
+            )
+            model = str(prog.get("model") or (rc or {}).get("model") or "")
+            if state not in {"pending", "ready", "running"} and rc:
+                failure = rc.get("failure")
+                assertions = list(rc.get("assertions") or [])
+                screenshots = list(rc.get("screenshots") or [])
         elif rc:
             state = str(rc.get("status") or "pending")
             model = str(rc.get("model") or "")
@@ -379,24 +391,33 @@ def qa_case_detail(root: Path, jira: str, case_id: str) -> dict[str, Any] | None
             continue
         # While the case is still in flight, its failure/screenshots on disk are
         # stale (previous run) — hide them and let the live strip speak instead.
-        live_active = bool(prog) and str(prog.get("state") or "") in {
-            "pending",
-            "ready",
-            "running",
-        }
+        verdict_state, verdict_reason = reconcile_case_verdict(
+            str((prog or {}).get("state") or ""),
+            str((prog or {}).get("reason") or ""),
+            str(rc.get("status") or ""),
+            str(rc.get("reason") or ""),
+        )
+        live_active = verdict_state in {"pending", "ready", "running"}
         latest = {
             "run_id": str(run.get("run_id") or ""),
             "env": str(run.get("env") or ""),
-            "state": str((prog or {}).get("state") or rc.get("status") or ""),
+            "state": verdict_state,
             "model": str((prog or {}).get("model") or rc.get("model") or ""),
-            "reason": str((prog or {}).get("reason") or rc.get("reason") or ""),
+            "reason": verdict_reason,
             "failure": None if live_active else rc.get("failure"),
             "assertions": [] if live_active else list(rc.get("assertions") or []),
             "screenshots": [] if live_active else list(rc.get("screenshots") or []),
         }
         break
     live = None
-    if prog:
+    if prog and latest is not None:
+        live = {
+            "run_id": str((progress or {}).get("run_id") or ""),
+            "state": latest["state"],
+            "model": prog.get("model"),
+            "reason": latest["reason"],
+        }
+    elif prog:
         live = {
             "run_id": str((progress or {}).get("run_id") or ""),
             "state": str(prog.get("state") or ""),

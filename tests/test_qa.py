@@ -2712,6 +2712,171 @@ def test_recheck_db_assertions_flags_false_pass(tmp_path: Path, monkeypatch):
     assert problems[0]["actual"] == "0"
 
 
+def test_recheck_accepts_prose_expected_when_recorded_cell_matches(tmp_path: Path, monkeypatch):
+    from dev_yard.qa_exec import recheck_db_assertions
+
+    _write_qa_yaml(tmp_path, "    db:\n      url: postgres://u:p@h/db\n")
+    cfg = load_qa_config(tmp_path)
+    job = CaseJob(id="case-01", title="t", repo="front")
+    result = {
+        "status": "passed",
+        "assertions": [
+            {
+                "type": "db",
+                "expected": "projects.auto_fetch_ai_nav = 0",
+                "actual": "0",
+                "status": "passed",
+                "sql": "SELECT auto_fetch_ai_nav FROM projects WHERE id = 1",
+            }
+        ],
+    }
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None: "0")
+    assert recheck_db_assertions(cfg, job, result) == []
+
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None: "1")
+    problems = recheck_db_assertions(cfg, job, result)
+    assert len(problems) == 1
+    assert problems[0]["actual"] == "1"
+
+
+def test_recheck_two_word_expected_still_compares_to_cell(tmp_path: Path, monkeypatch):
+    from dev_yard.qa_exec import recheck_db_assertions
+
+    _write_qa_yaml(tmp_path, "    db:\n      url: postgres://u:p@h/db\n")
+    cfg = load_qa_config(tmp_path)
+    job = CaseJob(id="c1", title="t", repo="be")
+    result = {
+        "status": "passed",
+        "assertions": [
+            {
+                "type": "db",
+                "expected": "Jane Doe",
+                "actual": "Jane Doe",
+                "status": "passed",
+                "sql": "SELECT name FROM users WHERE id = 1",
+            }
+        ],
+    }
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None: "Jane Doe")
+    assert recheck_db_assertions(cfg, job, result) == []
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None: "other")
+    assert len(recheck_db_assertions(cfg, job, result)) == 1
+
+
+def test_recheck_scalar_expected_still_wins_over_recorded_actual(tmp_path: Path, monkeypatch):
+    from dev_yard.qa_exec import recheck_db_assertions
+
+    _write_qa_yaml(tmp_path, "    db:\n      url: postgres://u:p@h/db\n")
+    cfg = load_qa_config(tmp_path)
+    job = CaseJob(id="c1", title="t", repo="be")
+    result = {
+        "status": "passed",
+        "assertions": [
+            {
+                "type": "db",
+                "expected": "1",
+                "actual": "0",
+                "status": "passed",
+                "sql": "SELECT auto_fetch_ai_nav FROM projects WHERE id = 1",
+            }
+        ],
+    }
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None: "0")
+    problems = recheck_db_assertions(cfg, job, result)
+    assert len(problems) == 1
+
+
+def test_reconcile_keeps_file_pass_when_progress_reason_was_overwritten():
+    from dev_yard.qa import reconcile_case_verdict
+
+    state, reason = reconcile_case_verdict(
+        "failed",
+        "UI/网络/DB 三层一致",
+        "passed",
+        "UI/网络/DB 三层一致",
+    )
+    assert state == "passed"
+    assert reason == "UI/网络/DB 三层一致"
+    kept, kept_reason = reconcile_case_verdict(
+        "failed",
+        "host-recheck-mismatch: expected='1' actual='0'",
+        "passed",
+        "worker said pass",
+    )
+    assert kept == "failed"
+    assert kept_reason.startswith("host-recheck-mismatch:")
+    for progress_reason in (
+        "cancelled: qa-run case-01 cancelled",
+        "auth failed: login",
+        "worker exit: pi exit 1",
+        "env fault: down",
+        "cleanup failed: boom",
+    ):
+        state, reason = reconcile_case_verdict(
+            "blocked", progress_reason, "passed", "pass text"
+        )
+        assert state == "blocked"
+        assert reason == progress_reason
+
+
+def test_apply_resume_keeps_later_verdict_over_pass_file(tmp_path: Path):
+    from dev_yard.qa import _apply_resume
+
+    run = tmp_path / "run"
+    (run / "case-01").mkdir(parents=True)
+    (run / "case-02").mkdir()
+    (run / "progress.yaml").write_text(
+        "run_id: r\nenv: local\ncases:\n"
+        "  - {id: case-01, state: blocked, reason: 'cancelled: qa-run case-01 cancelled'}\n"
+        "  - {id: case-02, state: blocked, reason: 'auth failed: login'}\n",
+        encoding="utf-8",
+    )
+    for cid in ("case-01", "case-02"):
+        (run / cid / "result.yaml").write_text(
+            "status: passed\nreason: pass text\n",
+            encoding="utf-8",
+        )
+    cases = [
+        CaseJob(id="case-01", title="t", repo="be"),
+        CaseJob(id="case-02", title="t", repo="be"),
+    ]
+    _apply_resume(cases, run)
+    assert [(c.id, c.state, c.reason) for c in cases] == [
+        ("case-01", "blocked", "cancelled: qa-run case-01 cancelled"),
+        ("case-02", "blocked", "auth failed: login"),
+    ]
+    doc = yaml.safe_load((run / "progress.yaml").read_text(encoding="utf-8"))
+    by_id = {c["id"]: c for c in doc["cases"]}
+    assert by_id["case-01"]["state"] == "blocked"
+    assert by_id["case-02"]["state"] == "blocked"
+
+
+def test_persist_case_verdict_writes_host_downgrade(tmp_path: Path):
+    from dev_yard.qa import persist_case_verdict
+
+    path = tmp_path / "result.yaml"
+    path.write_text(
+        "case: case-01\nstatus: passed\nreason: ok\n"
+        "assertions:\n"
+        "  - {type: db, expected: '1', actual: '1', status: passed, sql: 'SELECT 1'}\n",
+        encoding="utf-8",
+    )
+    persist_case_verdict(
+        path,
+        {
+            "status": "failed",
+            "reason": "host-recheck-mismatch: expected='1' actual='0'",
+            "assertions": [
+                {"type": "db", "status": "failed", "sql": "SELECT 1"},
+            ],
+        },
+    )
+    text = path.read_text(encoding="utf-8")
+    assert "status: failed" in text
+    assert "host-recheck-mismatch:" in text
+    assert "sql: SELECT 1" in text
+
+
 def test_recheck_skips_db_assertion_without_sql(tmp_path: Path, monkeypatch):
     from dev_yard.qa_exec import recheck_db_assertions
 

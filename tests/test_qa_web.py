@@ -76,6 +76,37 @@ def _seed_qa(yard: Path, *, progress: bool = True) -> None:
         )
 
 
+def test_qa_board_keeps_file_pass_while_sibling_reruns(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    yard = _req(tmp_path, git_src, monkeypatch)
+    _seed_qa(yard, progress=False)
+    run = yard / "reqs" / "QA-W1" / "qa" / "evidence" / "2026-09-16-153000"
+    (run / "case-01" / "result.yaml").write_text(
+        "case: case-01\nstatus: passed\nreason: 三层一致\n"
+        "assertions:\n  - {type: db, expected: 'col = 0', actual: '0', status: passed}\n",
+        encoding="utf-8",
+    )
+    (run / "progress.yaml").write_text(
+        "run_id: 2026-09-16-153000\nenv: local\n"
+        "cases:\n"
+        "  - {id: case-01, state: failed, reason: 三层一致, repo: backend, model: grok-4}\n"
+        "  - {id: case-02, state: running, reason: '', repo: backend, model: grok-4}\n",
+        encoding="utf-8",
+    )
+    detail = _client(yard).get("/api/requirements/QA-W1").json()
+    states = {c["id"]: c["state"] for c in detail["qa"]["cases"]}
+    assert states["case-01"] == "passed"
+    assert states["case-02"] == "running"
+    # The requirement cards overlay qa.progress, not qa.cases, while a sibling runs.
+    progress = {c["id"]: c["state"] for c in detail["qa"]["progress"]["cases"]}
+    assert progress["case-01"] == "passed"
+    assert progress["case-02"] == "running"
+    case = _client(yard).get("/api/requirements/QA-W1/qa/cases/case-01").json()
+    assert case["latest_run"]["state"] == "passed"
+    assert case["live"]["state"] == "passed"
+
+
 def test_qa_api_empty_is_200(tmp_path: Path, git_src: Path, monkeypatch):
     yard = _req(tmp_path, git_src, monkeypatch)
     r = _client(yard).get("/api/requirements/QA-W1/qa")
