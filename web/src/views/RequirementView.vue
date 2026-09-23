@@ -884,7 +884,6 @@ import {
   STEP_LABELS,
 } from "@/composables/labels";
 import { isQaJobActive, QA_GATE_ACTIONS, useQaRunActive } from "@/composables/qa";
-import { forgetRecent } from "@/composables/recents";
 import { useSnack } from "@/composables/snack";
 
 const { mdAndUp } = useDisplay();
@@ -1395,7 +1394,6 @@ async function doDelete() {
   acting.value = "delete";
   try {
     await deleteRequirement(jira.value);
-    forgetRecent(jira.value);
     deleteOpen.value = false;
     snack.notify(`已删除 ${jira.value}`, "success");
     await router.push("/");

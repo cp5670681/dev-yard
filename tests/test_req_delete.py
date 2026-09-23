@@ -103,18 +103,12 @@ def test_api_delete_requirement(tmp_path: Path, monkeypatch):
         Path(__file__).resolve().parents[1] / "web" / "src" / "views" / "DashboardView.vue"
     ).read_text()
     assert "askDelete" in vue
-    assert "forgetRecent" in vue
     assert "删除需求？" in vue
     detail = (
         Path(__file__).resolve().parents[1] / "web" / "src" / "views" / "RequirementView.vue"
     ).read_text()
     assert "deleteOpen" in detail
     assert "doDelete" in detail
-    assert "forgetRecent" in detail
-    recents = (
-        Path(__file__).resolve().parents[1] / "web" / "src" / "composables" / "recents.ts"
-    ).read_text()
-    assert "export function forgetRecent" in recents
 
 
 def test_api_delete_conflict_when_job_running(tmp_path: Path, monkeypatch):

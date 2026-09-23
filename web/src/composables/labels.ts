@@ -4,6 +4,7 @@ export const PHASE_COLOR: Record<string, string> = {
   spec: "info",
   tickets: "secondary",
   freeze: "secondary",
+  frozen: "secondary",
   implement: "primary",
   review: "secondary",
   testing: "warning",
