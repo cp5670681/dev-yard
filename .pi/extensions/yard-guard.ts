@@ -20,6 +20,13 @@ const PSEUDO_ROOTS = ["/proc", "/sys", "/dev", "/run"];
 /** WSL 9p mounts: traversal blocks in `p9_client_rpc` and ignores signals. */
 const NINE_P_ROOTS = ["/mnt", "/usr/lib/wsl"];
 const GUARDED_ROOTS = [...NINE_P_ROOTS, ...PSEUDO_ROOTS];
+/**
+ * Image files pi's `read` attaches as base64. The omniroute gateway counts that
+ * base64 as text tokens (one 2598x1386 screenshot ~1MB ~= 780k tokens), so a
+ * single `read` of a screenshot blows the model's 500k window and kills the
+ * stage with `input_too_large`. Screenshots are background, not source of truth.
+ */
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
 
 /** Commands that always recurse into their path operands. */
 const ALWAYS_RECURSIVE = new Set(["find", "fd", "du", "tree", "rg", "ag", "ack"]);
@@ -213,6 +220,15 @@ export function isDangerousPath(target: string, cwd: string): boolean {
   return GUARDED_ROOTS.some((root) => isUnderRoot(root, abs));
 }
 
+/** True when `target` is an image pi's `read` would send as a base64 attachment. */
+export function isImagePath(target: string): boolean {
+  const raw = stripDecorations(target.trim()).replace(/^@/, "");
+  if (!raw) {
+    return false;
+  }
+  return IMAGE_EXTENSIONS.has(path.extname(raw).toLowerCase());
+}
+
 function isPrefixToken(token: string): boolean {
   return COMMAND_PREFIXES.has(stripDecorations(token)) || /^\w+=/.test(token);
 }
@@ -398,6 +414,12 @@ const REASON =
   "WSL 下 /mnt/*、/usr/lib/wsl/* 会阻塞在 p9_client_rpc 且不可中断，" +
   "根目录扫描同样会拖死整个阶段。请把搜索限定在当前 worktree，优先用 rg。";
 
+const IMAGE_REASON =
+  "dev-yard guard: 不要用 read 打开图片（png/jpg/jpeg/gif/webp/bmp）。" +
+  "read 拿到的图片会进 function_call_output，grok-cli 网关把它当 base64 文本计 token，" +
+  "一张截图就能顶爆窗口让整轮失败（input_too_large）。" +
+  "需求截图会在阶段 prompt 里以 @ 附件挂进用户消息，直接看那些图。";
+
 export default function yardGuard(pi: ExtensionAPI): void {
   pi.on("tool_call", (event, ctx) => {
     if (isToolCallEventType("bash", event)) {
@@ -408,6 +430,12 @@ export default function yardGuard(pi: ExtensionAPI): void {
       }
       if (event.input.timeout === undefined && isPureSearchCommand(command)) {
         event.input.timeout = DEFAULT_SEARCH_TIMEOUT_SECONDS;
+      }
+      return;
+    }
+    if (isToolCallEventType("read", event)) {
+      if (isImagePath(event.input.path ?? "")) {
+        return { block: true, reason: `${IMAGE_REASON}（命中：${event.input.path}）` };
       }
       return;
     }

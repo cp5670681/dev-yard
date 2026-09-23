@@ -203,3 +203,20 @@ def test_missing_req_dir_raises(tmp_path):
     spec = stages.StageSpec(name="scan", skill="scan", bundles=(), tools=("read",))
     with pytest.raises(FileNotFoundError, match="req open"):
         service.run_stage(root, spec, "J-9", runner=FakeRunner())
+
+
+def test_run_stage_passes_requirement_images_to_runner(tmp_path):
+    """Screenshots ride extra_read_paths so the runner can @file-attach them."""
+    root = _workspace(tmp_path)
+    d = _req(root, "J-1")
+    assets = d / "assets" / "669971526"
+    assets.mkdir(parents=True)
+    shot = assets / "entry1.png"
+    shot.write_bytes(b"x")
+    (assets / "notes.txt").write_text("nope")
+    spec = stages.StageSpec(name="scan", skill="scan", bundles=(), tools=("read",))
+    r = FakeRunner()
+    service.run_stage(root, spec, "J-1", runner=r)
+    extra = r.calls[0][2]
+    assert shot in extra
+    assert assets / "notes.txt" not in extra

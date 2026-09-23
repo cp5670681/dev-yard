@@ -1266,14 +1266,18 @@ def run_stage(
             raise ValueError(
                 f"{spec.name} requires phase={spec.requires_phase}, current phase={phase}"
             )
-    extra = [
-        req / "REQUIREMENT.md",
-        req / "GRILL.md",
-        req / "SPEC.md",
-        req / "TICKETS.md",
-        paths.context_md(root),
-        paths.adr_dir(root),
-    ]
+    extra = attachments.with_images(
+        root,
+        jira,
+        [
+            req / "REQUIREMENT.md",
+            req / "GRILL.md",
+            req / "SPEC.md",
+            req / "TICKETS.md",
+            paths.context_md(root),
+            paths.adr_dir(root),
+        ],
+    )
     prompt = session_prompt_for(spec, root, jira, extra=bases)
     r = runner or get_runner(
         root, spec.name, dry_run=dry_run, print_mode=print_mode, spec=spec
@@ -1630,7 +1634,7 @@ def implement(
         targets = ids or st.ready_ids(data)
     runner = runner or get_runner(root, "implement", dry_run=dry_run, print_mode=print_mode)
     ran: list[str] = []
-    extra = [req / "SPEC.md", req / "TICKETS.md"]
+    extra = attachments.with_images(root, jira, [req / "SPEC.md", req / "TICKETS.md"])
     allowed = (
         _FROM_CONTRACT_STATES
         if (from_contract or from_test) and ids
@@ -1833,7 +1837,7 @@ def review(
     runner = runner or get_runner(
         root, "contract" if contract else "review", dry_run=dry_run, print_mode=print_mode
     )
-    extra = [req / "SPEC.md", req / "TICKETS.md"]
+    extra = attachments.with_images(root, jira, [req / "SPEC.md", req / "TICKETS.md"])
     ran: list[str] = []
     if contract:
         # REQUIREMENT.md is the product source of truth; without it the reviewer

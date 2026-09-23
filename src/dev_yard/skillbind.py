@@ -18,11 +18,14 @@ def _attachments_hint(root: Path, jira: str, req: Path) -> str:
         return ""
     listing = "\n".join(f"- {req / attachments.UPLOADS_DIRNAME / n}" for n in names)
     return (
-        "Human-added attachments are part of the requirement. Read each one "
-        "(HTML prototypes carry the real UI logic: state machines, field linkage, "
-        "validation) and fold decision-bearing behavior into your output, noting "
-        "that it came from an attachment. Large files: grep/skim instead of dumping. "
-        "Never delete or modify anything under uploads/.\n"
+        "Human-added attachments are part of the requirement. Read the text/HTML "
+        "ones (HTML prototypes carry the real UI logic: state machines, field "
+        "linkage, validation) and fold decision-bearing behavior into your output, "
+        "noting that it came from an attachment. Do NOT read image files "
+        "(png/jpg/jpeg/gif/webp/bmp): they reach the stage as prompt attachments "
+        "when needed, and the read tool blocks them. Large "
+        "files: grep/skim instead of dumping. Never delete or modify anything under "
+        "uploads/.\n"
         f"{listing}"
     )
 

@@ -2,7 +2,12 @@ import subprocess
 from pathlib import Path
 
 from dev_yard.config import DevSettings, save_dev_settings
-from dev_yard.runners import assistant_pi_argv, pi_argv, run_pi_print
+from dev_yard.runners import (
+    assistant_pi_argv,
+    attachment_args,
+    pi_argv,
+    run_pi_print,
+)
 from dev_yard.service import init_yard
 from dev_yard.skillbind import session_prompt
 
@@ -73,6 +78,35 @@ def test_pi_argv_loads_safety_extension(monkeypatch):
     assert guard.name == "yard-guard.ts"
     assert "/mnt" in guard.read_text()
     assert argv[-1] == "go"
+
+
+def test_attachment_args_only_images():
+    from pathlib import Path as P
+
+    args = attachment_args([P("/a/shot.png"), P("/a/spec.md"), P("/a/pic.JPG"), P("/a/x.txt")])
+    assert args == ["@/a/shot.png", "@/a/pic.JPG"]
+
+
+def test_pi_argv_attaches_images_after_print_flag(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("YARD_PI_PROVIDER", raising=False)
+    monkeypatch.delenv("YARD_PI_MODEL", raising=False)
+    (tmp_path / "repos.yaml").write_text("repos: {}\n")
+    img = tmp_path / "shot.png"
+    img.write_bytes(b"x")
+    md = tmp_path / "SPEC.md"
+    md.write_text("x")
+    argv = pi_argv(
+        root=tmp_path,
+        bundle="grill",
+        prompt=None,
+        print_mode=True,
+        binary="pi",
+        attach=[md, img],
+    )
+    assert f"@{img}" in argv
+    assert f"@{md}" not in argv
+    assert argv.index("-p") < argv.index(f"@{img}")
+    assert argv[-1] == f"@{img}"
 
 
 def test_pi_argv_guard_survives_bare_workspace(tmp_path: Path, monkeypatch):
@@ -334,4 +368,20 @@ def test_downstream_prompts_list_uploads(tmp_path: Path):
         assert "Human-added attachments" in p, stage
         assert "Never delete or modify anything under uploads/" in p, stage
         assert str(yard / "reqs" / "AB-1" / "uploads" / "原型.html") in p, stage
+
+
+def test_uploads_hint_forbids_reading_images(tmp_path: Path):
+    """The hint must not tell the model to read a file the guard now blocks."""
+    from dev_yard.service import req_attach, req_open
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    req_open(yard, "AB-1", source="none")
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(b"x")
+    req_attach(yard, "AB-1", [shot])
+
+    p = session_prompt(yard, "grill", "AB-1")
+    assert "Do NOT read image files" in p
+    assert "Read each one" not in p
 

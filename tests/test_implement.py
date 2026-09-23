@@ -195,6 +195,39 @@ def test_review_marker_blocks_even_on_exit_zero(tmp_path: Path, git_src: Path, m
     assert st.load(yard, "AB-15")["tickets"]["T1"]["state"] == "blocked"
 
 
+def test_implement_and_review_attach_requirement_images(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-19")
+    d = yard / "reqs" / "AB-19"
+    assets = d / "assets" / "669971526"
+    assets.mkdir(parents=True)
+    shot = assets / "entry1.png"
+    shot.write_bytes(b"x")
+
+    class Capture:
+        def __init__(self) -> None:
+            self.calls: list[list[Path]] = []
+
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            self.calls.append(list(extra_read_paths))
+            return RunResult(ok=True, summary="ok")
+
+    impl = Capture()
+    implement(yard, "AB-19", None, runner=impl)
+    assert shot in impl.calls[0]
+
+    rev = Capture()
+    review(yard, "AB-19", None, runner=rev)
+    assert shot in rev.calls[0]
+
+    contract = Capture()
+    review(yard, "AB-19", None, contract=True, runner=contract)
+    assert shot in contract.calls[0]
+
+
 class _Capture:
     def __init__(self) -> None:
         self.prompts: list[str] = []

@@ -65,6 +65,43 @@ def test_size_limit(tmp_path: Path, monkeypatch):
         attachments.add_bytes(yard, "AB-1", "big.bin", b"12345")
 
 
+def test_list_images_assets_then_uploads_capped(tmp_path: Path, monkeypatch):
+    yard = _yard(tmp_path)
+    d, _ = req_open(yard, "AB-1", source="none")
+    assets = d / "assets" / "669971526"
+    assets.mkdir(parents=True)
+    (assets / "b.png").write_bytes(b"x")
+    (assets / "a.jpg").write_bytes(b"x")
+    (assets / "notes.txt").write_text("not an image")
+    attachments.add_bytes(yard, "AB-1", "shot.PNG", b"x")
+    attachments.add_bytes(yard, "AB-1", "spec.md", b"x")
+
+    got = [p.name for p in attachments.list_images(yard, "AB-1")]
+    assert got == ["a.jpg", "b.png", "shot.PNG"]
+
+    monkeypatch.setattr(attachments, "MAX_PROMPT_IMAGES", 2)
+    assert len(attachments.list_images(yard, "AB-1")) == 2
+
+
+def test_list_images_empty_when_none(tmp_path: Path):
+    yard = _yard(tmp_path)
+    req_open(yard, "AB-1", source="none")
+    assert attachments.list_images(yard, "AB-1") == []
+
+
+def test_with_images_appends_requirement_images(tmp_path: Path):
+    yard = _yard(tmp_path)
+    d, _ = req_open(yard, "AB-1", source="none")
+    assets = d / "assets" / "669971526"
+    assets.mkdir(parents=True)
+    shot = assets / "entry1.png"
+    shot.write_bytes(b"x")
+    base = [d / "SPEC.md"]
+    got = attachments.with_images(yard, "AB-1", base)
+    assert got[0] == base[0]
+    assert shot in got
+
+
 def test_req_attach_writes_uploads_and_doc_section(tmp_path: Path):
     yard = _yard(tmp_path)
     req_open(yard, "AB-1", source="none")

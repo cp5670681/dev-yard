@@ -404,6 +404,7 @@ class JobLogRunner(Runner):
             spec=self.spec,
             provider=self.provider,
             model=self.model,
+            attach=extra_read_paths,
         )
         binary = argv[0]
         if not shutil.which(binary) and not Path(binary).exists():

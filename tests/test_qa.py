@@ -60,9 +60,11 @@ class _DesignRunner(Runner):
         self.called = 0
         self.yard = yard
         self.key = key
+        self.extra: list[Path] = []
 
     def start(self, prompt, cwd, extra_read_paths, repo=None):
         self.called += 1
+        self.extra = list(extra_read_paths)
         qa = self.yard / "reqs" / self.key / "qa" / "cases" / "mod"
         qa.mkdir(parents=True, exist_ok=True)
         (qa / "case-01.md").write_text(
@@ -149,6 +151,19 @@ def test_design_called_when_no_cases(tmp_path: Path, git_src: Path, monkeypatch)
     )
     assert design.called == 1
     assert result["cases"] == 1
+
+
+def test_design_attaches_requirement_images(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-IMG")
+    assets = yard / "reqs" / "QA-IMG" / "assets" / "669971526"
+    assets.mkdir(parents=True)
+    shot = assets / "entry1.png"
+    shot.write_bytes(b"x")
+    design = _DesignRunner(yard, "QA-IMG")
+    req_test(yard, "QA-IMG", print_mode=True, design_only=True, runner=design)
+    assert shot in design.extra
 
 
 def test_design_runner_uses_qa_yaml_design_model(tmp_path: Path, git_src: Path, monkeypatch):

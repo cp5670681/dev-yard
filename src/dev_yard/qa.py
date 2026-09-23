@@ -16,7 +16,7 @@ from typing import Any
 
 import yaml
 
-from dev_yard import gitops, paths
+from dev_yard import attachments, gitops, paths
 from dev_yard import status as st
 from dev_yard.config import load_repos, resolve_freeze_branch
 from dev_yard.parse import as_name_list
@@ -868,7 +868,11 @@ def _verify_loop(
             verify_feedback=render_feedback(results),
             history=history_text or None,
         )
-        result = design_runner().start(prompt, root, [qa, paths.req_dir(root, jira)])
+        result = design_runner().start(
+            prompt,
+            root,
+            attachments.with_images(root, jira, [qa, paths.req_dir(root, jira)]),
+        )
         _raise_if_cancelled(cancel_check, "qa-design")
         if not result.ok:
             raise TestRejected(
@@ -1477,7 +1481,9 @@ def _req_test(
             history=history_text or None,
         )
         result = _ensure_design_runner().start(
-            prompt, root, [qa, paths.req_dir(root, jira)]
+            prompt,
+            root,
+            attachments.with_images(root, jira, [qa, paths.req_dir(root, jira)]),
         )
         _raise_if_cancelled(cancel_check, "qa-design")
         if not result.ok:
@@ -1796,6 +1802,7 @@ def _req_test(
             spec=spec,
             provider=slot.provider,
             model=slot.model,
+            attach=attachments.list_images(root, jira),
         )
         case_dir = run_dir / job.id
         case_dir.mkdir(parents=True, exist_ok=True)

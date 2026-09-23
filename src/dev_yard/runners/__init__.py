@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from dev_yard.attachments import is_prompt_image
 from dev_yard.config import resolve_pi_choice
 from dev_yard.stages import (
     StageSpec,
@@ -68,6 +69,18 @@ def guard_args(root: Path) -> list[str]:
     return ["--extension", str(guard)] if guard is not None else []
 
 
+def attachment_args(paths: list[Path]) -> list[str]:
+    """`@<image>` args so files arrive as user-message images, not tool results.
+
+    pi's `read` puts images in a `function_call_output`, which the grok-cli
+    Responses upstream serializes as text and counts the base64 as tokens (one
+    1MB screenshot ~= 780k -> `input_too_large`). `@` inputs ride the user
+    message, where the same image costs ~1.2k tokens. Non-image paths are left
+    alone: the stage reads markdown with the read tool, not by dumping it in.
+    """
+    return [f"@{p}" for p in paths if is_prompt_image(p)]
+
+
 def pi_argv(
     *,
     root: Path,
@@ -79,6 +92,7 @@ def pi_argv(
     spec: StageSpec | None = None,
     provider: str | None = None,
     model: str | None = None,
+    attach: list[Path] | None = None,
 ) -> list[str]:
     cmd = binary or agent_binary()
     # --no-skills: skip ~/.pi/agent/skills and extra project skills.
@@ -102,6 +116,8 @@ def pi_argv(
     argv.extend(guard_args(root))
     if print_mode:
         argv.append("-p")
+    if attach:
+        argv.extend(attachment_args(attach))
     if prompt is not None:
         argv.append(prompt)
     return argv
@@ -337,6 +353,7 @@ class PiRunner(Runner):
                 spec=self.spec,
                 provider=self.provider,
                 model=self.model,
+                attach=extra_read_paths,
             )
 
             def _echo(line: str) -> None:
@@ -368,6 +385,7 @@ class PiRunner(Runner):
             spec=self.spec,
             provider=self.provider,
             model=self.model,
+            attach=extra_read_paths,
         )
         r = subprocess.run(argv, cwd=cwd)
         return RunResult(

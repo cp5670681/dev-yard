@@ -93,6 +93,23 @@ PURE_CASES: list[tuple[str, bool]] = [
     ("", False),
 ]
 
+# read path -> image (would be sent as a base64 attachment)?
+IMAGE_CASES: list[tuple[str, bool]] = [
+    ("reqs/PG-12937/assets/669971526/entry1-project-detail.png", True),
+    ("/tmp/Shot.PNG", True),
+    ("a/b/photo.jpeg", True),
+    ("x.JPG", True),
+    ("anim.gif", True),
+    ("pic.webp", True),
+    ("sprite.bmp", True),
+    ("@reqs/x.png", True),
+    ("reqs/prototype.svg", False),
+    ("app/models/user.rb", False),
+    ("REQUIREMENT.md", False),
+    ("", False),
+    ("/home/chengpeng", False),
+]
+
 HARNESS = """
 import {{ createJiti }} from {jiti};
 const jiti = createJiti(import.meta.url, {{
@@ -102,6 +119,7 @@ const mod = await jiti.import({guard});
 const bash = {bash};
 const paths = {paths};
 const pure = {pure};
+const images = {images};
 let bad = 0;
 for (const [cmd, cwd, want] of bash) {{
   const got = mod.dangerousSearchTarget(cmd, cwd) !== null;
@@ -114,6 +132,10 @@ for (const [p, want] of paths) {{
 for (const [cmd, want] of pure) {{
   const got = mod.isPureSearchCommand(cmd);
   if (got !== want) {{ bad++; console.log(`FAIL pure want=${{want}} got=${{got}} :: ${{cmd}}`); }}
+}}
+for (const [p, want] of images) {{
+  const got = mod.isImagePath(p);
+  if (got !== want) {{ bad++; console.log(`FAIL image want=${{want}} got=${{got}} :: ${{p}}`); }}
 }}
 console.log(bad === 0 ? "ALL PASS" : `${{bad}} FAILURES`);
 process.exit(bad === 0 ? 0 : 1);
@@ -161,6 +183,7 @@ def test_yard_guard_logic(tmp_path: Path):
         bash=json.dumps(BASH_CASES),
         paths=json.dumps(PATH_CASES),
         pure=json.dumps(PURE_CASES),
+        images=json.dumps(IMAGE_CASES),
     )
     harness = tmp_path / "check-guard.mjs"
     harness.write_text(script)
