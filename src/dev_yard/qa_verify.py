@@ -432,6 +432,7 @@ def env_lock(
     env: str,
     what: str = "design verification",
     wait_timeout: float = 0.0,
+    on_wait: Callable[[bool], None] | None = None,
 ):
     """Serialize per-env QA work (verification and runs) across requirements.
 
@@ -441,7 +442,9 @@ def env_lock(
 
     `wait_timeout > 0` makes the caller queue behind a live holder (M8) instead
     of failing immediately: a second requirement's run waits its turn rather
-    than erroring out. A stale lock is still reclaimed at once.
+    than erroring out. A stale lock is still reclaimed at once. When `on_wait` is
+    given it is called with `True` on entering a wait and `False` once the lock
+    is held, so the board can show "waiting for env".
     """
     lock_dir = root / LOCK_DIR
     lock_dir.mkdir(parents=True, exist_ok=True)
@@ -449,6 +452,7 @@ def env_lock(
     path = lock_dir / f"{safe}.verify.lock"
     token = f"{os.getpid()}:{uuid.uuid4().hex}"
     deadline = time.monotonic() + wait_timeout if wait_timeout > 0 else None
+    waiting = False
     while True:
         tmp = lock_dir / f".{safe}.{uuid.uuid4().hex}.tmp"
         try:
@@ -474,6 +478,10 @@ def env_lock(
                         stale.unlink(missing_ok=True)
                     continue
                 if deadline is not None and time.monotonic() < deadline:
+                    if not waiting:
+                        waiting = True
+                        if on_wait is not None:
+                            on_wait(True)
                     time.sleep(1.0)
                     continue
                 raise TestRejected(
@@ -483,6 +491,8 @@ def env_lock(
         finally:
             tmp.unlink(missing_ok=True)
         break
+    if waiting and on_wait is not None:
+        on_wait(False)
     try:
         yield
     finally:

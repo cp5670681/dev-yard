@@ -1556,10 +1556,17 @@ def ticket_from_qa_case(root: Path, jira: str, case_id: str) -> dict[str, Any]:
         )
     ticket = spawned.tickets[0]
     from dev_yard import qa_state as qa_st
+    from dev_yard.qa_config import TestRejected
 
     t = qa_st.triage(root, jira)
     rem = [c for c in t["pending"] if c != case_id]
     qa_st.record_triage(root, jira, rem, t["auto_recycled"], filed={case_id: ticket.id})
+    # M1: filing a bug is the explicit `awaiting_triage -> recycled` transition.
+    # The ticket is already created; a bookkeeping guard must not undo that.
+    try:
+        qa_st.transition(root, jira, "file_bug")
+    except TestRejected:
+        pass
     return {
         "jira": jira,
         "case_id": case_id,

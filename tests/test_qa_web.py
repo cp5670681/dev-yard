@@ -445,6 +445,13 @@ def test_qa_page_payload_carries_phase_and_triage(
     assert page["triage"]["auto_recycled"] == ["case-02"]
     assert page["phase"]  # derived from the seeded running progress
     assert page["next"]
+    assert page["phase_drift"] is False
+    # A stale recorded phase the evidence contradicts is surfaced, not trusted.
+    qa_st.record(yard, "QA-W1", phase="closed")
+    page = client.get("/api/requirements/QA-W1/qa").json()
+    assert page["phase"] != "closed"
+    assert page["recorded_phase"] == "closed"
+    assert page["phase_drift"] is True
     detail = client.get("/api/requirements/QA-W1").json()
     assert detail["qa"]["triage"]["pending"] == ["case-01"]
     assert detail["qa"]["next"]

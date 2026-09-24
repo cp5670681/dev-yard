@@ -70,6 +70,7 @@ export interface JobSnapshot extends JobBrief {
   grill: GrillRound | null;
   pi_runs: PiRun[];
   qa_progress?: QaProgress | null;
+  env_waiting: boolean;
 }
 
 export interface JobsOut {
@@ -326,6 +327,8 @@ export interface QaPage {
   open_questions?: { count: number; body: string; exists?: boolean; error?: string };
   phase?: string;
   next?: string;
+  recorded_phase?: string | null;
+  phase_drift?: boolean;
   triage?: {
     pending?: string[];
     auto_recycled?: string[];

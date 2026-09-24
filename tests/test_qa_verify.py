@@ -560,6 +560,46 @@ def test_env_lock_waits_for_holder_when_asked(tmp_path: Path):
     t.join(timeout=2)
 
 
+def test_env_lock_reports_wait_state(tmp_path: Path):
+    """`on_wait` flips True while queued and back to False once held (M8)."""
+    import threading
+
+    from dev_yard.qa_verify import env_lock
+
+    held = threading.Event()
+    acquired = threading.Event()
+
+    def holder():
+        with env_lock(tmp_path, "local"):
+            acquired.set()
+            held.wait(5)
+
+    t = threading.Thread(target=holder)
+    t.start()
+    assert acquired.wait(2)
+    seen: list[bool] = []
+
+    def waiter():
+        with env_lock(tmp_path, "local", wait_timeout=5, on_wait=seen.append):
+            seen.append(False)  # marker: the lock is held here
+        held.set()
+
+    w = threading.Thread(target=waiter)
+    w.start()
+    w.join(timeout=8)
+    assert seen[:2] == [True, False]  # waited, then acquired
+    t.join(timeout=2)
+
+
+def test_env_lock_no_wait_leaves_flag_unset(tmp_path: Path):
+    from dev_yard.qa_verify import env_lock
+
+    seen: list[bool] = []
+    with env_lock(tmp_path, "local", on_wait=seen.append):
+        pass
+    assert seen == []  # never contended -> no wait signal
+
+
 def test_verify_env_block_is_retried(tmp_path: Path, git_src: Path, monkeypatch):
     calls = {"n": 0}
 

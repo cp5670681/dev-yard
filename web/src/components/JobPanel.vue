@@ -3,6 +3,9 @@
     <v-card-title class="d-flex align-center flex-wrap ga-3 py-2 px-3 bg-surface-variant">
       <span class="font-weight-bold text-subtitle-2">{{ actionLabel }}{{ tickets }}</span>
       <v-chip size="small" :color="stateColor" variant="tonal" class="jira-lozenge">{{ job.state }}</v-chip>
+      <v-chip v-if="job.env_waiting" size="small" color="warning" variant="tonal">
+        等待环境
+      </v-chip>
       <v-progress-circular
         v-if="job.state === 'running' || job.state === 'queued'"
         indeterminate
@@ -95,6 +98,7 @@ const job = ref<JobSnapshot>(
     log: "",
     grill: null,
     pi_runs: [],
+    env_waiting: false,
   },
 );
 
@@ -127,6 +131,9 @@ async function cancel() {
   }
 }
 const hint = computed(() => {
+  if (job.value.env_waiting) {
+    return "另一个需求正在占用该测试环境，排队等待其释放（同 env 串行）。可用「停止」取消。";
+  }
   if (job.value.action === "grill") {
     if (job.value.state === "waiting") return "勾选或改写后提交。有建议的选项已默认选中。";
     if (job.value.state === "running" || job.value.state === "queued") {

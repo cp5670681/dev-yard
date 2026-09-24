@@ -60,7 +60,8 @@ def test_contract_diff_ignores_upstream_drift(tmp_path: Path, git_src: Path, mon
     assert "diff vs freeze point" in prompt
     assert "UPSTREAM" not in prompt
     assert "scope creep" in prompt
-    assert "files: [" in prompt
+    # The findings schema asks for a `files` field (reformatted from `files: [`).
+    assert "files (paths" in prompt
 
     # Without a recorded sha the fork point is used, which also excludes drift.
     data = st.load(yard, "AB-71")

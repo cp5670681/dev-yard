@@ -818,6 +818,11 @@ def qa_status_cmd(jira: str) -> None:
     review = payload.get("review") or {}
     triage = payload.get("triage") or {}
     typer.echo(f"{jira} phase={payload.get('phase')}")
+    if payload.get("phase_drift"):
+        typer.echo(
+            f"  注意：state.yaml 记录 phase={payload.get('recorded_phase')} "
+            f"与证据不符，以证据为准（可重跑以刷新）"
+        )
     typer.echo(f"  review={review.get('status') or '?'} approved={bool(review.get('approved'))}")
     pending = triage.get("pending") or []
     recycled = triage.get("auto_recycled") or []

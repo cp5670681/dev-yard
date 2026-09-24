@@ -1,7 +1,7 @@
 # yard-qa 可恢复执行环：单一状态机 + 故障自愈，人工只在审核与失败判定出现
 
 - 日期：2026-09-24
-- 状态：方案 v3（**P0 + 大部分 P1/P2 已实现**，见 §13；M3 池预检待做）
+- 状态：方案 v3（**P0 + P1/P2 已实现**，见 §13；仅 M3 池预检默认关、M1 门禁读取路径未改，均为有意取舍）
 - 触发：
   - 复盘 [`docs/2026-09-23-yard-qa-retest-incident.md`](../../2026-09-23-yard-qa-retest-incident.md)：一次「用例自身错误」被平台放大成产品缺陷，且重测被整轮闸门锁死。
   - 使用反馈：自动测「流程不标准、容易卡住、走不通；中间因模型等问题中断后不好恢复」。
@@ -349,18 +349,18 @@ updated_at: 2026-09-24T10:05:00Z
 
 | 机制 | 实现 | 测试 |
 |---|---|---|
-| M1 状态机（索引，非权威） | `src/dev_yard/qa_state.py`（`load/save/record/record_triage/derive_phase/status_payload`）；`qa/state.yaml` 记录 phase/triage/pools；`dev-yard qa status <JIRA>`；`_req_test` 在 run 结束写 phase+`triage`。**偏离原案**：`derive_phase` 从 `STATUS.yaml`+证据**推导**当前态，门禁仍直接读证据；未实现 `transition()`，「唯一权威」未达成（见 §14） | `test_qa_state_records_and_derives_phase`、`test_qa_status_cli` |
+| M1 状态机 | `src/dev_yard/qa_state.py`（`load/save/record/record_triage/derive_phase/status_payload`）；`EVENTS` 事件表 + `can()/transition()`；`qa/state.yaml` 记录 phase/triage/pools；`dev-yard qa status <JIRA>` 输出记录态与证据漂移提示；`_req_test` 的 approve/verify/run-start/run-end、`ticket_from_qa_case` 的 `file_bug` 走 `transition()`，非法转移抛 `TestRejected`。**取舍**：`derive_phase` 仍从 `STATUS.yaml`+证据**推导**当前态（证据是校验指纹），`transition` 写入的 `phase` 作为记录态，`status_payload` 暴露 `recorded_phase`/`phase_drift`；门禁判定仍以证据推导结果为准（见 §14） | `test_transition_rejects_illegal_move_and_records_legal`、`test_run_end_records_transition`、`test_status_payload_flags_phase_drift`、`test_ticket_from_qa_case_updates_triage_state`、`test_qa_state_records_and_derives_phase`、`test_qa_status_cli` |
 | M2 可重试终态 | `qa_schedule.run_schedule(retry_attempts, retry_backoff)`；env 类 blocked 回 `ready`+attempt（无 setup/cleanup 的用例），熔断不计入；`qa.yaml run.retry_attempts/retry_backoff` | `test_run_schedule_retries_env_block_then_passes` 等 4 条 |
 | M4 design 原子标记 | 宿主写 `qa/.design.pending`（开始）/`qa/design.yaml`（成功）；`need_design` 认 pending。**偏离原案**：不用「指纹 ≠ 当前」硬门，避免人工改用例后被强制重设计；pending 哨兵已能挡住半成品 | `test_design_pending_sentinel_forces_redesign` |
 | M5 故障分类前置 | `VerifyResult.status += blocked`；`verify_env_error()`；`_verify_loop` 不把 blocked 回灌 design，改为**带退避重试**（`design.verify_retry_attempts`/`_backoff`）；`verify_gate/view/describe` 区分 blocked | `test_verify_env_error_blocks_not_fails`、`test_verify_env_error_does_not_block_design_loop`、`test_verify_env_block_is_retried` |
 | M6 自动修复免复审 | `cases_fingerprint(qa, scope=)`（bodies/seeds）；`qa_review.machine_fixed()` 沿用审批；仅在正文未变时生效 | `test_machine_fixed_requires_unchanged_body`、`test_auto_recycle_triggers_redesign_and_keeps_approval` |
 | M3 池预检与隔离 | `run_schedule(on_pool_trip=)` 把隔离写进 `state.yaml.pools`；`req_test(pool_probe=)` 可注入预检，`run.pool_preflight` 开启时用 `_real_pool_probe`（轻量 pi 调用，60s）逐个探测，失败的池隔离、全失败即拒；**默认关**（见 §13 待做说明） | `test_run_schedule_reports_pool_trip`、`test_record_pools_merges`、`test_pool_preflight_drops_bad_pool`、`..._all_failed_rejects` |
 | M6b 失败自动分流 | `qa_report.triage_buckets()`；run 后写 `state.triage`；下次 design invocation 自动回流 `auto_recycled`（case-defect，消费后清空）；CLI `dev-yard req triage <JIRA> --product/--all`、`POST /api/requirements/{jira}/qa/triage`、`QaView` 批量下 bug 按钮 | `test_triage_buckets_splits_case_defect_from_product`、`test_triage_qa_cases_files_only_product`、`test_qa_triage_endpoint_files_pending` |
-| M7 契约校验+容错 | `qa.lint_cases()`（repo/account/writes/identity/covers）在 approve 前拦下（`--allow-unverified` 可越权），并在 verify 前**有界回灌 design 修一次**；`qa.load_yaml_tolerant()`（标量补引号 + 逐行回退）供 `_read_case_result`/`_file_verdict` | `test_lint_cases_flags_contract_problems`、`test_approve_refused_on_lint_problem`、`test_lint_problem_triggers_one_design_fix`、`test_result_yaml_with_bare_colon_is_salvaged` |
-| M8 同 env 排队 | `env_lock(..., wait_timeout=)`；run 路径传 `run.env_wait_timeout`（默认 1800s）；CLI `--no-wait` 立即拒绝 | `test_env_lock_waits_for_holder_when_asked` |
+| M7 契约校验+容错 | `qa.lint_cases()`（repo/account/writes/identity/`needs_verify` 缺 verify.sql/covers）在 approve 前拦下（`--allow-unverified` 可越权），并在 verify 前**有界回灌 design 修一次**；`qa.load_yaml_tolerant()`（标量补引号 + 逐行回退）供 `_read_case_result`/`_file_verdict` | `test_lint_cases_flags_contract_problems`、`test_lint_cases_flags_missing_verify`、`test_approve_refused_on_lint_problem`、`test_lint_problem_triggers_one_design_fix`、`test_result_yaml_with_bare_colon_is_salvaged` |
+| M8 同 env 排队 | `env_lock(..., wait_timeout=, on_wait=)`；run 路径传 `run.env_wait_timeout`（默认 1800s）；CLI `--no-wait` 立即拒绝；`on_wait(bool)` 透出「等待环境」态到 web job（`Job.env_waiting` + `JobPanel` 徽标） | `test_env_lock_waits_for_holder_when_asked`、`test_env_lock_reports_wait_state`、`test_job_env_waiting_flag_round_trips` |
 | Web UI | `/qa` 与需求详情 payload 带 `phase`/`next`/`triage`；`QaView.vue` 顶部「失败分流」卡片展示待判定 / 自动回流用例；SPA 已 `pnpm build` 重打（`src/dev_yard/web/spa/` 已 gitignore） | `test_qa_page_payload_carries_phase_and_triage` |
 | M9 重启恢复 | `JobRunner.resume_pending_qa()`；`create_app` 启动时调用；受 `run.resume_on_restart` 控制 | `test_resume_pending_qa_restores_interrupted_run`、`..._skips_opt_out` |
-| M10 增量重跑 | `latest_retryable()`（含 `depends_on` 传递闭包）；`_req_test` 在 `resume is None/非 redesign/非 run_only` 时 amend 上一轮 failed/blocked；`run.incremental` 可关；`--full` 强制全量 | `test_incremental_rerun_amends_failed_run`、`test_incremental_can_be_disabled`、`test_latest_retryable_includes_dependents` |
+| M10 增量重跑 | `latest_retryable()`（含 `depends_on` 传递闭包）；`affected_covers()` 按 `meta.yaml changes[].ref` × `repo-baseline/<alias>.head` 反查本次 diff 命中的 `covers`，并入增量集；`_req_test` 在 `resume is None/非 redesign/非 run_only` 时 amend 上一轮 failed/blocked；amend 时刷新 mutation baseline（B 票修复合法前移 HEAD，不再误报 worker 变更）；`run.incremental` 可关；`--full` 强制全量 | `test_incremental_rerun_amends_failed_run`、`test_incremental_can_be_disabled`、`test_latest_retryable_includes_dependents`、`test_affected_covers_maps_diff_to_cases`、`test_incremental_reruns_affected_covers` |
 
 `qa.yaml run` 新键（均可不写）：`retry_attempts`(2)、`retry_backoff`(0)、`env_wait_timeout`(1800)、`resume_on_restart`(true)、`incremental`(true)、`pool_preflight`(false)。`qa.yaml design` 新键：`verify_retry_attempts`(1)、`verify_retry_backoff`(0)。
 
@@ -368,10 +368,9 @@ updated_at: 2026-09-24T10:05:00Z
 
 - **M3 主动预检默认关**：`run.pool_preflight: true` 才启用。偏离原案「默认 true」——每次运行多一次 pi 往返，而 per-pool 熔断 + M2 轮内重试已能兜住坏池；需要时按需打开。
 - **M7 lint 回灌只做一次**：有界 1 次；仍不通过则交人工（approve 门禁拦下）。
-- **M8 CLI 快速失败**：`--no-wait` 已加。
-- 既有失败（与方案无关，`a70e93a` 即存在）：`test_web_app.py::test_rerun_waits_for_the_job_before_claiming_success`（期望一个尚未实现的 `composables/qaRerun.ts` 重构）、`test_contract_diff_base.py::test_contract_diff_ignores_upstream_drift`。
-
-保留的既有失败（与本方案无关，`a70e93a` 即存在）：`test_web_app.py::test_rerun_waits_for_the_job_before_claiming_success`、`test_contract_diff_base.py::test_contract_diff_ignores_upstream_drift`。
+- **M1 门禁仍读证据推导**：`transition()` 与事件表已落地并成为唯一的 phase 写入者；但门禁判定仍以 `derive_phase`（`STATUS.yaml`+证据）为准，`state.yaml.phase` 为记录态，`status_payload`/需求详情页/`QaView` 均暴露漂移。原案的「门禁改读 state.yaml」未做（重写读取路径风险大）。
+- **已完成（原列于此）**：M8 `--no-wait` + `on_wait` 等待态；M7 `needs_verify` lint；M10 `covers` 命中 diff；M1 `transition()`。
+- **既有失败已清零**（2026-09-24 第三轮）：`test_web_app.py::test_rerun_waits_for_the_job_before_claiming_success`（`cf97ad8` 批量重测把 `settleJob`/`showCaseBanner` 重构为 `submitRerun`/`showRerunBanner`，测试未同步）、`test_contract_diff_base.py::test_contract_diff_ignores_upstream_drift`（`e201173` 把 prompt 的 `files: [` 改成 `files (paths …`，测试未同步）——两处均为**过时断言**，行为本身正确，已更新断言对齐现状。
 
 ---
 
@@ -392,13 +391,13 @@ updated_at: 2026-09-24T10:05:00Z
 | M9 缺占用检查 | `resume_pending_qa` 跳过已有活动 job 的需求 |
 | §5 提到 `--full` | CLI 增加 `--full`（等价强制新 run 全量） |
 
-确认但**未做**（记入 §13 待做，不再宣称已实现）：
+确认但**未做**的收敛（2026-09-24 第二轮补做后，仅剩 M3 默认关与 M1 门禁读取路径）：
 
-- **M1 非权威**：`state.yaml` 目前是并行索引 + 推导，门禁仍读证据；无 `transition()`。要真正「唯一权威」需重写门禁读取路径，风险大，单列。
-- **M8 web 层 `waiting` 态**：`_jobs_conflict` 未加 env 维度、无 `waiting` 徽标。但跨需求同 env 的「第二个 job 报错」已由 `env_lock` 等待解决（第二个 job 等锁而非失败），故只差 UI 提示。
-- **M10 的「`covers` 命中本次 diff」**：已加 `depends_on` 传递闭包；未做按 diff 反查受影响 `covers`（需要逐仓 diff→D 映射，成本高）。
-- **M7 `needs_verify` 独立 lint 规则**：由 `verify_case` 承担，未并入 `lint_cases`。
-- **M3 默认关**（原案默认 true）。
+- ~~**M1 非权威**~~ **部分补做**：已加 `EVENTS` + `can()/transition()`，approve/verify/run/file_bug 走状态机，非法转移抛 `TestRejected`；`status_payload` 暴露 `recorded_phase`/`phase_drift`，`_try_transition` 被拒时写日志（不静默，也不阻断已成立的动作）；门禁读取路径仍以证据推导为准（未改）。
+- ~~**M8 web 层 `waiting` 态**~~ **已补做**：`env_lock(on_wait=)` 在等待/取得锁时回调，`Job.env_waiting` 透出，`JobPanel` 显示「等待环境」徽标（SPA 已重打）。`_jobs_conflict` 未加 env 维度（跨需求同 env 由 `env_lock` 排队，无需 job 层拦截）。
+- ~~**M10 的「`covers` 命中本次 diff」**~~ **已补做**：`affected_covers()` 用 `meta.yaml changes[].ref` × `repo-baseline/<alias>.head` 反查，并入增量集；amend 时刷新 mutation baseline。
+- ~~**M7 `needs_verify` 独立 lint 规则**~~ **已补做**：并入 `lint_cases`，approve 门禁拦下。
+- **M3 默认关**（原案默认 true）：保留。
 
 后续 CR 轮已补齐（原列于此）：M5 核实期 blocked 退避重试、M6b CLI `req triage`/批量下 bug、M10 `depends_on` 后继。
 

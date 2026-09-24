@@ -42,6 +42,15 @@ def test_wait_seq_unblocks_on_append():
     assert hit.wait(1)
 
 
+def test_job_env_waiting_flag_round_trips():
+    job = Job(id="abc", jira="AB-1", action="qa-run")
+    assert job.snapshot()["env_waiting"] is False
+    job.set_env_wait(True)
+    assert job.snapshot()["env_waiting"] is True
+    job.set_env_wait(False)
+    assert job.snapshot()["env_waiting"] is False
+
+
 def test_wait_board_unblocks_when_job_waits(tmp_path: Path):
     yard = tmp_path / "yard"
     init_yard(yard)

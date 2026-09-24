@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 import threading
 import time
@@ -3488,6 +3489,82 @@ def test_qa_status_cli(tmp_path: Path, git_src: Path, monkeypatch):
     assert "phase=designing" in out.output
 
 
+def test_transition_rejects_illegal_move_and_records_legal(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard import qa_state as qa_st
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-TR")
+    # Cases exist but are unapproved: `designing`/`awaiting_review`, so a run
+    # cannot start yet — the machine refuses the move instead of recording it.
+    design = _DesignRunner(yard, "QA-TR")
+    req_test(yard, "QA-TR", print_mode=True, design_only=True, runner=design)
+    with pytest.raises(TestRejected, match="cannot run_start"):
+        qa_st.transition(yard, "QA-TR", "run_start")
+    # `approve` is legal here and lands in `approved` (approval itself is the
+    # evidence the transition validates against).
+    from dev_yard.qa_review import approve_cases
+
+    approve_cases(yard / "reqs" / "QA-TR" / "qa")
+    qa_st.transition(yard, "QA-TR", "approve")
+    payload = qa_st.status_payload(yard, "QA-TR")
+    assert payload["phase"] == "approved"
+    assert payload["recorded_phase"] == "approved"
+    assert payload["phase_drift"] is False
+
+
+def test_try_transition_logs_rejection(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.qa import _try_transition
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-TL")
+    design = _DesignRunner(yard, "QA-TL")
+    req_test(yard, "QA-TL", print_mode=True, design_only=True, runner=design)
+    lines: list[str] = []
+    # `run_start` is illegal before approval: it must not raise, but must warn.
+    _try_transition(yard, "QA-TL", "run_start", on_log=lines.append)
+    assert any("状态机未记录 run_start" in ln for ln in lines)
+
+
+def test_status_payload_flags_phase_drift(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard import qa_state as qa_st
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-DR")
+    design = _DesignRunner(yard, "QA-DR")
+    req_test(yard, "QA-DR", print_mode=True, design_only=True, runner=design)
+    # A stale/hand-edited "closed" that the evidence does not support.
+    qa_st.record(yard, "QA-DR", phase="closed")
+    payload = qa_st.status_payload(yard, "QA-DR")
+    assert payload["phase"] == "awaiting_review"  # evidence wins
+    assert payload["phase_drift"] is True
+
+
+def test_run_end_records_transition(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard import qa_state as qa_st
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RE")
+    design = _DesignRunner(yard, "QA-RE")
+    req_test(yard, "QA-RE", print_mode=True, design_only=True, runner=design)
+    req_test(yard, "QA-RE", print_mode=True, approve=True, runner=design)
+    result = req_test(
+        yard,
+        "QA-RE",
+        print_mode=True,
+        run_only=True,
+        ingest=False,
+        case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
+    )
+    assert result["run_id"]
+    assert qa_st.load(yard, "QA-RE")["phase"] == "closed"
+
+
 def test_auto_recycle_triggers_redesign_and_keeps_approval(
     tmp_path: Path, git_src: Path, monkeypatch
 ):
@@ -3647,6 +3724,76 @@ def test_incremental_rerun_amends_failed_run(tmp_path: Path, git_src: Path, monk
     assert result["run_id"] == "2020-01-01-000000"
 
 
+def test_affected_covers_maps_diff_to_cases(tmp_path: Path, git_src: Path):
+    from dev_yard.qa import affected_covers
+
+    yard = tmp_path / "yard"
+    qa = yard / "reqs" / "QA-AC" / "qa"
+    qa.mkdir(parents=True)
+    wt = yard / "reqs" / "QA-AC" / "worktrees" / "backend"
+    shutil.copytree(git_src, wt)
+    base = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=wt, text=True
+    ).strip()
+    (wt / "README").write_text("changed\n")
+    subprocess.check_call(["git", "commit", "-am", "fix"], cwd=wt)
+    (qa / "meta.yaml").write_text(
+        "changes:\n"
+        "  - {id: D1, repo: backend, ref: README}\n"
+        "  - {id: D2, repo: backend, ref: other.rb}\n",
+        encoding="utf-8",
+    )
+    run_dir = qa / "evidence" / "2020-01-01-000000"
+    (run_dir / "repo-baseline").mkdir(parents=True)
+    (run_dir / "repo-baseline" / "backend.head").write_text(base, encoding="utf-8")
+    cases = [
+        CaseJob(id="c1", title="t", repo="backend", covers=["D1"]),
+        CaseJob(id="c2", title="t", repo="backend", covers=["D2"]),
+    ]
+    assert affected_covers(yard, "QA-AC", cases, run_dir) == {"c1"}
+
+
+def test_incremental_reruns_affected_covers(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-IN3")
+    run_dir = _seed_run_with_cases(
+        yard,
+        "QA-IN3",
+        case_states={"case-01": "failed", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-IN3"),
+    )
+    (run_dir / "result.yaml").write_text("run_id: 2020-01-01-000000\n", encoding="utf-8")
+    qa = yard / "reqs" / "QA-IN3" / "qa"
+    # case-02 covers D2 and passed, but D2's file moved since the run baseline.
+    (qa / "cases" / "mod" / "case-02.md").write_text(
+        "---\nid: case-02\ntitle: second\npriority: P0\n"
+        "requirement: QA-IN3\nrepo: backend\ncovers: [D2]\n---\n\n# body\n",
+        encoding="utf-8",
+    )
+    (qa / "meta.yaml").write_text(
+        "changes:\n  - {id: D2, repo: backend, ref: README}\n", encoding="utf-8"
+    )
+    wt = yard / "reqs" / "QA-IN3" / "worktrees" / "backend"
+    base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=wt, text=True).strip()
+    (run_dir / "repo-baseline" / "backend.head").write_text(base, encoding="utf-8")
+    (wt / "README").write_text("touched\n")
+    subprocess.check_call(["git", "commit", "-am", "B ticket fix"], cwd=wt)
+    req_test(yard, "QA-IN3", print_mode=True, approve=True, ingest=False)
+    ran: list[str] = []
+
+    def case_runner(job, pool):
+        ran.append(job.id)
+        return {"status": "passed", "repo": "backend"}
+
+    result = req_test(
+        yard, "QA-IN3", print_mode=True, ingest=False, case_runner=case_runner
+    )
+    # case-01 (failed) and case-02 (covers D2, touched) are amended in place.
+    assert sorted(ran) == ["case-01", "case-02"]
+    assert result["run_id"] == "2020-01-01-000000"
+
+
 def test_incremental_can_be_disabled(tmp_path: Path, git_src: Path, monkeypatch):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)
@@ -3706,6 +3853,32 @@ def test_lint_cases_flags_contract_problems(tmp_path: Path, git_src: Path, monke
     assert any("data.identity" in p for p in problems)
     assert any("nobody" in p for p in problems)
     assert any("D2" in p for p in problems)
+
+
+def test_lint_cases_flags_missing_verify(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.qa import lint_cases
+    from dev_yard.qa_config import load_qa_config
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-LINT2")
+    qa = yard / "reqs" / "QA-LINT2" / "qa"
+    qa.mkdir(parents=True, exist_ok=True)
+    cfg = load_qa_config(yard)
+    # A `- DB:` expectation without a data.verify is the M7 contract problem.
+    cases = [
+        CaseJob(
+            id="case-02",
+            title="t",
+            repo="backend",
+            body="- DB: projects.name=foo\n",
+        )
+    ]
+    problems = lint_cases(yard, "QA-LINT2", cfg, cases)
+    assert any("data.verify" in p for p in problems)
+    # A pure-UI case stays exempt.
+    ui = [CaseJob(id="case-03", title="t", repo="backend", body="# ui only\n")]
+    assert lint_cases(yard, "QA-LINT2", cfg, ui) == []
 
 
 def test_approve_refused_on_lint_problem(tmp_path: Path, git_src: Path, monkeypatch):
@@ -4009,13 +4182,24 @@ def test_ticket_from_qa_case_updates_triage_state(
         "assertions:\n  - {type: ui, expected: e, actual: a, status: failed}\n",
         encoding="utf-8",
     )
+    (run_dir / "result.yaml").write_text(
+        "run_id: 2020-01-01-000000\nsummary:\n  total: 2\n  passed: 1\n  failed: 1\n",
+        encoding="utf-8",
+    )
     qa_st.record_triage(yard, "QA-TF", ["case-01"], ["case-02"])
+    # A run only reaches triage after the cases were approved; mirror that so
+    # the phase derives as triage/recycled rather than awaiting_review.
+    from dev_yard.qa_review import approve_cases
+
+    approve_cases(yard / "reqs" / "QA-TF" / "qa")
     out = ticket_from_qa_case(yard, "QA-TF", "case-01")
     assert out["ticket_id"]
     t = qa_st.triage(yard, "QA-TF")
     assert t["pending"] == []
     assert t["auto_recycled"] == ["case-02"]
     assert t["filed"]["case-01"] == out["ticket_id"]
+    # M1: filing a bug is the `awaiting_triage -> recycled` transition.
+    assert qa_st.load(yard, "QA-TF")["phase"] == "recycled"
 
 
 def test_triage_qa_cases_preserves_auto_recycled(

@@ -95,6 +95,9 @@ class Job:
     grill: dict | None = None
     pi_runs: list[dict[str, Any]] = field(default_factory=list)
     qa_progress: dict[str, Any] | None = None
+    # True while a qa run waits for another requirement to release the shared
+    # env lock (M8); the board renders a "waiting for env" badge.
+    env_waiting: bool = False
     done: threading.Event = field(default_factory=threading.Event)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _cv: threading.Condition = field(init=False, repr=False, compare=False)
@@ -131,6 +134,7 @@ class Job:
             "grill": self.grill,
             "pi_runs": list(self.pi_runs),
             "qa_progress": self.qa_progress,
+            "env_waiting": self.env_waiting,
         }
 
     def append(self, text: str) -> None:
@@ -215,6 +219,13 @@ class Job:
         with self._cv:
             self.qa_progress = payload
             self._bump()
+
+    def set_env_wait(self, waiting: bool) -> None:
+        """Flag whether the run is queued behind another env lock holder (M8)."""
+        with self._cv:
+            if self.env_waiting != waiting:
+                self.env_waiting = waiting
+                self._bump()
 
     def track_proc(self, proc: subprocess.Popen[str]) -> None:
         """Track a live pi subprocess so cancel() can kill it immediately."""
@@ -670,6 +681,7 @@ def default_execute(root: Path, job: Job) -> None:
                 cancel_check=job.cancel_requested.is_set,
                 on_spawn=job.track_proc,
                 on_reap=job.untrack_proc,
+                on_wait=job.set_env_wait,
             )
         except TestRejected as e:
             raise RuntimeError(str(e)) from e
@@ -1079,6 +1091,7 @@ class JobRunner:
             job.append(str(e))
             job.set_state("error")
         finally:
+            job.set_env_wait(False)
             job.done.set()
 
 

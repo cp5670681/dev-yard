@@ -611,13 +611,16 @@ def test_rerun_waits_for_the_job_before_claiming_success():
     req = (root / "views" / "RequirementView.vue").read_text()
     qa = (root / "views" / "QaView.vue").read_text()
     helper = (root / "composables" / "qaRerun.ts").read_text()
-    assert "settleJob" in req
-    assert "settleJob" in qa
+    # `settleJob` resolves only at a terminal job state; the views submit through
+    # `submitRerun` (which awaits it), so success is never claimed from the
+    # submission response alone. The banner reports the settled rerun.
     assert "settleJob" in helper
+    assert "submitRerun" in req
+    assert "submitRerun" in qa
     assert 'addEventListener("state"' not in helper
     assert "已重测 ${caseId}" not in req
     assert "已重测 ${caseId}" not in qa
-    assert "showCaseBanner" in req
+    assert "showRerunBanner" in req
 
 
 def test_job_panel_can_cancel_running_jobs():

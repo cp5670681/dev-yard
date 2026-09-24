@@ -64,6 +64,7 @@ from dev_yard.qa_verify import (
     describe,
     env_lock,
     failed_cases,
+    needs_verify,
     prior_defects,
     render_feedback,
     render_prior_defects,
@@ -656,7 +657,8 @@ def lint_cases(
     """Static contract checks a case must pass before review/approve (M7).
 
     Catches what used to only blow up mid-run: a missing/invalid repo, an
-    unconfigured account, `data.writes` without `data.identity`, and a change
+    unconfigured account, `data.writes` without `data.identity`, a case that
+    declares data prerequisites without a `data.verify` (M7), and a change
     point no case covers. Returns human-readable problems (empty = clean).
     """
     problems: list[str] = []
@@ -670,6 +672,11 @@ def lint_cases(
             problems.append(f"{job.id}: account {job.account!r} 未配置")
         if job.writes and not job.identity:
             problems.append(f"{job.id}: data.writes 需要配套 data.identity")
+        if needs_verify(job) and not job.verify:
+            problems.append(
+                f"{job.id}: 声明了 setup/cleanup 或 DB 预期，但缺少 data.verify"
+                "（纯 UI 用例请显式写 `SELECT 1`）"
+            )
     for cid in uncovered_changes(paths.qa_dir(root, jira), cases):
         problems.append(f"改动点 {cid} 未被任何用例 covers")
     return problems
@@ -1408,9 +1415,14 @@ def latest_retryable(
     A case whose `depends_on` chain reaches a retried case is included too, so a
     fixed upstream is re-verified downstream.
     """
-    base = _latest_retryable_ids(qa, {c.id for c in cases}, env)
-    if not base:
+    got = _latest_retryable_run(qa, {c.id for c in cases}, env)
+    if got is None or not got[1]:
         return []
+    return _with_dependents(cases, got[1])
+
+
+def _with_dependents(cases: list[CaseJob], base: list[str]) -> list[str]:
+    """Grow a retry set with every case whose `depends_on` chain reaches it."""
     out = set(base)
     progressed = True
     while progressed:
@@ -1424,10 +1436,78 @@ def latest_retryable(
     return sorted(out)
 
 
-def _latest_retryable_ids(qa: Path, case_ids: set[str], env: str) -> list[str]:
+def affected_covers(
+    root: Path, jira: str, cases: list[CaseJob], run_dir: Path
+) -> set[str]:
+    """Case ids whose `covers` change points were touched since the run baseline.
+
+    M10: when a B-ticket fix lands, a case covering a changed file must re-run
+    even if it passed last time. `meta.yaml` maps each change id (`D*`) to repo
+    files (`changes[].ref`); the run's `repo-baseline/<alias>.head` gives the
+    per-repo commit the last run started from, so `git diff` yields exactly what
+    moved since. Best-effort: any unreadable baseline/repo is skipped.
+    """
+    meta = paths.qa_dir(root, jira) / "meta.yaml"
+    if not meta.is_file():
+        return set()
+    try:
+        data = yaml.safe_load(meta.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return set()
+    changes = data.get("changes") if isinstance(data, dict) else None
+    if not isinstance(changes, list):
+        return set()
+    changed: dict[str, set[str]] = {}
+
+    def repo_changes(alias: str) -> set[str]:
+        if alias in changed:
+            return changed[alias]
+        files: set[str] = set()
+        head_path = run_dir / "repo-baseline" / f"{alias}.head"
+        wt = paths.req_worktree(root, jira, alias)
+        if head_path.is_file() and wt.is_dir():
+            try:
+                base = head_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                base = ""
+            if base:
+                files = gitops.changed_files(wt, base)
+        changed[alias] = files
+        return files
+
+    hit: set[str] = set()
+    for change in changes:
+        if not isinstance(change, dict):
+            continue
+        cid = str(change.get("id") or "").strip()
+        alias = str(change.get("repo") or "").strip()
+        refs = set()
+        for raw in str(change.get("ref") or "").split(","):
+            path = raw.strip()
+            while path.startswith("./"):
+                path = path[2:]
+            if path:
+                refs.add(path)
+        if not cid or not alias or not refs:
+            continue
+        if refs & repo_changes(alias):
+            hit.add(cid)
+    if not hit:
+        return set()
+    return {
+        job.id
+        for job in cases
+        if job.covers and hit & {str(c).strip() for c in job.covers}
+    }
+
+
+def _latest_retryable_run(
+    qa: Path, case_ids: set[str], env: str
+) -> tuple[Path, list[str]] | None:
+    """Newest finished run matching env+case set, with its failed/blocked ids."""
     evidence = qa / "evidence"
     if not evidence.is_dir():
-        return []
+        return None
     for run_dir in sorted((p for p in evidence.iterdir() if p.is_dir()), reverse=True):
         doc = _progress_doc(run_dir)
         if doc is None:
@@ -1454,8 +1534,8 @@ def _latest_retryable_ids(qa: Path, case_ids: set[str], env: str) -> list[str]:
             if blocked_kind(reason, blocked_class) == "case-defect":
                 continue
             out.append(str(item.get("id")))
-        return out
-    return []
+        return run_dir, out
+    return None
 
 
 def reconcile_case_verdict(
@@ -1727,6 +1807,7 @@ def req_test(
     cancel_check: CancelCheck | None = None,
     on_spawn: SpawnFn | None = None,
     on_reap: ReapFn | None = None,
+    on_wait: Callable[[bool], None] | None = None,
 ) -> dict[str, Any]:
     """One run per requirement at a time; the lock guards evidence and skills."""
     with _run_lock(root, jira):
@@ -1756,12 +1837,35 @@ def req_test(
             cancel_check=cancel_check,
             on_spawn=on_spawn,
             on_reap=on_reap,
+            on_wait=on_wait,
         )
 
 
 def _raise_if_cancelled(cancel_check: CancelCheck | None, what: str) -> None:
     if cancel_check is not None and cancel_check():
         raise JobCancelled(f"{what} cancelled")
+
+
+def _try_transition(
+    root: Path,
+    jira: str,
+    event: str,
+    on_log: LogFn | None = None,
+    **fields: Any,
+) -> None:
+    """Advance the QA state machine without letting bookkeeping fail the step.
+
+    Evidence files already hold the facts, and `derive_phase` is what gates read;
+    `transition` writes the recorded phase and its guard is surfaced as
+    `phase_drift` when it disagrees. A rejection is therefore a signal to inspect,
+    never a reason to fail an otherwise-valid approve/verify/run — but it is
+    logged rather than swallowed silently, so a wrong move is not invisible.
+    """
+    try:
+        qa_st.transition(root, jira, event, **fields)
+    except TestRejected as e:
+        if on_log is not None:
+            on_log(f"状态机未记录 {event}：{e}（以证据为准）\n")
 
 
 def _req_test(
@@ -1791,6 +1895,7 @@ def _req_test(
     cancel_check: CancelCheck | None = None,
     on_spawn: SpawnFn | None = None,
     on_reap: ReapFn | None = None,
+    on_wait: Callable[[bool], None] | None = None,
 ) -> dict[str, Any]:
     if design_only and run_only:
         raise TestRejected("--design-only and --run-only are mutually exclusive")
@@ -2008,6 +2113,7 @@ def _req_test(
     verify_fingerprint = cases_fingerprint(qa) if cases else ""
     pre_verify_fingerprint = verify_fingerprint
     if verify_enabled and cases and not run_only and not rerun_ids:
+        _try_transition(root, jira, "verify_start", on_log=on_log)
         if verify_only:
             verify_results = verify_cases(
                 root,
@@ -2038,6 +2144,7 @@ def _req_test(
         blocked_path = write_blocked(root, jira, verify_results)
         if blocked_path is not None and on_log is not None:
             on_log(f"数据核实未通过，design-blocked 清单：{blocked_path}\n")
+        _try_transition(root, jira, "verify_done", on_log=on_log)
     verify_info = (
         verify_view(qa, verify_fingerprint) if cases else {"present": False, "stale": False}
     )
@@ -2105,6 +2212,8 @@ def _req_test(
                 f"--approve 被拒绝：{why}；修好后重跑设计，或加 --allow-unverified 越权"
             )
         approve_cases(qa)
+        # M1: record the human gate as an explicit state-machine transition.
+        _try_transition(root, jira, "approve", on_log=on_log)
         # Approval is a marker, never an execution: running the cases is a
         # separate `--run-only` / `qa-run` step so a review cannot silently
         # trigger a run (and so accounts can be configured in between).
@@ -2167,16 +2276,29 @@ def _req_test(
         and not run_only
         and cfg.run_incremental
     ):
-        retryable = latest_retryable(qa, cases, cfg.active_env)
-        if retryable:
-            rerun_run = find_run_for_rerun(qa, set(retryable))
-            if rerun_run is not None:
-                rerun_ids = set(retryable)
+        prev = _latest_retryable_run(qa, case_ids, cfg.active_env)
+        if prev is not None and prev[1]:
+            retryable = latest_retryable(qa, cases, cfg.active_env)
+            # M10: a fix that touched a change point (meta.yaml `changes[].ref`)
+            # re-runs its covering cases too, even ones that passed last time.
+            touched = affected_covers(root, jira, cases, prev[0])
+            extra = sorted(touched - set(retryable))
+            if extra:
+                retryable = sorted(set(retryable) | touched)
                 if on_log is not None:
                     on_log(
-                        f"增量重跑 {len(retryable)} 条（上一轮 failed/blocked）："
-                        f"{', '.join(sorted(retryable))}\n"
+                        f"受影响用例（covers 命中本次 diff）：{', '.join(extra)}\n"
                     )
+            # Amend the env-matched run we derived from (its case set is exactly
+            # the current one), so an env switch never reuses a stale run.
+            rerun_run = (prev[0].name, prev[0], cfg.active_env)
+            rerun_ids = set(retryable)
+            if on_log is not None:
+                on_log(
+                    f"增量重跑 {len(retryable)} 条"
+                    f"（上一轮 failed/blocked + 受影响 covers）："
+                    f"{', '.join(sorted(retryable))}\n"
+                )
     if rerun_run is not None:
         run_id, run_dir, _ = rerun_run
         reset = reset_cases_in_run(run_dir, rerun_ids, case_ids)
@@ -2201,6 +2323,10 @@ def _req_test(
         run_id, run_dir = _claim_run_dir(evidence)
         resuming = False
     aliases = _involved_aliases(root, jira)
+    # An amendment (`rerun_run`) re-runs cases after a fix landed, so HEAD has
+    # legitimately moved: rebaseline here. An interrupted-resume keeps the run's
+    # original baseline so a mutation the crashed attempt left behind is caught.
+    amending = rerun_run is not None
     tree_before: dict[str, dict[str, str]] = {}
     heads_before: dict[str, str] = {}
     baseline_dir = run_dir / "repo-baseline"
@@ -2214,10 +2340,10 @@ def _req_test(
             )
         baseline_json = baseline_dir / f"{alias}.json"
         baseline_txt = baseline_dir / f"{alias}.txt"
-        # On resume, compare against the run's *original* baseline so a mutation
-        # left behind by the interrupted attempt is still caught. Only a fresh
-        # run records a new baseline.
-        if resuming and baseline_json.is_file():
+        # On an interrupted resume, compare against the run's *original* baseline
+        # so a mutation left behind by the crashed attempt is still caught. A
+        # fresh run — or an amendment after a fix — records a new baseline.
+        if resuming and not amending and baseline_json.is_file():
             try:
                 loaded = json.loads(baseline_json.read_text(encoding="utf-8"))
             except (OSError, ValueError):
@@ -2233,7 +2359,7 @@ def _req_test(
             baseline_json.write_text(
                 json.dumps(snap, ensure_ascii=False, indent=2), encoding="utf-8"
             )
-        if not baseline_txt.is_file():
+        if amending or not baseline_txt.is_file():
             text = _porcelain(wt)
             baseline_txt.write_text(
                 text + ("\n" if text else ""), encoding="utf-8"
@@ -2241,7 +2367,7 @@ def _req_test(
         # A commit leaves `git status` clean, so the porcelain diff alone cannot
         # see it; pin HEAD as a second baseline.
         head_path = baseline_dir / f"{alias}.head"
-        if resuming and head_path.is_file():
+        if resuming and not amending and head_path.is_file():
             heads_before[alias] = head_path.read_text(encoding="utf-8").strip()
         else:
             sha = _head_sha(wt) or ""
@@ -2542,7 +2668,12 @@ def _req_test(
             cfg.active_env,
             what="qa run",
             wait_timeout=0 if no_wait else cfg.run_env_wait_timeout,
+            on_wait=on_wait,
         ):
+            # M1: the run is now the active phase. Record it *after* the env lock
+            # so a queued job does not report `running` (and phase_drift) while
+            # it is still waiting its turn.
+            _try_transition(root, jira, "run_start", on_log=on_log)
             run_schedule(
                 cases,
                 pools,
@@ -2740,27 +2871,40 @@ def _req_test(
     # human having to re-derive it from the report.
     triage = triage_buckets(case_payloads)
     if triage["pending"]:
-        phase = "awaiting_triage"
+        phase, event = "awaiting_triage", "run_failed"
     elif triage["auto_recycled"]:
-        phase = "recycled"
+        phase, event = "recycled", "run_recycled"
     elif summary.get("blocked"):
-        phase = "running"
+        phase, event = "running", "run_retryable"
     else:
-        phase = "closed"
-    qa_st.record(
-        root,
-        jira,
-        phase=phase,
-        last_run_id=run_id,
-        last_verdict=(
-            "failed"
-            if (summary.get("failed") or summary.get("blocked"))
-            else "passed"
-            if summary.get("passed")
-            else ""
-        ),
-    )
+        phase, event = "closed", "run_passed"
+    # Record triage *before* the transition: `derive_phase` reads it to validate
+    # the move is legal from the evidence's point of view (M1).
     qa_st.record_triage(root, jira, triage["pending"], triage["auto_recycled"])
+    last_verdict = (
+        "failed"
+        if (summary.get("failed") or summary.get("blocked"))
+        else "passed"
+        if summary.get("passed")
+        else ""
+    )
+    try:
+        qa_st.transition(
+            root, jira, event, last_run_id=run_id, last_verdict=last_verdict
+        )
+    except TestRejected as e:
+        # The verdict is already in evidence/result.yaml; a state-machine
+        # bookkeeping mismatch must never hide it, but do record the move and
+        # say why the guard demurred.
+        if on_log is not None:
+            on_log(f"状态机未记录 {event}：{e}；已按证据写 phase={phase}\n")
+        qa_st.record(
+            root,
+            jira,
+            phase=phase,
+            last_run_id=run_id,
+            last_verdict=last_verdict,
+        )
 
     return {
         "jira": jira,

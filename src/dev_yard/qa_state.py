@@ -52,6 +52,32 @@ NEXT_ACTION = {
     "closed": "已完成",
 }
 
+# Legal events (spec §4.1). Each maps to the phases it may fire from and the
+# phase it lands in. `derive_phase` is the evidence-validated current phase, so
+# `transition` refuses an event whose source phase is not allowed — a gate
+# cannot be silently skipped. `to` is included in `from` so a re-entrant event
+# (e.g. a re-run after a failed run) is not rejected.
+EVENTS: dict[str, tuple[frozenset[str], str]] = {
+    "verify_start": (
+        frozenset({"awaiting_review", "verifying", "approved"}),
+        "verifying",
+    ),
+    "verify_done": (
+        frozenset({"verifying", "awaiting_review", "approved"}),
+        "awaiting_review",
+    ),
+    "approve": (frozenset({"awaiting_review", "approved"}), "approved"),
+    "run_start": (
+        frozenset({"approved", "awaiting_triage", "recycled", "running"}),
+        "running",
+    ),
+    "run_passed": (frozenset({"running", "closed"}), "closed"),
+    "run_failed": (frozenset({"running", "awaiting_triage"}), "awaiting_triage"),
+    "run_recycled": (frozenset({"running", "recycled"}), "recycled"),
+    "run_retryable": (frozenset({"running"}), "running"),
+    "file_bug": (frozenset({"awaiting_triage", "recycled"}), "recycled"),
+}
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -108,6 +134,34 @@ def record(root: Path, jira: str, **fields: Any) -> dict[str, Any]:
         except OSError:
             pass
         return data
+
+
+def can(root: Path, jira: str, event: str) -> tuple[bool, str]:
+    """Whether `event` may fire from the requirement's current (derived) phase."""
+    spec = EVENTS.get(event)
+    if spec is None:
+        return False, f"unknown qa transition {event!r}"
+    current = derive_phase(root, jira)
+    if current not in spec[0]:
+        return False, f"cannot {event} from phase {current}"
+    return True, ""
+
+
+def transition(
+    root: Path, jira: str, event: str, **fields: Any
+) -> dict[str, Any]:
+    """Advance the state machine, writing the new phase to `state.yaml`.
+
+    The current phase is *derived from evidence* (never a stale recorded write),
+    so the guard is a real check that the move is legal right now. An illegal
+    move raises `TestRejected` instead of silently recording a wrong phase.
+    """
+    ok, why = can(root, jira, event)
+    if not ok:
+        from dev_yard.qa_config import TestRejected
+
+        raise TestRejected(f"{jira}: {why}")
+    return record(root, jira, phase=EVENTS[event][1], **fields)
 
 
 def record_pools(root: Path, jira: str, pools: dict[str, str]) -> dict[str, Any]:
@@ -222,6 +276,28 @@ def derive_phase(root: Path, jira: str) -> str:
     return "closed"
 
 
+def phase_snapshot(root: Path, jira: str) -> dict[str, Any]:
+    """Derived phase, the recorded phase, and whether the two disagree.
+
+    Evidence wins for `phase`; the recorded write is surfaced so a stale or
+    hand-edited `state.yaml` is visible rather than silently trusted. The
+    in-flight markers `designing`/`verifying` are not drift: evidence cannot
+    always show them.
+    """
+    recorded_phase = load(root, jira).get("phase")
+    phase = derive_phase(root, jira)
+    drift = bool(
+        recorded_phase
+        and recorded_phase != phase
+        and recorded_phase not in {"designing", "verifying"}
+    )
+    return {
+        "phase": phase,
+        "recorded_phase": recorded_phase,
+        "phase_drift": drift,
+    }
+
+
 def status_payload(root: Path, jira: str) -> dict[str, Any]:
     """Everything `qa status` / the board needs, from one place."""
     from dev_yard.qa_review import review_payload
@@ -230,11 +306,11 @@ def status_payload(root: Path, jira: str) -> dict[str, Any]:
     review = review_payload(qa) if qa.is_dir() else {"status": "no-cases"}
     t = triage(root, jira)
     recorded = load(root, jira)
-    phase = derive_phase(root, jira)
+    snap = phase_snapshot(root, jira)
     return {
         "jira": jira,
-        "phase": phase,
-        "next": NEXT_ACTION.get(phase, ""),
+        **snap,
+        "next": NEXT_ACTION.get(snap["phase"], ""),
         "review": review,
         "triage": t,
         "pools": recorded.get("pools") if isinstance(recorded.get("pools"), dict) else {},

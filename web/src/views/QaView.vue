@@ -8,6 +8,15 @@
     <v-alert v-if="error" type="error" class="mb-4" closable @click:close="error = ''">
       {{ error }}
     </v-alert>
+    <v-alert
+      v-if="phaseDrift"
+      type="warning"
+      variant="tonal"
+      class="mb-4"
+    >
+      状态记录与证据不一致：state.yaml 记为 <code>{{ recordedPhase }}</code>，
+      按证据应为 <code>{{ payload?.phase }}</code>（以证据为准，可重跑刷新）。
+    </v-alert>
 
     <v-card
       v-if="triagePending.length || triageAuto.length"
@@ -655,6 +664,8 @@ const openQuestions = computed(
 
 const triagePending = computed(() => payload.value?.triage?.pending || []);
 const triageAuto = computed(() => payload.value?.triage?.auto_recycled || []);
+const phaseDrift = computed(() => Boolean(payload.value?.phase_drift));
+const recordedPhase = computed(() => payload.value?.recorded_phase || "");
 const triaging = ref(false);
 
 // A design/run job still in flight keeps the case set in motion, so the review
