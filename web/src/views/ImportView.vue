@@ -61,7 +61,7 @@
             hint="工作区目录名；可从链接自动提取"
             persistent-hint
             class="mb-4"
-            @update:model-value="userCustomizedKey = true"
+            @update:model-value="onKeyInput"
           />
 
           <div class="d-flex align-center mb-2">
@@ -89,7 +89,7 @@
                 <v-text-field
                   v-model="row.ref"
                   label="代码分支 / ref"
-                  placeholder="origin/feature/xxx"
+                  :placeholder="refPlaceholder"
                   density="comfortable"
                   hide-details
                 />
@@ -143,7 +143,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { mdiClose, mdiPlus } from "@mdi/js";
-import { importRequirement, listRepos } from "@/api/client";
+import { getGitSettings, importRequirement, listRepos } from "@/api/client";
 import type { Repo } from "@/api/types";
 import { useSnack } from "@/composables/snack";
 
@@ -162,11 +162,35 @@ const busy = ref(false);
 const error = ref("");
 const repos = ref<Repo[]>([]);
 const userCustomizedKey = ref(false);
-const rows = ref<{ alias: string; ref: string; base: string }[]>([
-  { alias: "", ref: "", base: "" },
+const freezeBranchTemplate = ref("req/{jira}");
+const rows = ref<{ alias: string; ref: string; base: string; auto: string }[]>([
+  { alias: "", ref: "", base: "", auto: "" },
 ]);
 
 const repoAliases = computed(() => repos.value.map((r) => r.alias));
+
+// 外部分支常按冻结规范命名（如 req/PG-13068），据此给空 ref 预填
+// origin/<freeze_branch>；用户手改过（ref !== auto）的行不再覆盖。
+function suggestedRef(): string {
+  const key = reqKey.value.trim();
+  const tpl = (freezeBranchTemplate.value || "").trim();
+  if (!key || !tpl.includes("{jira}")) return "";
+  const name = tpl.replaceAll("{jira}", key);
+  return name ? `origin/${name}` : "";
+}
+
+const refPlaceholder = computed(() => suggestedRef() || "origin/feature/xxx");
+
+function syncAutoRefs() {
+  const suggested = suggestedRef();
+  if (!suggested) return;
+  for (const row of rows.value) {
+    if (row.ref.trim() === "" || row.ref === row.auto) {
+      row.ref = suggested;
+      row.auto = suggested;
+    }
+  }
+}
 
 const rules = {
   required: (v: string) => !!v?.trim() || "此项为必填",
@@ -182,10 +206,24 @@ onMounted(async () => {
   } catch {
     /* alias input is a combobox, so a failed fetch still allows free text */
   }
+  try {
+    const git = await getGitSettings();
+    if (git.freeze_branch) freezeBranchTemplate.value = git.freeze_branch;
+  } catch {
+    /* fall back to the default freeze template */
+  }
+  syncAutoRefs();
 });
 
 function addRow() {
-  rows.value.push({ alias: "", ref: "", base: "" });
+  rows.value.push({ alias: "", ref: "", base: "", auto: "" });
+  syncAutoRefs();
+}
+
+function onKeyInput(val: string) {
+  userCustomizedKey.value = true;
+  reqKey.value = val;
+  syncAutoRefs();
 }
 
 function extractKeyFromTarget(target: string): string {
@@ -212,7 +250,10 @@ function extractKeyFromTarget(target: string): string {
 function onTargetUrlChange(val: string) {
   if (!userCustomizedKey.value || !reqKey.value) {
     const extracted = extractKeyFromTarget(val);
-    if (extracted) reqKey.value = extracted;
+    if (extracted) {
+      reqKey.value = extracted;
+      syncAutoRefs();
+    }
   }
 }
 
