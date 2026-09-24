@@ -84,8 +84,12 @@ def render_markdown(text: str, jira: str) -> str:
     quoted = quote(jira, safe="")
 
     def repl(m: re.Match[str]) -> str:
-        attr, q, bucket, name = m.group(1), m.group(2), m.group(3), Path(m.group(4)).name
-        return f"{attr}={q}/r/{quoted}/{bucket}/{quote(unquote(name))}{q}"
+        attr, q, bucket, name = m.group(1), m.group(2), m.group(3), m.group(4)
+        parts = [p for p in unquote(name).split("/") if p not in ("", ".")]
+        if not parts or ".." in parts:
+            return m.group(0)
+        rel = "/".join(quote(p, safe="") for p in parts)
+        return f"{attr}={q}/r/{quoted}/{bucket}/{rel}{q}"
 
     return _ASSET_REF.sub(repl, html)
 

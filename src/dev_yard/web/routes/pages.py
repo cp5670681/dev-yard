@@ -67,7 +67,7 @@ def build(ctx: AppContext) -> APIRouter:
             raise HTTPException(404, f"unknown doc {slug}")
         return spa_index()
 
-    @router.get("/r/{jira}/assets/{name}")
+    @router.get("/r/{jira}/assets/{name:path}")
     def asset(jira: str, name: str):
         try:
             path = ctx.asset_file(jira, name)

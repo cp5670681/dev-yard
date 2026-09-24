@@ -934,6 +934,33 @@ def test_render_markdown_rewrites_assets():
     assert "/r/PG-1/assets/a.png" in html
 
 
+def test_render_markdown_keeps_nested_asset_dir():
+    """Confluence extracts images under assets/<pageId>/; keep the subpath."""
+    html = render_markdown("![x](assets/669966043/ui.png)", "PG-1")
+    assert "/r/PG-1/assets/669966043/ui.png" in html
+
+
+def test_render_markdown_drops_traversal():
+    html = render_markdown("![x](assets/../REQUIREMENT.md)", "PG-1")
+    assert "/r/PG-1/assets/" not in html
+
+
+def test_nested_asset_served(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    d, _ = req_open(yard, "AB-35", source="none")
+    (d / "assets" / "669966043").mkdir(parents=True)
+    (d / "assets" / "669966043" / "ui.png").write_bytes(b"\x89PNG\r\n")
+    client = _client(yard)
+    assert asset_file(yard, "AB-35", "669966043/ui.png").name == "ui.png"
+    img = client.get("/r/AB-35/assets/669966043/ui.png")
+    assert img.status_code == 200
+    assert img.content.startswith(b"\x89PNG")
+    assert client.get("/r/AB-35/assets/../REQUIREMENT.md").status_code in {404, 422}
+
+
 def test_render_markdown_strips_raw_html():
     html = render_markdown(
         'hello <script>alert(1)</script> <img src="javascript:alert(1)" alt="x">',
