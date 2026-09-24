@@ -231,6 +231,7 @@ dev-yard req changes PROJ-101            # 查看变更记录（只读）
 - **宿主独立复核**：run 期 worker 对带 `sql` 的 db 断言自报 passed，宿主会重跑该 SQL 比对 `expected`，不一致降级为 `failed`。
 - **阻塞分类**：worker 在 result.yaml 写 `blocked_class`（`case-defect`/`env`/`undeployed`/`auth`/`other`），宿主据此决策；无法归类的原因不再触发整轮中断。
 - **变更门**：run 前后比对 worktree 的 git 状态与 HEAD，commit 级改动也会被判为 worker 越权改动而中止。
+- **可恢复执行环**：`qa/state.yaml` 记录状态机（phase/待判定失败/隔离池），`dev-yard qa status <JIRA>` 一屏看当前态与下一步；模型/环境类 `blocked` 在轮内自动重试（`run.retry_attempts`），坏池按 pool 隔离；web 重启自动续跑未完成的 run（`run.resume_on_restart`）；B 票修完默认只重跑上一轮 failed/blocked（`run.incremental`，`--fresh` 全量）；同 env 跨需求排队等待而非直接报错（`run.env_wait_timeout`，`--no-wait` 立即拒绝）；可选 `run.pool_preflight` 跑前逐个探测模型池。`case-defect` 自动回流 design，只有疑似产品缺陷才进人工「下 bug」列表。详见 [`docs/superpowers/specs/2026-09-24-yard-qa-recovery-design.md`](docs/superpowers/specs/2026-09-24-yard-qa-recovery-design.md)。
 
 ### 目录与分支拓扑
 ```text
@@ -274,10 +275,12 @@ dev-yard web --host 0.0.0.0 --allow-remote
 | `dev-yard req delete <key>` | 删除需求产物与 Worktree | |
 | `dev-yard req push <key> [repos..]` | 推送各仓 Worktree 分支到远端 | `--remote`, `--force` |
 | `dev-yard req submit-test <key>` | 标记提测 | |
-| `dev-yard req test <key>` | `--design-only` 出用例 → `--approve` 只标记通过 → `--run-only` 执行 | `--env`, `--print`, `--design-only`, `--run-only`, `--unsafe-skip-review`, `--redesign`, `--approve`, `--feedback`, `--feedback-file`, `--verify-only`, `--no-verify`, `--allow-unverified`, `--resume`, `--fresh`, `--rerun-case`, `--no-ingest` |
+| `dev-yard req test <key>` | `--design-only` 出用例 → `--approve` 只标记通过 → `--run-only` 执行 | `--env`, `--print`, `--design-only`, `--run-only`, `--unsafe-skip-review`, `--redesign`, `--approve`, `--feedback`, `--feedback-file`, `--verify-only`, `--no-verify`, `--allow-unverified`, `--resume`, `--fresh`, `--full`, `--no-wait`, `--rerun-case`, `--no-ingest` |
+| `dev-yard req triage <key>` | 给待判定失败用例批量下 bug | `--product/--all` |
 | `dev-yard req change <key>` | 轻量变更：追加变更记录 + 更新 SPEC + 建一张轻量票 | `--note`, `--repo`, `--grill`, `--run`, `--print` |
 | `dev-yard req changes <key>` | 打印该需求的变更记录 | |
 | `dev-yard qa check-env` | 解析 exec 配方、ping、hello 回显 | `--env`, `--jira` |
+| `dev-yard qa status <key>` | 读 `qa/state.yaml` + 证据推导当前态、待判定失败项、隔离模型池与下一步 | |
 | `dev-yard req accept-test <key>` | 录入测试报告 | `--verdict`, `--body-file` |
 | `dev-yard grill <key>` | 需求答辩与对齐 | `--print`, `--dry-run` |
 | `dev-yard spec <key>` | 制定方案与契约 | `--print`, `--dry-run` |

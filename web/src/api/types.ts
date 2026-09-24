@@ -324,6 +324,13 @@ export interface QaPage {
   review?: QaReview | null;
   active_jobs?: JobBrief[];
   open_questions?: { count: number; body: string; exists?: boolean; error?: string };
+  phase?: string;
+  next?: string;
+  triage?: {
+    pending?: string[];
+    auto_recycled?: string[];
+    filed?: Record<string, string>;
+  };
   runs: {
     run_id: string;
     env?: string;

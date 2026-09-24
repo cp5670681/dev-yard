@@ -33,31 +33,46 @@ class ReviewState:
     # Set when the requirement docs changed after the cases were designed;
     # forces `approved=False` until a person re-approves or redesigns.
     stale_reason: str = ""
+    # True when the last change was a host-driven seed fix that did not touch
+    # what is being tested; the previous approval is carried over (M6).
+    machine_fixed: bool = False
 
 
-def _case_assets(qa: Path) -> list[Path]:
+def _case_assets(qa: Path, scope: str = "all") -> list[Path]:
     """Every authored file that changes what a case executes.
 
     Includes `case-*.md`'s setup/cleanup scripts (spec §6.1) but excludes the
     `.replay.sh` that `qa-run` writes next to a case: that is run output, not a
     reviewed artifact, and must not invalidate an approval.
+
+    `scope` narrows the set: `bodies` is only the `case-*.md` files (the tested
+    point), `seeds` is everything else (setup/verify/依赖). The two are used to
+    tell a machine seed-fix from a change to what is being tested (M6).
     """
     root = qa / "cases"
     if not root.is_dir():
         return []
-    return [
-        path
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-        and not path.name.startswith(".")
-        and not path.name.endswith(".replay.sh")
-    ]
+    out: list[Path] = []
+    for path in sorted(root.rglob("*")):
+        if (
+            not path.is_file()
+            or path.name.startswith(".")
+            or path.name.endswith(".replay.sh")
+        ):
+            continue
+        is_body = path.name.startswith("case-") and path.suffix == ".md"
+        if scope == "bodies" and not is_body:
+            continue
+        if scope == "seeds" and is_body:
+            continue
+        out.append(path)
+    return out
 
 
-def cases_fingerprint(qa: Path) -> str:
-    """Stable hash over every authored case asset's path and content."""
+def cases_fingerprint(qa: Path, *, scope: str = "all") -> str:
+    """Stable hash over authored case assets' path and content."""
     h = hashlib.sha1()
-    for path in _case_assets(qa):
+    for path in _case_assets(qa, scope):
         h.update(path.relative_to(qa).as_posix().encode("utf-8"))
         h.update(b"\0")
         h.update(path.read_bytes())
@@ -85,6 +100,7 @@ def load_review(qa: Path) -> ReviewState | None:
         feedback=str(data.get("feedback") or ""),
         updated_at=str(data.get("updated_at") or ""),
         stale_reason=str(data.get("stale_reason") or ""),
+        machine_fixed=bool(data.get("machine_fixed")),
     )
 
 
@@ -94,6 +110,7 @@ def save_review(
     fingerprint: str,
     feedback: str = "",
     stale_reason: str = "",
+    machine_fixed: bool = False,
 ) -> Path:
     qa.mkdir(parents=True, exist_ok=True)
     path = qa / REVIEW_FILE
@@ -105,6 +122,8 @@ def save_review(
     }
     if stale_reason:
         payload["stale_reason"] = stale_reason
+    if machine_fixed:
+        payload["machine_fixed"] = True
     path.write_text(
         yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
@@ -153,6 +172,7 @@ def review_payload(qa: Path) -> dict[str, object]:
         "feedback": state.feedback if state else "",
         "updated_at": state.updated_at if state else "",
         "fingerprint": current,
+        "machine_fixed": bool(state and state.machine_fixed),
         "verify": verify_view(qa, current),
     }
 
@@ -194,6 +214,24 @@ def approve_cases(qa: Path) -> dict[str, object]:
 def reject_cases(qa: Path, feedback: str) -> dict[str, object]:
     """Record a rejection with the reviewer's feedback."""
     save_review(qa, STATUS_REJECTED, cases_fingerprint(qa), feedback=feedback)
+    return review_payload(qa)
+
+
+def mark_machine_fixed(qa: Path, feedback: str) -> dict[str, object]:
+    """Record a host seed-fix that does not touch what is being tested (M6).
+
+    Called only after the caller proved the case bodies/预期 are unchanged and
+    just setup/verify/依赖 moved. Saving the *current* fingerprint keeps the
+    previous approval valid, so a run-time `case-defect` can be auto-repaired
+    without a second human approval.
+    """
+    save_review(
+        qa,
+        STATUS_PASSED,
+        cases_fingerprint(qa),
+        feedback=feedback,
+        machine_fixed=True,
+    )
     return review_payload(qa)
 
 

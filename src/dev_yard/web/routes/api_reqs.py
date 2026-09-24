@@ -185,6 +185,21 @@ def build(ctx: AppContext) -> APIRouter:
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
 
+    @router.post("/api/requirements/{jira}/qa/triage")
+    def api_qa_triage(jira: str, product_only: bool = True):
+        """Batch-file bug tickets for the run's pending failures (M6b)."""
+        if paths.is_reserved_req_name(jira):
+            raise HTTPException(404, f"no requirement {jira}")
+        ctx.detail_or_404(jira)
+        try:
+            return yard_service.triage_qa_cases(
+                ctx.root, jira, product_only=product_only
+            )
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
     @router.post("/api/requirements/{jira}/qa/rerun")
     def api_qa_rerun(jira: str, payload: QaRerunIn):
         ids = [c.strip() for c in payload.case_ids if c.strip()]

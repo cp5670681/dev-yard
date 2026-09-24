@@ -8,6 +8,39 @@
     <v-alert v-if="error" type="error" class="mb-4" closable @click:close="error = ''">
       {{ error }}
     </v-alert>
+
+    <v-card
+      v-if="triagePending.length || triageAuto.length"
+      variant="tonal"
+      :color="triagePending.length ? 'warning' : 'info'"
+      class="mb-4"
+    >
+      <v-card-title class="d-flex align-center ga-2 py-2">
+        <v-icon :icon="mdiHelpCircleOutline" size="20" />
+        失败分流
+      </v-card-title>
+      <v-card-text class="text-body-2">
+        <p v-if="triagePending.length" class="mb-1">
+          <strong>待判定（疑似产品缺陷）：</strong>{{ triagePending.join("、") }}
+          —— 在失败用例上「下 bug」，或「打回重做」修用例。
+        </p>
+        <p v-if="triageAuto.length" class="mb-0 text-medium-emphasis">
+          将自动回流用例缺陷：{{ triageAuto.join("、") }}（下次设计时只改种子，不占人工判定）。
+        </p>
+      </v-card-text>
+      <v-card-actions v-if="triagePending.length">
+        <v-btn
+          size="small"
+          color="error"
+          variant="tonal"
+          :loading="triaging"
+          :disabled="triaging"
+          @click="fileProductBugs"
+        >
+          批量下 bug（仅 product 项）
+        </v-btn>
+      </v-card-actions>
+    </v-card>
     <ReqDocTabs v-if="docs.length" :jira="jira" :docs="docs" current="qa" />
     <v-tabs v-else class="mb-4" show-arrows color="primary">
       <v-tab :to="`/r/${jira}`">看板</v-tab>
@@ -559,7 +592,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { mdiClipboardCheckOutline, mdiHelpCircleOutline, mdiRefresh, mdiMenuDown } from "@mdi/js";
-import { getQa, getRequirement, runAction, fileCaseBug } from "@/api/client";
+import { getQa, getRequirement, runAction, fileCaseBug, triageQaCases } from "@/api/client";
 import {
   jobTail,
   submitRerun,
@@ -619,6 +652,10 @@ const reviewApproved = computed(() => Boolean(review.value?.approved));
 const openQuestions = computed(
   () => payload.value?.open_questions || { count: 0, body: "", exists: false },
 );
+
+const triagePending = computed(() => payload.value?.triage?.pending || []);
+const triageAuto = computed(() => payload.value?.triage?.auto_recycled || []);
+const triaging = ref(false);
 
 // A design/run job still in flight keeps the case set in motion, so the review
 // gate stays closed until it finishes.
@@ -873,6 +910,27 @@ async function fileBug(caseId: string) {
     snack.notify(msg, "error");
   } finally {
     acting.value = "";
+  }
+}
+
+async function fileProductBugs() {
+  if (!triagePending.value.length || triaging.value) return;
+  error.value = "";
+  triaging.value = true;
+  try {
+    const out = await triageQaCases(jira.value, true);
+    const n = Object.keys(out.filed || {}).length;
+    snack.notify(
+      n ? `已下 ${n} 张 bug 票` : "没有可自动建票的 product 项（未分类请逐条下 bug）",
+      n ? "success" : "info",
+    );
+    await load();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    error.value = msg;
+    snack.notify(msg, "error");
+  } finally {
+    triaging.value = false;
   }
 }
 

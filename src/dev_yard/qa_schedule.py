@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -90,6 +91,9 @@ class CaseJob:
     writes: list[str] = field(default_factory=list)
     identity: str = ""
     defect_class: str = ""
+    # How many times an environment-class block has been requeued in this run
+    # (M2). Bounded by `retry_attempts`; never written to result.yaml.
+    attempts: int = 0
 
 
 RunCase = Callable[[CaseJob, PoolSlot], dict[str, Any]]
@@ -204,6 +208,23 @@ def blocked_kind(reason: str, blocked_class: str = "") -> str:
     return "env" if _env_signal(low) else "other"
 
 
+def _retryable_block(job: CaseJob, retry_attempts: int) -> bool:
+    """True when a blocked case should be requeued rather than ended (M2).
+
+    Environment-class failures are retried even for cases that declare
+    setup/cleanup — a model/network crash is transient regardless of the seed.
+    Host-run script failures (`setup failed:` / `env fault:` / `cleanup failed:`)
+    are the setup fuse's job and are not retried here; a case-defect / unknown
+    reason is a real verdict; a cancelled case is never retried.
+    """
+    if retry_attempts <= 0 or job.attempts >= retry_attempts:
+        return False
+    reason = (job.reason or "").lower()
+    if reason.startswith(("setup failed:", "env fault:", "cleanup failed:")):
+        return False
+    return blocked_kind(job.reason, job.blocked_class) == "env"
+
+
 def pick_pool(
     pools: list[PoolSlot], tripped: set[str] | None = None
 ) -> PoolSlot | None:
@@ -296,6 +317,7 @@ def progress_payload(
                 "ended_at": c.ended_at,
                 "reason": c.reason,
                 "blocked_class": c.blocked_class,
+                "attempts": c.attempts,
             }
             for c in cases
         ],
@@ -330,6 +352,9 @@ def run_schedule(
     on_progress: ProgressCb | None = None,
     serialize_accounts: bool = False,
     cancel_check: Callable[[], bool] | None = None,
+    retry_attempts: int = 0,
+    retry_backoff: float = 0.0,
+    on_pool_trip: Callable[[str, str], None] | None = None,
 ) -> None:
     validate_dag(cases)
     refresh_ready(cases)
@@ -407,12 +432,29 @@ def run_schedule(
                     job.provider = str(result.get("provider"))
                 job.ended_at = now_iso()
                 pid = slot.id
-                if status == "blocked":
+                if status == "blocked" and _retryable_block(job, retry_attempts):
+                    # Environment-class failure on a case the host owns end to
+                    # end: requeue it instead of recording a terminal block, so
+                    # a transient model/env fault does not end the run (M2).
+                    job.attempts += 1
+                    job.state = "ready"
+                    job.pool = None
+                    job.model = None
+                    job.provider = None
+                    job.reason = ""
+                    job.blocked_class = ""
+                    job.ended_at = None
+                    # Do not count a requeued failure toward the pool breaker.
+                    if retry_backoff > 0:
+                        time.sleep(retry_backoff)
+                elif status == "blocked":
                     klass = env_block_class(job.reason, job.blocked_class)
                     if klass is None:
                         last_block_class[pid] = None
                     elif last_block_class.get(pid) == klass:
                         tripped[pid] = job.reason or "environment blocked"
+                        if on_pool_trip is not None:
+                            on_pool_trip(pid, tripped[pid])
                     else:
                         last_block_class[pid] = klass
                 else:

@@ -129,6 +129,22 @@ class QaConfig:
     # gate refuse `--approve` while a case's data cannot be proven.
     design_verify_attempts: int = 3
     design_verify_required: bool = True
+    design_verify_retry_attempts: int = 1
+    design_verify_retry_backoff: float = 0.0
+    # Run-level resilience (M2/M8/M9). `retry_attempts` bounds in-run requeues
+    # of environment-blocked cases; `retry_backoff` is the seconds slept before
+    # a requeued case is dispatched again.
+    run_retry_attempts: int = 2
+    run_retry_backoff: float = 0.0
+    run_env_wait_timeout: int = 1800
+    run_resume_on_restart: bool = True
+    # Amend the previous run in place, re-running only its failed/blocked cases,
+    # instead of starting a full run (M10).
+    run_incremental: bool = True
+    # Probe each pool with a trivial pi call before scheduling, dropping the
+    # ones that fail (M3). Off by default: a probe costs one pi round-trip per
+    # run and the per-pool breaker already isolates a dead pool mid-run.
+    run_pool_preflight: bool = False
 
     @property
     def total_concurrency(self) -> int:
@@ -196,6 +212,36 @@ def _int(value: Any, field: str, default: int | None = None) -> int:
     except (TypeError, ValueError) as e:
         raise TestRejected(f"qa.yaml {field} must be an integer") from e
     return n
+
+
+def _float(value: Any, field: str, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError) as e:
+        raise TestRejected(f"qa.yaml {field} must be a number") from e
+
+
+def _parse_run(raw: Any) -> tuple[int, float, int, bool, bool, bool]:
+    """qa.yaml `run`: (retry, backoff, env_wait, resume_on_restart, incremental, preflight)."""
+    if raw is None:
+        return 2, 0.0, 1800, True, True, False
+    if not isinstance(raw, dict):
+        raise TestRejected("qa.yaml run must be a mapping")
+    attempts = _int(raw.get("retry_attempts"), "run.retry_attempts", 2)
+    if attempts < 0:
+        raise TestRejected("qa.yaml run.retry_attempts must be >= 0")
+    backoff = _float(raw.get("retry_backoff"), "run.retry_backoff", 0.0)
+    if backoff < 0:
+        raise TestRejected("qa.yaml run.retry_backoff must be >= 0")
+    wait = _int(raw.get("env_wait_timeout"), "run.env_wait_timeout", 1800)
+    if wait < 0:
+        raise TestRejected("qa.yaml run.env_wait_timeout must be >= 0")
+    resume = _as_bool(raw.get("resume_on_restart"), True)
+    incremental = _as_bool(raw.get("incremental"), True)
+    preflight = _as_bool(raw.get("pool_preflight"), False)
+    return attempts, backoff, wait, resume, incremental, preflight
 
 
 def _parse_accounts(raw: Any) -> dict[str, QaAccount]:
@@ -273,16 +319,28 @@ def _parse_design(raw: Any) -> tuple[str | None, str | None]:
     return _pair_or_none(raw.get("provider"), raw.get("model"), "qa.yaml design")
 
 
-def _parse_design_verify(raw: Any) -> tuple[int, bool]:
-    """qa.yaml `design` verify options: (verify_attempts, verify_required)."""
+def _parse_design_verify(raw: Any) -> tuple[int, bool, int, float]:
+    """qa.yaml `design` verify options.
+
+    Returns (verify_attempts, verify_required, verify_retry_attempts,
+    verify_retry_backoff). `verify_retry_*` bound the retry of an
+    environment-blocked verification (M5) so a transient DB outage does not
+    immediately stop the design pass.
+    """
     if raw is None:
-        return 3, True
+        return 3, True, 1, 0.0
     if not isinstance(raw, dict):
         raise TestRejected("qa.yaml design must be a mapping")
     attempts = _int(raw.get("verify_attempts"), "design.verify_attempts", 3)
     if attempts < 1:
         raise TestRejected("qa.yaml design.verify_attempts must be >= 1")
-    return attempts, _as_bool(raw.get("verify_required"), True)
+    retry = _int(raw.get("verify_retry_attempts"), "design.verify_retry_attempts", 1)
+    if retry < 0:
+        raise TestRejected("qa.yaml design.verify_retry_attempts must be >= 0")
+    backoff = _float(raw.get("verify_retry_backoff"), "design.verify_retry_backoff", 0.0)
+    if backoff < 0:
+        raise TestRejected("qa.yaml design.verify_retry_backoff must be >= 0")
+    return attempts, _as_bool(raw.get("verify_required"), True), retry, backoff
 
 
 def _parse_workers(root: Path, raw: Any) -> tuple[QaWorker, ...]:
@@ -387,7 +445,20 @@ def _parse_config(root: Path, data: dict[str, Any], env: str | None = None) -> Q
     )
     workers = _parse_workers(root, data.get("workers"))
     design_provider, design_model = _parse_design(data.get("design"))
-    verify_attempts, verify_required = _parse_design_verify(data.get("design"))
+    (
+        verify_attempts,
+        verify_required,
+        verify_retry_attempts,
+        verify_retry_backoff,
+    ) = _parse_design_verify(data.get("design"))
+    (
+        retry_attempts,
+        retry_backoff,
+        env_wait,
+        resume_on_restart,
+        incremental,
+        pool_preflight,
+    ) = _parse_run(data.get("run"))
     return QaConfig(
         active_env=env_name,
         env=env,
@@ -399,6 +470,14 @@ def _parse_config(root: Path, data: dict[str, Any], env: str | None = None) -> Q
         design_model=design_model,
         design_verify_attempts=verify_attempts,
         design_verify_required=verify_required,
+        design_verify_retry_attempts=verify_retry_attempts,
+        design_verify_retry_backoff=verify_retry_backoff,
+        run_retry_attempts=retry_attempts,
+        run_retry_backoff=retry_backoff,
+        run_env_wait_timeout=env_wait,
+        run_resume_on_restart=resume_on_restart,
+        run_incremental=incremental,
+        run_pool_preflight=pool_preflight,
     )
 
 

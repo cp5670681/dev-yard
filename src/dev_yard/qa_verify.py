@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 import uuid
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -75,7 +76,7 @@ class VerifyResult:
     """Outcome of verifying one case's declared data prerequisites."""
 
     case: str
-    status: str = "skipped"  # passed | failed | skipped
+    status: str = "skipped"  # passed | failed | blocked | skipped
     reason: str = ""
     setup_ok: bool = True
     setup_stdout: str = ""
@@ -83,6 +84,10 @@ class VerifyResult:
     rows: int = 0
     lint: dict[str, Any] = field(default_factory=dict)
     error: str = ""
+    # Set to "env" when the check could not run for infrastructure reasons
+    # (usql/DB unreachable) rather than a real data gap. A blocked case must
+    # not be fed back to design as a seed bug (M5).
+    blocked_class: str = ""
     # sha1 of the case set this result belongs to; the gate ignores stale ones.
     fingerprint: str = ""
     # Row id this case's setup bound, plus the columns it writes. Empty when
@@ -102,7 +107,39 @@ class VerifyResult:
             "error": self.error,
             "fingerprint": self.fingerprint,
         }
+        if self.blocked_class:
+            out["blocked_class"] = self.blocked_class
         return out
+
+
+# Signals that a verify query failed for infrastructure reasons, not because the
+# case's data is missing. Kept next to the SQL executor so design-loop and gate
+# agree on what "env" means.
+_ENV_VERIFY_HINTS = (
+    "usql not found",
+    "no db.url",
+    "timed out",
+    "cannot run",
+    "connection",
+    "could not connect",
+    "no route",
+    "unreachable",
+    "password authentication",
+    "too many connections",
+    "server closed the connection",
+)
+_ENV_VERIFY_CLASSES = frozenset(
+    {"unreachable", "auth", "pod_not_found", "timeout", "runner", "config"}
+)
+
+
+def verify_env_error(e: TestRejected) -> bool:
+    """True when a verify failure is environmental, not a case data gap."""
+    cls = str(getattr(e, "error_class", "") or "").lower()
+    if cls in _ENV_VERIFY_CLASSES:
+        return True
+    low = str(e).lower()
+    return any(h in low for h in _ENV_VERIFY_HINTS)
 
 
 def _sql_identifiers(sql: str) -> set[str]:
@@ -280,7 +317,12 @@ def verify_case(
     try:
         result.rows = run_sql_count(verify_cfg, text, on_log=on_log)
     except TestRejected as e:
-        result.status = "failed"
+        if verify_env_error(e):
+            # Infrastructure, not a case gap: never feed this back to design.
+            result.status = "blocked"
+            result.blocked_class = "env"
+        else:
+            result.status = "failed"
         result.error = f"verify query failed: {e}"
         _cleanup(root, jira, cfg, job, result, on_log, executor)
         return finish()
@@ -377,24 +419,37 @@ def _cleanup(
             root, jira, cfg, job, "cleanup", on_log=on_log, executor=executor
         )
     except TestRejected as e:
-        result.status = "failed"
+        # A cleanup failure is a real verdict, but do not downgrade an
+        # environment-blocked result to a case defect (M5).
+        if result.status != "blocked":
+            result.status = "failed"
         result.error = (result.error + f" cleanup failed: {e}").strip()
 
 
 @contextmanager
-def env_lock(root: Path, env: str, what: str = "design verification"):
+def env_lock(
+    root: Path,
+    env: str,
+    what: str = "design verification",
+    wait_timeout: float = 0.0,
+):
     """Serialize per-env QA work (verification and runs) across requirements.
 
     `req test` already holds a per-JIRA lock, but seeds share one test DB, so two
     requirements' verifies *or runs* must not overlap. `what` names the holder in
     the refusal message.
+
+    `wait_timeout > 0` makes the caller queue behind a live holder (M8) instead
+    of failing immediately: a second requirement's run waits its turn rather
+    than erroring out. A stale lock is still reclaimed at once.
     """
     lock_dir = root / LOCK_DIR
     lock_dir.mkdir(parents=True, exist_ok=True)
     safe = re.sub(r"[^A-Za-z0-9._-]", "-", env or "env")
     path = lock_dir / f"{safe}.verify.lock"
     token = f"{os.getpid()}:{uuid.uuid4().hex}"
-    for attempt in range(2):
+    deadline = time.monotonic() + wait_timeout if wait_timeout > 0 else None
+    while True:
         tmp = lock_dir / f".{safe}.{uuid.uuid4().hex}.tmp"
         try:
             tmp.write_text(token, encoding="utf-8")
@@ -408,7 +463,8 @@ def env_lock(root: Path, env: str, what: str = "design verification"):
                     holder = ""
                 head = holder.split(":", 1)[0] if holder else ""
                 pid = int(head) if head.isdigit() else None
-                if pid is not None and not _pid_alive(pid) and attempt == 0:
+                if pid is not None and not _pid_alive(pid):
+                    # Atomic reclaim: the winner renames, losers get FileNotFound.
                     stale = path.with_name(path.name + f".stale.{uuid.uuid4().hex}")
                     try:
                         os.rename(path, stale)
@@ -416,6 +472,9 @@ def env_lock(root: Path, env: str, what: str = "design verification"):
                         pass
                     else:
                         stale.unlink(missing_ok=True)
+                    continue
+                if deadline is not None and time.monotonic() < deadline:
+                    time.sleep(1.0)
                     continue
                 raise TestRejected(
                     f"another {what} is running for env {env}; "
@@ -498,7 +557,7 @@ def verify_cases(
 
 
 def status_counts(results: dict[str, VerifyResult]) -> dict[str, int]:
-    counts = {"passed": 0, "failed": 0, "skipped": 0}
+    counts = {"passed": 0, "failed": 0, "blocked": 0, "skipped": 0}
     for r in results.values():
         counts[r.status] = counts.get(r.status, 0) + 1
     counts["total"] = len(results)
@@ -560,6 +619,14 @@ def _failed_ids(cases: dict[str, Any]) -> list[str]:
     )
 
 
+def _blocked_ids(cases: dict[str, Any]) -> list[str]:
+    return sorted(
+        cid
+        for cid, item in cases.items()
+        if isinstance(item, dict) and item.get("status") == "blocked"
+    )
+
+
 def failed_cases(qa: Path, fingerprint: str) -> list[str]:
     """Cases whose verdict is `failed` for the *current* case set."""
     data = read_summary(qa)
@@ -567,6 +634,15 @@ def failed_cases(qa: Path, fingerprint: str) -> list[str]:
         return []
     cases = data.get("cases")
     return _failed_ids(cases) if isinstance(cases, dict) else []
+
+
+def blocked_cases(qa: Path, fingerprint: str) -> list[str]:
+    """Cases whose verification was blocked by the environment (M5)."""
+    data = read_summary(qa)
+    if not data or str(data.get("fingerprint") or "") != fingerprint:
+        return []
+    cases = data.get("cases")
+    return _blocked_ids(cases) if isinstance(cases, dict) else []
 
 
 def write_blocked(root: Path, jira: str, results: dict[str, VerifyResult]) -> Path | None:
@@ -625,11 +701,17 @@ def verify_gate(
         # this, not the data verdict.
         return True, ""
     failed = failed_cases(qa, fingerprint)
-    if not failed:
+    blocked = blocked_cases(qa, fingerprint)
+    if not failed and not blocked:
         return True, ""
+    parts: list[str] = []
+    if failed:
+        parts.append(f"{len(failed)} 条用例数据核实未通过：{', '.join(failed)}")
+    if blocked:
+        parts.append(f"{len(blocked)} 条因环境不可用未能核实：{', '.join(blocked)}")
     return False, (
-        f"{len(failed)} 条用例数据核实未通过：{', '.join(failed)}"
-        "（见 qa/design-verify/ 与 BLOCKED.md；"
+        "；".join(parts)
+        + "（见 qa/design-verify/ 与 BLOCKED.md；"
         "修好后重跑设计，或加 --allow-unverified 越权）"
     )
 
@@ -642,12 +724,14 @@ def verify_view(qa: Path, fingerprint: str) -> dict[str, Any]:
     stale = str(data.get("fingerprint") or "") != fingerprint
     cases = data.get("cases") if isinstance(data.get("cases"), dict) else {}
     failed = _failed_ids(cases)
+    blocked = _blocked_ids(cases)
     return {
         "present": True,
         "stale": stale,
         "updated_at": str(data.get("updated_at") or ""),
         "summary": data.get("summary") if isinstance(data.get("summary"), dict) else {},
         "failed": failed,
+        "blocked": blocked,
         "empty": sorted(
             cid
             for cid, item in cases.items()
@@ -655,7 +739,9 @@ def verify_view(qa: Path, fingerprint: str) -> dict[str, Any]:
             and isinstance(item.get("lint"), dict)
             and item["lint"].get("empty")
         ),
-        "details": [_failed_detail(cid, cases.get(cid)) for cid in failed],
+        "details": [
+            _failed_detail(cid, cases.get(cid)) for cid in [*failed, *blocked]
+        ],
     }
 
 
@@ -765,5 +851,6 @@ def describe(results: dict[str, VerifyResult]) -> str:
     counts = status_counts(results)
     return (
         f"verify passed={counts['passed']} failed={counts['failed']} "
-        f"skipped={counts['skipped']} total={counts['total']}"
+        f"blocked={counts['blocked']} skipped={counts['skipped']} "
+        f"total={counts['total']}"
     )

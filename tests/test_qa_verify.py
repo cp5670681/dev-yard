@@ -494,3 +494,84 @@ def test_no_verify_skips_the_loop(tmp_path: Path, git_src: Path, monkeypatch):
     writer = _CaseWriter(yard, "QA-V4")
     result = req_test(yard, "QA-V4", print_mode=True, runner=writer, verify=False)
     assert result["awaiting_review"] is True
+
+
+def test_verify_env_error_blocks_not_fails(tmp_path: Path, monkeypatch):
+    """A DB/usql failure is an environment block, not a case data gap (M5)."""
+    job = _case_job(tmp_path, verify_sql="SELECT id FROM projects WHERE id=669215")
+
+    def boom(cfg, sql, on_log=None):
+        raise TestRejected("usql not found; cannot verify data")
+
+    monkeypatch.setattr("dev_yard.qa_verify.run_sql_count", boom)
+    result = verify_case(tmp_path, JIRA, _cfg(tmp_path), job)
+    assert result.status == "blocked"
+    assert result.blocked_class == "env"
+    # A blocked case must not be reported as a design-blocked failure.
+    assert failed_cases(paths.qa_dir(tmp_path, JIRA), "") == []
+
+
+def test_verify_env_error_does_not_block_design_loop(tmp_path: Path, git_src: Path, monkeypatch):
+    """An env-blocked verify must not trigger a design redesign (M5)."""
+    calls = {"n": 0}
+
+    def boom(cfg, sql, on_log=None):
+        calls["n"] += 1
+        raise TestRejected("connection refused")
+
+    monkeypatch.setattr("dev_yard.qa_verify.run_sql_count", boom)
+    yard = _testing_req(tmp_path, git_src, "QA-V7")
+    writer = _CaseWriter(yard, "QA-V7")
+    result = req_test(yard, "QA-V7", print_mode=True, runner=writer)
+    assert writer.called == 1  # design ran once; no redesign on an env error
+    assert result["awaiting_review"] is True
+    assert result["verify"]["summary"]["blocked"] == 1
+    assert result["verify"]["failed"] == []
+
+
+def test_env_lock_waits_for_holder_when_asked(tmp_path: Path):
+    """A wait_timeout lets a second run queue instead of failing (M8)."""
+    import threading
+
+    from dev_yard.qa_verify import env_lock
+
+    held = threading.Event()
+    acquired = threading.Event()
+
+    def holder():
+        with env_lock(tmp_path, "local"):
+            acquired.set()
+            held.wait(5)
+
+    t = threading.Thread(target=holder)
+    t.start()
+    assert acquired.wait(2)
+    order: list[str] = []
+
+    def waiter():
+        with env_lock(tmp_path, "local", wait_timeout=5):
+            order.append("waiter")
+        held.set()
+
+    w = threading.Thread(target=waiter)
+    w.start()
+    w.join(timeout=8)
+    assert order == ["waiter"]  # it waited, then acquired, then released
+    t.join(timeout=2)
+
+
+def test_verify_env_block_is_retried(tmp_path: Path, git_src: Path, monkeypatch):
+    calls = {"n": 0}
+
+    def boom(cfg, sql, on_log=None):
+        calls["n"] += 1
+        raise TestRejected("connection refused")
+
+    monkeypatch.setattr("dev_yard.qa_verify.run_sql_count", boom)
+    yard = _testing_req(tmp_path, git_src, "QA-VR")
+    _write_qa_yaml(yard, "\ndesign:\n  verify_retry_attempts: 2\n")
+    writer = _CaseWriter(yard, "QA-VR")
+    result = req_test(yard, "QA-VR", print_mode=True, runner=writer)
+    assert writer.called == 1  # an env error must not trigger a redesign
+    assert calls["n"] == 3  # initial verify + 2 retries
+    assert result["verify"]["summary"]["blocked"] == 1

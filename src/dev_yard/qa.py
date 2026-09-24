@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from contextlib import nullcontext as _nullcontext
@@ -17,6 +18,7 @@ from typing import Any
 import yaml
 
 from dev_yard import attachments, gitops, paths
+from dev_yard import qa_state as qa_st
 from dev_yard import status as st
 from dev_yard.config import load_repos, resolve_freeze_branch
 from dev_yard.parse import as_name_list
@@ -35,11 +37,12 @@ from dev_yard.qa_exec import (
     replay_path,
     run_case_script,
 )
-from dev_yard.qa_report import has_design_blocked_skip, map_qa_result
+from dev_yard.qa_report import has_design_blocked_skip, map_qa_result, triage_buckets
 from dev_yard.qa_review import (
     approve_cases,
     cases_fingerprint,
     clear_stale,
+    mark_machine_fixed,
     reject_cases,
     review_gate,
     review_payload,
@@ -647,6 +650,59 @@ def _preload_auth(
     return ensure_auth(root, cfg, names, on_log)
 
 
+def lint_cases(
+    root: Path, jira: str, cfg: QaConfig, cases: list[CaseJob]
+) -> list[str]:
+    """Static contract checks a case must pass before review/approve (M7).
+
+    Catches what used to only blow up mid-run: a missing/invalid repo, an
+    unconfigured account, `data.writes` without `data.identity`, and a change
+    point no case covers. Returns human-readable problems (empty = clean).
+    """
+    problems: list[str] = []
+    repos = set(load_repos(root))
+    for job in cases:
+        if not job.repo:
+            problems.append(f"{job.id}: 缺少 repo")
+        elif repos and job.repo not in repos:
+            problems.append(f"{job.id}: repo {job.repo!r} 不是 repos.yaml 别名")
+        if job.account and job.account not in cfg.env.accounts:
+            problems.append(f"{job.id}: account {job.account!r} 未配置")
+        if job.writes and not job.identity:
+            problems.append(f"{job.id}: data.writes 需要配套 data.identity")
+    for cid in uncovered_changes(paths.qa_dir(root, jira), cases):
+        problems.append(f"改动点 {cid} 未被任何用例 covers")
+    return problems
+
+
+def _real_pool_probe(
+    root: Path, slot: PoolSlot, *, on_spawn: SpawnFn | None = None, on_reap: ReapFn | None = None
+) -> tuple[bool, str]:
+    """A trivial pi call that proves a pool's provider/model can run (M3)."""
+    spec = load_registry(root)["qa-run"]
+    argv = pi_argv(
+        root=root,
+        bundle="qa-run",
+        prompt=None,
+        print_mode=True,
+        spec=spec,
+        provider=slot.provider,
+        model=slot.model,
+    )
+    code, raw = run_pi_print_tracked(
+        argv,
+        root,
+        "Reply with the single word: ok",
+        timeout=60,
+        on_spawn=on_spawn,
+        on_reap=on_reap,
+    )
+    if code == 0:
+        return True, ""
+    reason, _detail = diagnose_pi_exit(code, raw)
+    return False, reason
+
+
 def _duties(kind: str, jira: str) -> str:
     # Hard constraints only; the detailed playbook lives in the SKILL.md next to
     # this text. Keep the two in sync (a test asserts the key phrases).
@@ -732,6 +788,53 @@ def open_questions_payload(qa: Path) -> dict[str, Any]:
 
 def _count_open_questions(qa: Path) -> int:
     return int(open_questions_payload(qa)["count"])
+
+
+_DESIGN_MARKER = "design.yaml"
+_DESIGN_PENDING = ".design.pending"
+
+
+def design_pending(qa: Path) -> bool:
+    """True when a previous design run started but never finished (M4).
+
+    The host drops this sentinel before invoking qa-design and removes it only
+    once the run returns ok, so a crashed/partial design is never mistaken for
+    a completed one on the next invocation.
+    """
+    return (qa / _DESIGN_PENDING).is_file()
+
+
+def read_design_marker(qa: Path) -> dict[str, Any] | None:
+    """The last completed design generation, or None."""
+    path = qa / _DESIGN_MARKER
+    if not path.is_file():
+        return None
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _mark_design_pending(qa: Path) -> None:
+    qa.mkdir(parents=True, exist_ok=True)
+    (qa / _DESIGN_PENDING).write_text(now_iso(), encoding="utf-8")
+
+
+def _finish_design(qa: Path) -> dict[str, Any]:
+    """Record a completed design generation and clear the pending sentinel."""
+    ids = [c.id for c in discover_cases(qa)]
+    marker = {
+        "generation": now_iso(),
+        "cases": ids,
+        "count": len(ids),
+        "fingerprint": cases_fingerprint(qa),
+    }
+    (qa / _DESIGN_MARKER).write_text(
+        yaml.safe_dump(marker, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    )
+    (qa / _DESIGN_PENDING).unlink(missing_ok=True)
+    return marker
 
 
 def _design_prompt(
@@ -851,10 +954,13 @@ def _verify_loop(
     on_log: LogFn | None,
     cancel_check: CancelCheck | None,
 ) -> dict[str, VerifyResult]:
-    """Verify, then feed failures back to design, up to `verify_attempts` times."""
-    attempts = max(1, cfg.design_verify_attempts)
+    """Verify, feed case gaps back to design, and retry environment blocks (M5)."""
+    case_attempts = max(1, cfg.design_verify_attempts)
+    env_retries = max(0, cfg.design_verify_retry_attempts)
     results: dict[str, VerifyResult] = {}
-    for attempt in range(attempts):
+    case_round = 0
+    env_round = 0
+    while True:
         _raise_if_cancelled(cancel_check, "qa-verify")
         fingerprint = cases_fingerprint(qa)
         results = verify_cases(
@@ -867,46 +973,67 @@ def _verify_loop(
             cancel_check=cancel_check,
         )
         failures = [r for r in results.values() if r.status == "failed"]
-        if not failures:
+        blocked = [r for r in results.values() if r.status == "blocked"]
+        if not failures and not blocked:
             break
-        if attempt + 1 >= attempts:
-            # Out of retries: this verdict is what the human has to act on, so
-            # it must land in the review state. Skipping this write would leave
-            # review.yaml holding an earlier iteration's already-fixed findings
-            # and hide the case that is still design-blocked.
-            reject_cases(qa, render_feedback(results))
+        if failures:
+            case_round += 1
+            if case_round >= case_attempts:
+                # Out of retries: this verdict is what the human has to act on,
+                # so it must land in the review state.
+                reject_cases(qa, render_feedback(results))
+                if on_log is not None:
+                    on_log(
+                        f"数据核实仍有 {len(failures)} 条未通过，已达上限 "
+                        f"{case_attempts}；标 design-blocked，交人工\n"
+                    )
+                break
             if on_log is not None:
                 on_log(
-                    f"数据核实仍有 {len(failures)} 条未通过，已达上限 {attempts}；"
-                    "标 design-blocked，交人工\n"
+                    f"数据核实 {len(failures)} 条未通过，回灌 design 重做"
+                    f"（第 {case_round}/{case_attempts - 1} 次）\n"
+                )
+            prompt = _design_prompt(
+                root,
+                jira,
+                cfg,
+                verify_feedback=render_feedback(results),
+                history=history_text or None,
+            )
+            _mark_design_pending(qa)
+            result = design_runner().start(
+                prompt,
+                root,
+                attachments.with_images(root, jira, [qa, paths.req_dir(root, jira)]),
+            )
+            _raise_if_cancelled(cancel_check, "qa-design")
+            if not result.ok:
+                raise TestRejected(
+                    f"qa-design 数据核实回流失败: {result.summary or result.exit_code}"
+                )
+            cases = discover_cases(qa)
+            _finish_design(qa)
+            # Record the host's findings as the review state's feedback, so a
+            # human sees what the loop changed even when it ends green.
+            reject_cases(qa, render_feedback(results))
+            continue
+        # Only environment-blocked cases remain: retry with backoff (M5), do not
+        # burn design rounds on infrastructure.
+        if env_round >= env_retries:
+            if on_log is not None:
+                on_log(
+                    f"数据核实 {len(blocked)} 条因环境不可用未完成（非用例缺陷）；"
+                    f"已重试 {env_round} 次，修好环境后重跑\n"
                 )
             break
+        env_round += 1
         if on_log is not None:
             on_log(
-                f"数据核实 {len(failures)} 条未通过，回灌 design 重做"
-                f"（第 {attempt + 1}/{attempts - 1} 次）\n"
+                f"数据核实 {len(blocked)} 条因环境不可用，退避重试"
+                f"（第 {env_round}/{env_retries} 次）\n"
             )
-        prompt = _design_prompt(
-            root,
-            jira,
-            cfg,
-            verify_feedback=render_feedback(results),
-            history=history_text or None,
-        )
-        result = design_runner().start(
-            prompt,
-            root,
-            attachments.with_images(root, jira, [qa, paths.req_dir(root, jira)]),
-        )
-        _raise_if_cancelled(cancel_check, "qa-design")
-        if not result.ok:
-            raise TestRejected(
-                f"qa-design 数据核实回流失败: {result.summary or result.exit_code}"
-            )
-        cases = discover_cases(qa)
-        # Record the host's findings as the review state's feedback, so a human
-        # sees what the loop changed even when it ends green.
-        reject_cases(qa, render_feedback(results))
+        if cfg.design_verify_retry_backoff > 0:
+            time.sleep(cfg.design_verify_retry_backoff)
     return results
 
 
@@ -949,6 +1076,52 @@ def _write_progress(
     return payload
 
 
+_YAML_SCALAR = re.compile(r"^(\s*(?:- )?)([A-Za-z_][\w-]*):\s+(.+)$")
+
+
+def _repair_yaml_scalars(text: str) -> str:
+    """Quote free-text scalars that carry a bare `: ` (M7).
+
+    A worker writing `reason: case-defect: 缺 x` makes the whole file
+    unparseable. Re-quoting just those values salvages the result instead of
+    failing the case as `unreadable`.
+    """
+    out: list[str] = []
+    for line in text.splitlines():
+        match = _YAML_SCALAR.match(line)
+        if match is None:
+            out.append(line)
+            continue
+        prefix, key, value = match.groups()
+        val = value.strip()
+        if not val or val[:1] in {'"', "'", "|", ">", "[", "{"} or ": " not in val:
+            out.append(line)
+            continue
+        escaped = val.replace("\\", "\\\\").replace('"', '\\"')
+        out.append(f'{prefix}{key}: "{escaped}"')
+    return "\n".join(out)
+
+
+def load_yaml_tolerant(text: str) -> dict[str, Any] | None:
+    """Best-effort parse of a worker result file, or None (M7)."""
+    for candidate in (text, _repair_yaml_scalars(text)):
+        try:
+            data = yaml.safe_load(candidate)
+        except yaml.YAMLError:
+            continue
+        if isinstance(data, dict):
+            return data
+    lines = _repair_yaml_scalars(text).splitlines()
+    while lines:
+        try:
+            data = yaml.safe_load("\n".join(lines))
+        except yaml.YAMLError:
+            lines.pop()
+            continue
+        return data if isinstance(data, dict) else None
+    return None
+
+
 def _read_case_result(
     path: Path, job: CaseJob, slot: PoolSlot, *, strict: bool = True
 ) -> dict[str, Any]:
@@ -961,8 +1134,17 @@ def _read_case_result(
             "provider": slot.provider,
         }
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {
+            "status": "blocked",
+            "reason": "worker exit: unreadable case result.yaml",
+            "repo": job.repo,
+            "model": slot.model,
+            "provider": slot.provider,
+        }
+    data = load_yaml_tolerant(text)
+    if data is None:
         return {
             "status": "blocked",
             "reason": "worker exit: unreadable case result.yaml",
@@ -1216,6 +1398,66 @@ def find_run_for_rerun(
     return None
 
 
+def latest_retryable(
+    qa: Path, cases: list[CaseJob], env: str
+) -> list[str]:
+    """Ids to re-run in place: the latest run's failed/blocked cases + dependents.
+
+    Only a *finished* run that matches `env` and the current case set counts;
+    `case-defect` ids are excluded (they belong to the design recycle path).
+    A case whose `depends_on` chain reaches a retried case is included too, so a
+    fixed upstream is re-verified downstream.
+    """
+    base = _latest_retryable_ids(qa, {c.id for c in cases}, env)
+    if not base:
+        return []
+    out = set(base)
+    progressed = True
+    while progressed:
+        progressed = False
+        for job in cases:
+            if job.id in out:
+                continue
+            if any(dep in out for dep in job.depends_on):
+                out.add(job.id)
+                progressed = True
+    return sorted(out)
+
+
+def _latest_retryable_ids(qa: Path, case_ids: set[str], env: str) -> list[str]:
+    evidence = qa / "evidence"
+    if not evidence.is_dir():
+        return []
+    for run_dir in sorted((p for p in evidence.iterdir() if p.is_dir()), reverse=True):
+        doc = _progress_doc(run_dir)
+        if doc is None:
+            continue
+        run_env = str(doc.get("env") or "")
+        if env and run_env and run_env != env:
+            continue
+        ids = {
+            str(c.get("id"))
+            for c in doc.get("cases") or []
+            if isinstance(c, dict) and c.get("id")
+        }
+        if ids and case_ids and ids != set(case_ids):
+            continue
+        out: list[str] = []
+        for item in doc.get("cases") or []:
+            if not isinstance(item, dict):
+                continue
+            state = str(item.get("state") or "")
+            if state not in {"failed", "blocked"}:
+                continue
+            reason = str(item.get("reason") or "")
+            blocked_class = str(item.get("blocked_class") or "")
+            if blocked_kind(reason, blocked_class) == "case-defect":
+                continue
+            out.append(str(item.get("id")))
+        return out
+    return []
+
+
 def reconcile_case_verdict(
     progress_state: str,
     progress_reason: str,
@@ -1254,8 +1496,8 @@ def _file_verdict(path: Path) -> tuple[str, str]:
     if not path.is_file():
         return "", ""
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError:
+        data = load_yaml_tolerant(path.read_text(encoding="utf-8")) or {}
+    except (OSError, UnicodeDecodeError):
         return "", ""
     if not isinstance(data, dict):
         return "", ""
@@ -1360,6 +1602,9 @@ def _apply_resume(cases: list[CaseJob], run_dir: Path) -> int:
     for job in cases:
         prev = prev_by_id.get(job.id) or {}
         state = str(prev.get("state") or "")
+        # A run interrupted mid-retry must not get a fresh retry budget.
+        if isinstance(prev.get("attempts"), int):
+            job.attempts = prev["attempts"]
         if prev_by_id and state not in TERMINAL:
             continue
         path = run_dir / job.id / "result.yaml"
@@ -1433,6 +1678,7 @@ def reset_cases_in_run(
         item["started_at"] = None
         item["ended_at"] = None
         item["reason"] = ""
+        item["attempts"] = 0
     if not reset:
         return []
     # Drop the case's own result + screenshots so the old outcome cannot be read
@@ -1472,6 +1718,8 @@ def req_test(
     verify_only: bool = False,
     allow_unverified: bool = False,
     unsafe_skip_review: bool = False,
+    no_wait: bool = False,
+    pool_probe: Callable[[PoolSlot], Any] | None = None,
     runner: Runner | None = None,
     case_runner: Callable[[CaseJob, PoolSlot], dict[str, Any]] | None = None,
     on_progress: ProgressFn | None = None,
@@ -1499,6 +1747,8 @@ def req_test(
             verify_only=verify_only,
             allow_unverified=allow_unverified,
             unsafe_skip_review=unsafe_skip_review,
+            no_wait=no_wait,
+            pool_probe=pool_probe,
             runner=runner,
             case_runner=case_runner,
             on_progress=on_progress,
@@ -1532,6 +1782,8 @@ def _req_test(
     verify_only: bool = False,
     allow_unverified: bool = False,
     unsafe_skip_review: bool = False,
+    no_wait: bool = False,
+    pool_probe: Callable[[PoolSlot], Any] | None = None,
     runner: Runner | None = None,
     case_runner: Callable[[CaseJob, PoolSlot], dict[str, Any]] | None = None,
     on_progress: ProgressFn | None = None,
@@ -1602,7 +1854,33 @@ def _req_test(
             f"{jira} has no cases to approve; run `dev-yard req test {jira}` "
             "first, review the cases, then --approve"
         )
-    need_design = (not run_only) and not verify_only and (redesign or not cases)
+    # M6b: a run that ended in case-defects leaves them recorded in state.yaml.
+    # On the next design invocation, recycle them automatically — fix the seed,
+    # not the tested point — unless the human asked for something else.
+    auto_recycled_ids = qa_st.triage(root, jira)["auto_recycled"]
+    auto_recycled_now = False
+    if (
+        auto_recycled_ids
+        and not run_only
+        and not verify_only
+        and not redesign
+        and not approve
+        and not rerun_ids
+        and not feedback_text
+    ):
+        redesign = True
+        auto_recycled_now = True
+        feedback_text = (
+            "上一轮 run 判定以下用例为用例/种子缺陷（case-defect），"
+            "请只修 setup / verify.sql / 依赖声明，保持用例正文与预期不变："
+            + "、".join(auto_recycled_ids)
+        )
+        if on_log is not None:
+            on_log(f"自动回流 case-defect：{', '.join(auto_recycled_ids)}\n")
+    bodies_before = cases_fingerprint(qa, scope="bodies")
+    need_design = (not run_only) and not verify_only and (
+        redesign or not cases or design_pending(qa)
+    )
     if feedback_text:
         if run_only:
             raise TestRejected("--feedback cannot be used with --run-only")
@@ -1650,6 +1928,7 @@ def _req_test(
             feedback=feedback_text or None,
             history=history_text or None,
         )
+        _mark_design_pending(qa)
         result = _ensure_design_runner().start(
             prompt,
             root,
@@ -1661,12 +1940,66 @@ def _req_test(
                 f"qa-design failed: {result.summary or result.exit_code}"
             )
         cases = discover_cases(qa)
+        _finish_design(qa)
         if feedback_text:
-            reject_cases(qa, feedback_text)
+            if auto_recycled_now and (
+                cases_fingerprint(qa, scope="bodies") == bodies_before
+            ):
+                # Only seeds/verify moved: the tested point is unchanged, so the
+                # previous approval carries over (M6).
+                mark_machine_fixed(qa, feedback_text)
+            else:
+                reject_cases(qa, feedback_text)
         elif redesign:
             # A redesign supersedes a doc-change stale flag; the changed case
             # fingerprint still forces a fresh review.
             clear_stale(qa)
+
+    if auto_recycled_now:
+        # Consume the case-defect list so a later plain `req test` does not keep
+        # forcing a redesign; the next run records a fresh triage anyway.
+        prev_triage = qa_st.triage(root, jira)
+        qa_st.record_triage(root, jira, prev_triage["pending"], [])
+
+    # M7: static contract lint with one bounded design fix pass, before verify.
+    # A seed/contract mistake should not cost a human review or a run.
+    if (
+        cases
+        and not run_only
+        and not rerun_ids
+        and not verify_only
+        and not allow_unverified
+    ):
+        problems = lint_cases(root, jira, cfg, cases)
+        if problems:
+            if on_log is not None:
+                on_log("用例契约检查未通过，回灌 design 修正："
+                       + "；".join(problems) + "\n")
+            _raise_if_cancelled(cancel_check, "qa-design")
+            fix_prompt = _design_prompt(
+                root,
+                jira,
+                cfg,
+                verify_feedback=(
+                    "宿主静态契约检查未通过，请修正后重写用例：\n"
+                    + "\n".join(f"- {p}" for p in problems)
+                ),
+            )
+            _mark_design_pending(qa)
+            result = _ensure_design_runner().start(
+                fix_prompt,
+                root,
+                attachments.with_images(root, jira, [qa, paths.req_dir(root, jira)]),
+            )
+            _raise_if_cancelled(cancel_check, "qa-design")
+            if not result.ok:
+                raise TestRejected(
+                    f"qa-design 契约修正失败: {result.summary or result.exit_code}"
+                )
+            cases = discover_cases(qa)
+            _finish_design(qa)
+            # The changed case set invalidates any prior approval; the review
+            # gate holds it for a fresh look (no need to force `rejected`).
 
     # M1/M3: prove each case's declared data prerequisites host-side. Failures
     # loop back into design (bounded); the final verdict is written so the gate
@@ -1713,6 +2046,10 @@ def _req_test(
     uncovered = uncovered_changes(qa, cases)
     if uncovered and on_log is not None:
         on_log(f"提示：改动点未被任何用例 covers：{', '.join(uncovered)}\n")
+    # M7: static contract checks, before a human is asked to approve.
+    lint_problems = lint_cases(root, jira, cfg, cases) if cases else []
+    if lint_problems and on_log is not None:
+        on_log("用例契约检查：" + "；".join(lint_problems) + "\n")
 
     if design_only:
         return {
@@ -1724,6 +2061,7 @@ def _req_test(
             "review": review_payload(qa),
             "verify": verify_info,
             "uncovered_changes": uncovered,
+            "lint": lint_problems,
         }
     if verify_only:
         return {
@@ -1749,7 +2087,13 @@ def _req_test(
                 "review": review_payload(qa),
                 "verify": verify_info,
                 "uncovered_changes": uncovered,
+                "lint": lint_problems,
             }
+        if lint_problems and not allow_unverified:
+            raise TestRejected(
+                "用例契约检查未通过：" + "；".join(lint_problems)
+                + "；修好后重跑设计，或加 --allow-unverified 越权"
+            )
         ok, why = verify_gate(
             qa,
             cases_fingerprint(qa),
@@ -1799,6 +2143,7 @@ def _req_test(
                 "review": review_payload(qa),
                 "verify": verify_info,
                 "uncovered_changes": uncovered,
+                "lint": lint_problems,
             }
     if allow_unverified:
         _mark_design_blocked(cases, qa, cases_fingerprint(qa))
@@ -1812,6 +2157,26 @@ def _req_test(
             f"--resume: no incomplete run for {jira} in env {cfg.active_env}; "
             "use --fresh to start a new run"
         )
+    # M10: a finished run whose cases failed/blocked is amended in place by
+    # default, so fixing B tickets only re-runs what actually broke.
+    if (
+        rerun_run is None
+        and incomplete is None
+        and resume is None
+        and not redesign
+        and not run_only
+        and cfg.run_incremental
+    ):
+        retryable = latest_retryable(qa, cases, cfg.active_env)
+        if retryable:
+            rerun_run = find_run_for_rerun(qa, set(retryable))
+            if rerun_run is not None:
+                rerun_ids = set(retryable)
+                if on_log is not None:
+                    on_log(
+                        f"增量重跑 {len(retryable)} 条（上一轮 failed/blocked）："
+                        f"{', '.join(sorted(retryable))}\n"
+                    )
     if rerun_run is not None:
         run_id, run_dir, _ = rerun_run
         reset = reset_cases_in_run(run_dir, rerun_ids, case_ids)
@@ -1902,6 +2267,28 @@ def _req_test(
                 job.ended_at = stamp
 
     pools = [PoolSlot.from_worker(w) for w in cfg.workers]
+    # M3: optionally probe each pool and drop the ones that cannot run.
+    if cfg.run_pool_preflight or pool_probe is not None:
+        probe = pool_probe or (
+            lambda p: _real_pool_probe(root, p, on_spawn=on_spawn, on_reap=on_reap)
+        )
+        kept: list[PoolSlot] = []
+        for p in pools:
+            try:
+                res = probe(p)
+            except Exception as e:  # noqa: BLE001 — a probe failure is just a drop
+                res = (False, str(e))
+            ok, reason = res if isinstance(res, tuple) else (bool(res), "")
+            if ok:
+                kept.append(p)
+            else:
+                qa_st.record_pools(root, jira, {p.id: "quarantined"})
+                if on_log is not None:
+                    on_log(f"模型池预检失败，隔离 {p.id}：{reason}\n")
+        if not kept:
+            raise TestRejected("所有模型池预检失败；修好 provider/额度后重跑")
+        pools = kept
+    qa_st.record_pools(root, jira, {p.id: "healthy" for p in pools})
     if on_log is not None:
         on_log("本轮使用启动时的 worker 配置\n")
     progress_path = run_dir / "progress.yaml"
@@ -2150,7 +2537,12 @@ def _req_test(
     try:
         # Seeds share one test DB across requirements, so a run must not overlap
         # another requirement's run/verification in the same env.
-        with env_lock(root, cfg.active_env, what="qa run"):
+        with env_lock(
+            root,
+            cfg.active_env,
+            what="qa run",
+            wait_timeout=0 if no_wait else cfg.run_env_wait_timeout,
+        ):
             run_schedule(
                 cases,
                 pools,
@@ -2158,6 +2550,11 @@ def _req_test(
                 on_progress=ping,
                 serialize_accounts=cfg.serialize_accounts,
                 cancel_check=cancel_check,
+                retry_attempts=cfg.run_retry_attempts,
+                retry_backoff=cfg.run_retry_backoff,
+                on_pool_trip=lambda pid, reason: qa_st.record_pools(
+                    root, jira, {pid: "quarantined"}
+                ),
             )
     finally:
         executor.close()
@@ -2338,6 +2735,33 @@ def _req_test(
                 except OSError:
                     pass
 
+    # M6b/M1: classify the non-passing cases and record the machine state so the
+    # next invocation (or a restarted web server) knows what to do without a
+    # human having to re-derive it from the report.
+    triage = triage_buckets(case_payloads)
+    if triage["pending"]:
+        phase = "awaiting_triage"
+    elif triage["auto_recycled"]:
+        phase = "recycled"
+    elif summary.get("blocked"):
+        phase = "running"
+    else:
+        phase = "closed"
+    qa_st.record(
+        root,
+        jira,
+        phase=phase,
+        last_run_id=run_id,
+        last_verdict=(
+            "failed"
+            if (summary.get("failed") or summary.get("blocked"))
+            else "passed"
+            if summary.get("passed")
+            else ""
+        ),
+    )
+    qa_st.record_triage(root, jira, triage["pending"], triage["auto_recycled"])
+
     return {
         "jira": jira,
         "run_id": run_id,
@@ -2346,4 +2770,5 @@ def _req_test(
         "ingested": ingested,
         "ingest_skipped": ingest_skipped,
         "cases": len(cases),
+        "triage": triage,
     }

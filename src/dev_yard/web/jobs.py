@@ -970,6 +970,34 @@ class JobRunner:
             restored.append(job)
         return restored
 
+    def resume_pending_qa(self) -> list[Job]:
+        """Re-submit QA runs that a restart interrupted (M9).
+
+        Only a requirement whose derived phase is `running` (an incomplete run
+        exists) and whose qa.yaml still opts into `run.resume_on_restart` is
+        restored; everything else is left for the human to drive.
+        """
+        if self.sync:
+            return []
+        from dev_yard.qa_config import TestRejected, load_qa_config
+        from dev_yard.qa_state import derive_phase
+
+        restored: list[Job] = []
+        for req in paths.iter_req_dirs(self.root):
+            jira = req.name
+            try:
+                if any(j.jira == jira for j in self.running()):
+                    continue
+                if derive_phase(self.root, jira) != "running":
+                    continue
+                if not load_qa_config(self.root, None, jira).run_resume_on_restart:
+                    continue
+                job = self.submit("qa-run", jira, extra={"resume": True})
+            except (ValueError, TestRejected):
+                continue
+            restored.append(job)
+        return restored
+
     def submit(
         self,
         action: str,

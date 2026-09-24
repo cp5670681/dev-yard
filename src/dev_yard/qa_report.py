@@ -144,6 +144,40 @@ def _summary_line(summary: dict[str, Any]) -> str:
     return summary_line(summary)
 
 
+def triage_buckets(cases: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """Split a run's non-passing cases into human triage vs automatic recycle.
+
+    `pending` is what a person must judge (likely product defects); everything
+    the host can resolve itself — a `case-defect` seed gap — goes to
+    `auto_recycled` and never appears in the 下 bug list. Environment blocks are
+    retried in-run (M2) and are not triage items either.
+    """
+    pending: list[str] = []
+    auto_recycled: list[str] = []
+    for item in cases:
+        if not isinstance(item, dict):
+            continue
+        cid = str(item.get("case") or item.get("id") or "").strip()
+        if not cid:
+            continue
+        status = str(item.get("status") or "")
+        if status == "failed":
+            if classify_defect(item) == "case":
+                auto_recycled.append(cid)
+            else:
+                pending.append(cid)
+        elif status == "blocked":
+            kind = blocked_kind(
+                str(item.get("reason") or ""), str(item.get("blocked_class") or "")
+            )
+            if kind == "case-defect":
+                auto_recycled.append(cid)
+            elif kind == "other":
+                pending.append(cid)
+            # env (retried) and cancelled (collateral) are not triage items.
+    return {"pending": sorted(set(pending)), "auto_recycled": sorted(set(auto_recycled))}
+
+
 def md_cell(text: Any) -> str:
     """One-line, pipe-escaped text safe inside a Markdown table cell."""
     return " ".join(str(text or "").split()).replace("|", "\\|")

@@ -82,6 +82,7 @@ def create_app(
     assistants = assistant_hub or AssistantHub(root, sync=sync_jobs)
     if not jobs.sync:
         jobs.resume_pending_grills()
+        jobs.resume_pending_qa()
         service.recover_stale_tickets(root)
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     templates.env.globals["step_labels"] = STEP_LABELS

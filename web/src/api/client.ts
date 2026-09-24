@@ -125,6 +125,13 @@ export function fileCaseBug(jira: string, caseId: string) {
   );
 }
 
+export function triageQaCases(jira: string, productOnly = true) {
+  return api<{ filed: Record<string, string>; skipped: string[] }>(
+    `/api/requirements/${encodeURIComponent(jira)}/qa/triage?product_only=${productOnly}`,
+    { method: "POST" },
+  );
+}
+
 export function rerunQaCases(jira: string, caseIds: string[], env = "") {
   return api<JobsOut>(
     `/api/requirements/${encodeURIComponent(jira)}/qa/rerun`,

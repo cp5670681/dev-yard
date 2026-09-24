@@ -1555,6 +1555,11 @@ def ticket_from_qa_case(root: Path, jira: str, case_id: str) -> dict[str, Any]:
             f"case {case_id} 没有可建的 bug 票（repo {finding['repo']!r} 不在本需求仓库内）"
         )
     ticket = spawned.tickets[0]
+    from dev_yard import qa_state as qa_st
+
+    t = qa_st.triage(root, jira)
+    rem = [c for c in t["pending"] if c != case_id]
+    qa_st.record_triage(root, jira, rem, t["auto_recycled"], filed={case_id: ticket.id})
     return {
         "jira": jira,
         "case_id": case_id,
@@ -1562,6 +1567,49 @@ def ticket_from_qa_case(root: Path, jira: str, case_id: str) -> dict[str, Any]:
         "title": ticket.title,
         "repo": ticket.repo,
     }
+
+
+def triage_qa_cases(
+    root: Path, jira: str, *, product_only: bool = True
+) -> dict[str, Any]:
+    """Open bug tickets for the run's pending failures in one go (M6b).
+
+    `product_only` files only the cases the host classified as `product`; the
+    rest (unclassified, or a case-defect the host already recycles) are
+    reported as skipped and left for the design path.
+    """
+    from dev_yard import qa_state as qa_st
+    from dev_yard.qa_board import list_runs
+    from dev_yard.qa_report import classify_defect
+
+    qa = paths.qa_dir(root, jira)
+    pending = qa_st.triage(root, jira)["pending"]
+    if not pending:
+        return {"filed": {}, "skipped": []}
+    rows: dict[str, dict[str, Any]] = {}
+    for run in list_runs(qa):
+        for c in run.get("cases") or []:
+            cid = str(c.get("case") or "") if isinstance(c, dict) else ""
+            if cid and cid not in rows:
+                rows[cid] = c
+    filed: dict[str, str] = {}
+    skipped: list[str] = []
+    for cid in pending:
+        row = rows.get(cid)
+        if row is None or (product_only and classify_defect(row) != "product"):
+            skipped.append(cid)
+            continue
+        try:
+            out = ticket_from_qa_case(root, jira, cid)
+        except (ValueError, FileNotFoundError):
+            skipped.append(cid)
+            continue
+        filed[cid] = out["ticket_id"]
+    if filed:
+        remaining = [c for c in pending if c not in filed]
+        cur = qa_st.triage(root, jira)
+        qa_st.record_triage(root, jira, remaining, cur["auto_recycled"], filed=filed)
+    return {"filed": filed, "skipped": skipped}
 
 
 def ticket_delete(root: Path, jira: str, ticket_id: str) -> dict[str, Any]:

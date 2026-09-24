@@ -171,6 +171,16 @@ def qa_detail_summary(root: Path, jira: str) -> dict[str, Any]:
             }
         )
 
+    from dev_yard.qa_state import NEXT_ACTION, derive_phase
+    from dev_yard.qa_state import triage as qa_triage
+
+    try:
+        phase = derive_phase(root, jira)
+        triage_payload = qa_triage(root, jira)
+    except Exception:  # noqa: BLE001 — the board must render even if state is odd
+        phase = ""
+        triage_payload = {"pending": [], "auto_recycled": [], "filed": {}}
+
     return {
         "has_cases": has_cases,
         "has_meta": has_meta,
@@ -181,6 +191,9 @@ def qa_detail_summary(root: Path, jira: str) -> dict[str, Any]:
         "incomplete_run": incomplete,
         "cases": merged_cases,
         "review": review_payload(qa) if qa.is_dir() else None,
+        "phase": phase,
+        "next": NEXT_ACTION.get(phase, ""),
+        "triage": triage_payload,
     }
 
 
@@ -325,6 +338,9 @@ def _case_run_row(run_dir: Path, cid: str, listed: dict[str, Any]) -> dict[str, 
         "assertions": _assertion_rows(data.get("assertions")),
         "screenshots": _screenshots(case_dir),
         "title": str(data.get("title") or ""),
+        # Carried so triage/board can tell a product defect from a case bug.
+        "defect_class": str(data.get("defect_class") or ""),
+        "blocked_class": str(data.get("blocked_class") or ""),
     }
 
 
@@ -348,18 +364,33 @@ def qa_page_payload(root: Path, jira: str) -> dict[str, Any]:
             "runs": [],
             "review": None,
             "open_questions": {"count": 0, "body": "", "exists": False},
+            "phase": "",
+            "next": "",
+            "triage": {"pending": [], "auto_recycled": [], "filed": {}},
         }
     meta, bad_meta = _load_yaml(qa / "meta.yaml")
     if bad_meta:
         meta_out: Any = {"status": _UNREADABLE}
     else:
         meta_out = meta if isinstance(meta, dict) else None
+    from dev_yard.qa_state import NEXT_ACTION, derive_phase
+    from dev_yard.qa_state import triage as qa_triage
+
+    try:
+        phase = derive_phase(root, jira)
+        triage_payload = qa_triage(root, jira)
+    except Exception:  # noqa: BLE001 — page must render even if state is odd
+        phase = ""
+        triage_payload = {"pending": [], "auto_recycled": [], "filed": {}}
     return {
         "meta": meta_out,
         "cases": list_case_payloads(qa),
         "runs": list_runs(qa),
         "review": review_payload(qa),
         "open_questions": open_questions_payload(qa),
+        "phase": phase,
+        "next": NEXT_ACTION.get(phase, ""),
+        "triage": triage_payload,
     }
 
 

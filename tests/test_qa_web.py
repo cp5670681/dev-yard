@@ -429,3 +429,43 @@ def test_qa_active_jobs_hold_review_gate(tmp_path: Path, git_src: Path, monkeypa
         assert client.get("/api/requirements/QA-W1/qa").json()["active_jobs"] == []
     finally:
         gate.set()
+
+
+def test_qa_page_payload_carries_phase_and_triage(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard import qa_state as qa_st
+
+    yard = _req(tmp_path, git_src, monkeypatch)
+    _seed_qa(yard)
+    qa_st.record_triage(yard, "QA-W1", ["case-01"], ["case-02"])
+    client = _client(yard)
+    page = client.get("/api/requirements/QA-W1/qa").json()
+    assert page["triage"]["pending"] == ["case-01"]
+    assert page["triage"]["auto_recycled"] == ["case-02"]
+    assert page["phase"]  # derived from the seeded running progress
+    assert page["next"]
+    detail = client.get("/api/requirements/QA-W1").json()
+    assert detail["qa"]["triage"]["pending"] == ["case-01"]
+    assert detail["qa"]["next"]
+
+
+def test_qa_triage_endpoint_files_pending(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard import qa_state as qa_st
+
+    yard = _req(tmp_path, git_src, monkeypatch)
+    _seed_qa(yard)
+    run = yard / "reqs" / "QA-W1" / "qa" / "evidence" / "2026-09-16-153000"
+    (run / "case-01" / "result.yaml").write_text(
+        "case: case-01\ntitle: t\nrepo: backend\nstatus: failed\nreason: x\n"
+        "defect_class: product\n"
+        "failure: {step: 1, step_desc: boom, evidence: screenshots/step-01.png}\n"
+        "assertions:\n  - {type: ui, expected: e1, actual: a1, status: failed}\n",
+        encoding="utf-8",
+    )
+    qa_st.record_triage(yard, "QA-W1", ["case-01"], [])
+    client = _client(yard)
+    out = client.post("/api/requirements/QA-W1/qa/triage").json()
+    assert list(out["filed"]) == ["case-01"]
+    assert out["skipped"] == []
+    assert qa_st.triage(yard, "QA-W1")["filed"]["case-01"]

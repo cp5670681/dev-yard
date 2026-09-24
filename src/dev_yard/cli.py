@@ -808,6 +808,32 @@ def qa_report_cmd(
     _echo_blocked_hint(summary, jira)
 
 
+@qa_app.command("status")
+def qa_status_cmd(jira: str) -> None:
+    """Show the QA state machine: current phase, triage and next step."""
+    from dev_yard.qa_state import status_payload
+
+    root = root_opt()
+    payload = status_payload(root, jira)
+    review = payload.get("review") or {}
+    triage = payload.get("triage") or {}
+    typer.echo(f"{jira} phase={payload.get('phase')}")
+    typer.echo(f"  review={review.get('status') or '?'} approved={bool(review.get('approved'))}")
+    pending = triage.get("pending") or []
+    recycled = triage.get("auto_recycled") or []
+    if pending:
+        typer.echo(f"  待判定失败（下 bug 或 --redesign）: {', '.join(pending)}")
+    if recycled:
+        typer.echo(f"  自动回流用例缺陷: {', '.join(recycled)}")
+    pools = payload.get("pools") or {}
+    bad = [k for k, v in pools.items() if (v or {}).get("state") == "quarantined"]
+    if bad:
+        typer.echo(f"  隔离模型池: {', '.join(bad)}")
+    if payload.get("last_run_id"):
+        typer.echo(f"  last_run={payload['last_run_id']}")
+    typer.echo(f"  下一步: {payload.get('next') or ''}")
+
+
 @qa_app.command("logs")
 def qa_logs_cmd(
     jira: str,
@@ -840,6 +866,34 @@ def qa_logs_cmd(
     typer.echo(text.rstrip())
 
 
+@req_app.command("triage")
+def req_triage_cmd(
+    jira: str,
+    product: bool = typer.Option(
+        True,
+        "--product/--all",
+        help="只对宿主判定为 product 的失败建票；--all 连未分类一起建",
+    ),
+) -> None:
+    """批量给待判定失败用例下 bug（M6b）。"""
+    root = root_opt()
+    try:
+        out = service.triage_qa_cases(root, jira, product_only=product)
+    except (ValueError, FileNotFoundError) as e:
+        _die(e)
+        return
+    filed = out.get("filed") or {}
+    skipped = out.get("skipped") or []
+    if not filed and not skipped:
+        typer.echo(f"{jira} 没有待判定失败用例")
+        return
+    for cid, tid in filed.items():
+        typer.echo(f"  {cid} -> {tid}")
+    if skipped:
+        typer.echo(f"  跳过（非 product / 无结果）：{', '.join(skipped)}")
+    typer.echo(f"{jira} 已建 {len(filed)} 张，跳过 {len(skipped)} 条")
+
+
 @req_app.command("test")
 def req_test_cmd(
     jira: str,
@@ -868,10 +922,18 @@ def req_test_cmd(
     fresh: bool = typer.Option(
         False, "--fresh", help="Ignore an incomplete run and start a new one"
     ),
+    full: bool = typer.Option(
+        False, "--full", help="强制全量重跑（新 run），不做 M10 增量重跑"
+    ),
     rerun_case: list[str] = typer.Option(
         [],
         "--rerun-case",
         help="Re-run only these case ids (repeatable); amends the run they belong to",
+    ),
+    no_wait: bool = typer.Option(
+        False,
+        "--no-wait",
+        help="同 env 已有 run 时立即拒绝，不排队等待（run.env_wait_timeout）",
     ),
     no_verify: bool = typer.Option(
         False, "--no-verify", help="跳过设计期数据核实（verify.sql）"
@@ -896,8 +958,8 @@ def req_test_cmd(
     from dev_yard.test_report import ReportRejected
 
     root = root_opt()
-    if resume and fresh:
-        _die(ValueError("--resume and --fresh are mutually exclusive"))
+    if resume and (fresh or full):
+        _die(ValueError("--resume and --fresh/--full are mutually exclusive"))
         return
     if verify_only and no_verify:
         _die(ValueError("--verify-only and --no-verify are mutually exclusive"))
@@ -905,6 +967,7 @@ def req_test_cmd(
     if rerun_case and (
         resume
         or fresh
+        or full
         or design_only
         or run_only
         or redesign
@@ -943,12 +1006,13 @@ def req_test_cmd(
             approve=approve,
             feedback=text or None,
             ingest=not no_ingest,
-            resume=True if resume else False if fresh else None,
+            resume=True if resume else False if (fresh or full) else None,
             rerun_cases=rerun_case or None,
             verify=False if no_verify else None,
             verify_only=verify_only,
             allow_unverified=allow_unverified,
             unsafe_skip_review=unsafe_skip_review,
+            no_wait=no_wait,
             on_log=lambda line: typer.echo(line.rstrip() if isinstance(line, str) else line),
         )
     except (ValueError, FileNotFoundError, TestRejected, ReportRejected, GitError) as e:

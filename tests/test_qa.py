@@ -3314,3 +3314,779 @@ def test_write_collisions_flag_same_row_and_column():
     errors = write_collisions(results)
     assert set(errors) == {"case-01", "case-02"}
     assert "projects.auto_fetch_ai_nav" in errors["case-01"]
+
+
+# --- recovery: retryable terminal blocks (M2) and design completion (M4) ---
+
+
+def test_run_schedule_retries_env_block_then_passes():
+    calls = {"n": 0}
+    cases = [CaseJob(id="c1", title="t", repo="be")]
+    pools = [PoolSlot(id="a", provider="rcc", model="m", concurrency=1, priority=1)]
+
+    def run(job, slot):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return {
+                "status": "blocked",
+                "reason": "worker exit: pi exit 1",
+                "blocked_class": "env",
+            }
+        return {"status": "passed"}
+
+    run_schedule(cases, pools, run, retry_attempts=2)
+    assert calls["n"] == 3
+    assert cases[0].state == "passed"
+    assert cases[0].attempts == 2
+
+
+def test_run_schedule_exhausts_retries_then_blocks():
+    calls = {"n": 0}
+    cases = [CaseJob(id="c1", title="t", repo="be")]
+    pools = [PoolSlot(id="a", provider="rcc", model="m", concurrency=1, priority=1)]
+
+    def run(job, slot):
+        calls["n"] += 1
+        return {"status": "blocked", "reason": "worker exit: pi exit 1"}
+
+    run_schedule(cases, pools, run, retry_attempts=2)
+    assert calls["n"] == 3
+    assert cases[0].state == "blocked"
+
+
+def test_run_schedule_retries_worker_exit_with_setup():
+    # A model/env crash is transient regardless of the case's seed, so it is
+    # retried even when the case declares setup (M2).
+    calls = {"n": 0}
+    cases = [CaseJob(id="c1", title="t", repo="be", setup="setup.sql")]
+    pools = [PoolSlot(id="a", provider="rcc", model="m", concurrency=1, priority=1)]
+
+    def run(job, slot):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return {"status": "blocked", "reason": "worker exit: pi exit 1"}
+        return {"status": "passed"}
+
+    run_schedule(cases, pools, run, retry_attempts=2)
+    assert calls["n"] == 3
+    assert cases[0].state == "passed"
+
+
+def test_run_schedule_does_not_retry_setup_failure():
+    calls = {"n": 0}
+    cases = [CaseJob(id="c1", title="t", repo="be", setup="setup.sql")]
+    pools = [PoolSlot(id="a", provider="rcc", model="m", concurrency=1, priority=1)]
+
+    def run(job, slot):
+        calls["n"] += 1
+        return {"status": "blocked", "reason": "setup failed: boom", "blocked_class": "env"}
+
+    run_schedule(cases, pools, run, retry_attempts=2)
+    assert calls["n"] == 1
+    assert cases[0].state == "blocked"
+
+
+def test_run_schedule_does_not_retry_case_defect_or_cancel():
+    for reason, blocked_class in (
+        ("case-defect: 缺关联", "case-defect"),
+        ("cancelled: run cancelled", "cancelled"),
+        ("mystery", ""),
+    ):
+        calls = {"n": 0}
+        cases = [CaseJob(id="c1", title="t", repo="be")]
+        pools = [PoolSlot(id="a", provider="rcc", model="m", concurrency=1, priority=1)]
+
+        def run(job, slot, _reason=reason, _cls=blocked_class):
+            calls["n"] += 1
+            return {"status": "blocked", "reason": _reason, "blocked_class": _cls}
+
+        run_schedule(cases, pools, run, retry_attempts=2)
+        assert calls["n"] == 1, reason
+        assert cases[0].state == "blocked", reason
+
+
+def test_design_pending_sentinel_forces_redesign(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard.qa import design_pending, read_design_marker
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-DP")
+    design = _DesignRunner(yard, "QA-DP")
+    req_test(yard, "QA-DP", print_mode=True, design_only=True, runner=design)
+    qa = yard / "reqs" / "QA-DP" / "qa"
+    assert design.called == 1
+    assert not design_pending(qa)
+    marker = read_design_marker(qa)
+    assert marker is not None and marker["count"] == 1
+
+    # A crashed design leaves the sentinel behind: the next run must redesign.
+    (qa / ".design.pending").write_text("2026-01-01T00:00:00Z", encoding="utf-8")
+    design.called = 0
+    req_test(yard, "QA-DP", print_mode=True, design_only=True, runner=design)
+    assert design.called == 1
+    assert not design_pending(qa)
+
+
+# --- M1 state machine, M6b triage, M6 machine_fixed ---
+
+
+def test_triage_buckets_splits_case_defect_from_product():
+    from dev_yard.qa_report import triage_buckets
+
+    cases = [
+        {"case": "c1", "status": "failed", "repo": "be", "defect_class": "product"},
+        {"case": "c2", "status": "failed", "repo": "be", "reason": "case-defect: x"},
+        {"case": "c3", "status": "failed", "repo": "be", "defect_class": "unclassified"},
+        {"case": "c4", "status": "blocked", "repo": "be", "reason": "case-defect: y"},
+        {"case": "c5", "status": "blocked", "repo": "be", "reason": "worker exit: pi exit 1"},
+        {"case": "c6", "status": "blocked", "repo": "be", "reason": "mystery"},
+        {"case": "c7", "status": "passed", "repo": "be"},
+    ]
+    buckets = triage_buckets(cases)
+    assert buckets["pending"] == ["c1", "c3", "c6"]
+    assert buckets["auto_recycled"] == ["c2", "c4"]
+
+
+def test_qa_state_records_and_derives_phase(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard import qa_state as qa_st
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-ST")
+    # No cases yet -> designing.
+    assert qa_st.derive_phase(yard, "QA-ST") == "designing"
+    design = _DesignRunner(yard, "QA-ST")
+    req_test(yard, "QA-ST", print_mode=True, design_only=True, runner=design)
+    # Cases exist but are not approved -> awaiting_review.
+    assert qa_st.derive_phase(yard, "QA-ST") == "awaiting_review"
+    req_test(yard, "QA-ST", print_mode=True, approve=True, runner=design)
+    assert qa_st.derive_phase(yard, "QA-ST") == "approved"
+    result = req_test(
+        yard,
+        "QA-ST",
+        print_mode=True,
+        run_only=True,
+        ingest=False,
+        case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
+    )
+    assert result["triage"] == {"pending": [], "auto_recycled": []}
+    assert qa_st.derive_phase(yard, "QA-ST") == "closed"
+    payload = qa_st.status_payload(yard, "QA-ST")
+    assert payload["phase"] == "closed"
+    assert payload["next"]
+
+
+def test_qa_status_cli(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-ST2")
+    monkeypatch.chdir(yard)
+    out = cli.invoke(app, ["qa", "status", "QA-ST2"])
+    assert out.exit_code == 0, out.output
+    assert "phase=designing" in out.output
+
+
+def test_auto_recycle_triggers_redesign_and_keeps_approval(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard import qa_state as qa_st
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-AR")
+    design = _DesignRunner(yard, "QA-AR")
+    req_test(yard, "QA-AR", print_mode=True, design_only=True, runner=design)
+    req_test(yard, "QA-AR", print_mode=True, approve=True, runner=design)
+    # A previous run flagged case-01 as a case-defect.
+    qa_st.record_triage(yard, "QA-AR", [], ["case-01"])
+    design.called = 0
+    result = req_test(yard, "QA-AR", print_mode=True, design_only=True, runner=design)
+    assert design.called == 1  # auto-recycled into a redesign
+    # The agent rewrote the same body, so only seeds moved: approval carried over.
+    assert result["review"]["approved"] is True
+    assert result["review"]["machine_fixed"] is True
+    # The flag is consumed so a later plain `req test` does not redesign again.
+    assert qa_st.triage(yard, "QA-AR")["auto_recycled"] == []
+
+
+def test_machine_fixed_requires_unchanged_body(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.qa_review import cases_fingerprint, mark_machine_fixed, review_payload
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-MF")
+    design = _DesignRunner(yard, "QA-MF")
+    req_test(yard, "QA-MF", print_mode=True, design_only=True, runner=design)
+    req_test(yard, "QA-MF", print_mode=True, approve=True, runner=design)
+    qa = yard / "reqs" / "QA-MF" / "qa"
+    # Editing only setup keeps the body fingerprint; approval must survive.
+    mod = qa / "cases" / "mod"
+    (mod / "setup.sql").write_text("select 1;\n", encoding="utf-8")
+    mark_machine_fixed(qa, "seed fix")
+    assert review_payload(qa)["approved"] is True
+    assert review_payload(qa)["machine_fixed"] is True
+    # Editing the body must invalidate it.
+    (mod / "case-01.md").write_text(
+        "---\nid: case-01\ntitle: happy\nrepo: backend\n---\n\nchanged\n",
+        encoding="utf-8",
+    )
+    assert review_payload(qa)["approved"] is False
+    assert cases_fingerprint(qa, scope="bodies") != cases_fingerprint(
+        qa, scope="seeds"
+    )
+
+
+def test_result_yaml_with_bare_colon_is_salvaged():
+    from dev_yard.qa import load_yaml_tolerant
+
+    text = (
+        "case: case-01\n"
+        "status: blocked\n"
+        "reason: case-defect: 缺关联\n"
+        "blocked_class: case-defect\n"
+        "repo: backend\n"
+    )
+    data = load_yaml_tolerant(text)
+    assert data is not None
+    assert data["status"] == "blocked"
+    assert data["reason"] == "case-defect: 缺关联"
+    assert data["blocked_class"] == "case-defect"
+
+
+def test_result_yaml_quoted_scalars_unchanged():
+    from dev_yard.qa import load_yaml_tolerant
+
+    text = 'case: case-01\nreason: "already: quoted"\nurl: http://x/y\n'
+    data = load_yaml_tolerant(text)
+    assert data["reason"] == "already: quoted"
+    assert data["url"] == "http://x/y"
+
+
+def test_resume_pending_qa_restores_interrupted_run(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard.web.jobs import JobRunner
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RP")
+    _seed_run_with_cases(
+        yard,
+        "QA-RP",
+        case_states={"case-01": "running", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-RP"),
+    )
+    req_test(yard, "QA-RP", print_mode=True, approve=True, ingest=False)
+    from dev_yard.qa_state import derive_phase
+
+    assert derive_phase(yard, "QA-RP") == "running"
+    seen: list[tuple[str, dict]] = []
+    runner = JobRunner(
+        yard,
+        execute=lambda root, job: seen.append((job.action, job.extra)),
+        sync=False,
+    )
+    try:
+        jobs = runner.resume_pending_qa()
+        assert len(jobs) == 1
+        assert jobs[0].done.wait(timeout=10)
+        assert seen and seen[0][0] == "qa-run"
+        assert seen[0][1].get("resume") is True
+    finally:
+        for job in list(runner._jobs.values()):
+            job.done.wait(timeout=5)
+
+
+def test_resume_pending_qa_skips_opt_out(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.web.jobs import JobRunner
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RP2")
+    _seed_run_with_cases(
+        yard,
+        "QA-RP2",
+        case_states={"case-01": "running", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-RP2"),
+    )
+    req_test(yard, "QA-RP2", print_mode=True, approve=True, ingest=False)
+    (yard / "qa.yaml").write_text(
+        (yard / "qa.yaml").read_text(encoding="utf-8")
+        + "run:\n  resume_on_restart: false\n",
+        encoding="utf-8",
+    )
+    runner = JobRunner(yard, execute=lambda root, job: None, sync=False)
+    assert runner.resume_pending_qa() == []
+
+
+def test_incremental_rerun_amends_failed_run(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-IN")
+    run_dir = _seed_run_with_cases(
+        yard,
+        "QA-IN",
+        case_states={"case-01": "failed", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-IN"),
+    )
+    (run_dir / "result.yaml").write_text("run_id: 2020-01-01-000000\n", encoding="utf-8")
+    req_test(yard, "QA-IN", print_mode=True, approve=True, ingest=False)
+    ran: list[str] = []
+
+    def case_runner(job, pool):
+        ran.append(job.id)
+        return {"status": "passed", "repo": "backend"}
+
+    result = req_test(
+        yard, "QA-IN", print_mode=True, ingest=False, case_runner=case_runner
+    )
+    # Only the failed case is amended in place; the passed one keeps its result.
+    assert ran == ["case-01"]
+    assert result["run_id"] == "2020-01-01-000000"
+
+
+def test_incremental_can_be_disabled(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-IN2")
+    (yard / "qa.yaml").write_text(
+        (yard / "qa.yaml").read_text(encoding="utf-8")
+        + "run:\n  incremental: false\n",
+        encoding="utf-8",
+    )
+    run_dir = _seed_run_with_cases(
+        yard,
+        "QA-IN2",
+        case_states={"case-01": "failed", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-IN2"),
+    )
+    (run_dir / "result.yaml").write_text("run_id: 2020-01-01-000000\n", encoding="utf-8")
+    req_test(yard, "QA-IN2", print_mode=True, approve=True, ingest=False)
+    ran: list[str] = []
+
+    def case_runner(job, pool):
+        ran.append(job.id)
+        return {"status": "passed", "repo": "backend"}
+
+    result = req_test(
+        yard, "QA-IN2", print_mode=True, ingest=False, case_runner=case_runner
+    )
+    assert sorted(ran) == ["case-01", "case-02"]  # a fresh full run
+    assert result["run_id"] != "2020-01-01-000000"
+
+
+def test_lint_cases_flags_contract_problems(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.qa import lint_cases
+    from dev_yard.qa_config import load_qa_config
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-LINT")
+    qa = yard / "reqs" / "QA-LINT" / "qa"
+    qa.mkdir(parents=True, exist_ok=True)
+    (qa / "meta.yaml").write_text(
+        "changes:\n  - {id: D1, repo: backend}\n  - {id: D2, repo: backend}\n",
+        encoding="utf-8",
+    )
+    cfg = load_qa_config(yard)
+    cases = [
+        CaseJob(
+            id="case-01",
+            title="t",
+            repo="ghost",
+            covers=["D1"],
+            writes=["projects.name"],
+            account="nobody",
+        )
+    ]
+    problems = lint_cases(yard, "QA-LINT", cfg, cases)
+    assert any("ghost" in p for p in problems)
+    assert any("data.identity" in p for p in problems)
+    assert any("nobody" in p for p in problems)
+    assert any("D2" in p for p in problems)
+
+
+def test_approve_refused_on_lint_problem(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-LG")
+    design = _DesignRunner(yard, "QA-LG")
+    req_test(yard, "QA-LG", print_mode=True, design_only=True, runner=design)
+    qa = yard / "reqs" / "QA-LG" / "qa"
+    # case-01 covers D1 only; D2 is uncovered -> a lint problem.
+    (qa / "meta.yaml").write_text(
+        "changes:\n  - {id: D1, repo: backend}\n  - {id: D2, repo: backend}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TestRejected, match="契约检查"):
+        req_test(yard, "QA-LG", print_mode=True, approve=True, runner=design)
+    waived = req_test(
+        yard,
+        "QA-LG",
+        print_mode=True,
+        approve=True,
+        allow_unverified=True,
+        runner=design,
+        ingest=False,
+    )
+    assert waived["approved"] is True
+
+
+def test_run_schedule_reports_pool_trip():
+    trips: list[tuple[str, str]] = []
+    cases = [CaseJob(id=f"c{i}", title="t", repo="be") for i in (1, 2, 3)]
+    pools = [PoolSlot(id="p", provider="rcc", model="m", concurrency=1, priority=1)]
+
+    def run(job, slot):
+        return {"status": "blocked", "reason": "worker exit: pi exit 1"}
+
+    run_schedule(
+        cases,
+        pools,
+        run,
+        retry_attempts=0,
+        on_pool_trip=lambda pid, reason: trips.append((pid, reason)),
+    )
+    assert trips == [("p", "worker exit: pi exit 1")]
+    assert all(c.state == "blocked" for c in cases)
+
+
+def test_record_pools_merges(tmp_path: Path):
+    from dev_yard import qa_state as qa_st
+
+    qa_st.record_pools(tmp_path, "J-1", {"a": "healthy", "b": "healthy"})
+    qa_st.record_pools(tmp_path, "J-1", {"b": "quarantined"})
+    pools = qa_st.load(tmp_path, "J-1")["pools"]
+    assert pools["a"]["state"] == "healthy"
+    assert pools["b"]["state"] == "quarantined"
+
+
+def test_lint_problem_triggers_one_design_fix(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-LF")
+    qa = yard / "reqs" / "QA-LF" / "qa"
+    qa.mkdir(parents=True, exist_ok=True)
+    (qa / "meta.yaml").write_text(
+        "changes:\n  - {id: D1, repo: backend}\n  - {id: D2, repo: backend}\n",
+        encoding="utf-8",
+    )
+
+    class _FixRunner(Runner):
+        def __init__(self):
+            self.called = 0
+
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            self.called += 1
+            covers = "[D1]" if self.called == 1 else "[D1, D2]"
+            d = yard / "reqs" / "QA-LF" / "qa" / "cases" / "mod"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "case-01.md").write_text(
+                f"---\nid: case-01\ntitle: t\nrepo: backend\ncovers: {covers}\n---\n\nbody\n",
+                encoding="utf-8",
+            )
+            return RunResult(ok=True, summary="designed")
+
+    fixer = _FixRunner()
+    result = req_test(yard, "QA-LF", print_mode=True, design_only=True, runner=fixer)
+    assert fixer.called == 2  # initial design + one lint-driven fix
+    assert result["lint"] == []
+
+
+def test_pool_preflight_drops_bad_pool(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard import qa_state as qa_st
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-PP")
+    (yard / "qa.yaml").write_text(
+        "active_env: local\n"
+        "workers:\n"
+        "  - id: a\n    provider: rcc\n    model: good\n    concurrency: 1\n    priority: 1\n"
+        "  - id: b\n    provider: rcc\n    model: bad\n    concurrency: 1\n    priority: 2\n"
+        "envs:\n  local:\n    base_url: http://127.0.0.1:8080\n",
+        encoding="utf-8",
+    )
+    _write_case(
+        yard,
+        "QA-PP",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+    used: list[str] = []
+
+    def case_runner(job, pool):
+        used.append(pool.id)
+        return {"status": "passed", "repo": "backend"}
+
+    result = req_test(
+        yard,
+        "QA-PP",
+        print_mode=True,
+        run_only=True,
+        unsafe_skip_review=True,
+        ingest=False,
+        case_runner=case_runner,
+        pool_probe=lambda p: (p.id != "b", "boom"),
+    )
+    assert result["summary"]["passed"] == 1
+    assert used == ["a"]
+    assert qa_st.load(yard, "QA-PP")["pools"]["b"]["state"] == "quarantined"
+
+
+def test_pool_preflight_all_failed_rejects(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-PP2")
+    _write_case(
+        yard,
+        "QA-PP2",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+    with pytest.raises(TestRejected, match="所有模型池预检失败"):
+        req_test(
+            yard,
+            "QA-PP2",
+            print_mode=True,
+            run_only=True,
+            unsafe_skip_review=True,
+            ingest=False,
+            case_runner=lambda j, p: {"status": "passed", "repo": "backend"},
+            pool_probe=lambda p: (False, "nope"),
+        )
+
+
+def test_apply_resume_preserves_retry_attempts(tmp_path: Path):
+    from dev_yard.qa import _apply_resume
+
+    run = tmp_path / "run"
+    (run / "case-01").mkdir(parents=True)
+    (run / "progress.yaml").write_text(
+        "run_id: r\nenv: local\n"
+        "cases:\n  - {id: case-01, state: ready, repo: backend, attempts: 2}\n",
+        encoding="utf-8",
+    )
+    cases = [CaseJob(id="case-01", title="t", repo="backend")]
+    _apply_resume(cases, run)
+    assert cases[0].attempts == 2
+
+
+def test_resume_pending_qa_skips_when_job_active(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    import threading
+
+    from dev_yard.web.jobs import JobRunner
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RPA")
+    _seed_run_with_cases(
+        yard,
+        "QA-RPA",
+        case_states={"case-01": "running", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-RPA"),
+    )
+    req_test(yard, "QA-RPA", print_mode=True, approve=True, ingest=False)
+    started = threading.Event()
+    release = threading.Event()
+
+    def execute(root, job):
+        started.set()
+        release.wait(5)
+
+    runner = JobRunner(yard, execute=execute, sync=False)
+    try:
+        runner.submit("qa-run", "QA-RPA", extra={"resume": True})
+        assert started.wait(2)
+        assert runner.resume_pending_qa() == []
+    finally:
+        release.set()
+        for job in list(runner._jobs.values()):
+            job.done.wait(timeout=5)
+
+
+def test_triage_qa_cases_files_only_product(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard import qa_state as qa_st
+    from dev_yard.service import triage_qa_cases
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-TR")
+    run_dir = _seed_run_with_cases(
+        yard,
+        "QA-TR",
+        case_states={"case-01": "failed", "case-02": "failed"},
+        design=_DesignRunner(yard, "QA-TR"),
+    )
+    # case-02 is a product defect; case-01 is left unclassified.
+    (run_dir / "case-02" / "result.yaml").write_text(
+        "case: case-02\ntitle: t2\nrepo: backend\nstatus: failed\nreason: boom\n"
+        "defect_class: product\n"
+        "assertions:\n  - {type: ui, expected: e, actual: a, status: failed}\n",
+        encoding="utf-8",
+    )
+    qa_st.record_triage(yard, "QA-TR", ["case-01", "case-02"], [])
+    out = triage_qa_cases(yard, "QA-TR", product_only=True)
+    assert list(out["filed"]) == ["case-02"]
+    assert out["skipped"] == ["case-01"]
+    after = qa_st.triage(yard, "QA-TR")
+    assert after["pending"] == ["case-01"]
+    assert after["filed"]["case-02"]
+
+
+def test_triage_qa_cases_all_files_unclassified(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard import qa_state as qa_st
+    from dev_yard.service import triage_qa_cases
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-TR2")
+    _seed_run_with_cases(
+        yard,
+        "QA-TR2",
+        case_states={"case-01": "failed", "case-02": "failed"},
+        design=_DesignRunner(yard, "QA-TR2"),
+    )
+    qa_st.record_triage(yard, "QA-TR2", ["case-01", "case-02"], [])
+    out = triage_qa_cases(yard, "QA-TR2", product_only=False)
+    assert sorted(out["filed"]) == ["case-01", "case-02"]
+
+
+def test_latest_retryable_includes_dependents(tmp_path: Path):
+    from dev_yard.qa import latest_retryable
+
+    qa = tmp_path / "qa"
+    run = qa / "evidence" / "2026-01-01-000000"
+    run.mkdir(parents=True)
+    (run / "progress.yaml").write_text(
+        "run_id: r\nenv: local\ncases:\n"
+        "  - {id: c1, state: failed}\n"
+        "  - {id: c2, state: passed}\n"
+        "  - {id: c3, state: passed}\n",
+        encoding="utf-8",
+    )
+    cases = [
+        CaseJob(id="c1", title="t", repo="be"),
+        CaseJob(id="c2", title="t", repo="be", depends_on=["c1"]),
+        CaseJob(id="c3", title="t", repo="be"),
+    ]
+    assert latest_retryable(qa, cases, "local") == ["c1", "c2"]
+
+
+def test_cli_req_triage_no_pending(tmp_path: Path, monkeypatch):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    monkeypatch.chdir(yard)
+    out = cli.invoke(app, ["req", "triage", "J-1"])
+    assert out.exit_code == 0, out.output
+    assert "没有待判定" in out.output
+
+
+def test_ticket_from_qa_case_updates_triage_state(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard import qa_state as qa_st
+    from dev_yard.service import ticket_from_qa_case
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-TF")
+    run_dir = _seed_run_with_cases(
+        yard,
+        "QA-TF",
+        case_states={"case-01": "failed", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-TF"),
+    )
+    (run_dir / "case-01" / "result.yaml").write_text(
+        "case: case-01\ntitle: t1\nrepo: backend\nstatus: failed\nreason: boom\n"
+        "defect_class: product\n"
+        "assertions:\n  - {type: ui, expected: e, actual: a, status: failed}\n",
+        encoding="utf-8",
+    )
+    qa_st.record_triage(yard, "QA-TF", ["case-01"], ["case-02"])
+    out = ticket_from_qa_case(yard, "QA-TF", "case-01")
+    assert out["ticket_id"]
+    t = qa_st.triage(yard, "QA-TF")
+    assert t["pending"] == []
+    assert t["auto_recycled"] == ["case-02"]
+    assert t["filed"]["case-01"] == out["ticket_id"]
+
+
+def test_triage_qa_cases_preserves_auto_recycled(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard import qa_state as qa_st
+    from dev_yard.service import triage_qa_cases
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-TP")
+    run_dir = _seed_run_with_cases(
+        yard,
+        "QA-TP",
+        case_states={"case-01": "failed", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-TP"),
+    )
+    (run_dir / "case-01" / "result.yaml").write_text(
+        "case: case-01\ntitle: t1\nrepo: backend\nstatus: failed\nreason: boom\n"
+        "defect_class: product\n"
+        "assertions:\n  - {type: ui, expected: e, actual: a, status: failed}\n",
+        encoding="utf-8",
+    )
+    qa_st.record_triage(yard, "QA-TP", ["case-01"], ["case-02"])
+    out = triage_qa_cases(yard, "QA-TP", product_only=True)
+    assert list(out["filed"]) == ["case-01"]
+    t = qa_st.triage(yard, "QA-TP")
+    assert t["pending"] == []
+    assert t["auto_recycled"] == ["case-02"]
+    assert t["filed"]["case-01"] == out["filed"]["case-01"]
+
+
+def test_derive_phase_returns_recycled_when_all_filed(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard import qa_state as qa_st
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-RF")
+    run_dir = _seed_run_with_cases(
+        yard,
+        "QA-RF",
+        case_states={"case-01": "failed", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-RF"),
+    )
+    (run_dir / "result.yaml").write_text(
+        "run_id: 2020-01-01-000000\nsummary:\n  total: 2\n  passed: 1\n  failed: 1\n",
+        encoding="utf-8",
+    )
+    req_test(yard, "QA-RF", print_mode=True, approve=True, ingest=False)
+    qa_st.record_triage(yard, "QA-RF", [], [], filed={"case-01": "B1"})
+    assert qa_st.derive_phase(yard, "QA-RF") == "recycled"
+
+
+def test_reset_cases_in_run_clears_attempts(tmp_path: Path):
+    from dev_yard.qa import _progress_doc, reset_cases_in_run
+
+    run = tmp_path / "run"
+    run.mkdir(parents=True)
+    (run / "case-01").mkdir(parents=True)
+    (run / "case-01" / "result.yaml").write_text("status: failed\n", encoding="utf-8")
+    (run / "progress.yaml").write_text(
+        "run_id: r\nenv: local\n"
+        "cases:\n  - {id: case-01, state: failed, attempts: 2}\n",
+        encoding="utf-8",
+    )
+    reset = reset_cases_in_run(run, {"case-01"})
+    assert reset == ["case-01"]
+    doc = _progress_doc(run)
+    assert doc is not None
+    assert doc["cases"][0]["state"] == "ready"
+    assert doc["cases"][0]["attempts"] == 0
+

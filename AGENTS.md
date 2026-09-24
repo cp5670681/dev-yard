@@ -35,6 +35,8 @@ pi 的 `bash` 工具 `timeout` 是可选、**无默认值**，内置 `find`/`gre
 | `dev-yard req attach <JIRA> <file>...` | 人工补附件（HTML 原型、文档等）到 `reqs/<JIRA>/uploads/`，并在 REQUIREMENT.md 维护「补充附件」小节；`req detach <JIRA> <name>...` 反向移除。不跑 agent；`uploads/` 不会被 `req open` 清空。web 需求页也可上传/删除 |
 | `dev-yard req test` | 拆成三段：设计用例（`--design-only`，或 web「设计用例」）→ **暂停等人工审核**（`--approve` 只标记通过，不再触发执行）→ 执行用例（`--run-only`，或 web「执行用例」）；`--redesign` 配合 `--feedback`/`--feedback-file` 带意见重做；设计期宿主跑 `data.verify` 核实数据前置，失败自动回灌重做，`--verify-only` 只核实、`--no-verify` 跳过、`--allow-unverified` 越权放行；未审核直接 `--run-only` 需再加 `--unsafe-skip-review`；宿主会独立重跑 db 断言的 `sql`，不一致即降级 failed；**失败不再自动拆 B 票**，在失败用例卡片/详情上「下 bug」人工建票（`POST /api/requirements/<JIRA>/qa/cases/<case>/bug`）；产物在 `reqs/<JIRA>/qa/` |
 | `dev-yard qa check-env` | 不跑 agent；解析 qa.yaml exec 配方 → ping → hello 回显 |
+| `dev-yard req triage <JIRA>` | 不跑 agent；给待判定失败用例批量下 bug（默认只对宿主判定为 `product` 的项，`--all` 含未分类）；web「批量下 bug」同款 |
+| `dev-yard qa status <JIRA>` | 不跑 agent；读 `qa/state.yaml` + 证据推导当前态（designing/awaiting_review/running/awaiting_triage…）、待判定失败项、隔离模型池与下一步 |
 | `dev-yard req change <JIRA> --note ... --repo ...` | 轻量变更：追加变更记录到 REQUIREMENT.md →（可选 grill）→ 更新 SPEC → 追加一张 `source: light` 票；不重跑 tickets、不改 phase、不动契约。仅 frozen/testing，不涉及契约 |
 | `dev-yard req reset-grill <JIRA>` | 不跑 agent；丢弃待答的对齐轮次（`.grill-round.json`）+ 把 GRILL.md 清回空白 + 清 `stage_runs.grill`，下次「对齐」从头生成；不改 phase/票/契约。web 需求页有对应「重置对齐」按钮 |
 | `dev-yard implement --from-test` | 修就绪的测试 bug 票（B 票） |
