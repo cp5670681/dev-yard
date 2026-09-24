@@ -48,6 +48,7 @@ from dev_yard.tickets import (
     load_tickets,
     next_ticket_id,
     parse_tickets,
+    write_import_tickets,
 )
 
 REQ_SKELETON = """# {key}
@@ -419,11 +420,56 @@ def _norm_git_url(url: str) -> str:
     return s
 
 
-def req_freeze(root: Path, jira: str, force: bool = False) -> list[Path]:
+def _freeze_base_sha(
+    source: Path,
+    wt: Path,
+    repo: Repo,
+    start: str,
+    base_ref: str | None,
+    *,
+    imported: bool,
+) -> str | None:
+    """Diff base recorded at freeze time.
+
+    Normal freeze starts at `origin/<default_base>` and records that tip. An
+    imported freeze starts at an external ref that may fork from an older base,
+    so recording the live base tip would make the backend diff show inherited
+    commits as changes; record the fork point instead (or an explicit base).
+    """
+    if base_ref:
+        resolved = gitops.rev_parse(source, base_ref)
+        if not resolved:
+            raise ValueError(f"repo {repo.alias}: base ref {base_ref!r} not found")
+        return resolved
+    if imported:
+        fork = gitops.merge_base(wt, gitops.start_point(source, repo.default_base))
+        if fork:
+            return fork
+    return gitops.rev_parse(source, start)
+
+
+def req_freeze(
+    root: Path,
+    jira: str,
+    force: bool = False,
+    *,
+    start_refs: dict[str, str] | None = None,
+    base_refs: dict[str, str] | None = None,
+) -> list[Path]:
+    """Create/reuse freeze worktrees for every repo a ticket names.
+
+    `start_refs` (alias -> ref) overrides the per-repo fork point, letting an
+    external branch become the freeze content (see `req_import`). `base_refs`
+    (alias -> ref) pins the diff base explicitly; otherwise imported repos use
+    the fork point against `origin/<default_base>`. Both default off, so a plain
+    freeze keeps recording `origin/<default_base>` exactly as before.
+    """
     req = paths.req_dir(root, jira)
     tickets = load_tickets(req)
     if not tickets or not any(t.repo for t in tickets):
         raise ValueError("TICKETS.md has no tickets with a repo; finish to-tickets first")
+    starts = {k: str(v).strip() for k, v in (start_refs or {}).items() if str(v).strip()}
+    bases = {k: str(v).strip() for k, v in (base_refs or {}).items() if str(v).strip()}
     with st.jira_lock(jira):
         data = st.load(root, jira)
         phase = data.get("phase") or "open"
@@ -445,23 +491,33 @@ def req_freeze(root: Path, jira: str, force: bool = False) -> list[Path]:
             source = repo.source_path(root)
             gitops.ensure_clone(repo.url, source)
             gitops.fetch(source)
+            external = starts.get(alias)
+            if external:
+                if not gitops.rev_parse(source, external):
+                    raise ValueError(
+                        f"repo {alias}: ref {external!r} not found; fetch it or check the name"
+                    )
+                start = external
+            else:
+                start = gitops.start_point(source, repo.default_base)
             wt = paths.req_worktree(root, jira, alias)
-            start = gitops.start_point(source, repo.default_base)
             gitops.worktree_add(
                 source,
                 wt,
                 branch,
                 start,
-                reset_existing=bool(force and phase in {"testing", "done"}),
+                reset_existing=bool(force and (phase in {"testing", "done"} or external)),
             )
             created.append(wt)
-            sha = gitops.rev_parse(source, start)
+            sha = _freeze_base_sha(
+                source, wt, repo, start, bases.get(alias), imported=bool(external)
+            )
             if sha:
-                bases = data.get("base_shas")
-                if not isinstance(bases, dict):
-                    bases = {}
-                bases[alias] = sha
-                data["base_shas"] = bases
+                store = data.get("base_shas")
+                if not isinstance(store, dict):
+                    store = {}
+                store[alias] = sha
+                data["base_shas"] = store
             for slot in data["tickets"].values():
                 if slot.get("repo") == alias:
                     slot["worktree"] = str(wt)
@@ -470,6 +526,184 @@ def req_freeze(root: Path, jira: str, force: bool = False) -> list[Path]:
         st.refresh_ready(data)
         st.save(root, jira, data)
     return created
+
+
+def _resolve_import_refs(
+    root: Path,
+    repos: dict[str, Repo],
+    wanted: dict[str, str],
+    pinned: dict[str, str],
+) -> None:
+    """Fetch and verify every external ref up front.
+
+    Runs before any ticket is written so a bad ref aborts with the requirement
+    docs untouched (spec §8), instead of leaving a half-imported TICKETS.md.
+    """
+    for alias, ref in wanted.items():
+        repo = repos[alias]
+        source = repo.source_path(root)
+        gitops.ensure_clone(repo.url, source)
+        gitops.fetch(source)
+        if not gitops.rev_parse(source, ref):
+            raise ValueError(f"repo {alias}: ref {ref!r} not found; fetch it or check the name")
+    for alias, ref in pinned.items():
+        repo = repos.get(alias)
+        if not repo:
+            continue
+        source = repo.source_path(root)
+        if not gitops.rev_parse(source, ref):
+            raise ValueError(f"repo {alias}: base ref {ref!r} not found")
+
+
+def req_import(
+    root: Path,
+    jira: str,
+    *,
+    branches: dict[str, str],
+    bases: dict[str, str] | None = None,
+    source: str = "pi",
+    target: str | None = None,
+    payload: str | None = None,
+    submit: bool = True,
+    force: bool = False,
+    remote: str = "origin",
+    on_progress: Callable[[str], None] | None = None,
+    runner: Runner | None = None,
+    runner_factory: Callable[[str], Runner] | None = None,
+) -> dict[str, Any]:
+    """Import an externally-written requirement: docs + one branch per repo.
+
+    Skips grill/spec/tickets/contract and lands in testing: the requirement doc
+    is fetched like `req open`, a `source: import` ticket is written per repo,
+    each repo's freeze worktree is checked out at the external branch, and every
+    import ticket is marked done with `contract_review` passed. Then
+    `submit-test` merges the freeze branches into the shared test branches.
+    """
+    wanted = {
+        str(k).strip(): str(v).strip()
+        for k, v in (branches or {}).items()
+        if str(k).strip() and str(v).strip()
+    }
+    if not wanted:
+        raise ValueError("no branches given; pass --branch <alias>:<ref>")
+    for alias, ref in wanted.items():
+        if alias.startswith("-") or ref.startswith("-"):
+            raise ValueError(f"invalid branch {alias!r}:{ref!r}; refs must not start with '-'")
+    pinned = {
+        str(k).strip(): str(v).strip()
+        for k, v in (bases or {}).items()
+        if str(k).strip() and str(v).strip()
+    }
+    for alias, ref in pinned.items():
+        if ref.startswith("-"):
+            raise ValueError(f"invalid base {alias!r}:{ref!r}; refs must not start with '-'")
+    repos = load_repos(root)
+    unknown = sorted(a for a in wanted if a not in repos)
+    if unknown:
+        raise ValueError(
+            "unknown repo alias(es): " + ", ".join(unknown) + "; add them with `dev-yard repo add`"
+        )
+
+    req = paths.req_dir(root, jira)
+    with st.jira_lock(jira):
+        existed = (req / "STATUS.yaml").exists()
+        if existed:
+            phase = st.load(root, jira).get("phase") or "open"
+            # An existing *open* requirement is the natural "req open then import"
+            # path; anything past open would be unwound, so require --force.
+            if phase != "open" and not force:
+                raise ValueError(
+                    f"{jira} is already phase={phase}; pass --force to re-import "
+                    f"(or `dev-yard req reset-phase {jira}`)"
+                )
+            if force:
+                _teardown_worktrees(root, jira, req, st.load(root, jira))
+
+    if force and on_progress:
+        cases_root = paths.qa_dir(root, jira) / "cases"
+        if cases_root.is_dir() and any(cases_root.rglob("case-*.md")):
+            on_progress(
+                f"{jira} 已有 QA 用例；--force 重导入不会清用例，"
+                f"若代码已变请跑 `dev-yard req test {jira} --redesign`\n"
+            )
+
+    # Resolve every external ref BEFORE writing tickets, so a bad ref leaves the
+    # requirement docs untouched (spec §8).
+    _resolve_import_refs(root, repos, wanted, pinned)
+
+    # 1. Requirement doc (reuses the open stage's sources: Jira/file/text/none).
+    dest, warning = req_open(
+        root,
+        jira,
+        source=source,
+        target=target,
+        payload=payload,
+        force=True,
+        on_progress=on_progress,
+        runner=runner,
+    )
+    if on_progress and warning:
+        on_progress(warning)
+
+    # 2. One `source: import` ticket per repo (import owns TICKETS.md).
+    entries = [
+        {
+            "id": f"T{i + 1}",
+            "repo": alias,
+            "branch": wanted[alias],
+            "base": pinned.get(alias, ""),
+        }
+        for i, alias in enumerate(sorted(wanted))
+    ]
+    snapshot = _snapshot(dest, ("TICKETS.md",))
+    try:
+        write_import_tickets(dest, entries)
+        # 3. Freeze worktrees checked out at the external refs.
+        req_freeze(root, jira, force=True, start_refs=wanted, base_refs=pinned)
+    except Exception:
+        _restore(dest, snapshot)
+        raise
+
+    # 4. Mark the import tickets done and bypass the contract gate.
+    with st.jira_lock(jira):
+        data = st.load(root, jira)
+        slots = st.tickets_map(data.get("tickets"))
+        imported_ids = {t.id for t in load_tickets(dest) if t.source == "import"}
+        for tid, slot in slots.items():
+            if tid in imported_ids:
+                slot["state"] = "done"
+        data["tickets"] = slots
+        data["contract_review"] = "passed"
+        data["contract_summary"] = "imported: 外部代码导入，跳过契约审查"
+        data.pop("contract_findings", None)
+        data["imported"] = {
+            "at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "branches": dict(wanted),
+            "bases": dict(pinned),
+        }
+        data["phase"] = "frozen"
+        st.save(root, jira, data)
+
+    # 5. Submit for testing (merge into each repo's test_branch and push).
+    if submit:
+        from dev_yard import test_integrate
+        from dev_yard.test_report import submit_test
+
+        if not test_integrate.eligible_repos(root, st.load(root, jira)):
+            if on_progress:
+                on_progress(
+                    "没有仓配置 test_branch，已停在 frozen；"
+                    "配置后跑 `dev-yard req submit-test`\n"
+                )
+        else:
+            submit_test(
+                root,
+                jira,
+                remote=remote,
+                on_progress=on_progress,
+                runner_factory=runner_factory,
+            )
+    return st.load(root, jira)
 
 
 def req_delete(root: Path, jira: str) -> None:
@@ -585,6 +819,7 @@ def req_reset_phase(root: Path, jira: str) -> dict[str, Any]:
             "contract_review",
             "contract_summary",
             "contract_findings",
+            "imported",
             "test",
             "stage_runs",
         ):

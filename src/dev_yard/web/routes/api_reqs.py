@@ -16,6 +16,7 @@ from dev_yard.web.schemas import (
     ActionIn,
     ContractReviewIn,
     DocSaveIn,
+    ImportIn,
     OpenIn,
     QaRerunIn,
     TestReportIn,
@@ -340,6 +341,39 @@ def build(ctx: AppContext) -> APIRouter:
                     "source": payload.source,
                     "target": raw_target,
                     "payload": payload.payload,
+                    "force": payload.force,
+                },
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return ctx.jobs_out([job])
+
+    @router.post("/api/requirements/import")
+    def api_import(payload: ImportIn):
+        raw_target = payload.target or payload.jira or payload.key
+        req_key = (payload.key or payload.jira).strip()
+        if not req_key:
+            req_key = extract_req_key(raw_target)
+        if not req_key:
+            raise HTTPException(400, "Requirement key or target URL is required")
+        if not payload.branches:
+            raise HTTPException(400, "at least one --branch <alias>:<ref> is required")
+        try:
+            paths.req_dir(ctx.root, req_key)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        try:
+            job = ctx.jobs.submit(
+                "import",
+                req_key,
+                extra={
+                    "source": payload.source,
+                    "target": raw_target,
+                    "payload": payload.payload,
+                    "branches": payload.branches,
+                    "bases": payload.bases,
+                    "submit": payload.submit,
+                    "remote": payload.remote,
                     "force": payload.force,
                 },
             )

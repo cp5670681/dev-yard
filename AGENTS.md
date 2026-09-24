@@ -24,6 +24,7 @@ pi 的 `bash` 工具 `timeout` 是可选、**无默认值**，内置 `find`/`gre
 | 命令 | 技能 |
 |------|------|
 | `dev-yard req open` | fetch-requirement |
+| `dev-yard req import <JIRA> --branch <alias>:<ref>...` | 外部导入：需求文档（复用 open 来源）+ 每仓一个已有分支，建 freeze worktree 直达 testing（默认提测，`--no-submit` 停在 frozen）；每仓自动一张 `source: import` 的 done 票，契约置 passed；后续走常规 `req test` / `implement --from-test` |
 | `dev-yard grill` | grill-with-docs + grilling + domain-modeling |
 | `dev-yard spec` | to-spec |
 | `dev-yard tickets` | to-tickets |

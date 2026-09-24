@@ -118,10 +118,17 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
         base = repo.default_base if repo else "?"
         role = repo.role if repo else "?"
         branch = resolve_freeze_branch(root, jira, data, wt)
-        lines.append(
-            f"- {alias}: {wt.resolve()}  "
-            f"(branch {branch}, base {base}, role {role})"
-        )
+        segments = [f"branch {branch}", f"base {base}", f"role {role}"]
+        # The exact ref to diff against. The worktree's own local `base` may be
+        # stale (fetch updates origin/<base> only), and an imported requirement
+        # may fork from an older/other base; both are answered by freeze_base.
+        if (wt / ".git").exists():
+            saved = data.get("base_shas")
+            saved = saved.get(alias) if isinstance(saved, dict) else None
+            diff_base = gitops.freeze_base(wt, base, saved)
+            if diff_base:
+                segments.append(f"diff_base {diff_base}")
+        lines.append(f"- {alias}: {wt.resolve()}  (" + ", ".join(segments) + ")")
     env = cfg.env
     routes = _meta_routes(qa)
     db = "configured" if env.db_url else "not configured"
@@ -391,6 +398,8 @@ def _permission_gap_warning(root: Path, jira: str, cfg: QaConfig) -> str | None:
         if p.is_file():
             text += _read_capped(p, _PERMISSION_SCAN_MAX - len(text))
     repos = load_repos(root)
+    saved_bases = st.load(root, jira).get("base_shas")
+    saved_bases = saved_bases if isinstance(saved_bases, dict) else {}
     for alias in _involved_aliases(root, jira):
         if len(text) >= _PERMISSION_SCAN_MAX:
             break
@@ -399,7 +408,7 @@ def _permission_gap_warning(root: Path, jira: str, cfg: QaConfig) -> str | None:
         if not wt.is_dir() or repo is None:
             continue
         try:
-            base = gitops.freeze_base(wt, repo.default_base)
+            base = gitops.freeze_base(wt, repo.default_base, saved_bases.get(alias))
             changed = gitops.changed_files(wt, base)
         except Exception:  # noqa: BLE001 — a nudge must never break design
             continue
@@ -720,7 +729,8 @@ def _duties(kind: str, jira: str) -> str:
             f"Write only under {qa} (meta.yaml, cases/, OPEN-QUESTIONS.md). "
             "Do not write STATUS.yaml or REQUIREMENT/GRILL/SPEC/TICKETS.md.\n"
             "Read REQUIREMENT.md, SPEC.md, TICKETS.md. Do not call MCP or re-fetch Jira.\n"
-            "Diff each worktree with `git diff <default_base>...HEAD`. "
+            "Diff each worktree with `git diff <diff_base>...HEAD` "
+            "(diff_base from context.md; fall back to <default_base>). "
             "Empty diff: stop and say so.\n"
             "Do not git checkout, commit, push, or switch.\n"
             "Do not interview interactively; record uncertainties in "

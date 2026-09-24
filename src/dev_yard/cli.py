@@ -55,6 +55,21 @@ def _die(exc: BaseException) -> None:
     raise typer.Exit(1)
 
 
+def _parse_alias_refs(items: list[str] | None, flag: str) -> dict[str, str]:
+    """Parse repeated `<alias>:<ref>` options into a mapping (first colon splits)."""
+    out: dict[str, str] = {}
+    for item in items or []:
+        text = str(item).strip()
+        if not text:
+            continue
+        alias, sep, ref = text.partition(":")
+        alias, ref = alias.strip(), ref.strip()
+        if not sep or not alias or not ref:
+            raise ValueError(f"{flag} expects <alias>:<ref>, got {item!r}")
+        out[alias] = ref
+    return out
+
+
 def _echo_blocked_hint(summary: dict, jira: str = "") -> None:
     """Show the blocked breakdown and the actionable follow-up."""
     from dev_yard.qa_schedule import format_blocked_kind
@@ -266,6 +281,77 @@ def req_open(
     typer.echo(str(d))
     if warning:
         typer.echo(warning, err=True)
+
+
+@req_app.command("import")
+def req_import(
+    target: str = typer.Argument(..., help="Requirement key (e.g. PG-13068), URL, or description"),
+    branch: list[str] = typer.Option(
+        ..., "--branch", "-b", help="External code branch as <alias>:<ref> (repeatable)"
+    ),
+    base: list[str] | None = typer.Option(
+        None, "--base", help="Diff base as <alias>:<ref> (repeatable, optional)"
+    ),
+    key: str | None = typer.Option(None, "--key", "-k", help="Custom requirement key"),
+    text: str | None = typer.Option(None, "--text", "-t", help="Raw requirement text"),
+    file: Path | None = typer.Option(None, "--file", "-f", help="Local Markdown/text file"),
+    none: bool = typer.Option(False, "--none", help="Empty requirement skeleton (no remote fetch)"),
+    no_submit: bool = typer.Option(
+        False, "--no-submit", help="Stop at frozen; do not merge into the test branches"
+    ),
+    remote: str = typer.Option("origin", "--remote", "-r", help="Git remote name"),
+    force: bool = typer.Option(False, "--force", help="Re-import an existing requirement"),
+) -> None:
+    """Import an external requirement + code branch(es), straight into testing.
+
+    Skips align/spec/tickets/contract: fetches the requirement doc like `req open`,
+    writes one `source: import` ticket per repo, checks out each repo's freeze
+    worktree at the given external branch, and (unless --no-submit) submits for
+    testing.
+    """
+    from dev_yard.test_report import ReportRejected
+
+    root = root_opt()
+    req_key = (key or "").strip() or service.extract_req_key(target)
+    if not req_key:
+        _die(ValueError("Could not determine requirement key. Please specify --key."))
+    try:
+        branches = _parse_alias_refs(branch, "--branch")
+        bases = _parse_alias_refs(base, "--base")
+    except ValueError as e:
+        _die(e)
+    source = "pi"
+    payload = None
+    if none:
+        source = "none"
+    elif text is not None:
+        source = "text"
+        payload = text
+    elif file is not None:
+        source = "file"
+        payload = str(file)
+    try:
+        data = service.req_import(
+            root,
+            req_key,
+            branches=branches,
+            bases=bases,
+            source=source,
+            target=target,
+            payload=payload,
+            submit=not no_submit,
+            force=force,
+            remote=remote,
+            on_progress=lambda line: typer.echo(line, err=True),
+        )
+    except (ValueError, FileNotFoundError, RuntimeError, GitError, ReportRejected) as e:
+        _die(e)
+    tickets = data.get("tickets") or {}
+    typer.echo(
+        f"{req_key} phase={data.get('phase')} branch={data.get('branch')} "
+        f"tickets={len(tickets)} (all done)"
+    )
+    typer.echo(f"下一步：dev-yard req test {req_key} --design-only")
 
 
 @req_app.command("reset-phase")

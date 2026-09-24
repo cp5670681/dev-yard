@@ -224,6 +224,24 @@ dev-yard req changes PROJ-101            # 查看变更记录（只读）
 
 流程：追加变更记录到 `REQUIREMENT.md`（`## 变更记录`，不改原文）→（可选 `--grill`）→ 更新 `SPEC.md` → 追加**一张** `source: light` 的票。不重跑 `to-tickets`、不重排已有票、不改 `phase`、不动契约审查。新票按普通票「实现 → 审查 → 合并」；合并后 `submit-test` 幂等重提。若 SPEC 契约段被改动会告警，QA 用例会被标为待复核（需重新审核/`--redesign`）。
 
+### 外部导入（已有代码直接测试）
+
+代码已在别处写好并推上远端时用 `dev-yard req import`（Web 侧栏「外部导入」）。只需**需求文档 + 每仓一个代码分支**，跳过对齐/规约/拆票/契约，直接落到 freeze worktree 并提测，随后即可设计用例、跑测试、下 bug。
+
+```bash
+dev-yard req import PROJ-101 \
+  --branch core-api:origin/feature/pay \
+  --branch web-frontend:origin/feature/pay-ui \
+  --base core-api:origin/master          # 可选；缺省用 merge-base(外部分支, 主分支)
+dev-yard req import PROJ-101 --branch core-api:origin/feature/pay --no-submit   # 只 freeze，不提测
+```
+
+- 需求文档来源复用 `req open`（Jira 链接 / `--text` / `--file` / `--none`）。
+- 每个仓自动生成**一张** `source: import` 的票并直接置 `done`（仅供下游按仓门控），契约审查置 `passed`。
+- 外部分支收进各仓的冻结分支（默认 `req/{jira}`，模板见配置页）；diff 基线记 `merge-base(外部分支, origin/<default_base>)`（`--base` 可覆盖），qa-design 以 `qa/context.md` 的 `diff_base` 为准。
+- 之后完全走常规流程：`req test --design-only` → `--approve` → `--run-only`；失败「下 bug」→ `implement --from-test`（修完 `submit-test` 幂等重提）。
+- 约定：外部分支从各自主分支切出；导入后不要再跑 `req tickets` / `req freeze --force`。
+
 ### 自动化测试（`req test`）
 
 - **分段执行**：`--design-only`（或 Web「设计用例」）只出用例；`--approve`（Web「审核用例」）只标记通过，不再触发执行；真正跑用例是 `--run-only`（Web「执行用例」）。审核绑定用例指纹，改动用例即失效；未审核直接 `--run-only` 时必须显式加 `--unsafe-skip-review`。
@@ -271,6 +289,7 @@ dev-yard web --host 0.0.0.0 --allow-remote
 | `dev-yard repo list` | 列出已登记仓库 | |
 | `dev-yard repo set-model <alias>` | 设置仓库的实现模型 | `--provider`, `--model` |
 | `dev-yard req open <target>` | 创建/拉取需求 | `--key`, `--text`, `--file`, `--none`, `--force` |
+| `dev-yard req import <target>` | 外部导入：需求文档 + 每仓一个已有分支，直达 testing | `--branch <alias>:<ref>`（可重复）, `--base <alias>:<ref>`, `--no-submit`, `--force` |
 | `dev-yard req freeze <key>` | 冻结方案并建 Worktree | `--force`（testing/done 回退） |
 | `dev-yard req delete <key>` | 删除需求产物与 Worktree | |
 | `dev-yard req push <key> [repos..]` | 推送各仓 Worktree 分支到远端 | `--remote`, `--force` |

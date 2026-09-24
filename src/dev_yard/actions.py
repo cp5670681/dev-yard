@@ -21,6 +21,7 @@ class ActionSpec:
 # which is a UI flow (POST /test-report) rather than a background job.
 BOARD_ACTIONS: tuple[ActionSpec, ...] = (
     ActionSpec("open", "重新抽取"),
+    ActionSpec("import", "外部导入"),
     ActionSpec("change", "轻量变更"),
     ActionSpec("grill", "对齐"),
     ActionSpec("reset-grill", "重置对齐"),

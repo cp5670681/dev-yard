@@ -116,3 +116,45 @@ def append_light_ticket(
         text += "\n"
     atomic_write_text(path, text)
     return path
+
+
+def format_import_ticket(
+    *, ticket_id: str, repo: str, branch: str, base: str = ""
+) -> str:
+    """One `source: import` ticket. Satisfies per-repo gates; never implemented."""
+    base_note = f"（diff 基线 {base}）" if base else ""
+    return "\n".join(
+        [
+            f"## {ticket_id}: 外部导入 — {repo}",
+            f"- repo: {repo}",
+            "- depends_on:",
+            "- parallel: false",
+            "- source: import",
+            "",
+            f"来自外部导入：分支 {branch}{base_note}。",
+            "代码已存在于该分支，本票仅用于满足下游按仓/按票的流程门控，不触发实现。",
+            "",
+        ]
+    )
+
+
+def write_import_tickets(req_path: Path, entries: list[dict[str, str]]) -> Path:
+    """Write TICKETS.md with exactly one `source: import` ticket per entry.
+
+    Import is the entry point (not an incremental change), so it owns the file
+    and replaces it rather than appending — otherwise a re-import would stack
+    duplicate tickets.
+    """
+    path = req_path / "TICKETS.md"
+    lines = [f"# Tickets — {req_path.name}", ""]
+    for entry in entries:
+        lines.append(
+            format_import_ticket(
+                ticket_id=entry["id"],
+                repo=entry["repo"],
+                branch=entry["branch"],
+                base=entry.get("base", ""),
+            )
+        )
+    atomic_write_text(path, "\n".join(lines).rstrip() + "\n")
+    return path

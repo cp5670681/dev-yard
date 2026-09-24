@@ -191,6 +191,32 @@ export function openRequirement(
   });
 }
 
+export function importRequirement(input: {
+  jira: string;
+  source?: string;
+  target?: string;
+  payload?: string;
+  branches: Record<string, string>;
+  bases?: Record<string, string>;
+  submit?: boolean;
+  force?: boolean;
+}) {
+  return api<JobsOut>("/api/requirements/import", {
+    method: "POST",
+    body: JSON.stringify({
+      jira: input.jira,
+      key: input.jira,
+      source: input.source ?? "pi",
+      target: input.target ?? "",
+      payload: input.payload ?? "",
+      branches: input.branches,
+      bases: input.bases ?? {},
+      submit: input.submit ?? true,
+      force: input.force ?? false,
+    }),
+  });
+}
+
 export function runAction(
   jira: string,
   action: string,

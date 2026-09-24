@@ -83,6 +83,13 @@
           active-class="jira-nav-active"
         />
         <v-list-item
+          to="/import"
+          title="外部导入"
+          subtitle="已有分支直接测试"
+          :prepend-icon="mdiDownloadOutline"
+          active-class="jira-nav-active"
+        />
+        <v-list-item
           to="/settings"
           title="配置"
           subtitle="分支、模型"
@@ -187,11 +194,12 @@ import { useDisplay, useTheme } from "vuetify";
 import {
   mdiClipboardCheckOutline,
   mdiClipboardTextOutline,
+  mdiCreationOutline,
+  mdiDownloadOutline,
   mdiPlusBoxOutline,
   mdiProgressClock,
   mdiSourceRepository,
   mdiTune,
-  mdiCreationOutline,
   mdiViewDashboardOutline,
   mdiWeatherNight,
   mdiWeatherSunny,
@@ -289,6 +297,7 @@ const barTitle = computed(() => {
   if (name === "settings") return "配置";
   if (name === "qa-config") return "测试配置";
   if (name === "open") return "打开需求";
+  if (name === "import") return "外部导入";
   return "需求";
 });
 
