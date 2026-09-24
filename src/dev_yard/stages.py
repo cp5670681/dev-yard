@@ -17,6 +17,7 @@ RESERVED_STAGE_NAMES = frozenset(
         "web",
         "status",
         "push",
+        "pull",
         "sync",
         "assistant",
         "run",

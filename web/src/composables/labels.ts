@@ -92,6 +92,7 @@ export const ACTION_LABELS: Record<string, string> = {
   "fill-test-report": "提 bug",
   "fix-test": "修 bug",
   push: "推送到远端",
+  pull: "拉取远端分支",
   sync: "同步远端",
   "reset-phase": "重置阶段",
   "reset-grill": "重置对齐",

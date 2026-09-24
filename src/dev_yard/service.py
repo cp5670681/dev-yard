@@ -2503,14 +2503,14 @@ def requirement_diff(root: Path, jira: str) -> dict[str, Any]:
     }
 
 
-def req_push(
-    root: Path,
-    jira: str,
-    repos: list[str] | None = None,
-    remote: str = "origin",
-    force: bool = False,
-    on_progress: Callable[[str], None] | None = None,
-) -> list[dict[str, Any]]:
+def _frozen_target_aliases(
+    root: Path, jira: str, repos: list[str] | None, *, verb: str
+) -> tuple[dict[str, Any], list[str]]:
+    """Load a requirement and pick the frozen worktree aliases to operate on.
+
+    Shared by `req_push` / `req_pull`: both fan out over the same frozen set and
+    differ only in the git direction (`verb` only feeds the empty-set message).
+    """
     req = paths.req_dir(root, jira)
     if not req.exists() or not paths.is_req_dir(req):
         raise FileNotFoundError(f"no requirement {jira}")
@@ -2533,16 +2533,27 @@ def req_push(
         raise ValueError(f"no worktrees found for {jira}; freeze first")
 
     if repos:
-        target_aliases = [a for a in repos if a in available_aliases]
         missing = [a for a in repos if a not in available_aliases]
         if missing:
             raise ValueError(f"worktree not found for repo(s): {', '.join(missing)}")
+        target_aliases = [a for a in repos if a in available_aliases]
     else:
         target_aliases = available_aliases
 
     if not target_aliases:
-        raise ValueError("no matching repositories to push")
+        raise ValueError(f"no matching repositories to {verb}")
+    return data, target_aliases
 
+
+def req_push(
+    root: Path,
+    jira: str,
+    repos: list[str] | None = None,
+    remote: str = "origin",
+    force: bool = False,
+    on_progress: Callable[[str], None] | None = None,
+) -> list[dict[str, Any]]:
+    data, target_aliases = _frozen_target_aliases(root, jira, repos, verb="push")
     branch = resolve_freeze_branch(
         root,
         jira,
@@ -2581,6 +2592,86 @@ def req_push(
                 "status": "pushed",
             }
         )
+
+    return results
+
+
+def req_pull(
+    root: Path,
+    jira: str,
+    repos: list[str] | None = None,
+    remote: str = "origin",
+    strategy: str = "ff-only",
+    on_progress: Callable[[str], None] | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch remotes; update freeze worktrees onto their own remote branch.
+
+    The mirror of `req_push`: `req_sync` moves worktrees onto
+    `origin/<default_base>`, while this brings `origin/<freeze-branch>` (e.g. a
+    commit made elsewhere) back into the worktree before continuing to
+    implement/review or submitting for test.
+    """
+    if strategy not in gitops.SYNC_STRATEGIES:
+        raise ValueError(
+            f"unknown pull strategy {strategy!r}; use {', '.join(gitops.SYNC_STRATEGIES)}"
+        )
+    data, target_aliases = _frozen_target_aliases(root, jira, repos, verb="pull")
+
+    registered = load_repos(root)
+    branch = resolve_freeze_branch(
+        root, jira, data, paths.req_worktree(root, jira, target_aliases[0])
+    )
+    ref = f"{remote}/{branch}"
+    results: list[dict[str, Any]] = []
+    for alias in target_aliases:
+        repo = registered.get(alias)
+        if repo is None:
+            raise ValueError(f"unknown repo alias: {alias}")
+        wt = paths.req_worktree(root, jira, alias)
+        if not wt.exists() or not (wt / ".git").exists():
+            raise ValueError(f"missing worktree {wt}; freeze first")
+
+        source = repo.source_path(root)
+        if on_progress:
+            on_progress(f"fetching {alias} ({ref})...")
+        if repo.path:
+            if not (source / ".git").exists():
+                raise gitops.GitError(f"{alias}: {source} is not a git repo")
+            gitops.fetch(source, on_progress=on_progress)
+        else:
+            gitops.ensure_clone(repo.url, source, on_progress=on_progress)
+            gitops.fetch(source, on_progress=on_progress)
+
+        if gitops.rev_parse(source, ref) is None:
+            raise gitops.GitError(
+                f"{alias}: remote branch {ref} not found; push or submit-test first"
+            )
+        if gitops.has_changes(wt):
+            raise gitops.GitError(
+                f"{alias} worktree has uncommitted changes; commit or stash first"
+            )
+
+        before = gitops.head_sha(wt)
+        if on_progress:
+            on_progress(f"updating {alias} onto {ref} ({strategy})")
+        after = gitops.integrate_onto(wt, ref, strategy)
+        results.append(
+            {
+                "repo": alias,
+                "alias": alias,
+                "branch": branch,
+                "remote": remote,
+                "ref": ref,
+                "strategy": strategy,
+                "source": str(source),
+                "worktree": str(wt),
+                "from": before,
+                "to": after,
+                "status": "up-to-date" if before == after else "pulled",
+            }
+        )
+        if on_progress:
+            on_progress(f"{alias}: {results[-1]['status']}")
 
     return results
 

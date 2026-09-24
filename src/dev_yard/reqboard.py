@@ -400,7 +400,12 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
         detail.contract == "failed"
         or any(t.source == "contract" and t.can_implement for t in detail.tickets)
     )
-    can_push = (detail.phase in {"frozen", "done", "testing"}) and has_worktrees
+    can_transfer_worktree = (
+        detail.phase in {"frozen", "done", "testing"}
+    ) and has_worktrees
+    can_push = can_transfer_worktree
+    can_pull = can_transfer_worktree
+    pull_reason = "" if can_pull else "需要先 freeze 创建 worktree"
     registered = load_repos(root)
     can_sync = bool(registered)
     sync_reason = (
@@ -545,6 +550,17 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
             ACTION_LABELS["push"],
             can_push,
             "" if can_push else "需要先 freeze 创建 worktree",
+        ),
+        Action(
+            "pull",
+            ACTION_LABELS["pull"],
+            can_pull,
+            pull_reason
+            if not can_pull
+            else (
+                "fetch 登记仓；把已冻结的 worktree 快进/合并到各自的远端分支 "
+                "origin/<branch>"
+            ),
         ),
         Action(
             "sync",

@@ -1388,15 +1388,18 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
   const resetGrill = action === "reset-grill";
   const freeze = action === "freeze";
   const push = action === "push";
+  const pull = action === "pull";
   const sync = action === "sync";
   const runTest = action === "qa-run";
   const designTest = action === "qa-design";
-  if (resetPhase || resetGrill || freeze || push || sync || runTest || designTest) {
+  if (resetPhase || resetGrill || freeze || push || pull || sync || runTest || designTest) {
     confirm.action = action;
     confirm.ticketId = ticketId || "";
     const branch = detail.value?.branch || `req/${jira.value}`;
     confirm.text = push
       ? `将把各个仓库的 worktree 分支 (${branch}) 推送到远端。确认继续？`
+      : pull
+      ? `将 fetch 远端，并把已冻结的 worktree 快进到各自的远端分支 (${branch})。若本地与远端已分叉，默认快进会失败。确认继续？`
       : sync
       ? "将 fetch 远端，并把已冻结 worktree 更新到 origin/<default_base>（默认快进）。确认继续？"
       : freeze

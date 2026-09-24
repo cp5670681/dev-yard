@@ -159,6 +159,10 @@ dev-yard req test PROJ-101 --redesign --feedback "补齐权限拦截用例"   # 
 dev-yard push PROJ-101              # 或 dev-yard req push PROJ-101
 # 也支持只推送指定仓库：dev-yard push PROJ-101 core-api
 # 或在 Web 看板直接点击「推送到远端」
+
+# 10. 把远端分支的新提交拉回本地 Worktree（别处改过同一分支后）
+dev-yard req pull PROJ-101          # 默认 ff-only；分叉时用 --strategy merge/rebase
+# 或在 Web 看板点击「拉取远端分支」；「同步远端」是更新到 default_base，两者不同
 ```
 
 > **说明**：Agent 阶段默认打开交互 TUI；加上 `--print` 可转为单次非交互运行（直接打印日志）。
@@ -274,6 +278,7 @@ dev-yard web --host 0.0.0.0 --allow-remote
 | `dev-yard req freeze <key>` | 冻结方案并建 Worktree | `--force`（testing/done 回退） |
 | `dev-yard req delete <key>` | 删除需求产物与 Worktree | |
 | `dev-yard req push <key> [repos..]` | 推送各仓 Worktree 分支到远端 | `--remote`, `--force` |
+| `dev-yard req pull <key> [repos..]` | 把各仓 Worktree 更新到自己的远端分支（默认快进） | `--remote`, `--strategy` |
 | `dev-yard req submit-test <key>` | 标记提测 | |
 | `dev-yard req test <key>` | `--design-only` 出用例 → `--approve` 只标记通过 → `--run-only` 执行 | `--env`, `--print`, `--design-only`, `--run-only`, `--unsafe-skip-review`, `--redesign`, `--approve`, `--feedback`, `--feedback-file`, `--verify-only`, `--no-verify`, `--allow-unverified`, `--resume`, `--fresh`, `--full`, `--no-wait`, `--rerun-case`, `--no-ingest` |
 | `dev-yard req triage <key>` | 给待判定失败用例批量下 bug | `--product/--all` |

@@ -494,6 +494,36 @@ def req_push(
         typer.echo(f"pushed {r['repo']} ({r['branch']}) -> {r['remote']}")
 
 
+@req_app.command("pull")
+def req_pull(
+    jira: str = typer.Argument(..., help="Requirement key (e.g. PROJ-101)"),
+    repos: list[str] | None = typer.Argument(
+        None, help="Optional repo aliases (default: all frozen)"
+    ),
+    remote: str = typer.Option("origin", "--remote", "-r", help="Git remote name (default: origin)"),
+    strategy: str = typer.Option(
+        "ff-only",
+        "--strategy",
+        "-s",
+        help="How to update freeze worktrees: ff-only | merge | rebase",
+    ),
+) -> None:
+    """Fetch remotes and update freeze worktrees onto their own remote branch."""
+    root = root_opt()
+    try:
+        results = service.req_pull(
+            root,
+            jira,
+            repos=repos,
+            remote=remote,
+            strategy=strategy,
+            on_progress=lambda line: typer.echo(line, err=True),
+        )
+    except (ValueError, FileNotFoundError, GitError) as e:
+        _die(e)
+    for r in results:
+        typer.echo(f"{r['status']} {r['repo']} ({r['branch']})")
+
 
 @req_app.command("submit-test")
 def req_submit_test(

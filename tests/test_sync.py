@@ -8,7 +8,15 @@ from typer.testing import CliRunner
 from dev_yard import paths
 from dev_yard.cli import app
 from dev_yard.gitops import GitError, head_sha
-from dev_yard.service import init_yard, repo_add, req_freeze, req_open, req_sync
+from dev_yard.service import (
+    init_yard,
+    repo_add,
+    req_freeze,
+    req_open,
+    req_pull,
+    req_push,
+    req_sync,
+)
 from dev_yard.web.app import create_app
 from dev_yard.web.board import requirement_detail
 
@@ -232,3 +240,101 @@ def test_cli_and_web_sync(tmp_path: Path, monkeypatch):
     assert job["state"] == "ok"
     assert "backend:synced" in job["log"]
     assert (wt / "web.txt").exists()
+
+
+def _advance_branch(bare: Path, src: Path, branch: str, name: str, body: str) -> None:
+    other = src.parent / f"{src.name}-{name.replace('.', '-')}"
+    subprocess.check_call(["git", "clone", "-b", branch, str(bare), str(other)])
+    subprocess.check_call(["git", "config", "user.email", "t@t"], cwd=other)
+    subprocess.check_call(["git", "config", "user.name", "t"], cwd=other)
+    (other / name).write_text(body)
+    subprocess.check_call(["git", "add", "."], cwd=other)
+    subprocess.check_call(["git", "commit", "-m", f"add {name}"], cwd=other)
+    subprocess.check_call(["git", "push", "origin", branch], cwd=other)
+
+
+def _branch_of(wt: Path) -> str:
+    return subprocess.check_output(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=wt, text=True
+    ).strip()
+
+
+def _frozen_yard(tmp_path: Path, monkeypatch, jira: str):
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    yard, bare_be, _, src_be, _ = _setup_yard_with_remotes(tmp_path)
+    d, _ = req_open(yard, jira, source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: backend task\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    req_freeze(yard, jira)
+    return yard, bare_be, src_be
+
+
+def test_req_pull_ff_worktree(tmp_path: Path, monkeypatch):
+    yard, bare_be, src_be = _frozen_yard(tmp_path, monkeypatch, "PROJ-8")
+    wt = paths.req_worktree(yard, "PROJ-8", "backend")
+    branch = _branch_of(wt)
+    req_push(yard, "PROJ-8", repos=["backend"])
+    before = head_sha(wt)
+    _advance_branch(bare_be, src_be, branch, "remote.txt", "from remote")
+    results = req_pull(yard, "PROJ-8", repos=["backend"])
+    assert results[0]["status"] == "pulled"
+    assert results[0]["from"] == before
+    assert results[0]["to"] != before
+    assert (wt / "remote.txt").read_text() == "from remote"
+
+
+def test_req_pull_up_to_date_when_remote_not_ahead(tmp_path: Path, monkeypatch):
+    yard, _, _ = _frozen_yard(tmp_path, monkeypatch, "PROJ-9")
+    req_push(yard, "PROJ-9", repos=["backend"])
+    results = req_pull(yard, "PROJ-9", repos=["backend"])
+    assert results[0]["status"] == "up-to-date"
+
+
+def test_req_pull_missing_remote_branch(tmp_path: Path, monkeypatch):
+    yard, _, _ = _frozen_yard(tmp_path, monkeypatch, "PROJ-10")
+    with pytest.raises(GitError, match="not found"):
+        req_pull(yard, "PROJ-10", repos=["backend"])
+
+
+def test_req_pull_dirty_worktree_raises(tmp_path: Path, monkeypatch):
+    yard, _, _ = _frozen_yard(tmp_path, monkeypatch, "PROJ-11")
+    wt = paths.req_worktree(yard, "PROJ-11", "backend")
+    req_push(yard, "PROJ-11", repos=["backend"])
+    (wt / "dirty.txt").write_text("x")
+    with pytest.raises(GitError, match="uncommitted"):
+        req_pull(yard, "PROJ-11", repos=["backend"])
+
+
+def test_cli_and_web_pull(tmp_path: Path, monkeypatch):
+    yard, bare_be, src_be = _frozen_yard(tmp_path, monkeypatch, "PROJ-12")
+    wt = paths.req_worktree(yard, "PROJ-12", "backend")
+    branch = _branch_of(wt)
+    req_push(yard, "PROJ-12", repos=["backend"])
+
+    detail = requirement_detail(yard, "PROJ-12")
+    pull_act = next(a for a in detail.actions if a.id == "pull")
+    assert pull_act.enabled
+    assert pull_act.stage == "utility"
+
+    _advance_branch(bare_be, src_be, branch, "cli.txt", "cli")
+    monkeypatch.chdir(yard)
+    res = CliRunner().invoke(app, ["req", "pull", "PROJ-12", "backend"])
+    assert res.exit_code == 0, res.output
+    assert "pulled backend" in res.output
+    assert (wt / "cli.txt").read_text() == "cli"
+
+    _advance_branch(bare_be, src_be, branch, "web.txt", "web")
+    client = TestClient(create_app(yard, sync_jobs=True))
+    resp = client.post(
+        "/api/requirements/PROJ-12/actions/pull",
+        json={"repos": ["backend"], "strategy": "ff-only"},
+    )
+    assert resp.status_code == 200
+    job = resp.json()["jobs"][0]
+    assert job["action"] == "pull"
+    assert job["state"] == "ok"
+    assert "backend:pulled" in job["log"]
+    assert (wt / "web.txt").read_text() == "web"
+

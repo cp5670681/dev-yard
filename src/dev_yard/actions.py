@@ -38,6 +38,7 @@ BOARD_ACTIONS: tuple[ActionSpec, ...] = (
     ActionSpec("fill-test-report", "提 bug"),
     ActionSpec("fix-test", "修 bug"),
     ActionSpec("push", "推送到远端"),
+    ActionSpec("pull", "拉取远端分支"),
     ActionSpec("sync", "同步远端"),
     ActionSpec("reset-phase", "重置阶段"),
 )

@@ -478,6 +478,16 @@ class JobLogRunner(Runner):
         return result
 
 
+def _parse_repos_filter(extra: dict[str, Any]) -> list[str] | None:
+    """Accept `repos` as a comma-separated string or a list; else "all" (None)."""
+    repos = extra.get("repos")
+    if isinstance(repos, str) and repos.strip():
+        return [r.strip() for r in repos.split(",") if r.strip()]
+    if isinstance(repos, list):
+        return repos
+    return None
+
+
 def default_execute(root: Path, job: Job) -> None:
     extra = job.extra or {}
     if job.action == "repo_add":
@@ -565,11 +575,7 @@ def default_execute(root: Path, job: Job) -> None:
         extra = job.extra or {}
         remote = str(extra.get("remote") or "origin")
         force = bool(extra.get("force", False))
-        repos_filter = extra.get("repos")
-        if isinstance(repos_filter, str) and repos_filter.strip():
-            repos_filter = [r.strip() for r in repos_filter.split(",") if r.strip()]
-        elif not isinstance(repos_filter, list):
-            repos_filter = None
+        repos_filter = _parse_repos_filter(extra)
         results = service.req_push(
             root,
             job.jira,
@@ -581,14 +587,26 @@ def default_execute(root: Path, job: Job) -> None:
         pushed_summary = ", ".join(f"{r['repo']} ({r['branch']})" for r in results)
         job.append(f"pushed {job.jira} to remote: {pushed_summary}")
         return
+    if job.action == "pull":
+        extra = job.extra or {}
+        remote = str(extra.get("remote") or "origin")
+        strategy = str(extra.get("strategy") or "ff-only")
+        repos_filter = _parse_repos_filter(extra)
+        results = service.req_pull(
+            root,
+            job.jira,
+            repos=repos_filter,
+            remote=remote,
+            strategy=strategy,
+            on_progress=job.append,
+        )
+        summary = ", ".join(f"{r['repo']}:{r['status']}" for r in results)
+        job.append(f"pulled {job.jira}: {summary}")
+        return
     if job.action == "sync":
         extra = job.extra or {}
         strategy = str(extra.get("strategy") or "ff-only")
-        repos_filter = extra.get("repos")
-        if isinstance(repos_filter, str) and repos_filter.strip():
-            repos_filter = [r.strip() for r in repos_filter.split(",") if r.strip()]
-        elif not isinstance(repos_filter, list):
-            repos_filter = None
+        repos_filter = _parse_repos_filter(extra)
         results = service.req_sync(
             root,
             job.jira,
