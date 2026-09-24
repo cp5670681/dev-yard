@@ -351,3 +351,37 @@ def test_cli_export_and_import_bundle(tmp_path: Path, monkeypatch):
     assert res.exit_code == 0, res.output
     assert "AB-1 phase=testing" in res.stdout
     assert paths.req_worktree(yard2, "AB-1", "backend").exists()
+
+
+def test_web_export_import_bundle_round_trip(tmp_path: Path):
+    from fastapi.testclient import TestClient
+
+    from dev_yard.web.app import create_app
+
+    yard, _be, _fe = _frozen_yard(tmp_path)
+    client = TestClient(create_app(yard, sync_jobs=True))
+    r = client.post("/api/requirements/AB-1/export", json={"full": True})
+    assert r.status_code == 200, r.text
+    job = r.json()["jobs"][0]
+    assert job["state"] == "ok"
+
+    dl = client.get(f"/api/jobs/{job['id']}/export/download")
+    assert dl.status_code == 200
+    archive = tmp_path / "AB-1-bundle.tar.gz"
+    archive.write_bytes(dl.content)
+
+    yard2 = tmp_path / "yard2"
+    init_yard(yard2)
+    client2 = TestClient(create_app(yard2, sync_jobs=True))
+    with archive.open("rb") as fh:
+        r = client2.post(
+            "/api/requirements/import-bundle",
+            files={"file": ("AB-1-bundle.tar.gz", fh, "application/gzip")},
+            data={"force": "false"},
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["jobs"][0]["state"] == "ok"
+    assert paths.req_worktree(yard2, "AB-1", "backend").exists()
+    restored = st.load(yard2, "AB-1")
+    assert restored["phase"] == "testing"
+    assert restored["tickets"]["T1"]["state"] == "done"

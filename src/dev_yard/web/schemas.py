@@ -89,6 +89,12 @@ class QaRerunIn(BaseModel):
     env: str = ""
 
 
+class ExportIn(BaseModel):
+    accounts: bool = False
+    full: bool = False
+    snapshot: bool = False
+
+
 class AssistantSessionIn(BaseModel):
     route: str = "/"
     jira: str = ""

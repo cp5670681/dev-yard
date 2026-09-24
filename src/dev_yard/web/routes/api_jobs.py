@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
+from dev_yard import paths
 from dev_yard.web.context import AppContext
 from dev_yard.web.jobs import BoardSse, JobSse, PiChatSse
 from dev_yard.web.schemas import GrillAnswersIn
@@ -45,6 +46,28 @@ def build(ctx: AppContext) -> APIRouter:
                 seq = new_seq
 
         return _sse_response(gen)
+
+    @router.get("/api/jobs/{job_id}/export/download")
+    def api_job_export_download(job_id: str):
+        """Download the archive a specific export job produced.
+
+        Pinned to the job so a failed export (no file) or a newer export
+        (different job id) can never leak through this URL.
+        """
+        job = jobs.get(job_id)
+        if job is None:
+            raise HTTPException(404, "unknown job")
+        snap = job.snapshot()
+        if snap["action"] != "export-bundle" or snap["state"] != "ok":
+            raise HTTPException(409, "该任务没有可下载的导出包")
+        path = paths.export_bundle_path(ctx.root, job.jira, job.id)
+        if not path.is_file():
+            raise HTTPException(404, "导出文件不存在")
+        return FileResponse(
+            path,
+            media_type="application/gzip",
+            filename=f"{job.jira}-bundle.tar.gz",
+        )
 
     @router.get("/api/jobs/{job_id}")
     def api_job(job_id: str):

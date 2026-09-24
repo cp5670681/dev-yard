@@ -7,6 +7,7 @@ __pycache__/
 .repos/
 .yard-worktrees/
 .yard-assistant/
+.yard-exports/
 qa.yaml
 reqs/*/worktrees/
 dist/

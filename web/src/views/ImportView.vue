@@ -136,6 +136,46 @@
         </v-form>
       </v-card-text>
     </v-card>
+
+    <v-card variant="outlined" max-width="900" class="mt-6">
+      <v-card-text class="pt-6">
+        <div class="text-subtitle-1 font-weight-medium mb-1">从 bundle 还原需求</div>
+        <p class="text-medium-emphasis mb-4">
+          上传另一台机器用需求页「导出」或
+          <code>dev-yard req export &lt;JIRA&gt; --archive</code> 生成的
+          <code>.tar.gz</code>；会还原文档、逐票状态、freeze 与在途票 worktree。
+        </p>
+        <v-alert v-if="bundleError" type="error" class="mb-4" closable @click:close="bundleError = ''">
+          {{ bundleError }}
+        </v-alert>
+        <v-file-input
+          v-model="bundleFile"
+          label="bundle 压缩包 (.tar.gz)"
+          accept=".tar.gz,.tgz,application/gzip"
+          show-size
+          density="comfortable"
+          :disabled="bundleBusy"
+          class="mb-4"
+        />
+        <v-checkbox
+          v-model="bundleForce"
+          color="warning"
+          hide-details
+          label="强制覆盖已有需求"
+          class="mb-4"
+        />
+        <v-btn
+          color="primary"
+          block
+          size="large"
+          :loading="bundleBusy"
+          :disabled="!bundleFiles.length"
+          @click="submitBundle"
+        >
+          导入 bundle
+        </v-btn>
+      </v-card-text>
+    </v-card>
   </div>
 </template>
 
@@ -143,7 +183,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { mdiClose, mdiPlus } from "@mdi/js";
-import { getGitSettings, importRequirement, listRepos } from "@/api/client";
+import { getGitSettings, importBundle, importRequirement, listRepos } from "@/api/client";
 import type { Repo } from "@/api/types";
 import { useSnack } from "@/composables/snack";
 
@@ -160,6 +200,10 @@ const autoSubmit = ref(true);
 const force = ref(false);
 const busy = ref(false);
 const error = ref("");
+const bundleFile = ref<File[] | File | null>(null);
+const bundleForce = ref(false);
+const bundleBusy = ref(false);
+const bundleError = ref("");
 const repos = ref<Repo[]>([]);
 const userCustomizedKey = ref(false);
 const freezeBranchTemplate = ref("req/{jira}");
@@ -168,6 +212,10 @@ const rows = ref<{ alias: string; ref: string; base: string; auto: string }[]>([
 ]);
 
 const repoAliases = computed(() => repos.value.map((r) => r.alias));
+const bundleFiles = computed(() => {
+  const f = bundleFile.value;
+  return Array.isArray(f) ? f : f ? [f] : [];
+});
 
 // 外部分支常按冻结规范命名（如 req/PG-13068），据此给空 ref 预填
 // origin/<freeze_branch>；用户手改过（ref !== auto）的行不再覆盖。
@@ -321,6 +369,27 @@ async function submitForm() {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
     busy.value = false;
+  }
+}
+
+async function submitBundle() {
+  const file = bundleFiles.value[0];
+  if (!file) return;
+  bundleError.value = "";
+  bundleBusy.value = true;
+  try {
+    const out = await importBundle(file, bundleForce.value);
+    const job = out.jobs[0]?.id;
+    snack.notify(`已开始导入 ${out.jira}`, "success");
+    await router.push({
+      name: "requirement",
+      params: { jira: out.jira },
+      query: job ? { job } : {},
+    });
+  } catch (e) {
+    bundleError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    bundleBusy.value = false;
   }
 }
 </script>

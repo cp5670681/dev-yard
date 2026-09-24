@@ -288,6 +288,11 @@ dev-yard web --host 0.0.0.0 --allow-remote
 ```
 提供可视化需求看板、在线文档读写、阶段一键触发与实时日志。
 
+需求页右上角「导出」把该需求（文档 + 各仓 freeze/在途票分支）打成
+`<JIRA>-bundle.tar.gz` 并自动下载；「外部导入」页的「从 bundle 还原需求」上传
+该压缩包即可换机还原（勾选「强制覆盖」处理同名需求），等价于
+`req export --archive` / `req import-bundle`。还原前请确保各业务仓已登记或可 clone。
+
 `--allow-remote` 无鉴权，且会暴露 `pi --approve`，只在可信内网使用。
 
 ---

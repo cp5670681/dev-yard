@@ -31,6 +31,15 @@
           <v-btn
             v-if="detail"
             variant="text"
+            size="small"
+            :prepend-icon="mdiTrayArrowDown"
+            @click="openExport"
+          >
+            导出
+          </v-btn>
+          <v-btn
+            v-if="detail"
+            variant="text"
             color="error"
             size="small"
             :prepend-icon="mdiDeleteOutline"
@@ -669,6 +678,48 @@
       </v-card>
     </v-dialog>
 
+    <v-dialog v-model="exportForm.open" max-width="520">
+      <v-card>
+        <v-card-title>导出需求</v-card-title>
+        <v-card-text>
+          <p class="text-body-2 text-medium-emphasis mb-3">
+            把 <strong>{{ jira }}</strong> 的文档与各仓代码分支（freeze 分支 + 在途票分支）打成
+            <code>{{ jira }}-bundle.tar.gz</code>，可在另一台机器用「外部导入」页还原。
+          </p>
+          <v-checkbox
+            v-model="exportForm.full"
+            color="primary"
+            hide-details
+            label="自包含（--full，离线可还原，体积大）"
+            class="mb-1"
+          />
+          <v-checkbox
+            v-model="exportForm.snapshot"
+            color="primary"
+            hide-details
+            label="先提交未提交改动（--snapshot）"
+            class="mb-1"
+          />
+          <v-checkbox
+            v-model="exportForm.accounts"
+            color="warning"
+            hide-details
+            label="附带需求账号（明文密钥，谨慎）"
+          />
+          <p class="text-caption text-medium-emphasis mt-2 mb-0">
+            默认是瘦包，还原端需要能 fetch 远端 base。导出完成后浏览器会自动开始下载。
+          </p>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="exportForm.open = false">取消</v-btn>
+          <v-btn color="primary" :loading="acting === 'export-bundle'" @click="doExport">
+            开始导出
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <v-dialog v-model="deleteOpen" max-width="480">
       <v-card>
         <v-card-title>删除需求？</v-card-title>
@@ -892,6 +943,7 @@ import {
   mdiPaperclip,
   mdiProgressClock,
   mdiRefresh,
+  mdiTrayArrowDown,
   mdiWrench,
 } from "@mdi/js";
 import {
@@ -900,6 +952,8 @@ import {
   deleteAttachment,
   deleteRequirement,
   deleteTicket,
+  exportDownloadUrl,
+  exportRequirement,
   fileCaseBug,
   getReqAccounts,
   getRequirement,
@@ -996,6 +1050,12 @@ const frozenRepos = computed(() =>
 );
 const rerunningCase = ref("");
 const deleteOpen = ref(false);
+const exportForm = reactive({
+  open: false,
+  accounts: false,
+  full: false,
+  snapshot: false,
+});
 const ticketDelete = reactive({ open: false, ticket: null as Ticket | null });
 const diffDialog = reactive({ open: false, ticketId: "" });
 const reviewDialog = reactive({ open: false, ticket: null as Ticket | null });
@@ -1512,6 +1572,36 @@ async function doDelete() {
   }
 }
 
+function openExport() {
+  exportForm.accounts = false;
+  exportForm.full = false;
+  exportForm.snapshot = false;
+  exportForm.open = true;
+}
+
+async function doExport() {
+  error.value = "";
+  acting.value = "export-bundle";
+  try {
+    const out = await exportRequirement(jira.value, {
+      accounts: exportForm.accounts,
+      full: exportForm.full,
+      snapshot: exportForm.snapshot,
+    });
+    exportForm.open = false;
+    const job = out.jobs[0]?.id;
+    if (job) {
+      await router.replace({ query: { ...route.query, job } });
+    }
+    snack.notify("已开始导出，完成后自动下载", "success");
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+    snack.notify(error.value, "error");
+  } finally {
+    acting.value = "";
+  }
+}
+
 function confirmDeleteTicket(ticket: Ticket) {
   ticketDelete.ticket = ticket;
   ticketDelete.open = true;
@@ -1630,6 +1720,11 @@ async function onAction(
 
 function onJobDone(job?: JobSnapshot) {
   if (job && QA_GATE_ACTIONS.has(job.action)) jobProgress.value = null;
+  if (job?.action === "export-bundle" && job.state === "ok") {
+    window.location.assign(exportDownloadUrl(job.id));
+  } else if (job?.action === "export-bundle" && job.state !== "ok") {
+    snack.notify("导出失败，详见日志", "error");
+  }
   void load().then(() => {
     // `qa-review` and `qa-design` never execute cases, so they must not
     // surface a run banner.

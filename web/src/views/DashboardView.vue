@@ -7,9 +7,18 @@
           一个 Jira 一张看板。文档阶段可在网页用 pi -p 跑。
         </p>
       </div>
-      <v-btn color="primary" :prepend-icon="mdiPlus" to="/open" class="align-self-stretch align-self-sm-center">
-        打开需求
-      </v-btn>
+      <div class="d-flex flex-column flex-sm-row ga-2 align-self-stretch align-self-sm-center">
+        <v-btn
+          variant="tonal"
+          :prepend-icon="mdiTrayArrowDown"
+          to="/import"
+        >
+          导入 bundle
+        </v-btn>
+        <v-btn color="primary" :prepend-icon="mdiPlus" to="/open">
+          打开需求
+        </v-btn>
+      </div>
     </div>
     <v-alert v-if="error" type="error" class="mb-4" closable @click:close="error = ''">
       {{ error }}
@@ -110,7 +119,7 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
-import { mdiClipboardTextOffOutline, mdiDeleteOutline, mdiPlus } from "@mdi/js";
+import { mdiClipboardTextOffOutline, mdiDeleteOutline, mdiPlus, mdiTrayArrowDown } from "@mdi/js";
 import { deleteRequirement, listRequirements } from "@/api/client";
 import type { ReqSummary } from "@/api/types";
 import { contractTone, phaseColor, STEP_LABELS } from "@/composables/labels";

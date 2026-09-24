@@ -381,6 +381,20 @@ def _read_manifest(bundle_root: Path) -> dict[str, Any]:
     return data
 
 
+def read_bundle_manifest(src: Path) -> dict[str, Any]:
+    """Read a bundle's manifest without importing it (web import preflight).
+
+    Accepts a bundle directory or a `.tar.gz`; the archive case is extracted to
+    a temp dir, read, and cleaned up before returning.
+    """
+    bundle_root, tmp = _load_bundle_dir(src)
+    try:
+        return _read_manifest(bundle_root)
+    finally:
+        if tmp is not None:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _ensure_repos(root: Path, manifest: dict[str, Any], log: Progress) -> None:
     """Register any missing repos from the manifest; verify URLs for the rest."""
     from dev_yard import service

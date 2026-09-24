@@ -107,3 +107,22 @@ def qa_yaml(root: Path) -> Path:
 def req_accounts_yaml(root: Path, jira: str) -> Path:
     """Requirement-level accounts (plaintext, gitignored under .yard-qa/)."""
     return root / ".yard-qa" / "requirements" / _seg(jira) / "accounts.yaml"
+
+
+def exports_dir(root: Path) -> Path:
+    """Workspace scratch dir for `req export` bundles written by the web console."""
+    return root / ".yard-exports"
+
+
+def export_uploads_dir(root: Path) -> Path:
+    """Staging area for bundles uploaded to the web import endpoint."""
+    return exports_dir(root) / "uploads"
+
+
+def export_bundle_path(root: Path, jira: str, job_id: str) -> Path:
+    """The archive one export job writes.
+
+    Unique per job so a later export can never clobber a download the user is
+    still fetching; the job-scoped download URL pins the exact artifact.
+    """
+    return exports_dir(root) / _seg(jira) / f"{_seg(job_id)}.tar.gz"

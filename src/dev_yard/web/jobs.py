@@ -552,6 +552,46 @@ def default_execute(root: Path, job: Job) -> None:
         service.req_reset_grill(root, job.jira)
         job.append(f"{job.jira} 对齐已重置（下一轮从零生成）")
         return
+    if job.action == "export-bundle":
+        from dev_yard import bundle
+
+        extra = job.extra or {}
+        dest = paths.export_bundle_path(root, job.jira, job.id)
+        out = bundle.req_export(
+            root,
+            job.jira,
+            dest,
+            include_accounts=bool(extra.get("accounts")),
+            archive=True,
+            full=bool(extra.get("full")),
+            snapshot=bool(extra.get("snapshot")),
+            force=True,
+            on_progress=job.append,
+        )
+        # Job-scoped downloads pin their own file, so older archives for this
+        # requirement are dead weight; keep only the one just written.
+        for stale in dest.parent.glob("*.tar.gz"):
+            if stale != out:
+                stale.unlink(missing_ok=True)
+        job.append(f"exported {job.jira} -> {out}")
+        return
+    if job.action == "import-bundle":
+        from dev_yard import bundle
+
+        extra = job.extra or {}
+        src = Path(str(extra.get("source_path") or ""))
+        try:
+            data = bundle.req_import_bundle(
+                root, src, force=bool(extra.get("force")), on_progress=job.append
+            )
+        finally:
+            if src.is_file():
+                src.unlink(missing_ok=True)
+        tickets = data.get("tickets") or {}
+        job.append(
+            f"imported {data.get('jira')} phase={data.get('phase')} tickets={len(tickets)}"
+        )
+        return
     if job.action == "change":
         note = str(extra.get("note") or "")
         repo = str(extra.get("repo") or "")

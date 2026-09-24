@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -8,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from dev_yard import __version__, service
+from dev_yard import __version__, paths, service
 from dev_yard.actions import ACTION_LABELS
 from dev_yard.assistant import AssistantHub
 from dev_yard.web.board import DOC_FILES, PIPELINE
@@ -80,6 +81,8 @@ def create_app(
     root = root.resolve()
     jobs = job_runner or JobRunner(root, sync=sync_jobs)
     assistants = assistant_hub or AssistantHub(root, sync=sync_jobs)
+    # Drop bundle uploads stranded by a crash/restart before their import job ran.
+    shutil.rmtree(paths.export_uploads_dir(root), ignore_errors=True)
     if not jobs.sync:
         jobs.resume_pending_grills()
         jobs.resume_pending_qa()

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import shutil
+import uuid
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
 from dev_yard import __version__, attachments, gitops, paths
 from dev_yard import service as yard_service
@@ -16,6 +18,7 @@ from dev_yard.web.schemas import (
     ActionIn,
     ContractReviewIn,
     DocSaveIn,
+    ExportIn,
     ImportIn,
     OpenIn,
     QaRerunIn,
@@ -380,6 +383,75 @@ def build(ctx: AppContext) -> APIRouter:
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         return ctx.jobs_out([job])
+
+    @router.post("/api/requirements/{jira}/export")
+    def api_export(jira: str, payload: ExportIn | None = None):
+        """Export a requirement (docs + code branches) as a downloadable .tar.gz."""
+        ctx.detail_or_404(jira)
+        body = payload or ExportIn()
+        try:
+            job = ctx.jobs.submit(
+                "export-bundle",
+                jira,
+                extra={
+                    "label": "导出 bundle",
+                    "accounts": body.accounts,
+                    "full": body.full,
+                    "snapshot": body.snapshot,
+                },
+            )
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from e
+        return ctx.jobs_out([job])
+
+    @router.post("/api/requirements/import-bundle")
+    def api_import_bundle(
+        file: UploadFile = File(...),
+        force: bool = Form(False),
+    ):
+        """Restore a requirement from a `req export` bundle (.tar.gz)."""
+        from dev_yard import bundle
+
+        uploads = paths.export_uploads_dir(ctx.root)
+        uploads.mkdir(parents=True, exist_ok=True)
+        src = uploads / f"{uuid.uuid4().hex}.tar.gz"
+        handed_off = False
+        try:
+            with src.open("wb") as out:
+                shutil.copyfileobj(file.file, out)
+
+            try:
+                manifest = bundle.read_bundle_manifest(src)
+            except (OSError, ValueError) as e:  # BundleError subclasses ValueError
+                raise HTTPException(400, f"无法读取 bundle：{e}") from e
+
+            req_key = str(manifest.get("jira") or "").strip()
+            try:
+                req = paths.req_dir(ctx.root, req_key)
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+            if req.exists() and not force:
+                raise HTTPException(409, f"{req_key} 已存在；勾选「强制覆盖」再导入")
+
+            try:
+                job = ctx.jobs.submit(
+                    "import-bundle",
+                    req_key,
+                    extra={
+                        "label": "导入 bundle",
+                        "source_path": str(src),
+                        "force": force,
+                    },
+                )
+            except ValueError as e:
+                raise HTTPException(409, str(e)) from e
+            handed_off = True
+        finally:
+            # The job unlinks the archive once it runs; on any earlier failure we
+            # own it. (create_app also sweeps leftovers stranded by a restart.)
+            if not handed_off:
+                src.unlink(missing_ok=True)
+        return {**ctx.jobs_out([job]), "jira": req_key}
 
     @router.post("/api/requirements/{jira}/actions/{action}")
     def api_run_action(jira: str, action: str, payload: ActionIn | None = None):

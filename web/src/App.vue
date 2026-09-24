@@ -85,7 +85,7 @@
         <v-list-item
           to="/import"
           title="外部导入"
-          subtitle="已有分支直接测试"
+          subtitle="已有分支 / bundle 还原"
           :prepend-icon="mdiDownloadOutline"
           active-class="jira-nav-active"
         />

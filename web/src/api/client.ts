@@ -217,6 +217,34 @@ export function importRequirement(input: {
   });
 }
 
+export function exportRequirement(
+  jira: string,
+  opts: {
+    accounts?: boolean;
+    full?: boolean;
+    snapshot?: boolean;
+  } = {},
+) {
+  return api<JobsOut>(
+    `/api/requirements/${encodeURIComponent(jira)}/export`,
+    { method: "POST", body: JSON.stringify(opts) },
+  );
+}
+
+export function exportDownloadUrl(jobId: string) {
+  return `/api/jobs/${encodeURIComponent(jobId)}/export/download`;
+}
+
+export function importBundle(file: File, force = false) {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  form.append("force", force ? "true" : "false");
+  return api<{ jobs: JobSnapshot[]; jira: string }>(
+    "/api/requirements/import-bundle",
+    { method: "POST", body: form },
+  );
+}
+
 export function runAction(
   jira: string,
   action: string,
