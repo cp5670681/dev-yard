@@ -1036,7 +1036,7 @@ def test_design_only_reports_open_questions(tmp_path: Path, git_src: Path, monke
     assert result["open_questions"]["exists"] is True
 
 
-def test_run_schedule_cancel_marks_remaining_cancelled():
+def test_run_schedule_cancel_leaves_remaining_resumable():
     cases = [CaseJob(id=f"c{i}", title="t", repo="backend") for i in (1, 2, 3)]
     pools = [PoolSlot(id="a", provider=None, model=None, concurrency=1, priority=1)]
     cancel = threading.Event()
@@ -1047,11 +1047,13 @@ def test_run_schedule_cancel_marks_remaining_cancelled():
         cancel.set()
         return {"status": "passed", "repo": job.repo}
 
-    run_schedule(cases, pools, run, cancel_check=cancel.is_set)
+    cancelled = run_schedule(cases, pools, run, cancel_check=cancel.is_set)
+    assert cancelled is True
     assert ran == ["c1"]
     rest = [c for c in cases if c.id != "c1"]
-    assert all(c.state == "blocked" for c in rest)
-    assert all(c.reason.startswith("cancelled:") for c in rest)
+    # A pause is not a verdict: the not-yet-started cases stay resumable.
+    assert all(c.state in {"pending", "ready"} for c in rest)
+    assert all(c.state != "blocked" for c in rest)
 
 
 def test_run_schedule_worker_jobcancelled_is_cancelled_not_env():
@@ -1702,6 +1704,161 @@ def test_req_test_stale_result_is_not_accepted_on_resume(
     )
     assert result["summary"]["blocked"] == 1
     assert result["summary"]["passed"] == 0
+
+
+def test_resumable_predicate():
+    from dev_yard.qa_schedule import resumable
+
+    assert resumable("pending")
+    assert resumable("ready")
+    assert resumable("running")
+    assert resumable("blocked", "cancelled", "cancelled: run cancelled")
+    assert resumable("blocked", "", "cancelled: qa-run case-01 cancelled")
+    assert not resumable("passed")
+    assert not resumable("failed")
+    assert not resumable("skipped")
+    assert not resumable("blocked", "env", "worker exit: boom")
+    assert not resumable("blocked", "case-defect", "case-defect: missing seed")
+
+
+def test_run_status_lifecycle_round_trips(tmp_path: Path):
+    from dev_yard import qa_run
+
+    run = tmp_path / "2026-01-01-000000"
+    run.mkdir()
+    # No run.yaml, no result.yaml -> still running (backward compatible).
+    assert qa_run.status(run) == qa_run.RUNNING
+    qa_run.set_status(run, qa_run.PAUSED)
+    assert qa_run.status(run) == qa_run.PAUSED
+    qa_run.set_status(run, qa_run.CONCLUDED, outcome="failed")
+    doc = qa_run.load(run)
+    assert doc["status"] == qa_run.CONCLUDED
+    assert doc["outcome"] == "failed"
+    # Re-opening the run (resume/rerun) drops the stale outcome.
+    qa_run.set_status(run, qa_run.RUNNING)
+    assert qa_run.status(run) == qa_run.RUNNING
+    assert "outcome" not in qa_run.load(run)
+    # A legacy run with result.yaml and no run.yaml is concluded.
+    legacy = tmp_path / "2026-01-02-000000"
+    legacy.mkdir()
+    (legacy / "result.yaml").write_text("run_id: x\n", encoding="utf-8")
+    assert qa_run.status(legacy) == qa_run.CONCLUDED
+
+
+def test_run_incomplete_and_pending_count_cancelled(tmp_path: Path):
+    from dev_yard.qa import _pending_in, _run_incomplete
+
+    run = tmp_path / "2026-01-01-000000"
+    run.mkdir()
+    (run / "progress.yaml").write_text(
+        "run_id: 2026-01-01-000000\nenv: local\ncases:\n"
+        "  - {id: c1, state: passed}\n"
+        "  - {id: c2, state: blocked, reason: 'cancelled: run cancelled', "
+        "blocked_class: cancelled}\n",
+        encoding="utf-8",
+    )
+    assert _run_incomplete(run, {"c1", "c2"}) is True
+    assert _pending_in(run) == 1
+
+
+def test_run_incomplete_false_when_concluded(tmp_path: Path):
+    from dev_yard import qa_run
+    from dev_yard.qa import _run_incomplete
+
+    run = tmp_path / "2026-01-01-000000"
+    run.mkdir()
+    # A concluded run is terminal even if a stale progress row still says running.
+    (run / "progress.yaml").write_text(
+        "run_id: 2026-01-01-000000\nenv: local\ncases:\n"
+        "  - {id: c1, state: running}\n",
+        encoding="utf-8",
+    )
+    qa_run.set_status(run, qa_run.CONCLUDED, outcome="failed")
+    assert _run_incomplete(run, {"c1"}) is False
+
+
+def test_apply_resume_resets_cancelled_to_ready(tmp_path: Path):
+    from dev_yard.qa import _apply_resume
+
+    run = tmp_path / "2026-01-01-000000"
+    run.mkdir()
+    (run / "progress.yaml").write_text(
+        "run_id: 2026-01-01-000000\nenv: local\ncases:\n"
+        "  - {id: c1, state: passed}\n"
+        "  - {id: c2, state: blocked, reason: 'cancelled: run cancelled', "
+        "blocked_class: cancelled}\n",
+        encoding="utf-8",
+    )
+    cases = [
+        CaseJob(id="c1", title="t", repo="r"),
+        CaseJob(id="c2", title="t", repo="r"),
+    ]
+    skipped = _apply_resume(cases, run)
+    assert cases[0].state == "passed"
+    assert cases[1].state == "ready"
+    assert skipped == 1
+
+
+def test_req_test_pause_then_resume_reruns_unstarted(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard import qa_run
+    from dev_yard.runners import JobCancelled
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-PR")
+    for i in (1, 2, 3):
+        _write_case(
+            yard,
+            "QA-PR",
+            f"case-0{i}.md",
+            f"---\nid: case-0{i}\ntitle: t\nrepo: backend\n---\n\nbody\n",
+        )
+    cancel = threading.Event()
+    ran: list[str] = []
+
+    def run(job, slot):
+        ran.append(job.id)
+        cancel.set()
+        return {"status": "passed", "repo": "backend"}
+
+    with pytest.raises(JobCancelled):
+        req_test(
+            yard,
+            "QA-PR",
+            print_mode=True,
+            run_only=True, unsafe_skip_review=True,
+            ingest=False,
+            cancel_check=cancel.is_set,
+            case_runner=run,
+        )
+    assert ran == ["case-01"]
+    run_dir = next(
+        p for p in (yard / "reqs" / "QA-PR" / "qa" / "evidence").iterdir()
+        if p.is_dir()
+    )
+    assert qa_run.status(run_dir) == qa_run.PAUSED
+    assert not (run_dir / "result.yaml").is_file()
+
+    ran2: list[str] = []
+
+    def run2(job, slot):
+        ran2.append(job.id)
+        return {"status": "passed", "repo": "backend"}
+
+    result = req_test(
+        yard,
+        "QA-PR",
+        print_mode=True,
+        run_only=True, unsafe_skip_review=True,
+        ingest=False,
+        resume=True,
+        case_runner=run2,
+    )
+    assert set(ran2) == {"case-02", "case-03"}
+    assert qa_run.status(run_dir) == qa_run.CONCLUDED
+    assert result["summary"]["passed"] == 3
 
 
 def test_req_test_blocks_only_cases_on_failed_account(
@@ -2828,7 +2985,7 @@ def test_apply_resume_keeps_later_verdict_over_pass_file(tmp_path: Path):
     (run / "case-02").mkdir()
     (run / "progress.yaml").write_text(
         "run_id: r\nenv: local\ncases:\n"
-        "  - {id: case-01, state: blocked, reason: 'cancelled: qa-run case-01 cancelled'}\n"
+        "  - {id: case-01, state: blocked, reason: 'worker exit: boom'}\n"
         "  - {id: case-02, state: blocked, reason: 'auth failed: login'}\n",
         encoding="utf-8",
     )
@@ -2843,7 +3000,7 @@ def test_apply_resume_keeps_later_verdict_over_pass_file(tmp_path: Path):
     ]
     _apply_resume(cases, run)
     assert [(c.id, c.state, c.reason) for c in cases] == [
-        ("case-01", "blocked", "cancelled: qa-run case-01 cancelled"),
+        ("case-01", "blocked", "worker exit: boom"),
         ("case-02", "blocked", "auth failed: login"),
     ]
     doc = yaml.safe_load((run / "progress.yaml").read_text(encoding="utf-8"))
@@ -3676,6 +3833,29 @@ def test_resume_pending_qa_restores_interrupted_run(
             job.done.wait(timeout=5)
 
 
+def test_resume_pending_qa_skips_paused(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard import qa_run
+    from dev_yard.web.jobs import JobRunner
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-PP")
+    run_dir = _seed_run_with_cases(
+        yard,
+        "QA-PP",
+        case_states={"case-01": "running", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-PP"),
+    )
+    req_test(yard, "QA-PP", print_mode=True, approve=True, ingest=False)
+    # A deliberate pause: still resumable by phase, but not auto-resumed.
+    qa_run.set_status(run_dir, qa_run.PAUSED)
+    from dev_yard.qa_state import derive_phase
+
+    assert derive_phase(yard, "QA-PP") == "running"
+    runner = JobRunner(yard, execute=lambda root, job: None, sync=False)
+    assert runner.resume_pending_qa() == []
+
+
 def test_resume_pending_qa_skips_opt_out(tmp_path: Path, git_src: Path, monkeypatch):
     from dev_yard.web.jobs import JobRunner
 
@@ -4132,6 +4312,7 @@ def test_triage_qa_cases_all_files_unclassified(tmp_path: Path, git_src: Path, m
 
 
 def test_latest_retryable_includes_dependents(tmp_path: Path):
+    from dev_yard import qa_run
     from dev_yard.qa import latest_retryable
 
     qa = tmp_path / "qa"
@@ -4144,6 +4325,8 @@ def test_latest_retryable_includes_dependents(tmp_path: Path):
         "  - {id: c3, state: passed}\n",
         encoding="utf-8",
     )
+    # Only a concluded run has a verdict to amend.
+    qa_run.set_status(run, qa_run.CONCLUDED, outcome="failed")
     cases = [
         CaseJob(id="c1", title="t", repo="be"),
         CaseJob(id="c2", title="t", repo="be", depends_on=["c1"]),

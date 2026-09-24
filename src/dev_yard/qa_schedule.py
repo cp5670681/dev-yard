@@ -190,6 +190,18 @@ def env_block_class(reason: str, blocked_class: str = "") -> str | None:
     return _env_signal(r)
 
 
+def resumable(state: str, blocked_class: str = "", reason: str = "") -> bool:
+    """True when a case row has no final verdict and a resume should re-run it.
+
+    `pending`/`ready`/`running` are obviously unfinished. A `blocked` row is
+    re-runnable only when it is a cancellation (a pause / kill), never when it is
+    a real verdict (`case-defect` / `env` / `other`).
+    """
+    if str(state or "") in {"pending", "ready", "running"}:
+        return True
+    return blocked_kind(reason, blocked_class) == "cancelled"
+
+
 def blocked_kind(reason: str, blocked_class: str = "") -> str:
     """Bucket a blocked case for reporting: case-defect | env | cancelled | other."""
     declared = (blocked_class or "").strip().lower()
@@ -355,7 +367,8 @@ def run_schedule(
     retry_attempts: int = 0,
     retry_backoff: float = 0.0,
     on_pool_trip: Callable[[str, str], None] | None = None,
-) -> None:
+) -> bool:
+    """Run the case DAG. Returns True when the run was cancelled (paused)."""
     validate_dag(cases)
     refresh_ready(cases)
     max_workers = max(1, sum(p.concurrency for p in pools))
@@ -471,14 +484,12 @@ def run_schedule(
                     job.ended_at = stamp
             ping()
         elif cancelled:
-            stamp = now_iso()
-            for job in cases:
-                if job.state in {"pending", "ready"}:
-                    job.state = "blocked"
-                    job.reason = "cancelled: run cancelled"
-                    job.blocked_class = "cancelled"
-                    job.ended_at = stamp
+            # Pause, not a verdict: leave not-yet-started cases as pending/ready
+            # so a later resume runs them. In-flight cases were killed and
+            # recorded `blocked/cancelled`, which `resumable()` treats as
+            # re-runnable too.
             ping()
+    return cancelled
 
 
 def _safe_run(

@@ -17,7 +17,7 @@ from typing import Any
 
 import yaml
 
-from dev_yard import attachments, gitops, paths
+from dev_yard import attachments, gitops, paths, qa_run
 from dev_yard import qa_state as qa_st
 from dev_yard import status as st
 from dev_yard.config import load_repos, resolve_freeze_branch
@@ -57,6 +57,7 @@ from dev_yard.qa_schedule import (
     now_iso,
     progress_line,
     progress_payload,
+    resumable,
     run_schedule,
 )
 from dev_yard.qa_verify import (
@@ -1305,15 +1306,25 @@ def _run_matches(
     return True
 
 
+def _row_resumable(row: dict[str, Any]) -> bool:
+    """Whether a `progress.yaml` case row has no final verdict (resume re-runs it)."""
+    return resumable(
+        str(row.get("state") or ""),
+        str(row.get("blocked_class") or ""),
+        str(row.get("reason") or ""),
+    )
+
+
 def _run_incomplete(run_dir: Path, case_ids: set[str]) -> bool:
+    # A concluded run has no work left, whatever the case rows say.
+    if qa_run.status(run_dir) not in qa_run.RESUMABLE:
+        return False
     doc = _progress_doc(run_dir)
     if doc is not None and doc.get("cases"):
-        # Progress is authoritative once the run wrote it: only a case it still
-        # calls active, or a missing run summary, means there is work left.
+        # Progress is authoritative once the run wrote it: only a case with no
+        # final verdict — or a cancelled one — means there is work left.
         for item in doc.get("cases") or []:
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("state") or "") in {"pending", "ready", "running"}:
+            if isinstance(item, dict) and _row_resumable(item):
                 return True
         return not (run_dir / "result.yaml").is_file()
     if not (run_dir / "result.yaml").is_file():
@@ -1344,8 +1355,7 @@ def _pending_in(run_dir: Path) -> int:
         return sum(
             1
             for c in (data.get("cases") or [])
-            if isinstance(c, dict)
-            and str(c.get("state") or "") in {"pending", "ready", "running"}
+            if isinstance(c, dict) and _row_resumable(c)
         )
     pending = 0
     for p in sorted(run_dir.iterdir()):
@@ -1519,6 +1529,10 @@ def _latest_retryable_run(
     if not evidence.is_dir():
         return None
     for run_dir in sorted((p for p in evidence.iterdir() if p.is_dir()), reverse=True):
+        # Only a concluded run has a real verdict to amend; a paused/running one
+        # is the resume path's job, not incremental rerun's.
+        if qa_run.status(run_dir) != qa_run.CONCLUDED:
+            continue
         doc = _progress_doc(run_dir)
         if doc is None:
             continue
@@ -1696,6 +1710,13 @@ def _apply_resume(cases: list[CaseJob], run_dir: Path) -> int:
         if isinstance(prev.get("attempts"), int):
             job.attempts = prev["attempts"]
         if prev_by_id and state not in TERMINAL:
+            continue
+        if _row_resumable(prev):
+            # A cancelled row is not a verdict: re-run it. (pending/ready/running
+            # already continued above; this covers blocked(cancelled).)
+            job.state = "ready"
+            job.reason = ""
+            job.blocked_class = ""
             continue
         path = run_dir / job.id / "result.yaml"
         got = _read_case_result(path, job, dummy, strict=False) if path.is_file() else {}
@@ -2670,6 +2691,7 @@ def _req_test(
         return got
 
     runner_fn = case_runner or default_case_runner
+    run_cancelled = False
     try:
         # Seeds share one test DB across requirements, so a run must not overlap
         # another requirement's run/verification in the same env.
@@ -2682,9 +2704,11 @@ def _req_test(
         ):
             # M1: the run is now the active phase. Record it *after* the env lock
             # so a queued job does not report `running` (and phase_drift) while
-            # it is still waiting its turn.
+            # it is still waiting its turn. Also flips a resumed `paused` run
+            # back to `running`.
+            qa_run.set_status(run_dir, qa_run.RUNNING)
             _try_transition(root, jira, "run_start", on_log=on_log)
-            run_schedule(
+            run_cancelled = run_schedule(
                 cases,
                 pools,
                 runner_fn,
@@ -2700,8 +2724,12 @@ def _req_test(
     finally:
         executor.close()
 
-    # Cancelled mid-run: bail before writing result.yaml / ingesting, so the
-    # partial run is left resumable instead of recorded as a real outcome.
+    # Paused mid-run: record the lifecycle status, then bail before writing
+    # result.yaml / ingesting, so the partial run is left resumable instead of
+    # recorded as a real outcome. `paused` also keeps a restart from auto-
+    # resuming a run the user stopped on purpose.
+    if run_cancelled:
+        qa_run.set_status(run_dir, qa_run.PAUSED)
     _raise_if_cancelled(cancel_check, "qa-run")
 
     for job in cases:
@@ -2786,6 +2814,20 @@ def _req_test(
         encoding="utf-8",
     )
     ping()
+    # Conclude the run *before* ingest / the mutation raise: once result.yaml is
+    # written the run is over, and a crash in between must not leave an ingested
+    # run recorded as still `running` (and therefore resumable).
+    qa_run.set_status(
+        run_dir,
+        qa_run.CONCLUDED,
+        outcome=(
+            "failed"
+            if extra or summary.get("failed")
+            else "blocked"
+            if summary.get("blocked")
+            else "passed"
+        ),
+    )
     if extra:
         # Recorded above before raising, so the run is not lost.
         raise TestRejected(

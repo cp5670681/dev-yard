@@ -135,7 +135,10 @@ def test_qa_api_has_cases_and_run(tmp_path: Path, git_src: Path, monkeypatch):
     assert detail["qa"]["latest_run"]["run_id"] == "2026-09-16-153000"
     assert detail["qa"]["progress"]["cases"][0]["state"] == "running"
     assert detail["qa"]["progress"]["pools"][0]["inflight"] == 1
-    assert detail["qa"]["incomplete_run"]["run_id"] == "2026-09-16-153000"
+    # The run wrote result.yaml, so its lifecycle is concluded: no resumable run
+    # is offered even though the (stale) progress overlay still shows a running
+    # case.
+    assert detail["qa"]["incomplete_run"] is None
     assert len(detail["qa"]["cases"]) == 2
     assert detail["qa"]["cases"][0]["id"] == "case-01"
     assert detail["qa"]["cases"][0]["priority"] == "P0"
