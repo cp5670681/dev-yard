@@ -319,25 +319,99 @@ def _run_sql(cfg: QaConfig, script: Path, on_log: Any | None) -> str:
     return redact_qa_yaml((r.stdout or "").strip())
 
 
+_DOLLAR_TAG = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$")
+
+
+def _scan_sql(text: str, *, blank_strings: bool) -> str:
+    """Walk SQL once, dropping comments and (optionally) blanking strings.
+
+    A regex cannot do this safely: a `/*` born inside a `--` comment would
+    swallow real code, and a `--` inside a `/* */` would do the same. A single
+    pass with explicit state is the only way to keep the read-only guard honest,
+    so a query cannot smuggle a write past it, while a comment-prefixed or
+    dollar-quoted read-only query is not wrongly rejected.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if ch == "-" and nxt == "-":  # line comment
+            j = text.find("\n", i)
+            i = n if j == -1 else j + 1
+            out.append(" ")
+            continue
+        if ch == "/" and nxt == "*":  # block comment, nesting-aware
+            i += 2
+            depth = 1
+            while i < n and depth:
+                if text.startswith("/*", i):
+                    depth += 1
+                    i += 2
+                elif text.startswith("*/", i):
+                    depth -= 1
+                    i += 2
+                else:
+                    i += 1
+            out.append(" ")
+            continue
+        if ch == "$":  # dollar-quoted string: $tag$ ... $tag$
+            tag = _DOLLAR_TAG.match(text, i)
+            end = text.find(tag.group(0), tag.end()) if tag else -1
+            if tag and end != -1:
+                stop = end + len(tag.group(0))
+                out.append("''" if blank_strings else text[i:stop])
+                i = stop
+                continue
+        if ch in {"'", '"'}:  # string literal / quoted identifier
+            quote = ch
+            j = i + 1
+            while j < n:
+                if text[j] == quote:
+                    if j + 1 < n and text[j + 1] == quote:  # doubled escape
+                        j += 2
+                        continue
+                    break
+                j += 1
+            stop = min(j + 1, n)
+            if blank_strings:
+                out.append("''" if quote == "'" else '""')
+            else:
+                out.append(text[i:stop])
+            i = stop
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def assert_readonly_sql(text: str, *, what: str = "verify.sql") -> str:
-    """Validate a single read-only statement; return it without a trailing `;`."""
+    """Validate a single read-only statement; return it without a trailing `;`.
+
+    The returned statement has comments stripped and any single trailing `;`
+    removed, so callers can safely wrap it (see `run_sql_count`).
+    """
     body = (text or "").strip()
     if not body:
         raise TestRejected(f"{what} is empty")
-    if ";" in body.rstrip(";"):
+    # Judge the code with comments and string literals blanked, so prose in a
+    # `-- case-01 verify: ...` header or a write word in a literal is not SQL.
+    code = _scan_sql(body, blank_strings=True).strip()
+    if not code:
+        raise TestRejected(f"{what} is empty")
+    if ";" in code.rstrip(";"):
         raise TestRejected(f"{what} must be a single statement (no `;`)")
-    head = body.split(None, 1)[0].lower()
+    head = code.split(None, 1)[0].lower()
     if head not in READONLY_SQL_HEADS:
         raise TestRejected(
             f"{what} must be read-only (select/show/desc/describe/explain/with/table)"
         )
-    # A write keyword inside a string literal / quoted identifier is data, not
-    # a statement.
-    scrubbed = re.sub(r"'(?:[^']|'')*'", "''", body)
-    scrubbed = re.sub(r'"(?:[^"]|"")*"', '""', scrubbed)
-    if _WRITE_SQL.search(scrubbed):
+    if _WRITE_SQL.search(code):
         raise TestRejected(f"{what} must be read-only (no write keywords)")
-    return body.rstrip(";").rstrip()
+    clean = _scan_sql(body, blank_strings=False).strip()
+    while clean.endswith(";"):
+        clean = clean[:-1].rstrip()
+    return clean
 
 
 def run_sql_value(cfg: QaConfig, sql: str, on_log: Any | None = None) -> str:
