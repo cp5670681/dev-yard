@@ -907,6 +907,37 @@ def test_parallel_child_review_diff_excludes_sibling_work(
     assert "t1.txt" not in cap.prompts[0]
 
 
+def test_review_diff_excludes_upstream_advance(tmp_path, git_src, monkeypatch):
+    """The review prompt must diff against the recorded freeze base.
+
+    After the default branch advances, diffing against its live tip would show
+    the new upstream file as deleted in this ticket's review.
+    """
+    import subprocess
+
+    from dev_yard import paths
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _ready_req(tmp_path, git_src, "AB-77")
+    wt = paths.req_worktree(yard, "AB-77", "backend")
+    (wt / "feat.txt").write_text("feat\n")
+    subprocess.check_call(["git", "add", "."], cwd=wt)
+    subprocess.check_call(["git", "commit", "-m", "feat"], cwd=wt)
+    data = st.load(yard, "AB-77")
+    data["tickets"]["T1"]["state"] = "implemented"
+    st.save(yard, "AB-77", data)
+
+    (git_src / "upstream.txt").write_text("upstream\n")
+    subprocess.check_call(["git", "add", "."], cwd=git_src)
+    subprocess.check_call(["git", "commit", "-m", "upstream"], cwd=git_src)
+
+    cap = _Capture()
+    review(yard, "AB-77", ["T1"], runner=cap)
+    assert "feat.txt" in cap.prompts[0]
+    assert "upstream.txt" not in cap.prompts[0]
+
+
 class _CancelRunner(DryRunRunner):
     def start(self, prompt, cwd, extra_read_paths, repo=None):
         from dev_yard.web.jobs import JobCancelled
