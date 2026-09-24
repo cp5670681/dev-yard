@@ -611,6 +611,74 @@ def req_pull(
         typer.echo(f"{r['status']} {r['repo']} ({r['branch']})")
 
 
+@req_app.command("export")
+def req_export(
+    jira: str = typer.Argument(..., help="Requirement key (e.g. PG-12937)"),
+    output: Path | None = typer.Option(
+        None, "--output", "-o", help="Destination directory or .tar.gz (default: ./<JIRA>-bundle)"
+    ),
+    accounts: bool = typer.Option(
+        False, "--accounts", help="Include requirement accounts (plaintext secrets)"
+    ),
+    archive: bool = typer.Option(
+        False, "--archive", help="Write a single .tar.gz instead of a directory"
+    ),
+    full: bool = typer.Option(
+        False, "--full", help="Self-contained bundles (restorable offline, larger)"
+    ),
+    snapshot: bool = typer.Option(
+        False, "--snapshot", help="Commit pending worktree changes before bundling"
+    ),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing destination"),
+) -> None:
+    """Export a requirement (docs + code branches) into a portable bundle."""
+    from dev_yard import bundle
+
+    root = root_opt()
+    dest = output or Path.cwd() / (
+        f"{jira}-bundle.tar.gz" if archive else f"{jira}-bundle"
+    )
+    try:
+        out = bundle.req_export(
+            root,
+            jira,
+            dest,
+            include_accounts=accounts,
+            archive=archive,
+            full=full,
+            snapshot=snapshot,
+            force=force,
+            on_progress=lambda line: typer.echo(line, err=True),
+        )
+    except (ValueError, FileNotFoundError, OSError, GitError) as e:
+        _die(e)
+        return
+    typer.echo(str(out))
+
+
+@req_app.command("import-bundle")
+def req_import_bundle(
+    source: Path = typer.Argument(..., help="Bundle directory or .tar.gz from `req export`"),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing requirement"),
+) -> None:
+    """Restore a requirement from a bundle produced by `req export`."""
+    from dev_yard import bundle
+
+    root = root_opt()
+    try:
+        data = bundle.req_import_bundle(
+            root,
+            source,
+            force=force,
+            on_progress=lambda line: typer.echo(line, err=True),
+        )
+    except (ValueError, FileNotFoundError, OSError, GitError) as e:
+        _die(e)
+        return
+    tickets = data.get("tickets") or {}
+    typer.echo(f"{data.get('jira')} phase={data.get('phase')} tickets={len(tickets)}")
+
+
 @req_app.command("submit-test")
 def req_submit_test(
     jira: str,

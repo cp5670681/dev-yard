@@ -24,6 +24,7 @@ from dev_yard.config import (
     git_project_name,
     load_git_settings,
     load_repos,
+    normalize_git_url,
     render_freeze_branch,
     require_pair,
     resolve_freeze_branch,
@@ -150,7 +151,7 @@ def repo_add(
             current = gitops.run(["git", "remote", "get-url", "origin"], cwd=source)
         except gitops.GitError:
             current = ""
-        if current and _norm_git_url(current) != _norm_git_url(url):
+        if current and normalize_git_url(current) != normalize_git_url(url):
             raise ValueError(
                 f"{alias}: clone at {source} has origin {current}, not {url}; "
                 "remove the clone or keep the existing URL"
@@ -411,13 +412,6 @@ def req_detach(root: Path, jira: str, names: list[str]) -> list[str]:
         attachments.remove(root, jira, name)
     attachments.sync_doc(root, jira)
     return attachments.list_names(root, jira)
-
-
-def _norm_git_url(url: str) -> str:
-    s = (url or "").strip().rstrip("/")
-    if s.endswith(".git"):
-        s = s[:-4]
-    return s
 
 
 def _freeze_base_sha(
@@ -738,7 +732,7 @@ def _teardown_worktrees(root: Path, jira: str, d: Path, data: dict[str, Any]) ->
         if child and repo:
             source = repo.source_path(root)
             child_path = Path(child)
-            name = _checked_out_branch(child_path) or ticket_branch_name(freeze, tid)
+            name = gitops.checked_out_branch(child_path) or ticket_branch_name(freeze, tid)
             gitops.worktree_remove(source, child_path)
             gitops.branch_delete(source, name)
 
@@ -755,7 +749,7 @@ def _teardown_worktrees(root: Path, jira: str, d: Path, data: dict[str, Any]) ->
                     # Scratch dirs (e.g. _test-merge) are not ticket worktrees.
                     continue
                 source = repo.source_path(root)
-                name = _checked_out_branch(ticket_dir) or ticket_branch_name(
+                name = gitops.checked_out_branch(ticket_dir) or ticket_branch_name(
                     freeze, ticket_dir.name
                 )
                 gitops.worktree_remove(source, ticket_dir)
@@ -777,7 +771,7 @@ def _teardown_worktrees(root: Path, jira: str, d: Path, data: dict[str, Any]) ->
             continue
         source = repo.source_path(root)
         wt = paths.req_worktree(root, jira, alias)
-        name = _checked_out_branch(wt) or freeze
+        name = gitops.checked_out_branch(wt) or freeze
         gitops.worktree_remove(source, wt)
         gitops.branch_delete(source, name)
 
@@ -1298,20 +1292,6 @@ def _ticket_done_locked(
     st.save(root, jira, data)
 
 
-def _checked_out_branch(worktree: Path | None) -> str | None:
-    if worktree is None:
-        return None
-    if not (worktree / ".git").exists():
-        return None
-    try:
-        name = gitops.current_branch(worktree)
-    except gitops.GitError:
-        return None
-    if name and name != "HEAD":
-        return name
-    return None
-
-
 def _existing_freeze_branch(
     root: Path,
     jira: str,
@@ -1326,7 +1306,7 @@ def _existing_freeze_branch(
         repo = repos.get(alias)
         if not repo:
             continue
-        name = _checked_out_branch(paths.req_worktree(root, jira, alias))
+        name = gitops.checked_out_branch(paths.req_worktree(root, jira, alias))
         if name:
             return name
     return None

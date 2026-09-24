@@ -163,6 +163,14 @@ dev-yard push PROJ-101              # 或 dev-yard req push PROJ-101
 # 10. 把远端分支的新提交拉回本地 Worktree（别处改过同一分支后）
 dev-yard req pull PROJ-101          # 默认 ff-only；分叉时用 --strategy merge/rebase
 # 或在 Web 看板点击「拉取远端分支」；「同步远端」是更新到 default_base，两者不同
+
+# 11. 换电脑：把整个需求（含逐票进度）导成 bundle，在另一台机器还原
+dev-yard req export PROJ-101 -o PROJ-101-bundle      # 文档 + 各仓 freeze/在途票分支；--archive 出 .tar.gz
+dev-yard req export PROJ-101 --full -o PROJ-101-bundle       # 自包含（离线可还原，体积大）；默认瘦包，还原时需能 fetch 远端 base
+dev-yard req export PROJ-101 --snapshot -o PROJ-101-bundle   # Worktree 有未提交改动时先 commit 再导出（不加则直接拒绝）
+dev-yard req export PROJ-101 --accounts -o PROJ-101-bundle   # 附带 .yard-qa 账号（明文密钥，谨慎）
+# 目标机（先 dev-yard init / 配好 repos.yaml，缺的仓会按 manifest 自动登记）
+dev-yard req import-bundle PROJ-101-bundle           # 还原 phase/票状态、freeze 与在途票 Worktree
 ```
 
 > **说明**：Agent 阶段默认打开交互 TUI；加上 `--print` 可转为单次非交互运行（直接打印日志）。
@@ -298,6 +306,8 @@ dev-yard web --host 0.0.0.0 --allow-remote
 | `dev-yard req delete <key>` | 删除需求产物与 Worktree | |
 | `dev-yard req push <key> [repos..]` | 推送各仓 Worktree 分支到远端 | `--remote`, `--force` |
 | `dev-yard req pull <key> [repos..]` | 把各仓 Worktree 更新到自己的远端分支（默认快进） | `--remote`, `--strategy` |
+| `dev-yard req export <key>` | 导出需求为 bundle（文档 + 各仓代码分支），换机导入用 | `-o/--output`, `--archive`, `--full`, `--snapshot`, `--accounts`, `--force` |
+| `dev-yard req import-bundle <path>` | 从 `req export` 的 bundle 还原需求（含逐票状态与 Worktree） | `--force` |
 | `dev-yard req submit-test <key>` | 标记提测 | |
 | `dev-yard req test <key>` | `--design-only` 出用例 → `--approve` 只标记通过 → `--run-only` 执行 | `--env`, `--print`, `--design-only`, `--run-only`, `--unsafe-skip-review`, `--redesign`, `--approve`, `--feedback`, `--feedback-file`, `--verify-only`, `--no-verify`, `--allow-unverified`, `--resume`, `--fresh`, `--full`, `--no-wait`, `--rerun-case`, `--no-ingest` |
 | `dev-yard req triage <key>` | 给待判定失败用例批量下 bug | `--product/--all` |

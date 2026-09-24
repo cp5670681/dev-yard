@@ -25,6 +25,32 @@ PI_STAGES = (
 )
 
 
+_SCP_LIKE_RE = re.compile(r"^(?:[^@/]+@)?([^/:]+):(.+)$")
+
+
+def normalize_git_url(url: str) -> str:
+    """Best-effort canonical form for comparing two remote URLs.
+
+    Collapses scp (`git@host:group/repo.git`), `ssh://`, and `https://` spellings
+    of the same repo to `host/group/repo` (host lowercased, trailing `.git`/`/`
+    stripped) so a bundle restores onto a repo registered with a different
+    transport. Local paths are returned unchanged (minus `.git`).
+    """
+    raw = (url or "").strip()
+    if "://" in raw:
+        parsed = urlparse(raw)
+        host = (parsed.hostname or "").lower()
+        path = parsed.path
+        if host:
+            return f"{host}/{path.strip('/')}".rstrip("/").removesuffix(".git")
+    else:
+        scp = _SCP_LIKE_RE.match(raw)
+        if scp:
+            host = scp.group(1).lower()
+            return f"{host}/{scp.group(2).strip('/')}".rstrip("/").removesuffix(".git")
+    return raw.rstrip("/").removesuffix(".git")
+
+
 def git_project_name(url: str) -> str:
     """Last path segment of a git URL or local path, without `.git`."""
     raw = (url or "").strip()

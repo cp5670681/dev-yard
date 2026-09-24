@@ -372,6 +372,61 @@ def current_branch(worktree: Path) -> str:
     return run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=worktree)
 
 
+def checked_out_branch(worktree: Path | None) -> str | None:
+    """Branch a worktree is on, or None for detached/missing/unknown."""
+    if worktree is None or not (worktree / ".git").exists():
+        return None
+    try:
+        name = current_branch(worktree)
+    except GitError:
+        return None
+    return name if name and name != "HEAD" else None
+
+
+def init_repo(path: Path) -> None:
+    """Create an empty repository (used to bootstrap an offline import)."""
+    path.mkdir(parents=True, exist_ok=True)
+    run(["git", "init", "-q", str(path)])
+
+
+def bundle_create(
+    out: Path,
+    refs: list[str],
+    cwd: Path,
+    *,
+    exclude: str | None = None,
+) -> None:
+    """Write a git bundle of `refs`; `exclude` drops commits reachable from it."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    argv = ["git", "bundle", "create", str(out), *refs]
+    if exclude:
+        argv += ["--not", exclude]
+    run(argv, cwd=cwd)
+
+
+def bundle_list_heads(bundle: Path, cwd: Path) -> list[str]:
+    """Refs contained in a bundle (`<sha> <ref>` lines), for a precise fetch."""
+    out = run(["git", "bundle", "list-heads", str(bundle)], cwd=cwd)
+    return [line.split()[-1] for line in out.splitlines() if line.strip()]
+
+
+def fetch_bundle(
+    source: Path,
+    bundle: Path,
+    refspecs: list[str],
+    on_progress: Progress | None = None,
+) -> None:
+    """Fetch refs from a bundle file (used to import an exported requirement)."""
+    if not refspecs:
+        return
+    argv = ["git", "fetch", "--no-tags", str(bundle), *refspecs]
+    if on_progress is None:
+        run(argv, cwd=source)
+        return
+    on_progress(f"git fetch {bundle} (cwd={source})")
+    _run_progress(argv, on_progress, cwd=source)
+
+
 def assert_branch_name(branch: str) -> None:
     """Raise ValueError unless `branch` is a legal local branch ref."""
     name = (branch or "").strip()
