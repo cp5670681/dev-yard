@@ -112,6 +112,19 @@ export function getQaCase(jira: string, caseId: string) {
   );
 }
 
+export function fileCaseBug(jira: string, caseId: string) {
+  return api<{
+    jira: string;
+    case_id: string;
+    ticket_id: string;
+    title: string;
+    repo: string;
+  }>(
+    `/api/requirements/${encodeURIComponent(jira)}/qa/cases/${encodeURIComponent(caseId)}/bug`,
+    { method: "POST" },
+  );
+}
+
 export function rerunQaCases(jira: string, caseIds: string[], env = "") {
   return api<JobsOut>(
     `/api/requirements/${encodeURIComponent(jira)}/qa/rerun`,

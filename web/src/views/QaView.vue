@@ -416,18 +416,32 @@
                 <span v-else class="text-caption text-disabled">-</span>
               </td>
               <td @click.stop>
-                <v-btn
-                  v-if="canRerun(c)"
-                  size="x-small"
-                  variant="tonal"
-                  color="warning"
-                  :loading="rerunningCase === c.case"
-                  :disabled="rerunningCase !== ''"
-                  :title="`重新执行 ${c.case}（不改动本轮其它用例）`"
-                  @click="rerunCase(c.case)"
-                >
-                  重测
-                </v-btn>
+                <div class="d-flex ga-1">
+                  <v-btn
+                    v-if="canFileBug(c)"
+                    size="x-small"
+                    variant="tonal"
+                    color="error"
+                    :loading="acting === `file-bug-${c.case}`"
+                    :disabled="acting !== ''"
+                    :title="`把 ${c.case} 下成 bug 票`"
+                    @click="fileBug(c.case)"
+                  >
+                    下 bug
+                  </v-btn>
+                  <v-btn
+                    v-if="canRerun(c)"
+                    size="x-small"
+                    variant="tonal"
+                    color="warning"
+                    :loading="rerunningCase === c.case"
+                    :disabled="rerunningCase !== ''"
+                    :title="`重新执行 ${c.case}（不改动本轮其它用例）`"
+                    @click="rerunCase(c.case)"
+                  >
+                    重测
+                  </v-btn>
+                </div>
               </td>
             </tr>
           </tbody>
@@ -545,7 +559,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { mdiClipboardCheckOutline, mdiHelpCircleOutline, mdiRefresh, mdiMenuDown } from "@mdi/js";
-import { getQa, getRequirement, runAction } from "@/api/client";
+import { getQa, getRequirement, runAction, fileCaseBug } from "@/api/client";
 import {
   jobTail,
   submitRerun,
@@ -837,6 +851,29 @@ function statusColor(status: string) {
 
 function canRerun(c: { status?: string }) {
   return c.status === "failed" || c.status === "blocked" || c.status === "passed";
+}
+
+function canFileBug(c: { status?: string }) {
+  // 下 bug resolves the newest run server-side, so only offer it on the newest
+  // round — filing from an older round would cite the wrong result.
+  return isNewestRun.value && (c.status === "failed" || c.status === "blocked");
+}
+
+async function fileBug(caseId: string) {
+  if (!caseId || acting.value) return;
+  error.value = "";
+  acting.value = `file-bug-${caseId}`;
+  try {
+    const out = await fileCaseBug(jira.value, caseId);
+    snack.notify(`已下 bug 票 ${out.ticket_id}（${out.repo}）`, "success");
+    await load();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    error.value = msg;
+    snack.notify(msg, "error");
+  } finally {
+    acting.value = "";
+  }
 }
 
 async function rerunCase(caseId: string) {

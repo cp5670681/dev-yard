@@ -234,6 +234,8 @@ def accept_test_report(
     root: Path,
     jira: str,
     report: InboundReport,
+    *,
+    spawn: bool = True,
 ) -> dict[str, Any]:
     req = paths.req_dir(root, jira)
     if not req.is_dir():
@@ -301,7 +303,10 @@ def accept_test_report(
             data["phase"] = "done"
             slot["status"] = "passed"
         st.save(root, jira, data)
-        if report.verdict in {"failed", "blocked"}:
+        if spawn and report.verdict in {"failed", "blocked"}:
+            # Manual submissions (web 提 bug form / CLI / inbound API) still open
+            # tickets. A `req test` run passes spawn=False: it only records the
+            # report, and the human clicks 下 bug on the cases they judge real.
             from dev_yard.bug_tickets import spawn_fix_tickets
 
             spawn_fix_tickets(root, jira, "test")

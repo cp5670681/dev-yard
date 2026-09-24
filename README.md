@@ -145,7 +145,7 @@ dev-yard req accounts PROJ-101 --auto        # 权限会漂移：按 qa/accounts
 dev-yard req accounts PROJ-101 --refresh     # 清本需求账号的缓存登录态强制重登；--auto --refresh 发现后一并刷新
 # 需求页「测试账号」卡片也有「发现并填充 / 刷新登录态」按钮（同一个接口）
 dev-yard req test PROJ-101 --design-only   # 只设计用例（qa-design + 数据核实），停下等人工审核
-dev-yard req test PROJ-101          # 执行已审核用例，失败拆 B 票，通过则 phase=done
+dev-yard req test PROJ-101          # 执行已审核用例，失败只记报告，人工在失败用例上「下 bug」，通过则 phase=done
 dev-yard req test PROJ-101 --env test   # 指定环境；缺省用 qa.yaml 的 active_env
 dev-yard req test PROJ-101 --approve    # 人工审核通过当前用例（只标记，不执行）
 dev-yard req test PROJ-101 --run-only   # 执行已审核用例（与「执行用例」同义）

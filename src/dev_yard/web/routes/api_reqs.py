@@ -166,6 +166,25 @@ def build(ctx: AppContext) -> APIRouter:
         data["html"] = render_markdown(body, jira) if body else ""
         return data
 
+    @router.post("/api/requirements/{jira}/qa/cases/{case_id}/bug")
+    def api_qa_case_bug(jira: str, case_id: str):
+        if paths.is_reserved_req_name(jira):
+            raise HTTPException(404, f"no requirement {jira}")
+        if (
+            not case_id
+            or case_id in {".", ".."}
+            or "/" in case_id
+            or "\\" in case_id
+        ):
+            raise HTTPException(404, "unknown case")
+        ctx.detail_or_404(jira)
+        try:
+            return yard_service.ticket_from_qa_case(ctx.root, jira, case_id)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
     @router.post("/api/requirements/{jira}/qa/rerun")
     def api_qa_rerun(jira: str, payload: QaRerunIn):
         ids = [c.strip() for c in payload.case_ids if c.strip()]

@@ -215,6 +215,16 @@
 
       <v-divider />
       <v-card-actions>
+        <v-btn
+          v-if="canFileBug"
+          color="error"
+          variant="tonal"
+          :prepend-icon="mdiBugOutline"
+          :loading="filing"
+          @click="fileBug"
+        >
+          下 bug
+        </v-btn>
         <v-spacer />
         <v-btn variant="text" @click="close">关闭</v-btn>
       </v-card-actions>
@@ -232,12 +242,13 @@
 import { computed, reactive, ref, watch } from "vue";
 import {
   mdiAlertCircleOutline,
+  mdiBugOutline,
   mdiCheck,
   mdiClose,
   mdiCloseThick,
   mdiRefresh,
 } from "@mdi/js";
-import { getQaCase } from "@/api/client";
+import { fileCaseBug, getQaCase } from "@/api/client";
 import type { QaCaseDetail } from "@/api/types";
 import { QA_STATE_COLOR, QA_STATE_LABELS } from "@/composables/labels";
 import {
@@ -245,6 +256,7 @@ import {
   caseShotItems,
   qaTypeColor,
 } from "@/composables/qa";
+import { useSnack } from "@/composables/snack";
 import ScreenshotViewer from "./ScreenshotViewer.vue";
 
 const props = defineProps<{
@@ -257,7 +269,9 @@ const emit = defineEmits<{
   "update:modelValue": [boolean];
 }>();
 
+const snack = useSnack();
 const loading = ref(false);
+const filing = ref(false);
 const error = ref("");
 const data = ref<QaCaseDetail | null>(null);
 const panels = ref<number[]>([0]);
@@ -265,6 +279,28 @@ const viewer = reactive({ open: false, index: 0 });
 
 const latest = computed(() => data.value?.latest_run || null);
 const pass = computed(() => assertionPassCount(latest.value?.assertions));
+
+// A failed/blocked case can be opened as a bug ticket by hand.
+const canFileBug = computed(() => {
+  const state = latest.value?.state || data.value?.live?.state || "";
+  return state === "failed" || state === "blocked";
+});
+
+async function fileBug() {
+  if (!props.caseId || filing.value) return;
+  filing.value = true;
+  error.value = "";
+  try {
+    const out = await fileCaseBug(props.jira, props.caseId);
+    snack.notify(`已下 bug 票 ${out.ticket_id}（${out.repo}）`, "success");
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    error.value = msg;
+    snack.notify(msg, "error");
+  } finally {
+    filing.value = false;
+  }
+}
 
 const isLiveActive = computed(() => {
   const state = data.value?.live?.state || "";

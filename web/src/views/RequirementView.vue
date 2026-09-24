@@ -387,6 +387,7 @@
         @open-case="openCaseDetail"
         @rerun-case="rerunCase"
         @rerun-cases="rerunCases"
+        @file-bug="fileCaseBugAsTicket"
       />
       <v-card v-if="detail.changes?.length" variant="outlined" class="mt-4">
         <v-card-title class="text-subtitle-2">需求变更记录</v-card-title>
@@ -899,6 +900,7 @@ import {
   deleteAttachment,
   deleteRequirement,
   deleteTicket,
+  fileCaseBug,
   getReqAccounts,
   getRequirement,
   refreshReqAccounts,
@@ -1012,6 +1014,23 @@ function openCaseDetail(caseId: string, fromQuery = false) {
   caseDialog.caseId = caseId;
   caseDialog.open = true;
   caseFromQuery.value = fromQuery;
+}
+
+async function fileCaseBugAsTicket(caseId: string) {
+  if (!caseId || acting.value) return;
+  error.value = "";
+  acting.value = `file-bug-${caseId}`;
+  try {
+    const out = await fileCaseBug(jira.value, caseId);
+    snack.notify(`已下 bug 票 ${out.ticket_id}（${out.repo}）`, "success");
+    await load();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    error.value = msg;
+    snack.notify(msg, "error");
+  } finally {
+    acting.value = "";
+  }
 }
 
 watch(

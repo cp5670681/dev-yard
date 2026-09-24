@@ -313,8 +313,18 @@ def spawn_fix_tickets(
 
 
 def spawn_fix_tickets_result(
-    root: Path, jira: str, kind: str, persist: bool = True
+    root: Path,
+    jira: str,
+    kind: str,
+    persist: bool = True,
+    only_ids: set[str] | None = None,
 ) -> SpawnResult:
+    """Spawn bug tickets for stored findings.
+
+    `only_ids` scopes the run to those finding ids — a hand-picked 下 bug must
+    not also drain every other finding the run recorded, and it must return the
+    ticket for *its* finding rather than the first match in creation order.
+    """
     if kind not in KINDS:
         raise ValueError(f"unknown fix kind {kind!r}")
     req = paths.req_dir(root, jira)
@@ -323,6 +333,8 @@ def spawn_fix_tickets_result(
         existing = load_tickets(req) if md_path.exists() else []
         data = st.sync_tickets(st.load(root, jira), existing)
         findings = _findings_for_kind(kind, data, existing, root, jira)
+        if only_ids is not None:
+            findings = [f for f in findings if f["id"] in only_ids]
         by_id = {t.id: t for t in existing}
         known = {
             (t.source, t.finding): t.id
@@ -407,6 +419,63 @@ def spawn_fix_tickets_result(
             st.refresh_ready(data)
             st.save(root, jira, data)
         return SpawnResult(ids=[t.id for t in created], tickets=created)
+
+
+def spawn_manual_fix_ticket(
+    root: Path,
+    jira: str,
+    finding: dict[str, Any],
+    *,
+    persist: bool = True,
+) -> SpawnResult:
+    """Open a single test bug ticket from a hand-picked finding.
+
+    A failed run no longer auto-opens tickets; the human clicks 下 bug on the
+    case they judge to be a product defect. The finding is recorded in the test
+    slot (namespaced by the caller) so the spawn stays idempotent per finding id
+    and the ticket can cite the same `finding` back to the report.
+    """
+    fid = str(finding.get("id") or "").strip()
+    repo = str(finding.get("repo") or "").strip()
+    if not fid:
+        raise ValueError("finding id is required")
+    if not repo:
+        raise ValueError("finding repo is required")
+    # Append and spawn under one lock: a concurrent accept_test_report rewrites
+    # `slot["findings"]` wholesale, so releasing between the two would drop the
+    # hand-filed finding and the click would file nothing.
+    with st.jira_lock(jira):
+        data = st.load(root, jira)
+        slot = data.get("test")
+        if not isinstance(slot, dict):
+            slot = {}
+            data["test"] = slot
+        stored = slot.get("findings")
+        if not isinstance(stored, list):
+            stored = []
+        if not any(
+            isinstance(item, dict) and str(item.get("id") or "") == fid
+            for item in stored
+        ):
+            stored.append(
+                {
+                    "id": fid,
+                    "title": str(finding.get("title") or fid),
+                    "detail": str(finding.get("detail") or ""),
+                    "repo": repo,
+                    **(
+                        {"defect_class": str(finding["defect_class"])}
+                        if finding.get("defect_class")
+                        else {}
+                    ),
+                }
+            )
+        slot["findings"] = stored
+        if persist:
+            st.save(root, jira, data)
+        return spawn_fix_tickets_result(
+            root, jira, "test", persist=persist, only_ids={fid}
+        )
 
 
 def fix_ticket_ids(

@@ -199,6 +199,19 @@
             重测
           </v-btn>
           <v-btn
+            v-if="canFileBug"
+            size="small"
+            density="compact"
+            variant="outlined"
+            color="error"
+            class="px-2"
+            title="把这条失败用例直接下成 bug 票（可重复点击，已下过会提示）"
+            @click.stop="emit('file-bug', testCase.id)"
+          >
+            <v-icon :icon="mdiBugOutline" size="16" class="mr-1" />
+            下 bug
+          </v-btn>
+          <v-btn
             v-if="hasScreenshots"
             size="small"
             density="compact"
@@ -221,6 +234,7 @@ import {
   mdiRobotOutline,
   mdiAlertCircleOutline,
   mdiRefresh,
+  mdiBugOutline,
 } from "@mdi/js";
 import type { QaCaseItem } from "@/api/types";
 import { QA_STATE_LABELS, QA_STATE_COLOR } from "@/composables/labels";
@@ -245,6 +259,7 @@ const emit = defineEmits<{
   "preview-screenshot": [url: string];
   "open-case": [caseId: string];
   "rerun-case": [caseId: string];
+  "file-bug": [caseId: string];
 }>();
 
 const isRunning = computed(() => props.testCase.state === "running");
@@ -254,6 +269,10 @@ const isFailed = computed(
 const isPassed = computed(() => props.testCase.state === "passed");
 
 const canRerun = computed(() => isFailed.value || props.testCase.state === "passed");
+
+// A failed/blocked case can be opened as a bug ticket by hand. `blocked` counts
+// too: a step that could not run may still be a product defect the human judges.
+const canFileBug = computed(() => isFailed.value);
 
 const stateLabel = computed(() => {
   return QA_STATE_LABELS[props.testCase.state] || props.testCase.state;

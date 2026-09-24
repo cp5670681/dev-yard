@@ -250,6 +250,7 @@
                       @preview-screenshot="$emit('preview-screenshot', $event)"
                       @open-case="$emit('open-case', $event)"
                       @rerun-case="$emit('rerun-case', $event)"
+                      @file-bug="$emit('file-bug', $event)"
                     />
                   </div>
                 </div>
@@ -286,6 +287,7 @@
                 @preview-screenshot="$emit('preview-screenshot', $event)"
                 @open-case="$emit('open-case', $event)"
                 @rerun-case="$emit('rerun-case', $event)"
+                @file-bug="$emit('file-bug', $event)"
               />
               <div v-if="!filteredQaCases.length" class="text-center text-medium-emphasis py-6 text-caption">
                 这一栏没有测试用例
@@ -430,7 +432,7 @@
           </template>
           <div v-else class="empty-section-placeholder text-center py-6 text-medium-emphasis">
             <v-icon :icon="mdiBugCheckOutline" size="28" class="mb-1 text-success" />
-            <div class="text-caption">当前没有发现 Bug 或缺陷。提测或契约审查发现问题时将在此自动拆票。</div>
+            <div class="text-caption">当前没有发现 Bug 或缺陷。在失败用例上点「下 bug」即可人工建票。</div>
           </div>
         </div>
       </v-expand-transition>
@@ -488,6 +490,7 @@ defineEmits<{
   "open-case": [caseId: string];
   "rerun-case": [caseId: string];
   "rerun-cases": [caseIds: string[]];
+  "file-bug": [caseId: string];
 }>();
 
 const { mdAndUp } = useDisplay();

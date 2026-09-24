@@ -2315,7 +2315,7 @@ def _req_test(
                     raise TestRejected(
                         f"finding {f.id} repo {f.repo!r} is not a repos.yaml alias"
                     )
-            accept_test_report(root, jira, report)
+            accept_test_report(root, jira, report, spawn=False)
             ingested = True
     # Persist the ingest outcome so a blocked/skipped run is not a silent no-op.
     run_doc["ingested"] = ingested

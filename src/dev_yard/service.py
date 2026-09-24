@@ -1513,6 +1513,57 @@ def _remove_ticket_block(text: str, ticket_id: str) -> str:
     return result
 
 
+def ticket_from_qa_case(root: Path, jira: str, case_id: str) -> dict[str, Any]:
+    """Open one test bug ticket for a hand-picked failed case (手动下 bug)."""
+    from dev_yard.bug_tickets import spawn_manual_fix_ticket
+    from dev_yard.qa_board import list_runs
+    from dev_yard.qa_report import finding_from_case
+
+    case_id = (case_id or "").strip()
+    if not case_id:
+        raise ValueError("case_id is required")
+    qa = paths.qa_dir(root, jira)
+    row: dict[str, Any] | None = None
+    for run in list_runs(qa):
+        match = next(
+            (
+                c
+                for c in (run.get("cases") or [])
+                if isinstance(c, dict) and str(c.get("case") or "") == case_id
+            ),
+            None,
+        )
+        if match is not None:
+            row = match
+            break
+    if row is None:
+        raise ValueError(f"no run result for case {case_id}; run the case first")
+    status = str(row.get("status") or "")
+    if status not in {"failed", "blocked"}:
+        raise ValueError(f"case {case_id} is {status or 'unrun'}; only failed cases open bugs")
+    finding = finding_from_case(f"manual-{case_id}", row)
+    if not finding.get("detail"):
+        finding["detail"] = f"用例 {case_id} 失败，人工判定为产品缺陷"
+    repos = load_repos(root)
+    if repos and finding["repo"] not in repos:
+        raise ValueError(
+            f"case {case_id} repo {finding['repo']!r} is not a repos.yaml alias"
+        )
+    spawned = spawn_manual_fix_ticket(root, jira, finding)
+    if not spawned.tickets:
+        raise ValueError(
+            f"case {case_id} 没有可建的 bug 票（repo {finding['repo']!r} 不在本需求仓库内）"
+        )
+    ticket = spawned.tickets[0]
+    return {
+        "jira": jira,
+        "case_id": case_id,
+        "ticket_id": ticket.id,
+        "title": ticket.title,
+        "repo": ticket.repo,
+    }
+
+
 def ticket_delete(root: Path, jira: str, ticket_id: str) -> dict[str, Any]:
     """Remove a not-yet-started bug ticket (contract/test) from TICKETS.md.
 

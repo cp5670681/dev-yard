@@ -3109,7 +3109,9 @@ def test_rerun_and_redesign_waive_open_ticket_gate(
         )
 
 
-def test_only_product_failures_spawn_tickets(tmp_path: Path, git_src: Path, monkeypatch):
+def test_run_ingest_does_not_auto_spawn_tickets(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
     from dev_yard.test_report import accept_test_report
 
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
@@ -3139,7 +3141,8 @@ def test_only_product_failures_spawn_tickets(tmp_path: Path, git_src: Path, monk
     )
     assert soft is not None
     assert [f.defect_class for f in soft.findings] == ["unclassified", "case"]
-    accept_test_report(yard, "QA-DF", soft)
+    # A req-test run ingests the report (spawn=False): no B ticket opens by itself.
+    accept_test_report(yard, "QA-DF", soft, spawn=False)
     tickets = (yard / "reqs" / "QA-DF" / "TICKETS.md").read_text(encoding="utf-8")
     assert "## B1" not in tickets
 
@@ -3159,9 +3162,10 @@ def test_only_product_failures_spawn_tickets(tmp_path: Path, git_src: Path, monk
     )
     assert product is not None
     assert product.findings[0].defect_class == "product"
-    accept_test_report(yard, "QA-DF", product)
+    # Even a product finding does not auto-open a B ticket; 下 bug is manual.
+    accept_test_report(yard, "QA-DF", product, spawn=False)
     tickets = (yard / "reqs" / "QA-DF" / "TICKETS.md").read_text(encoding="utf-8")
-    assert "## B1" in tickets
+    assert "## B1" not in tickets
 
 
 def test_recheck_leaves_bilateral_prose_unverified(tmp_path: Path, monkeypatch):

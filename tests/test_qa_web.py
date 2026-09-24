@@ -307,6 +307,102 @@ def _wait_state(job, state: str, timeout: float = 5.0) -> None:
     assert job.state == state
 
 
+def test_qa_case_bug_files_ticket(tmp_path: Path, git_src: Path, monkeypatch):
+    """一键下 bug: a failed case opens one B ticket and records the finding."""
+    yard = _req(tmp_path, git_src, monkeypatch)
+    _seed_qa(yard, progress=False)
+    client = _client(yard)
+    r = client.post("/api/requirements/QA-W1/qa/cases/case-01/bug")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ticket_id"] == "B1"
+    assert body["repo"] == "backend"
+    tickets = (yard / "reqs" / "QA-W1" / "TICKETS.md").read_text(encoding="utf-8")
+    assert "## B1" in tickets
+    assert "- source: test" in tickets
+    # Re-clicking is idempotent: same ticket, no duplicate block.
+    again = client.post("/api/requirements/QA-W1/qa/cases/case-01/bug")
+    assert again.status_code == 200, again.text
+    assert again.json()["ticket_id"] == "B1"
+    tickets = (yard / "reqs" / "QA-W1" / "TICKETS.md").read_text(encoding="utf-8")
+    assert tickets.count("## B1:") == 1
+
+
+def test_qa_case_bug_files_only_the_clicked_case(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    """Regression: an ingested report has many findings; one click files one.
+
+    A run records every failed case as a finding (spawn=False). The manual 下 bug
+    must scope to the picked case — not drain the whole stored report — and must
+    return that case's ticket, not the first in creation order.
+    """
+    from dev_yard import status as st
+    from dev_yard.test_report import accept_test_report, parse_inbound
+
+    yard = _req(tmp_path, git_src, monkeypatch)
+    _seed_qa(yard, progress=False)
+    # Both cases failed on disk so either is eligible for 下 bug.
+    run_dir = yard / "reqs" / "QA-W1" / "qa" / "evidence" / "2026-09-16-153000"
+    (run_dir / "case-02" / "result.yaml").write_text(
+        "case: case-02\ntitle: t2\nrepo: backend\nstatus: failed\nreason: boom\n",
+        encoding="utf-8",
+    )
+    data = st.load(yard, "QA-W1")
+    data["contract_review"] = "passed"
+    data["phase"] = "testing"
+    data["repos"] = ["backend"]
+    st.save(yard, "QA-W1", data)
+    accept_test_report(
+        yard,
+        "QA-W1",
+        parse_inbound(
+            {
+                "verdict": "failed",
+                "body": "run",
+                "findings": [
+                    {"id": "case-01", "title": "t", "repo": "backend"},
+                    {"id": "case-02", "title": "t2", "repo": "backend"},
+                ],
+            },
+            "api",
+        ),
+        spawn=False,
+    )
+    tickets_before = (
+        (yard / "reqs" / "QA-W1" / "TICKETS.md").read_text(encoding="utf-8")
+        if (yard / "reqs" / "QA-W1" / "TICKETS.md").is_file()
+        else ""
+    )
+    assert "## B" not in tickets_before
+
+    resp = _client(yard).post("/api/requirements/QA-W1/qa/cases/case-02/bug")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    tickets = (yard / "reqs" / "QA-W1" / "TICKETS.md").read_text(encoding="utf-8")
+    assert tickets.count("## B") == 1
+    assert body["ticket_id"] == "B1"
+    # The ticket cites the clicked case, not case-01 (the first stored finding).
+    assert "manual-case-02:case-02" in tickets
+    assert "case-01" not in tickets
+
+
+def test_qa_case_bug_rejects_passed_case(tmp_path: Path, git_src: Path, monkeypatch):
+    yard = _req(tmp_path, git_src, monkeypatch)
+    _seed_qa(yard, progress=False)
+    r = _client(yard).post("/api/requirements/QA-W1/qa/cases/case-02/bug")
+    assert r.status_code == 400
+    assert "only failed cases" in r.json()["detail"]
+
+
+def test_qa_case_bug_unknown_case_is_400(tmp_path: Path, git_src: Path, monkeypatch):
+    yard = _req(tmp_path, git_src, monkeypatch)
+    _seed_qa(yard, progress=False)
+    r = _client(yard).post("/api/requirements/QA-W1/qa/cases/case-99/bug")
+    assert r.status_code == 400
+    assert "no run result" in r.json()["detail"]
+
+
 def test_qa_active_jobs_hold_review_gate(tmp_path: Path, git_src: Path, monkeypatch):
     """An in-flight design/run job is surfaced so the UI keeps the gate closed."""
     yard = _req(tmp_path, git_src, monkeypatch)

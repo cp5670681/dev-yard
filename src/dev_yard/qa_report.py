@@ -113,6 +113,33 @@ def map_qa_result(run: dict[str, Any], cases: list[dict[str, Any]]) -> InboundRe
     )
 
 
+def finding_from_case(batch_id: str, item: dict[str, Any]) -> dict[str, Any]:
+    """Build one namespaced finding from a single failed/blocked case.
+
+    Mirrors `map_qa_result`'s finding shape so a hand-filed 下 bug ticket cites
+    the same id/format as an auto one. The case need not carry a `defect_class`;
+    a hand-picked case is treated as a product defect.
+    """
+    cid = str(item.get("case") or item.get("id") or "").strip()
+    repo = str(item.get("repo") or "").strip()
+    if not cid:
+        raise ReportRejected("case id is required")
+    if not repo:
+        raise ReportRejected(f"failed case {cid} is missing repo")
+    failure = item.get("failure") if isinstance(item.get("failure"), dict) else {}
+    step_desc = str(failure.get("step_desc") or "").strip()
+    reason = str(item.get("reason") or "").strip()
+    evidence = str(failure.get("evidence") or "").strip()
+    detail = " ".join(p for p in (step_desc, reason, evidence) if p)
+    return {
+        "id": f"{batch_id}:{cid}",
+        "title": str(item.get("title") or cid),
+        "detail": detail,
+        "repo": repo,
+        "defect_class": "product",
+    }
+
+
 def _summary_line(summary: dict[str, Any]) -> str:
     return summary_line(summary)
 
