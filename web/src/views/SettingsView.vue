@@ -8,9 +8,9 @@
       </p>
     </div>
     <v-tabs v-model="tab" color="primary" class="mb-4" show-arrows>
+      <v-tab value="pi" :prepend-icon="mdiCreationOutline">模型</v-tab>
       <v-tab value="dev" :prepend-icon="mdiCodeBraces">开发</v-tab>
       <v-tab value="git" :prepend-icon="mdiSourceBranch">分支</v-tab>
-      <v-tab value="pi" :prepend-icon="mdiCreationOutline">模型</v-tab>
     </v-tabs>
     <v-alert v-if="error" type="error" class="mb-4" closable @click:close="error = ''">
       {{ error }}
@@ -180,7 +180,7 @@ import { STEP_LABELS } from "@/composables/labels";
 import { useSnack } from "@/composables/snack";
 
 const snack = useSnack();
-const tab = ref("dev");
+const tab = ref("pi");
 const error = ref("");
 const catalogError = ref("");
 const saving = ref(false);
