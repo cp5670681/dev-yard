@@ -65,6 +65,15 @@ _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _FROM_TABLE = re.compile(r"\b(?:from|join)\s+([A-Za-z_][A-Za-z0-9_.]*)", re.I)
 _NUMBER = re.compile(r"^\d+$")
 
+# Host-internal tables live in a reserved namespace and are exempt from the
+# "every FROM/JOIN table must be named in the case body" rule. The seed registry
+# (`_qa_exec_seeds`) is the one that matters: setup records each seeded row's id
+# there so a standalone read-only verify.sql can locate its own seed (setup may
+# run on a different replica than verify). It is a host convention, never a
+# business object a case body would name, so requiring it would fail every case
+# that seeds data.
+_INTERNAL_TABLE_PREFIX = "_qa_"
+
 
 def _truncate(text: str, cap: int = _STDOUT_CAP) -> str:
     text = text or ""
@@ -173,10 +182,13 @@ def lint_verify(job: CaseJob, sql: str) -> dict[str, Any]:
     body = (job.body or "").lower()
     if not idents and not tables:
         return {"ok": True, "empty": True, "matched": []}
-    # Every table must be named in the case body (a generic column name cannot
-    # carry a query on its own), and at least one column must appear too — so
-    # `SELECT id FROM unrelated_table` cannot pass by matching an identifier.
-    missing_tables = sorted(t for t in tables if t not in body)
+    # Every business table must be named in the case body (a generic column name
+    # cannot carry a query on its own), and at least one column must appear too —
+    # so `SELECT id FROM unrelated_table` cannot pass by matching an identifier.
+    # Host-internal `_qa_*` tables (the seed registry) are exempt: they are never
+    # a business object a body would name.
+    business_tables = [t for t in tables if not t.startswith(_INTERNAL_TABLE_PREFIX)]
+    missing_tables = sorted(t for t in business_tables if t not in body)
     if missing_tables:
         return {
             "ok": False,
@@ -188,6 +200,11 @@ def lint_verify(job: CaseJob, sql: str) -> dict[str, Any]:
                 + "，但用例正文从未提及；请把断言对象写进正文，或改用真查该数据的 verify.sql"
             ),
         }
+    if tables and not business_tables:
+        # Only the seed registry: it proves setup registered its rows, not that
+        # the business data is in place. Surface it as an exemption for a human
+        # to eyeball, like a `SELECT 1`, rather than a clean pass.
+        return {"ok": True, "empty": True, "matched": sorted(tables)}
     columns = sorted(idents - tables)
     hit = [c for c in columns if c in body]
     if columns and not hit:

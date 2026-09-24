@@ -156,6 +156,40 @@ def test_lint_verify_requires_identifier_in_body():
     assert "unrelated_table" in bad["detail"]
 
 
+def test_lint_verify_exempts_internal_seed_table():
+    # The seed registry is a host convention, never named in a case body; a
+    # verify that locates its own seed through it must still pass.
+    job = CaseJob(
+        id="c",
+        title="t",
+        repo="be",
+        body="## 预期\n- DB: projects.id=1 由 _qa 种子定位\n",
+    )
+    ok = lint_verify(
+        job,
+        "SELECT p.id FROM _qa_exec_seeds s JOIN projects p ON p.id = s.entity_id",
+    )
+    assert ok["ok"], ok
+    assert not ok["empty"]
+
+    # A real business table is still required to be named in the body.
+    bad = lint_verify(
+        job,
+        "SELECT p.id FROM _qa_exec_seeds s JOIN other_table p ON p.id = s.entity_id",
+    )
+    assert not bad["ok"]
+    assert "other_table" in bad["detail"]
+    assert "_qa_exec_seeds" not in bad["detail"]
+
+    # A verify that only reads the seed registry proves nothing about business
+    # data: pass, but surface it as an exemption like `SELECT 1`.
+    only_internal = lint_verify(
+        CaseJob(id="c", title="t", repo="be", body="## 预期\n- DB: projects.id=1\n"),
+        "SELECT 1 FROM _qa_exec_seeds WHERE jira = 'X'",
+    )
+    assert only_internal["ok"] and only_internal["empty"]
+
+
 def test_needs_verify_exempts_pure_ui():
     ui = CaseJob(id="c", title="t", repo="be", body="## 预期\n- UI: ok\n")
     assert not needs_verify(ui)
@@ -334,6 +368,37 @@ def test_assert_readonly_sql_allows_literals_rejects_writes():
             assert_readonly_sql(bad)
 
 
+def test_assert_readonly_sql_ignores_comments():
+    from dev_yard.qa_exec import assert_readonly_sql
+
+    # A leading prose header must not be mistaken for the statement head, and
+    # the returned statement is executable (comments gone, strings kept).
+    headered = "-- case-01 verify: 被测项目落库\nSELECT id FROM projects"
+    assert assert_readonly_sql(headered) == "SELECT id FROM projects"
+    # A write keyword / `;` inside a comment is documentation, not SQL.
+    assert (
+        assert_readonly_sql("-- setup 阶段已 delete 旧数据；不要慌\nSELECT 1")
+        == "SELECT 1"
+    )
+    assert assert_readonly_sql("/* delete this note */ SELECT 1") == "SELECT 1"
+    assert assert_readonly_sql("SELECT 1 -- trailing; note") == "SELECT 1"
+    # Nested block comments and dollar-quoted literals are valid read-only SQL.
+    assert (
+        assert_readonly_sql("SELECT 1 /* a /* b */ DELETE */ FROM t")
+        == "SELECT 1   FROM t"
+    )
+    assert assert_readonly_sql("SELECT $$delete$$") == "SELECT $$delete$$"
+    # A `/*` opening inside a `--` comment must not swallow the next statement.
+    for bad in (
+        "-- ok\nDELETE FROM t",
+        "/* note */ UPDATE t SET x=1",
+        "-- only a comment",
+        "SELECT 1 -- /*\n; DROP TABLE t\n-- */",
+    ):
+        with pytest.raises(TestRejected):
+            assert_readonly_sql(bad)
+
+
 def test_run_sql_count_counts_rows(tmp_path: Path, monkeypatch):
     import subprocess
 
@@ -350,6 +415,11 @@ def test_run_sql_count_counts_rows(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("dev_yard.qa_exec._run", fake_run)
     cfg = _cfg(tmp_path)
     assert run_sql_count(cfg, "SELECT id FROM projects") == 7
+    assert "count(*)" in seen[-1][-1]
+    # A comment header / trailing `;` must not defeat the count(*) wrapping.
+    assert run_sql_count(cfg, "-- header\nSELECT id FROM projects") == 7
+    assert "count(*)" in seen[-1][-1]
+    assert run_sql_count(cfg, "SELECT id FROM projects; -- done") == 7
     assert "count(*)" in seen[-1][-1]
     assert run_sql_count(cfg, "DESC projects") == 2
 
