@@ -148,6 +148,42 @@ def test_req_import_base_override_is_recorded(tmp_path: Path, monkeypatch):
     assert data["base_shas"]["backend"] == main_tip
 
 
+def test_req_import_diff_uses_fork_base(tmp_path: Path, monkeypatch):
+    """The diff shown for an imported branch must not include upstream commits.
+
+    `origin/main` advanced after `feature/x` forked; diffing against the live tip
+    would show `main2.txt` as deleted and inflate the changeset.
+    """
+    from dev_yard.service import requirement_diff, ticket_diff
+
+    monkeypatch.chdir(tmp_path)
+    repo, _feature_sha, _fork_sha = _local_repo_with_external_branch(tmp_path)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(repo), "main", "be", str(repo))
+    req_import(
+        yard,
+        "AB-DIFF",
+        source="text",
+        payload="# AB-DIFF\n",
+        branches={"backend": "feature/x"},
+        submit=False,
+    )
+
+    req_diff = requirement_diff(yard, "AB-DIFF")
+    assert len(req_diff["repos"]) == 1
+    repo_diff = req_diff["repos"][0]
+    req_paths = {f["path"] for f in repo_diff["files"]}
+    assert "feature.txt" in req_paths
+    assert "main2.txt" not in req_paths
+    assert "main2.txt" not in repo_diff["diff"]
+
+    ticket = ticket_diff(yard, "AB-DIFF", "T1")
+    ticket_paths = {f["path"] for f in ticket["files"]}
+    assert "feature.txt" in ticket_paths
+    assert "main2.txt" not in ticket_paths
+
+
 def test_req_import_rejects_unknown_alias(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     repo, _f, _c = _local_repo_with_external_branch(tmp_path)

@@ -289,6 +289,15 @@ def merge_base(worktree: Path, ref: str) -> str | None:
         return None
 
 
+def is_ancestor(worktree: Path, ancestor: str, descendant: str) -> bool:
+    """True when `ancestor` is reachable from `descendant`; False otherwise/unknown."""
+    try:
+        run(["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=worktree)
+        return True
+    except GitError:
+        return False
+
+
 def rev_parse(path: Path, ref: str) -> str | None:
     """Resolve a ref to a commit sha; None when unknown to this repo."""
     try:

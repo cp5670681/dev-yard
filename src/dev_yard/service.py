@@ -442,6 +442,12 @@ def _freeze_base_sha(
     return gitops.rev_parse(source, start)
 
 
+def _saved_bases(data: dict[str, Any]) -> dict[str, str]:
+    """Recorded diff baselines per repo alias; empty when unset/malformed."""
+    saved = data.get("base_shas")
+    return saved if isinstance(saved, dict) else {}
+
+
 def req_freeze(
     root: Path,
     jira: str,
@@ -2199,9 +2205,7 @@ def review(
         if not aliases:
             raise ValueError("no repos in STATUS.yaml; freeze first")
         repos = load_repos(root)
-        saved_bases = data.get("base_shas")
-        if not isinstance(saved_bases, dict):
-            saved_bases = {}
+        saved_bases = _saved_bases(data)
         wt_lines: list[str] = []
         wt_paths: list[Path] = []
         diffs: list[str] = []
@@ -2324,9 +2328,13 @@ def review(
             data = st.load(root, jira)
             slot = data["tickets"][tid]
             since = _ticket_base_sha(data, parsed, tid, t.repo, slot, cwd)
+            saved_base = _saved_bases(data).get(t.repo)
             st.save(root, jira, data)
-        base = repos[t.repo].default_base if t.repo in repos else "main"
-        label = since or base
+        default_base = repos[t.repo].default_base if t.repo in repos else "main"
+        # Recorded freeze point beats the live default-base tip, so upstream
+        # commits that landed after freeze don't leak into the review diff.
+        base = since or gitops.freeze_base(cwd, default_base, saved_base)
+        label = base
         prompt = session_prompt(
             root,
             "review",
@@ -2334,7 +2342,7 @@ def review(
             extra=(
                 f"Ticket: {tid} — {t.title}\nRepo alias: {t.repo}\n"
                 f"Diff vs {label} (this ticket only; working tree included):\n"
-                f"{_diff_vs_base(cwd, base, since)}\n\n"
+                f"{_diff_vs_base(cwd, default_base, base)}\n\n"
                 "After the written report, call submit_review exactly once "
                 "with verdict passed or failed. That call is the only pass/fail "
                 "signal; do not encode the verdict in the report text."
@@ -2574,7 +2582,11 @@ def ticket_diff(root: Path, jira: str, ticket_id: str) -> dict[str, Any]:
             }
 
     since = _ticket_base_sha(data, parsed, ticket_id, repo_alias, slot, cwd)
-    base = since or gitops.start_point(cwd, default_base)
+    # An imported ticket has no head_sha and no sibling to diff against; fall back
+    # to the recorded freeze point, never the live default-base tip.
+    base = since or gitops.freeze_base(
+        cwd, default_base, _saved_bases(data).get(repo_alias)
+    )
     head_sha = slot.get("head_sha")
 
     diff_target = f"{base}..{head_sha}" if (state == "done" and head_sha) else base
@@ -2656,6 +2668,7 @@ def requirement_diff(root: Path, jira: str) -> dict[str, Any]:
     data = st.load(root, jira)
     aliases = list(data.get("repos") or [])
     repos = load_repos(root)
+    saved_bases = _saved_bases(data)
     out_repos: list[dict[str, Any]] = []
     for alias in aliases:
         wt = paths.req_worktree(root, jira, alias)
@@ -2663,7 +2676,9 @@ def requirement_diff(root: Path, jira: str) -> dict[str, Any]:
         default_base = repo_obj.default_base if repo_obj else "main"
         if not wt.exists() or not (wt / ".git").exists():
             continue
-        base = gitops.start_point(wt, default_base)
+        # Recorded freeze point wins; the live default-base tip would mix in
+        # upstream commits that landed after the requirement forked.
+        base = gitops.freeze_base(wt, default_base, saved_bases.get(alias))
         try:
             log = gitops.run(["git", "log", "--oneline", f"{base}..HEAD"], cwd=wt)
         except gitops.GitError:
@@ -2919,6 +2934,8 @@ def req_sync(
         target_aliases = sorted(registered)
 
     results: list[dict[str, Any]] = []
+    base_store = _saved_bases(st.load(root, jira))
+    base_changed = False
     for alias in target_aliases:
         repo = registered[alias]
         source = repo.source_path(root)
@@ -2959,6 +2976,19 @@ def req_sync(
             row["to"] = after
             row["status"] = "up-to-date" if before == after else "synced"
             row["branch"] = gitops.current_branch(wt)
+            # The worktree now contains upstream; the recorded diff base must move
+            # with it or the synced-in commits show up as this requirement's work.
+            # Keep an explicitly pinned base that the synced ref does not supersede.
+            ref_sha = gitops.rev_parse(wt, ref)
+            saved = base_store.get(alias)
+            if ref_sha and (
+                not saved
+                or not gitops.rev_parse(wt, str(saved))
+                or gitops.is_ancestor(wt, str(saved), ref_sha)
+            ):
+                if base_store.get(alias) != ref_sha:
+                    base_store[alias] = ref_sha
+                    base_changed = True
         else:
             try:
                 row["ref"] = gitops.start_point(source, repo.default_base)
@@ -2968,6 +2998,13 @@ def req_sync(
         results.append(row)
         if on_progress:
             on_progress(f"{alias}: {row['status']}")
+    if base_changed:
+        with st.jira_lock(jira):
+            data = st.load(root, jira)
+            merged = dict(_saved_bases(data))
+            merged.update(base_store)
+            data["base_shas"] = merged
+            st.save(root, jira, data)
     return results
 
 

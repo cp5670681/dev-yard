@@ -16,6 +16,7 @@ from dev_yard.service import (
     req_pull,
     req_push,
     req_sync,
+    requirement_diff,
 )
 from dev_yard.web.app import create_app
 from dev_yard.web.board import requirement_detail
@@ -205,6 +206,34 @@ def test_req_sync_merge_when_diverged(tmp_path: Path, monkeypatch):
     assert results[0]["status"] == "synced"
     assert (wt / "feat.txt").exists()
     assert (wt / "main.txt").exists()
+
+
+def test_req_sync_advances_diff_base(tmp_path: Path, monkeypatch):
+    """After syncing onto default_base the recorded diff base must move with it.
+
+    Otherwise the synced-in upstream commit shows up as this requirement's work.
+    """
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    yard, bare_be, _, src_be, _ = _setup_yard_with_remotes(tmp_path)
+    d, _ = req_open(yard, "PROJ-8", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: backend task\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    req_freeze(yard, "PROJ-8")
+    wt = paths.req_worktree(yard, "PROJ-8", "backend")
+    (wt / "feat.txt").write_text("feat")
+    subprocess.check_call(["git", "add", "."], cwd=wt)
+    subprocess.check_call(["git", "commit", "-m", "feat"], cwd=wt)
+    _advance_origin(bare_be, src_be, "upstream.txt", "upstream")
+
+    req_sync(yard, "PROJ-8", repos=["backend"], strategy="merge")
+
+    assert (wt / "upstream.txt").exists()
+    diff = requirement_diff(yard, "PROJ-8")
+    files = {f["path"] for f in diff["repos"][0]["files"]}
+    assert "feat.txt" in files
+    assert "upstream.txt" not in files
 
 
 def test_cli_and_web_sync(tmp_path: Path, monkeypatch):
