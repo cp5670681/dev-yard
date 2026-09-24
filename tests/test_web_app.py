@@ -1750,3 +1750,48 @@ def test_create_app_recovers_stale_reviewing(tmp_path: Path, git_src: Path, monk
 
 
 
+
+
+def test_import_from_web(tmp_path: Path, git_src: Path, monkeypatch):
+    import subprocess
+
+    from dev_yard import status as st
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    subprocess.check_call(["git", "checkout", "-q", "-b", "feature/x"], cwd=git_src)
+    (git_src / "feature.txt").write_text("f\n")
+    subprocess.check_call(["git", "add", "."], cwd=git_src)
+    subprocess.check_call(["git", "commit", "-q", "-m", "feature"], cwd=git_src)
+    subprocess.check_call(["git", "checkout", "-q", "main"], cwd=git_src)
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    client = _client(yard)
+
+    r = client.post(
+        "/api/requirements/import",
+        json={
+            "key": "AB-90",
+            "source": "text",
+            "payload": "# AB-90\n",
+            "branches": {"backend": "feature/x"},
+            "submit": False,
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["jobs"][0]["action"] == "import"
+    data = st.load(yard, "AB-90")
+    assert data["phase"] == "frozen"
+    assert data["contract_review"] == "passed"
+    assert data["tickets"]["T1"]["state"] == "done"
+
+
+def test_import_from_web_requires_branches(tmp_path: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    r = _client(yard).post(
+        "/api/requirements/import", json={"key": "AB-91", "source": "none", "branches": {}}
+    )
+    assert r.status_code == 400

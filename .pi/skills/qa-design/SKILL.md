@@ -14,7 +14,7 @@ description: >
 - `reqs/<JIRA>/{REQUIREMENT,SPEC,TICKETS}.md`（只读）
 - `reqs/<JIRA>/qa/context.md`（宿主写的 worktree 地图、本次 `env` 与 base_url）
 - `reqs/CONTEXT.md`（若有：只读术语）
-- 每个 worktree：`git -C <path> diff <default_base>...HEAD`（HEAD 即 `req/<JIRA>`）
+- 每个 worktree：`git -C <path> diff <diff_base>...HEAD`，`<diff_base>` 取 `context.md` 里该 alias 的 `diff_base`（没有则回退 `<default_base>`；HEAD 即 `req/<JIRA>`）
 
 不要调 MCP、不要重拉 Jira、不要交互式访谈。缺细节时：能按 SPEC + 常规默认决定的，写进用例并标注假设；**真正有歧义、答错会让用例判错的，逐条写进 `qa/OPEN-QUESTIONS.md`（见下节），不要卡住、也不要默认成常规值糊过去**。
 
@@ -52,7 +52,7 @@ description: >
 
 ## 做法
 
-1. 每个 worktree 做 `git diff <default_base>...HEAD`。空 diff：停止并说明，不要编改动。
+1. 每个 worktree 做 `git diff <diff_base>...HEAD`（`<diff_base>` 取 `context.md` 该 alias 的 `diff_base`，无则 `<default_base>`）。空 diff：停止并说明，不要编改动。
 2. 改动点 D1..Dn 写入 `qa/meta.yaml`。`repo` 必须是 `repos.yaml` 别名（context 地图里的 alias），不要写 frontend/backend 泛称。`role` 只作阅读提示。
 3. **增量**更新 `meta.yaml`：改 `changes` / `base_branches` / `feature_branches` / `module` / `requirement`；保留已有 `routes:`，不要整文件覆盖。
 4. 覆盖：每个 D 至少 1 条 + 1 条正常流 + UI **可达**的后端错误分支（无权限/重复/超限）。**每条 `meta.yaml` 的 `changes[].id` 都必须被至少一条 case 的 `covers` 引用**（宿主会把未覆盖的 D 单独提示，不能漏）。控件 `disabled`/`maxlength`/无清空导致点不到的拦截，不要写成用例。**每条含 UI 预期的步骤还必须过「预期可达性审查」（见下节）**。

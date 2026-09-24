@@ -20,6 +20,19 @@ class OpenIn(BaseModel):
     force: bool = False
 
 
+class ImportIn(BaseModel):
+    jira: str = ""
+    key: str = ""
+    source: str = "pi"
+    target: str = ""
+    payload: str = ""
+    branches: dict[str, str] = Field(default_factory=dict)
+    bases: dict[str, str] = Field(default_factory=dict)
+    submit: bool = True
+    remote: str = "origin"
+    force: bool = False
+
+
 class RepoAddIn(BaseModel):
     alias: str = ""
     url: str

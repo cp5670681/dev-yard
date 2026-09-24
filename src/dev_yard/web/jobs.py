@@ -522,6 +522,28 @@ def default_execute(root: Path, job: Job) -> None:
         if warning:
             job.append(warning)
         return
+    if job.action == "import":
+        source = str(extra.get("source") or "pi")
+        runner = JobLogRunner(job, root, "open") if source == "pi" else None
+        data = service.req_import(
+            root,
+            job.jira,
+            branches=extra.get("branches") or {},
+            bases=extra.get("bases") or {},
+            source=source,
+            target=extra.get("target"),
+            payload=extra.get("payload"),
+            submit=bool(extra.get("submit", True)),
+            force=bool(extra.get("force")),
+            remote=str(extra.get("remote") or "origin"),
+            on_progress=job.append,
+            runner=runner,
+        )
+        job.append(
+            f"{job.jira} phase={data.get('phase')} branch={data.get('branch')} "
+            f"tickets={len(data.get('tickets') or {})} (all done)"
+        )
+        return
     if job.action == "reset-phase":
         data = service.req_reset_phase(root, job.jira)
         job.append(f"{job.jira} phase={data.get('phase')}")
