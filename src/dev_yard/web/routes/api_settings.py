@@ -122,6 +122,7 @@ def build(ctx: AppContext) -> APIRouter:
                 payload.provider.strip() or None,
                 payload.model.strip() or None,
                 test_branch=payload.test_branch,
+                note=payload.note,
             )
         except ValueError as e:
             raise HTTPException(400, str(e)) from e

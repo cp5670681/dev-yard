@@ -38,6 +38,7 @@ class RepoAddIn(BaseModel):
     url: str
     default_base: str = "main"
     role: str = "svc"
+    note: str = ""
     path: str = ""
     provider: str = ""
     model: str = ""
@@ -48,6 +49,7 @@ class RepoPiIn(BaseModel):
     provider: str = ""
     model: str = ""
     test_branch: str | None = None
+    note: str | None = None
 
 
 class QaConfigIn(BaseModel):

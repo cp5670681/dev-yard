@@ -1299,6 +1299,8 @@ def test_repo_form_role_is_free_text(tmp_path: Path, git_src: Path):
     assert 'v-model="role"' in vue
     assert 'label="role' in vue
     assert 'v-text-field v-model="role"' in vue
+    assert 'v-model="note"' in vue
+    assert "备注" in vue
     r = client.post(
         "/api/repos",
         json={
@@ -1306,6 +1308,7 @@ def test_repo_form_role_is_free_text(tmp_path: Path, git_src: Path):
             "url": str(git_src),
             "default_base": "main",
             "role": "mobile",
+            "note": "http://research.dev1.rccchina.com 的后端",
             "path": str(git_src),
         },
     )
@@ -1317,6 +1320,7 @@ def test_repo_form_role_is_free_text(tmp_path: Path, git_src: Path):
             "url": str(git_src),
             "default_base": "main",
             "role": "mobile",
+            "note": "http://research.dev1.rccchina.com 的后端",
             "path": str(git_src),
             "provider": "",
             "model": "",
@@ -1492,6 +1496,7 @@ def test_api_repo_add(tmp_path: Path, git_src: Path):
     assert r.json()["jobs"][0]["action"] == "repo_add"
     listed = client.get("/api/repos").json()
     assert listed[0]["alias"] == "backend"
+    assert listed[0]["note"] == ""
 
 
 def test_api_repo_set_pi(tmp_path: Path, git_src: Path):
@@ -1509,6 +1514,16 @@ def test_api_repo_set_pi(tmp_path: Path, git_src: Path):
     cleared = client.put("/api/repos/backend", json={"provider": "", "model": ""})
     assert cleared.json()[0]["provider"] == ""
     assert cleared.json()[0]["model"] == ""
+    noted = client.put(
+        "/api/repos/backend",
+        json={"provider": "", "model": "", "note": "http://app.example 的后端"},
+    )
+    assert noted.json()[0]["note"] == "http://app.example 的后端"
+    cleared_note = client.put(
+        "/api/repos/backend",
+        json={"provider": "", "model": "", "note": ""},
+    )
+    assert cleared_note.json()[0]["note"] == ""
 
 
 def test_api_ticket_diff_and_requirement_diff(tmp_path: Path, git_src: Path):

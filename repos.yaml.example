@@ -36,6 +36,7 @@ repos:
     url: git@host:team/backend.git
     default_base: main
     role: be
+    # note: research.dev1.rccchina.com 的后端  # 可选；给人/模型看，不参与调度
     # test_branch: PG-test   # 提测时把冻结分支 merge 到此共享测试分支；缺省=该仓不提测
     # provider: rcc
     # model: glm-5.3

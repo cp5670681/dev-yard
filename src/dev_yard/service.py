@@ -129,6 +129,7 @@ def repo_add(
     provider: str | None = None,
     model: str | None = None,
     test_branch: str | None = None,
+    note: str | None = None,
 ) -> Repo:
     repos = load_repos(root)
     alias = (alias or "").strip() or git_project_name(url)
@@ -138,6 +139,7 @@ def repo_add(
         url=url,
         default_base=default_base,
         role=role,
+        note=(note or "").strip() or None,
         path=Path(path) if path else None,
         provider=pair[0] if pair else None,
         model=pair[1] if pair else None,
@@ -168,6 +170,7 @@ def repo_set_pi(
     provider: str | None,
     model: str | None,
     test_branch: str | None = None,
+    note: str | None = None,
 ) -> Repo:
     repos = load_repos(root)
     repo = repos.get(alias)
@@ -179,6 +182,8 @@ def repo_set_pi(
     if test_branch is not None:
         # None = not provided (leave as-is); "" = clear.
         repo.test_branch = test_branch.strip() or None
+    if note is not None:
+        repo.note = note.strip() or None
     save_repos(root, repos)
     return repo
 
@@ -1374,6 +1379,17 @@ def _sync_child_with_parent(
     return None
 
 
+def _source_clone_line(alias: str, path: Path, repo: Repo) -> str:
+    parts = [f"on {repo.default_base}"]
+    if repo.role:
+        parts.append(f"role {repo.role}")
+    if repo.note:
+        parts.append(f"note {repo.note}")
+    if repo.path:
+        parts.append("path-mapped, not moved")
+    return f"- {alias}: {path}  ({'; '.join(parts)})"
+
+
 def ensure_on_default_base(root: Path) -> dict[str, Path]:
     """Managed `.repos/` clones are checked out; path-mapped working copies are not moved."""
     out: dict[str, Path] = {}
@@ -1476,14 +1492,12 @@ def run_stage(
         mapping = ensure_on_default_base(root)
         repos = load_repos(root)
         lines = "\n".join(
-            f"- {a}: {p}  (on {repos[a].default_base}"
-            + ("; path-mapped, not moved" if repos[a].path else "")
-            + ")"
-            for a, p in mapping.items()
+            _source_clone_line(a, p, repos[a]) for a, p in mapping.items()
         )
         bases = (
             "Read application code from these source clones (on default_base). "
-            "Do not switch their branches. Requirement worktrees are created later by freeze.\n"
+            "Do not switch their branches. Requirement worktrees are created later by freeze. "
+            "Use each clone's role/note to match URLs and product names in the requirement.\n"
             f"{lines}\n"
         )
     if prompt_extra:

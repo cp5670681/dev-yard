@@ -45,6 +45,7 @@
                 </v-btn>
               </div>
               <div class="text-caption text-medium-emphasis mt-1">base {{ r.default_base }}</div>
+              <div v-if="r.note" class="text-caption text-medium-emphasis text-break">{{ r.note }}</div>
               <div class="text-caption text-medium-emphasis">测试分支 {{ r.test_branch || "（未配）" }}</div>
               <div class="text-caption text-medium-emphasis">实现 {{ repoPiLabel(r) }}</div>
               <div class="text-caption text-break mt-1">{{ r.url }}</div>
@@ -58,6 +59,7 @@
             <tr>
               <th>alias</th>
               <th>role</th>
+              <th>备注</th>
               <th>base</th>
               <th>url</th>
               <th>path</th>
@@ -71,6 +73,9 @@
               <td><code>{{ r.alias }}</code></td>
               <td>
                 <v-chip size="x-small" variant="tonal">{{ r.role }}</v-chip>
+              </td>
+              <td class="text-caption text-break" style="max-width: 18rem">
+                {{ r.note || "—" }}
               </td>
               <td>{{ r.default_base }}</td>
               <td>
@@ -116,6 +121,13 @@
               </v-col>
               <v-col cols="12" md="6">
                 <v-text-field v-model="role" label="role（可选标记，不参与调度）" placeholder="be / fe / 任意" />
+              </v-col>
+              <v-col cols="12">
+                <v-text-field
+                  v-model="note"
+                  label="备注（可选，给人/模型看，不参与调度）"
+                  placeholder="如 research.dev1.rccchina.com 的后端"
+                />
               </v-col>
               <v-col cols="12">
                 <v-text-field v-model="path" label="本地 path（可选，已有工作副本时填写）" />
@@ -197,6 +209,16 @@
             placeholder="留空则本仓不提测"
             variant="outlined"
             density="comfortable"
+            class="mb-3"
+            hide-details
+            clearable
+          />
+          <v-text-field
+            v-model="editNote"
+            label="备注"
+            placeholder="给人/模型看，如对应环境 URL"
+            variant="outlined"
+            density="comfortable"
             hide-details
             clearable
           />
@@ -233,6 +255,7 @@ const alias = ref("");
 const url = ref("");
 const defaultBase = ref("main");
 const role = ref("svc");
+const note = ref("");
 const path = ref("");
 const addProvider = ref("");
 const addModel = ref("");
@@ -243,6 +266,7 @@ const editAlias = ref("");
 const editProvider = ref("");
 const editModel = ref("");
 const editTestBranch = ref("");
+const editNote = ref("");
 const catalog = ref<PiCatalogProvider[]>([]);
 const jobId = ref(typeof route.query.job === "string" ? route.query.job : "");
 const urlRule = (v: string) => !!v.trim() || "需要 git url";
@@ -343,6 +367,7 @@ async function submit() {
       url: url.value,
       default_base: defaultBase.value,
       role: role.value,
+      note: note.value,
       path: path.value,
       provider: addProvider.value,
       model: addModel.value,
@@ -371,6 +396,7 @@ function openEdit(r: Repo) {
   editProvider.value = r.provider || "";
   editModel.value = r.model || "";
   editTestBranch.value = r.test_branch || "";
+  editNote.value = r.note || "";
   ensureSaved(r.provider, r.model);
   editDialog.value = true;
 }
@@ -385,6 +411,7 @@ async function saveEdit() {
       editProvider.value,
       editModel.value,
       editTestBranch.value,
+      editNote.value,
     );
     editDialog.value = false;
     snack.notify("已写入仓库设置", "success");

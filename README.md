@@ -104,7 +104,8 @@ dev-yard init
 
 ```bash
 # 方式 A：托管 Clone（推荐，自动拉取到 .repos/）
-dev-yard repo add core-api git@github.com:my-org/core-api.git --default-base main --role be
+dev-yard repo add core-api git@github.com:my-org/core-api.git --default-base main --role be \
+  --note "research.dev1.rccchina.com 的后端"
 dev-yard repo add web-frontend git@github.com:my-org/web-frontend.git --default-base main --role fe
 
 # 方式 B：复用本地已有目录
@@ -217,6 +218,7 @@ repos:
     url: git@github.com:my-org/core-api.git
     default_base: main
     role: be
+    note: research.dev1.rccchina.com 的后端  # 可选；给人/模型看，不参与调度
     test_branch: PG-test      # 提测时把冻结分支 merge 到此共享测试分支；缺省=该仓不提测
     provider: anthropic
     model: claude-3-7-sonnet # 仓级别模型覆盖

@@ -433,6 +433,7 @@ class AppContext:
                 "url": payload.url.strip(),
                 "default_base": payload.default_base.strip() or "main",
                 "role": payload.role.strip() or "svc",
+                "note": payload.note.strip() or None,
                 "path": payload.path.strip() or None,
                 "provider": payload.provider.strip() or None,
                 "model": payload.model.strip() or None,

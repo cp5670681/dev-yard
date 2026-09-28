@@ -327,6 +327,32 @@ def test_cli_tdd_command(tmp_path: Path, monkeypatch):
     assert res.exit_code != 0
 
 
+def test_repo_note_roundtrip(tmp_path: Path, git_src: Path):
+    from dev_yard.service import _source_clone_line
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(
+        yard,
+        "research",
+        str(git_src),
+        "main",
+        "be",
+        str(git_src),
+        note="http://research.dev1.rccchina.com 的后端",
+    )
+    loaded = load_repos(yard)["research"]
+    assert loaded.note == "http://research.dev1.rccchina.com 的后端"
+    yaml_text = (yard / "repos.yaml").read_text(encoding="utf-8")
+    assert "research.dev1.rccchina.com" in yaml_text
+    line = _source_clone_line("research", loaded.source_path(yard), loaded)
+    assert "note http://research.dev1.rccchina.com 的后端" in line
+    assert "role be" in line
+    repo_set_pi(yard, "research", None, None, note="")
+    assert load_repos(yard)["research"].note is None
+    assert "note:" not in (yard / "repos.yaml").read_text(encoding="utf-8")
+
+
 def test_repo_test_branch_roundtrip(tmp_path: Path, git_src: Path):
     yard = tmp_path / "yard"
     init_yard(yard)

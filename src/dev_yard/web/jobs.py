@@ -502,6 +502,7 @@ def default_execute(root: Path, job: Job) -> None:
             provider=extra.get("provider") or None,
             model=extra.get("model") or None,
             test_branch=extra.get("test_branch") or None,
+            note=extra.get("note") or None,
         )
         job.append(f"added {repo.alias} -> {repo.source_path(root)}")
         return

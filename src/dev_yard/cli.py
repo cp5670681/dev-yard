@@ -187,6 +187,9 @@ def repo_add(
     test_branch: str | None = typer.Option(
         None, "--test-branch", help="共享测试分支（提测时 merge 冻结分支到这里）"
     ),
+    note: str | None = typer.Option(
+        None, "--note", help="给人/模型看的备注（如对应环境 URL），不参与调度"
+    ),
 ) -> None:
     root = root_opt()
     try:
@@ -201,6 +204,7 @@ def repo_add(
             provider=provider,
             model=model,
             test_branch=test_branch,
+            note=note,
         )
     except (ValueError, GitError) as e:
         _die(e)
@@ -216,7 +220,8 @@ def repo_list() -> None:
         return
     for a, r in repos.items():
         pi = f"\t{r.provider}/{r.model}" if r.provider and r.model else ""
-        typer.echo(f"{a}\t{r.role}\t{r.default_base}\t{r.url}{pi}")
+        extra = f"\t{r.note}" if r.note else ""
+        typer.echo(f"{a}\t{r.role}\t{r.default_base}\t{r.url}{pi}{extra}")
 
 
 @repo_app.command("set-model")

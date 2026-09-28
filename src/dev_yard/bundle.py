@@ -253,6 +253,7 @@ def req_export(
                     "url": repo.url,
                     "default_base": repo.default_base,
                     "role": repo.role,
+                    "note": repo.note,
                     "test_branch": repo.test_branch,
                     "freeze_branch": freeze,
                     "base_ref": base_ref,
@@ -422,6 +423,7 @@ def _ensure_repos(root: Path, manifest: dict[str, Any], log: Progress) -> None:
                 None,
                 on_progress=log,
                 test_branch=cfg.get("test_branch"),
+                note=cfg.get("note"),
             )
         except gitops.GitError as e:
             # repo_add persists the entry before cloning; a failed clone (offline)

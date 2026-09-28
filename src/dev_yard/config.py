@@ -72,6 +72,7 @@ class Repo:
     url: str
     default_base: str = "main"
     role: str = "svc"
+    note: str | None = None
     path: Path | None = None
     provider: str | None = None
     model: str | None = None
@@ -234,6 +235,7 @@ def load_repos(root: Path) -> dict[str, Repo]:
             url=raw["url"],
             default_base=raw.get("default_base", "main"),
             role=raw.get("role", "svc"),
+            note=_blank(raw.get("note")),
             path=Path(raw["path"]) if raw.get("path") else None,
             provider=_blank(raw.get("provider")),
             model=_blank(raw.get("model")),
@@ -407,6 +409,9 @@ def save_repos(root: Path, repos: dict[str, Repo]) -> None:
             "default_base": r.default_base,
             "role": r.role,
         }
+        note = _blank(r.note)
+        if note:
+            entry["note"] = note
         if r.path:
             entry["path"] = str(r.path)
         test_branch = _blank(r.test_branch)

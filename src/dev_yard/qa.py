@@ -122,6 +122,8 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
         role = repo.role if repo else "?"
         branch = resolve_freeze_branch(root, jira, data, wt)
         segments = [f"branch {branch}", f"base {base}", f"role {role}"]
+        if repo and repo.note:
+            segments.append(f"note {repo.note}")
         # The exact ref to diff against. The worktree's own local `base` may be
         # stale (fetch updates origin/<base> only), and an imported requirement
         # may fork from an older/other base; both are answered by freeze_base.

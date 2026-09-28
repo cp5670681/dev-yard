@@ -361,6 +361,7 @@ export interface Repo {
   url: string;
   default_base: string;
   role: string;
+  note: string;
   path: string;
   provider: string;
   model: string;
@@ -566,7 +567,7 @@ export interface AssistantSession {
 export interface AssistantContext {
   route: string;
   jira: string | null;
-  repos: { alias: string; role: string; default_base: string; path: boolean }[];
+  repos: { alias: string; role: string; note: string; default_base: string; path: boolean }[];
   requirements: { jira: string; phase: string; next: string; title: string | null }[];
   requirement?: {
     jira: string;

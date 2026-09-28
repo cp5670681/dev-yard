@@ -80,7 +80,13 @@ def now_iso() -> str:
 
 def page_context(root: Path, route: str = "", jira: str = "") -> dict[str, Any]:
     repos = [
-        {"alias": a, "role": r.role, "default_base": r.default_base, "path": bool(r.path)}
+        {
+            "alias": a,
+            "role": r.role,
+            "note": r.note or "",
+            "default_base": r.default_base,
+            "path": bool(r.path),
+        }
         for a, r in load_repos(root).items()
     ]
     ctx: dict[str, Any] = {

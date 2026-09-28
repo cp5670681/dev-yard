@@ -305,6 +305,7 @@ export function addRepo(payload: {
   url: string;
   default_base: string;
   role: string;
+  note?: string | null;
   path: string;
   provider?: string | null;
   model?: string | null;
@@ -314,6 +315,7 @@ export function addRepo(payload: {
     method: "POST",
     body: JSON.stringify({
       ...payload,
+      note: payload.note ?? "",
       provider: payload.provider ?? "",
       model: payload.model ?? "",
       test_branch: payload.test_branch ?? "",
@@ -326,6 +328,7 @@ export function setRepoPi(
   provider: string | null,
   model: string | null,
   test_branch: string | null,
+  note: string | null,
 ) {
   return api<Repo[]>(`/api/repos/${encodeURIComponent(alias)}`, {
     method: "PUT",
@@ -333,6 +336,7 @@ export function setRepoPi(
       provider: provider ?? "",
       model: model ?? "",
       test_branch: test_branch ?? "",
+      note: note ?? "",
     }),
   });
 }
