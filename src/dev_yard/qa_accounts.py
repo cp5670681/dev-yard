@@ -41,6 +41,39 @@ _WRITE_SQL = re.compile(
 
 _ROW_SEP = "|"
 _FALLBACK_KEY = "auto"
+_COMMENT_BLOCK = re.compile(r"/\*.*?\*/", re.S)
+_COMMENT_LINE = re.compile(r"--[^\n]*")
+
+
+def _sql_body(sql: str) -> str:
+    """Strip ``--`` / ``/* */`` comments so guards see the real statement."""
+    text = _COMMENT_BLOCK.sub(" ", sql)
+    text = _COMMENT_LINE.sub(" ", text)
+    return text.strip()
+
+
+def assert_readonly_sql(sql: str) -> str:
+    """Reject empty, multi-statement, or write-looking discovery SQL.
+
+    Leading comments are ignored for the first-keyword check: qa-design writes
+    ``accounts-discover.sql`` with a header, and ``WITH … SELECT`` is allowed.
+    """
+    text = sql.strip()
+    if not text:
+        raise ValueError("--sql must not be empty")
+    body = _sql_body(text)
+    if not body:
+        raise ValueError("--sql must not be empty")
+    if ";" in body.rstrip(";"):
+        raise ValueError("--sql must be a single statement (no `;`)")
+    head = body.split(None, 1)[0].lstrip("(").lower()
+    if head not in _READONLY_SQL:
+        raise ValueError(
+            "--sql must be read-only (select/with/show/desc/explain/table)"
+        )
+    if _WRITE_SQL.search(body):
+        raise ValueError("--sql must be read-only (no write keywords)")
+    return text
 
 
 @dataclass(frozen=True)
@@ -84,19 +117,10 @@ def discover(db_url: str, sql: str, timeout: int = 30) -> list[Candidate]:
     """Run the read-only discovery query and return parsed candidates."""
     if not db_url:
         raise ValueError("qa.yaml envs.<env>.db.url is not configured; cannot run --sql")
+    text = assert_readonly_sql(sql)
     binary = shutil.which("usql")
     if not binary:
         raise ValueError("usql not found; install it to discover accounts")
-    text = sql.strip()
-    if not text:
-        raise ValueError("--sql must not be empty")
-    if ";" in text.rstrip(";"):
-        raise ValueError("--sql must be a single statement (no `;`)")
-    head = text.split(None, 1)[0].lower()
-    if head not in _READONLY_SQL:
-        raise ValueError("--sql must be read-only (select/show/desc/explain/table)")
-    if _WRITE_SQL.search(text):
-        raise ValueError("--sql must be read-only (no write keywords)")
     try:
         r = subprocess.run(
             [binary, db_url, "-t", "-A", "-c", text],

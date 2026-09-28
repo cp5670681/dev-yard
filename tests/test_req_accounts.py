@@ -229,10 +229,31 @@ def test_cli_req_accounts_uses_discovered_candidate(tmp_path: Path, monkeypatch)
     ],
 )
 def test_discover_usernames_rejects_writes(sql: str):
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="read-only|single statement"):
         cli._discover_usernames("postgres://x", sql)
 
 
 def test_discover_usernames_requires_dsn():
     with pytest.raises(ValueError, match="db.url"):
         cli._discover_usernames("", "select 1")
+
+
+def test_assert_readonly_sql_allows_leading_comments_and_cte():
+    from dev_yard.qa_accounts import assert_readonly_sql
+
+    sql = """\
+-- header from qa-design
+/* block */
+WITH perm AS (
+  SELECT username FROM users WHERE state = 'active' LIMIT 1
+)
+SELECT username, 'readonly' AS account_key FROM perm;
+"""
+    assert assert_readonly_sql(sql).startswith("-- header")
+
+
+def test_assert_readonly_sql_rejects_comment_only():
+    from dev_yard.qa_accounts import assert_readonly_sql
+
+    with pytest.raises(ValueError, match="empty"):
+        assert_readonly_sql("-- just a comment\n")
