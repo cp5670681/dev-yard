@@ -467,6 +467,7 @@ def test_context_md_names_the_selected_env(tmp_path: Path):
     assert "- available envs: local, test" in text
     assert "- base_url: https://test.example.com" in text
     assert "- test 环境" in text
+    assert "## Database columns" in text
 
 
 def test_req_test_uses_the_selected_env(tmp_path: Path, git_src: Path, monkeypatch):
@@ -1081,6 +1082,8 @@ def test_qa_duties_and_skills_stay_in_sync():
     assert "Do not interview." not in design_duties
     assert "OPEN-QUESTIONS" in design_duties
     assert "accounts-discover.sql" in design_duties
+    assert "information_schema" in design_duties
+    assert "schema.rb" in design_duties
     assert "case-defect" in run_duties
     assert "cancelled:" in run_duties
     assert "qa logs" in run_duties
@@ -1092,6 +1095,8 @@ def test_qa_duties_and_skills_stay_in_sync():
     run_text = (run_skill / "SKILL.md").read_text(encoding="utf-8")
     assert "OPEN-QUESTIONS" in design_text
     assert "accounts-discover.sql" in design_text
+    assert "Database columns" in design_text
+    assert "information_schema" in design_text
     assert "Do not interview." not in design_text
     assert "case-defect" in run_text
     assert "cancelled:" in run_text

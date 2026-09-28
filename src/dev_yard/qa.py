@@ -63,6 +63,7 @@ from dev_yard.qa_schedule import (
 from dev_yard.qa_verify import (
     VerifyResult,
     describe,
+    dump_live_schema,
     env_lock,
     failed_cases,
     needs_verify,
@@ -72,6 +73,7 @@ from dev_yard.qa_verify import (
     verify_cases,
     verify_gate,
     verify_view,
+    worktree_schema_files,
     write_blocked,
     write_summary,
 )
@@ -171,7 +173,25 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
         "QA_CASE_ID/QA_SCRIPT_KIND; stdout is the only channel back; state lives in "
         "the DB, never on the execution host's disk; do not assume two runs land on "
         "the same replica; do not read ARGV.",
+        "",
+        "## Database columns",
+        "",
+        "verify.sql 和 setup 的表名、列名必须来自本节（宿主已对当前 env 查过 "
+        "information_schema）或下列 schema 文件。不要猜列名，不要把代码常量"
+        "（NEED_RENOVATION_TYPE 等）写成表字段，不要编造主键 id=1001。",
     ]
+    schema_files = worktree_schema_files(root, jira, aliases)
+    if schema_files:
+        lines.extend(schema_files)
+    live = dump_live_schema(cfg)
+    if live:
+        lines.append("Live columns (current env):")
+        lines.extend(live)
+    else:
+        lines.append(
+            "- live dump unavailable; read the schema files above "
+            "(db/schema.rb / structure.sql / prisma)."
+        )
     if others:
         lines.append(
             f"Other envs exist ({', '.join(others)}) but are out of scope for this run."
@@ -747,6 +767,10 @@ def _duties(kind: str, jira: str) -> str:
             "declares setup/cleanup or a DB expectation; the host runs it and "
             "feeds failures back to you. A pure-UI case writes `SELECT 1` and is "
             "flagged as an exemption.\n"
+            "Column names come from context.md Database columns (host dumped "
+            "information_schema) or worktree schema.rb. Never invent columns or "
+            "treat app constants as table fields. Do not invent primary keys in "
+            "verify.sql without a setup that inserts those rows.\n"
             "seed must hard self-prove: every entity/field/link a case asserts must "
             "be created by setup (or verified read-only), and setup must exit(1) "
             "when its own assertion fails — not just print.\n"
@@ -887,7 +911,7 @@ def _design_prompt(
             "只改失败清单里的用例文件（setup、cleanup、verify.sql、该用例的前置）。\n"
             "不要改其它用例，不要 diff，不要读 dev-yard 的 src/。\n"
             "错误里的异常行是结论；忽略 Rails 启动警告。\n"
-            "模型不认的字段从 setup 删掉，按 worktree 里该模型的列来写。\n"
+            "列名以 context.md Database columns 为准；模型不认的字段从 setup 删掉。\n"
             "缺账号保持未覆盖，不要为账号重写用例。\n\n"
             + verify_feedback.strip()
         )

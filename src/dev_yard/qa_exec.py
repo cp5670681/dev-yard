@@ -584,6 +584,27 @@ def _scalar_eq(expected: Any, got: str) -> bool:
     return " ".join(str(expected).split()).casefold() == " ".join(got.split()).casefold()
 
 
+def run_sql_lines(cfg: QaConfig, sql: str, on_log: Any | None = None) -> list[str]:
+    """Run a read-only statement and return non-empty stdout lines (usql -t -A)."""
+    body = assert_readonly_sql(sql)
+    if not cfg.env.db_url:
+        raise TestRejected("qa.yaml has no db.url; cannot query schema")
+    binary = shutil.which("usql")
+    if not binary:
+        raise TestRejected("usql not found; cannot query schema")
+    if on_log is not None:
+        on_log(f"$ usql <db.url> -t -A -c {body[:200]}")
+    r = _run(
+        [binary, cfg.env.db_url, "-t", "-A", "-c", body],
+        timeout=120,
+        label="usql schema",
+    )
+    if r.returncode != 0:
+        err = redact_qa_yaml((r.stderr or r.stdout or "").strip()) or str(r.returncode)
+        raise TestRejected(f"schema query failed: {err}")
+    return [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
+
+
 def run_sql_count(cfg: QaConfig, sql: str, on_log: Any | None = None) -> int:
     """Row count of a read-only verify statement, run host-side via usql.
 

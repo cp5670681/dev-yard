@@ -434,12 +434,54 @@ def test_render_feedback_lists_only_failures():
                 status="failed",
                 verify_sql="SELECT id FROM projects WHERE id=669215",
                 error="0 rows",
+                hint="verify 用了编造主键",
             ),
             "case-07": VerifyResult(case="case-07", status="passed"),
         }
     )
     assert "case-06" in text and "0 rows" in text
+    assert "怎么改" in text and "编造主键" in text
     assert "case-07" not in text
+
+
+def test_enrich_hint_invented_pk_without_setup():
+    from dev_yard.qa_verify import enrich_verify_hint
+
+    job = CaseJob(id="case-01", title="t", repo="backend", body="", setup="")
+
+    class _Env:
+        db_url = ""
+
+    class _Cfg:
+        env = _Env()
+
+    result = VerifyResult(
+        case="case-01",
+        status="failed",
+        verify_sql="SELECT 1 FROM projects WHERE id=1001 AND last=1",
+        rows=0,
+        error="0 rows",
+    )
+    hint = enrich_verify_hint(_Cfg(), job, result)  # type: ignore[arg-type]
+    assert "编造主键" in hint
+    assert result.hint == hint
+
+
+def test_dump_live_schema_formats_rows(monkeypatch):
+    from dev_yard.qa_verify import dump_live_schema
+
+    class _Env:
+        db_url = "postgres://u:p@127.0.0.1/qa"
+
+    class _Cfg:
+        env = _Env()
+
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.run_sql_lines",
+        lambda cfg, sql, on_log=None: ["projects: id, last, version", "users: id, name"],
+    )
+    lines = dump_live_schema(_Cfg())  # type: ignore[arg-type]
+    assert lines == ["- projects: id, last, version", "- users: id, name"]
 
 
 def test_prior_defects_reads_previous_runs(tmp_path: Path):

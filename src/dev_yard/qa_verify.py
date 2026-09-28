@@ -29,6 +29,7 @@ from dev_yard.qa_exec import (
     case_script_path,
     run_case_script,
     run_sql_count,
+    run_sql_lines,
     run_sql_value,
 )
 from dev_yard.qa_schedule import CaseJob, now_iso
@@ -64,6 +65,11 @@ _SQL_STOP = frozenset(
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _FROM_TABLE = re.compile(r"\b(?:from|join)\s+([A-Za-z_][A-Za-z0-9_.]*)", re.I)
 _NUMBER = re.compile(r"^\d+$")
+_HARD_PK = re.compile(r"\bid\s*=\s*\d+", re.I)
+_COL_MISSING = re.compile(
+    r"column\s+(?:(?P<qual>[A-Za-z_][\w]*)\.)?(?P<col>[A-Za-z_][\w]*)\s+does not exist",
+    re.I,
+)
 
 # Host-internal tables live in a reserved namespace and are exempt from the
 # "every FROM/JOIN table must be named in the case body" rule. The seed registry
@@ -186,6 +192,8 @@ class VerifyResult:
     # the case does not declare `data.writes`.
     identity: str = ""
     writes: list[str] = field(default_factory=list)
+    # Host-filled repair hint (real columns, invented-PK guidance). Empty on pass.
+    hint: str = ""
 
     def to_payload(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -201,6 +209,8 @@ class VerifyResult:
         }
         if self.blocked_class:
             out["blocked_class"] = self.blocked_class
+        if self.hint:
+            out["hint"] = self.hint
         return out
 
 
@@ -304,6 +314,142 @@ def lint_verify(job: CaseJob, sql: str) -> dict[str, Any]:
     return {"ok": True, "empty": False, "matched": sorted(set(tables) | set(hit))}
 
 
+def _safe_ident(name: str) -> str | None:
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name or ""):
+        return name.lower()
+    return None
+
+
+def _agg_cells(cfg: QaConfig, sql: str) -> str:
+    try:
+        return (run_sql_value(cfg, sql) or "").strip()
+    except TestRejected:
+        return ""
+
+
+def _table_columns(cfg: QaConfig, table: str) -> list[str]:
+    ident = _safe_ident(table)
+    if not ident:
+        return []
+    cell = _agg_cells(
+        cfg,
+        "SELECT string_agg(column_name, ',' ORDER BY ordinal_position) "
+        "FROM information_schema.columns "
+        "WHERE table_schema NOT IN ('pg_catalog','information_schema') "
+        f"AND table_name = '{ident}'",
+    )
+    names = [p.strip() for p in cell.split(",") if p.strip()]
+    return names[:40]
+
+
+def _sample_ids(cfg: QaConfig, table: str) -> str:
+    ident = _safe_ident(table)
+    if not ident:
+        return ""
+    return _agg_cells(
+        cfg,
+        "SELECT string_agg(id::text, ',') FROM ("
+        f"SELECT id FROM {ident} LIMIT 5"
+        ") qa_sample",
+    )
+
+
+def missing_column(error: str) -> str:
+    found = _COL_MISSING.search(error or "")
+    return (found.group("col") if found else "") or ""
+
+
+def invented_pk_sql(sql: str) -> bool:
+    return bool(_HARD_PK.search(sql or ""))
+
+
+_SCHEMA_DUMP_SQL = (
+    "SELECT table_name || ': ' || string_agg(column_name, ', ' ORDER BY ordinal_position) "
+    "FROM information_schema.columns "
+    "WHERE table_schema NOT IN ('pg_catalog', 'information_schema') "
+    "AND table_name NOT LIKE '_qa_%' "
+    "GROUP BY table_name ORDER BY table_name"
+)
+_SCHEMA_DUMP_MAX_LINES = 250
+_SCHEMA_DUMP_MAX_CHARS = 80000
+_SCHEMA_FILES = ("db/schema.rb", "db/structure.sql", "prisma/schema.prisma")
+
+
+def dump_live_schema(cfg: QaConfig) -> list[str]:
+    """Current-env table: columns from information_schema. Empty if DB is down."""
+    if not getattr(cfg.env, "db_url", ""):
+        return []
+    try:
+        rows = run_sql_lines(cfg, _SCHEMA_DUMP_SQL)
+    except TestRejected:
+        return []
+    lines: list[str] = []
+    size = 0
+    for row in rows[:_SCHEMA_DUMP_MAX_LINES]:
+        line = f"- {row}"
+        size += len(line) + 1
+        if size > _SCHEMA_DUMP_MAX_CHARS:
+            lines.append("- …(truncated)")
+            break
+        lines.append(line)
+    return lines
+
+
+def worktree_schema_files(root: Path, jira: str, aliases: list[str]) -> list[str]:
+    out: list[str] = []
+    for alias in aliases:
+        wt = paths.req_worktree(root, jira, alias)
+        for rel in _SCHEMA_FILES:
+            path = wt / rel
+            if path.is_file():
+                out.append(f"- schema file ({alias}): `{path}`")
+    return out
+
+
+def enrich_verify_hint(cfg: QaConfig, job: CaseJob, result: VerifyResult) -> str:
+    """Tell the repair pass how to rewrite setup/verify, not just that it failed."""
+    if result.status != "failed":
+        return ""
+    parts: list[str] = []
+    sql = result.verify_sql or ""
+    err = result.error or ""
+    tables = sorted(_sql_tables(sql))
+    col = missing_column(err)
+    if col:
+        parts.append(
+            f"列 {col} 不存在。代码常量（如 NEED_RENOVATION_TYPE）不是表字段；"
+            "列名从 worktree schema.rb / ORM 读。"
+        )
+        for table in tables:
+            cols = _table_columns(cfg, table)
+            if cols:
+                parts.append(f"表 {table} 现有列: {', '.join(cols)}")
+    if result.rows < 1 and (err == "0 rows" or "0 rows" in err):
+        if invented_pk_sql(sql) and not job.setup:
+            parts.append(
+                "verify 用了编造主键（id=数字）且无 setup。不要再换一个假 id："
+                "写幂等 setup INSERT（verify 查这批种子），或按业务条件"
+                "（last/version/名称）SELECT 库里已有行 LIMIT 1。"
+            )
+        elif invented_pk_sql(sql):
+            parts.append(
+                "setup 已跑但仍 0 行：核对 setup 是否插入了 verify 里的 id，"
+                "或改 verify 按 setup 写入的属性查找，不要硬编码猜测主键。"
+            )
+        else:
+            parts.append(
+                "查询 0 行：前置条件在当前库不成立。放宽到真实存在的行，"
+                "或补 setup 造出 verify 所断言的数据。"
+            )
+        for table in tables[:2]:
+            sample = _sample_ids(cfg, table)
+            if sample:
+                parts.append(f"表 {table} 样例 id: {sample}")
+    hint = " ".join(parts).strip()
+    result.hint = hint
+    return hint
+
+
 def needs_verify(job: CaseJob) -> bool:
     """Whether the case declares data prerequisites that must be proven.
 
@@ -348,6 +494,8 @@ def verify_case(
     result = VerifyResult(case=job.id, fingerprint=fingerprint)
 
     def finish() -> VerifyResult:
+        if result.status == "failed" and not result.lint.get("skip_design"):
+            enrich_verify_hint(cfg, job, result)
         try:
             _write_result(paths.qa_dir(root, jira), result)
         except OSError:
@@ -889,6 +1037,8 @@ def render_feedback(
     lines = [
         "数据核实未通过。只改下列用例的 setup / cleanup / verify.sql。",
         "不要改其它用例，不要放宽预期，不要用 SELECT 1 掩盖真断言。",
+        "0 行且 SQL 含 id=<数字>：禁止再换假主键；写 setup 造数或按业务条件查已有行。",
+        "列不存在：用提示里的真实列名；应用常量不是表字段。",
         "",
     ]
     for cid in sorted(results):
@@ -903,6 +1053,8 @@ def render_feedback(
         lines.append(f"- 实际行数: {r.rows}")
         if r.error:
             lines.append(f"- 错误: {salient_error(r.error, limit)}")
+        if r.hint:
+            lines.append(f"- 怎么改: {r.hint}")
         if r.setup_stdout:
             lines.append(f"- setup stdout: {salient_error(r.setup_stdout, limit)}")
         lines.append("")
