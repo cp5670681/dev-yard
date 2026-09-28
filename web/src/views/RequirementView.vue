@@ -90,6 +90,37 @@
         </template>
       </div>
 
+      <v-card
+        v-if="detail.phase === 'testing' || detail.phase === 'done'"
+        variant="outlined"
+        class="mb-4"
+      >
+        <v-card-text class="d-flex flex-wrap align-center ga-3 py-3">
+          <span class="text-body-2">
+            1 检查环境 · 2 设计用例 · 3 审核意见 · 4 执行 · 5 下 bug
+          </span>
+          <v-spacer />
+          <v-btn
+            size="small"
+            variant="tonal"
+            :loading="acting === 'qa-ready'"
+            @click="checkQaReady"
+          >
+            检查环境
+          </v-btn>
+          <v-btn size="small" variant="text" :to="`/r/${jira}/qa`">打开测试页</v-btn>
+        </v-card-text>
+        <v-card-text v-if="readySteps.length" class="pt-0">
+          <div v-for="step in readySteps" :key="step.step" class="text-body-2">
+            <strong>{{ step.status }}</strong>
+            {{ step.step }}<span v-if="step.detail"> — {{ step.detail }}</span>
+          </div>
+          <p class="text-caption text-medium-emphasis mt-2 mb-0">
+            三项都通过后再设计。审核通过后才执行；只有失败且确认是产品问题的用例才建票。
+          </p>
+        </v-card-text>
+      </v-card>
+
       <div
         class="d-flex flex-wrap align-center ga-2"
         :class="actionGroups.length > 1 ? 'mb-2' : 'mb-4'"
@@ -321,7 +352,7 @@
               </template>
               <QaFeedbackDetails v-else-if="qaReview?.feedback" :review="qaReview" />
               <template v-else-if="qaReview?.stale">用例在通过之后又改动过，需要重新审核。</template>
-              <template v-else>通过后「执行用例」才会开始执行；改预期等于洗白失败。</template>
+              <template v-else>看完用例再给意见。通过后才能执行；没通过不能建票。要改就打回，再出一版。</template>
             </div>
           </div>
           <div class="d-flex flex-wrap align-center ga-2 flex-shrink-0">
@@ -385,6 +416,7 @@
         :qa-progress="liveProgress"
         :jira="jira"
         :phase="detail.phase"
+        :review-approved="Boolean(qaReview?.approved)"
         :rerunning-case="rerunningCase"
         @implement="(id) => confirmAction('implement', id)"
         @review="(id) => confirmAction('review', id)"
@@ -869,7 +901,9 @@
           <p v-else-if="qaReview?.stale" class="text-body-2 mb-2">
             用例在通过之后又改动过，需要重新审核。
           </p>
-          <p v-else class="text-body-2 mb-2">通过后「执行用例」才会开始执行；改预期等于洗白失败。</p>
+          <p v-else class="text-body-2 mb-2">
+            通过后才能执行。通过之后，只有跑失败并确认是产品问题的用例才能建票。要改就填写意见打回。
+          </p>
           <v-textarea
             v-model="qaReviewFeedback"
             label="打回意见（打回时必填；会交给 qa-design 重做用例）"
@@ -914,6 +948,7 @@
       v-model="caseDialog.open"
       :jira="jira"
       :case-id="caseDialog.caseId"
+      :review-approved="Boolean(qaReview?.approved)"
     />
     <TicketReviewDialog
       v-model="reviewDialog.open"
@@ -957,6 +992,7 @@ import {
   fileCaseBug,
   getReqAccounts,
   getRequirement,
+  assessQaReady,
   refreshReqAccounts,
   runAction,
   submitTestReport,
@@ -1038,6 +1074,7 @@ const qaReviewLabel = computed(() => {
   if (qaReview.value?.status === "rejected") return "已打回";
   return "待审核";
 });
+const readySteps = ref<{ step: string; status: string; detail: string }[]>([]);
 const qaReviewOpen = ref(false);
 const qaReviewFeedback = ref("");
 const changeOpen = ref(false);
@@ -1074,6 +1111,24 @@ function openCaseDetail(caseId: string, fromQuery = false) {
   caseDialog.caseId = caseId;
   caseDialog.open = true;
   caseFromQuery.value = fromQuery;
+}
+
+async function checkQaReady() {
+  acting.value = "qa-ready";
+  error.value = "";
+  try {
+    const res = await assessQaReady(jira.value);
+    readySteps.value = res.steps || [];
+    if (!res.ok) {
+      error.value = "环境、账号或数据库还没通过。先处理检查结果，再设计用例。";
+    } else {
+      snack.notify("环境、账号、数据库都通过", "success");
+    }
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    acting.value = "";
+  }
 }
 
 async function fileCaseBugAsTicket(caseId: string) {
@@ -1465,9 +1520,9 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
       : freeze
       ? `冻结后会创建分支 ${branch} 并切 worktree。确认继续？`
       : designTest
-      ? "将按 qa.yaml 设计 UI 用例并做数据核实；完成后停下等审核。确认继续？"
+      ? "将先检查环境、账号和数据库，通过后设计用例并做数据核实。设计完停下等审核，不会建票。确认继续？"
       : runTest
-      ? "将执行已审核的 UI 用例；失败会拆 B 票。确认继续？"
+      ? "将执行已审核的用例。失败只记结果，不会自动建票；确认是产品问题后再在用例上「下 bug」。确认继续？"
       : resetGrill
       ? "将停止正在等待的对齐任务，丢弃当前待答轮次，并把 GRILL.md 清回空白：下次「对齐」从头生成问题。阶段/票/契约保留。确认继续？"
       : "将把需求重置回 open 阶段：拆掉 worktree 和本地分支，清空票/契约/测试状态。文档与截图保留。确认继续？";

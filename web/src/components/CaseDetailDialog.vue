@@ -259,11 +259,15 @@ import {
 import { useSnack } from "@/composables/snack";
 import ScreenshotViewer from "./ScreenshotViewer.vue";
 
-const props = defineProps<{
-  modelValue: boolean;
-  jira: string;
-  caseId: string;
-}>();
+const props = withDefaults(
+  defineProps<{
+    modelValue: boolean;
+    jira: string;
+    caseId: string;
+    reviewApproved?: boolean;
+  }>(),
+  { reviewApproved: false },
+);
 
 const emit = defineEmits<{
   "update:modelValue": [boolean];
@@ -280,10 +284,9 @@ const viewer = reactive({ open: false, index: 0 });
 const latest = computed(() => data.value?.latest_run || null);
 const pass = computed(() => assertionPassCount(latest.value?.assertions));
 
-// A failed/blocked case can be opened as a bug ticket by hand.
 const canFileBug = computed(() => {
   const state = latest.value?.state || data.value?.live?.state || "";
-  return state === "failed" || state === "blocked";
+  return props.reviewApproved && state === "failed";
 });
 
 async function fileBug() {

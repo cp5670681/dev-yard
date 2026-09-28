@@ -3,7 +3,7 @@
     <h1 class="text-h5 text-sm-h4 mb-1">外部导入</h1>
     <p class="text-medium-emphasis mb-6">
       只给需求文档 + 每仓一个已有代码分支，跳过对齐/规约/拆票/契约，直接落到 freeze
-      worktree 并提测，随后即可设计用例、跑测试、下 bug。
+      worktree 并提测。之后先检查环境，再设计用例、人工审核，通过后执行；确认是产品问题才下 bug。
     </p>
 
     <v-card variant="outlined" max-width="900">

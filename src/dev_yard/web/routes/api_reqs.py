@@ -135,6 +135,21 @@ def build(ctx: AppContext) -> APIRouter:
             raise HTTPException(400, str(e)) from e
         return {"ok": True, "jira": jira, "uploads": attachments.list_names(ctx.root, jira)}
 
+    @router.post("/api/requirements/{jira}/qa/ready")
+    def api_qa_ready(jira: str, env: str | None = None):
+        """Environment, accounts, and database. ok=false lists the failed steps."""
+        from dev_yard.qa_config import TestRejected, load_qa_config
+        from dev_yard.qa_ready import assess_ready
+
+        if paths.is_reserved_req_name(jira):
+            raise HTTPException(404, f"no requirement {jira}")
+        ctx.detail_or_404(jira)
+        try:
+            cfg = load_qa_config(ctx.root, (env or "").strip() or None, jira)
+            return assess_ready(ctx.root, jira, cfg)
+        except TestRejected as e:
+            raise HTTPException(400, str(e)) from e
+
     @router.get("/api/requirements/{jira}/qa")
     def api_qa(jira: str):
         from dev_yard.qa_board import qa_page_payload

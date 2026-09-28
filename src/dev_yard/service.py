@@ -1759,9 +1759,20 @@ def ticket_from_qa_case(root: Path, jira: str, case_id: str) -> dict[str, Any]:
             break
     if row is None:
         raise ValueError(f"no run result for case {case_id}; run the case first")
+    from dev_yard.qa_review import review_payload
+
+    review = review_payload(qa)
+    if not review.get("approved"):
+        raise ValueError(
+            f"用例尚未审核通过，不能用 {case_id} 建票；"
+            "先给出审核意见，通过后再建票"
+        )
     status = str(row.get("status") or "")
-    if status not in {"failed", "blocked"}:
-        raise ValueError(f"case {case_id} is {status or 'unrun'}; only failed cases open bugs")
+    if status != "failed":
+        raise ValueError(
+            f"case {case_id} is {status or 'unrun'}; "
+            "只有审核通过后跑失败的用例才能建票"
+        )
     finding = finding_from_case(f"manual-{case_id}", row)
     if not finding.get("detail"):
         finding["detail"] = f"用例 {case_id} 失败，人工判定为产品缺陷"
@@ -1810,10 +1821,16 @@ def triage_qa_cases(
     from dev_yard.qa_board import list_runs
     from dev_yard.qa_report import classify_defect
 
+    from dev_yard.qa_review import review_payload
+
     qa = paths.qa_dir(root, jira)
     pending = qa_st.triage(root, jira)["pending"]
     if not pending:
-        return {"filed": {}, "skipped": []}
+        return {"filed": {}, "skipped": [], "skip_reasons": {}}
+    if not review_payload(qa).get("approved"):
+        raise ValueError(
+            "用例尚未审核通过，不能建票；先给出审核意见，通过后再建票"
+        )
     rows: dict[str, dict[str, Any]] = {}
     for run in list_runs(qa):
         for c in run.get("cases") or []:
@@ -1822,22 +1839,35 @@ def triage_qa_cases(
                 rows[cid] = c
     filed: dict[str, str] = {}
     skipped: list[str] = []
+    skip_reasons: dict[str, str] = {}
+
+    def _skip(cid: str, reason: str) -> None:
+        skipped.append(cid)
+        skip_reasons[cid] = reason
+
     for cid in pending:
         row = rows.get(cid)
-        if row is None or (product_only and classify_defect(row) != "product"):
-            skipped.append(cid)
+        if row is None:
+            _skip(cid, "无结果")
+            continue
+        status = str(row.get("status") or "")
+        if status != "failed":
+            _skip(cid, f"结果是 {status or 'unrun'}，不是 failed，不能建票")
+            continue
+        if product_only and classify_defect(row) != "product":
+            _skip(cid, "不是 product")
             continue
         try:
             out = ticket_from_qa_case(root, jira, cid)
-        except (ValueError, FileNotFoundError):
-            skipped.append(cid)
+        except (ValueError, FileNotFoundError) as e:
+            _skip(cid, str(e))
             continue
         filed[cid] = out["ticket_id"]
     if filed:
         remaining = [c for c in pending if c not in filed]
         cur = qa_st.triage(root, jira)
         qa_st.record_triage(root, jira, remaining, cur["auto_recycled"], filed=filed)
-    return {"filed": filed, "skipped": skipped}
+    return {"filed": filed, "skipped": skipped, "skip_reasons": skip_reasons}
 
 
 def ticket_delete(root: Path, jira: str, ticket_id: str) -> dict[str, Any]:

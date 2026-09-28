@@ -3,8 +3,28 @@
     <v-breadcrumbs :items="crumbs" density="compact" class="px-0 mb-1" />
     <h1 class="text-h5 text-sm-h4 mb-1">测试</h1>
     <p class="text-medium-emphasis mb-4">
-      用例正文只读。审核通过后才会开始执行；改预期等于洗白失败。
+      先确认环境、账号和数据库，再设计用例。人工看过并给出意见，通过后才执行。只有跑失败、并且确认是产品问题的用例才建票。
     </p>
+    <v-card variant="outlined" class="mb-4">
+      <v-card-text class="d-flex flex-wrap align-center ga-3 py-3">
+        <span class="text-body-2">1 检查环境 · 2 设计用例 · 3 审核意见 · 4 执行 · 5 下 bug</span>
+        <v-spacer />
+        <v-btn
+          size="small"
+          variant="tonal"
+          :loading="acting === 'ready'"
+          @click="checkReady"
+        >
+          检查环境
+        </v-btn>
+      </v-card-text>
+      <v-card-text v-if="readySteps.length" class="pt-0">
+        <div v-for="step in readySteps" :key="step.step" class="text-body-2">
+          <strong>{{ step.status }}</strong>
+          {{ step.step }}<span v-if="step.detail"> — {{ step.detail }}</span>
+        </div>
+      </v-card-text>
+    </v-card>
     <v-alert v-if="error" type="error" class="mb-4" closable @click:close="error = ''">
       {{ error }}
     </v-alert>
@@ -37,7 +57,7 @@
           将自动回流用例缺陷：{{ triageAuto.join("、") }}（下次设计时只改种子，不占人工判定）。
         </p>
       </v-card-text>
-      <v-card-actions v-if="triagePending.length">
+      <v-card-actions v-if="triagePending.length && reviewApproved">
         <v-btn
           size="small"
           color="error"
@@ -59,7 +79,7 @@
     <v-empty-state
       v-if="empty"
       title="还没有用例"
-      text="提测后点「设计用例」，或 `dev-yard req test --design-only`。撞到缺 qa.yaml 就先配测试环境。"
+      text="先点「检查环境」。环境、账号、数据库都通过后，再「设计用例」。"
     >
       <template #actions>
         <v-btn
@@ -588,7 +608,12 @@
       </v-expansion-panels>
     </template>
 
-    <CaseDetailDialog v-model="caseDialog.open" :jira="jira" :case-id="caseDialog.caseId" />
+    <CaseDetailDialog
+      v-model="caseDialog.open"
+      :jira="jira"
+      :case-id="caseDialog.caseId"
+      :review-approved="reviewApproved"
+    />
     <ScreenshotViewer
       v-model="viewer.open"
       v-model:index="viewer.index"
@@ -601,7 +626,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { mdiClipboardCheckOutline, mdiHelpCircleOutline, mdiRefresh, mdiMenuDown } from "@mdi/js";
-import { getQa, getRequirement, runAction, fileCaseBug, triageQaCases } from "@/api/client";
+import { getQa, getRequirement, runAction, fileCaseBug, triageQaCases, assessQaReady } from "@/api/client";
 import {
   jobTail,
   submitRerun,
@@ -629,6 +654,7 @@ const error = ref("");
 const selectedRunId = ref("");
 const newFailuresDismissed = ref(false);
 const acting = ref("");
+const readySteps = ref<{ step: string; status: string; detail: string }[]>([]);
 const feedbackText = ref("");
 const rerunningCase = ref("");
 const caseDialog = reactive({ open: false, caseId: "" });
@@ -716,6 +742,22 @@ const verifyCaseIds = computed(() => verifyDetails.value.map((d) => d.case).join
 const verifyStale = computed(
   () => Boolean(review.value?.verify?.present && review.value?.verify?.stale),
 );
+
+async function checkReady() {
+  acting.value = "ready";
+  error.value = "";
+  try {
+    const res = await assessQaReady(jira.value);
+    readySteps.value = res.steps || [];
+    if (!res.ok) {
+      error.value = "环境、账号或数据库还没通过，先处理下面的失败项再设计。";
+    }
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    acting.value = "";
+  }
+}
 
 async function designCases() {
   acting.value = "design";
@@ -902,9 +944,8 @@ function canRerun(c: { status?: string }) {
 }
 
 function canFileBug(c: { status?: string }) {
-  // 下 bug resolves the newest run server-side, so only offer it on the newest
-  // round — filing from an older round would cite the wrong result.
-  return isNewestRun.value && (c.status === "failed" || c.status === "blocked");
+  // 下 bug 只对已审核、且这一轮结果是 failed 的用例出现。
+  return reviewApproved.value && isNewestRun.value && c.status === "failed";
 }
 
 async function fileBug(caseId: string) {
@@ -931,8 +972,12 @@ async function fileProductBugs() {
   try {
     const out = await triageQaCases(jira.value, true);
     const n = Object.keys(out.filed || {}).length;
+    const reasons = out.skip_reasons || {};
+    const skipped = (out.skipped || [])
+      .map((id) => (reasons[id] ? `${id}（${reasons[id]}）` : id))
+      .join("，");
     snack.notify(
-      n ? `已下 ${n} 张 bug 票` : "没有可自动建票的 product 项（未分类请逐条下 bug）",
+      n ? `已下 ${n} 张 bug 票` : skipped ? `没有建票：${skipped}` : "没有可建的 product 失败项",
       n ? "success" : "info",
     );
     await load();

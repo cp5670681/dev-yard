@@ -1990,6 +1990,30 @@ def _req_test(
             f"{jira} has no cases to approve; run `dev-yard req test {jira}` "
             "first, review the cases, then --approve"
         )
+    # Approve only records a decision. Design, verify, and execution all need
+    # a live environment, usable accounts, and a reachable database first.
+    review_only = bool(
+        approve
+        and not design_only
+        and not run_only
+        and not redesign
+        and not verify_only
+        and not rerun_ids
+        and not feedback_text
+    )
+    if not review_only:
+        from dev_yard.qa_ready import assert_ready
+
+        ready = assert_ready(root, jira, cfg, cases)
+        if ready is not None and on_log is not None:
+            on_log(
+                "前置检查通过："
+                + "，".join(
+                    f"{step.get('step')}={step.get('status')}"
+                    for step in ready.get("steps") or []
+                )
+                + "\n"
+            )
     # M6b: a run that ended in case-defects leaves them recorded in state.yaml.
     # On the next design invocation, recycle them automatically — fix the seed,
     # not the tested point — unless the human asked for something else.

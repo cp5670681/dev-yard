@@ -931,6 +931,32 @@ def req_accounts(
     )
 
 
+@qa_app.command("ready")
+def qa_ready_cmd(
+    jira: str,
+    env: str = typer.Option("", "--env", help="qa.yaml envs.<name>; default active_env"),
+) -> None:
+    """环境、账号、数据库都要通过，才可以设计或执行用例。"""
+    from dev_yard.qa_config import TestRejected, load_qa_config
+    from dev_yard.qa_ready import assess_ready
+
+    root = root_opt()
+    try:
+        cfg = load_qa_config(root, env.strip() or None, jira)
+        result = assess_ready(root, jira, cfg)
+    except (ValueError, FileNotFoundError, TestRejected, GitError) as e:
+        _die(e)
+        return
+    for step in result.get("steps") or []:
+        typer.echo(
+            f"{step.get('status', '?')} {step.get('step')}: {step.get('detail') or ''}".rstrip()
+        )
+    if not result.get("ok"):
+        _die(TestRejected(f"{jira} 前置未通过"))
+        return
+    typer.echo(f"ok env={result.get('env')}")
+
+
 @qa_app.command("check-env")
 def qa_check_env(
     env: str = typer.Option("", "--env", help="qa.yaml envs.<name>; default active_env"),
@@ -1079,7 +1105,11 @@ def req_triage_cmd(
     for cid, tid in filed.items():
         typer.echo(f"  {cid} -> {tid}")
     if skipped:
-        typer.echo(f"  跳过（非 product / 无结果）：{', '.join(skipped)}")
+        reasons = out.get("skip_reasons") or {}
+        detail = ", ".join(
+            f"{cid}（{reasons.get(cid) or '未建票'}）" for cid in skipped
+        )
+        typer.echo(f"  跳过：{detail}")
     typer.echo(f"{jira} 已建 {len(filed)} 张，跳过 {len(skipped)} 条")
 
 

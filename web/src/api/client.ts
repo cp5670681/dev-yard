@@ -126,7 +126,11 @@ export function fileCaseBug(jira: string, caseId: string) {
 }
 
 export function triageQaCases(jira: string, productOnly = true) {
-  return api<{ filed: Record<string, string>; skipped: string[] }>(
+  return api<{
+    filed: Record<string, string>;
+    skipped: string[];
+    skip_reasons?: Record<string, string>;
+  }>(
     `/api/requirements/${encodeURIComponent(jira)}/qa/triage?product_only=${productOnly}`,
     { method: "POST" },
   );
@@ -379,6 +383,16 @@ export function saveQaConfig(payload: QaConfigSave) {
     method: "PUT",
     body: JSON.stringify(payload),
   });
+}
+
+export function assessQaReady(jira: string, env?: string) {
+  const q = env ? `?env=${encodeURIComponent(env)}` : "";
+  return api<{
+    ok: boolean;
+    env: string;
+    jira: string;
+    steps: { step: string; status: string; detail: string }[];
+  }>(`/api/requirements/${encodeURIComponent(jira)}/qa/ready${q}`, { method: "POST" });
 }
 
 export function checkQaEnv(payload: { env?: string; jira?: string }) {

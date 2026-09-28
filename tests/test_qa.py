@@ -4285,6 +4285,9 @@ def test_triage_qa_cases_files_only_product(tmp_path: Path, git_src: Path, monke
         encoding="utf-8",
     )
     qa_st.record_triage(yard, "QA-TR", ["case-01", "case-02"], [])
+    from dev_yard.qa_review import approve_cases
+
+    approve_cases(yard / "reqs" / "QA-TR" / "qa")
     out = triage_qa_cases(yard, "QA-TR", product_only=True)
     assert list(out["filed"]) == ["case-02"]
     assert out["skipped"] == ["case-01"]
@@ -4307,6 +4310,9 @@ def test_triage_qa_cases_all_files_unclassified(tmp_path: Path, git_src: Path, m
         design=_DesignRunner(yard, "QA-TR2"),
     )
     qa_st.record_triage(yard, "QA-TR2", ["case-01", "case-02"], [])
+    from dev_yard.qa_review import approve_cases
+
+    approve_cases(yard / "reqs" / "QA-TR2" / "qa")
     out = triage_qa_cases(yard, "QA-TR2", product_only=False)
     assert sorted(out["filed"]) == ["case-01", "case-02"]
 
@@ -4385,6 +4391,60 @@ def test_ticket_from_qa_case_updates_triage_state(
     assert qa_st.load(yard, "QA-TF")["phase"] == "recycled"
 
 
+def test_ticket_from_qa_case_requires_approval(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard.service import ticket_from_qa_case
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-TF2")
+    run_dir = _seed_run_with_cases(
+        yard,
+        "QA-TF2",
+        case_states={"case-01": "failed", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-TF2"),
+    )
+    (run_dir / "case-01" / "result.yaml").write_text(
+        "case: case-01\ntitle: t1\nrepo: backend\nstatus: failed\nreason: boom\n"
+        "defect_class: product\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="尚未审核通过"):
+        ticket_from_qa_case(yard, "QA-TF2", "case-01")
+    from dev_yard import qa_state as qa_st
+    from dev_yard.service import triage_qa_cases
+
+    qa_st.record_triage(yard, "QA-TF2", ["case-01"], [])
+    with pytest.raises(ValueError, match="尚未审核通过"):
+        triage_qa_cases(yard, "QA-TF2", product_only=True)
+
+
+def test_ticket_from_qa_case_rejects_blocked(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard.qa_review import approve_cases
+    from dev_yard.service import ticket_from_qa_case
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-TF3")
+    run_dir = _seed_run_with_cases(
+        yard,
+        "QA-TF3",
+        case_states={"case-01": "blocked", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-TF3"),
+    )
+    (run_dir / "case-01" / "result.yaml").write_text(
+        "case: case-01\ntitle: t1\nrepo: backend\nstatus: blocked\n"
+        "blocked_class: case-defect\nreason: \"case-defect: 缺数据\"\n",
+        encoding="utf-8",
+    )
+    approve_cases(yard / "reqs" / "QA-TF3" / "qa")
+    with pytest.raises(ValueError, match="才能建票"):
+        ticket_from_qa_case(yard, "QA-TF3", "case-01")
+
+
 def test_triage_qa_cases_preserves_auto_recycled(
     tmp_path: Path, git_src: Path, monkeypatch
 ):
@@ -4407,6 +4467,9 @@ def test_triage_qa_cases_preserves_auto_recycled(
         encoding="utf-8",
     )
     qa_st.record_triage(yard, "QA-TP", ["case-01"], ["case-02"])
+    from dev_yard.qa_review import approve_cases
+
+    approve_cases(yard / "reqs" / "QA-TP" / "qa")
     out = triage_qa_cases(yard, "QA-TP", product_only=True)
     assert list(out["filed"]) == ["case-01"]
     t = qa_st.triage(yard, "QA-TP")

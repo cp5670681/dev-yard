@@ -144,7 +144,8 @@ dev-yard req accounts PROJ-101 --env test   # 本需求要多账号时先配：�
 dev-yard req accounts PROJ-101 --auto        # 权限会漂移：按 qa/accounts-discover.sql（username | account_key）一键发现并改绑本需求账号，复用全局默认账号密码，不动全局账号
 dev-yard req accounts PROJ-101 --refresh     # 清本需求账号的缓存登录态强制重登；--auto --refresh 发现后一并刷新
 # 需求页「测试账号」卡片也有「发现并填充 / 刷新登录态」按钮（同一个接口）
-dev-yard req test PROJ-101 --design-only   # 只设计用例（qa-design + 数据核实），停下等人工审核
+dev-yard qa ready PROJ-101               # 环境、账号、数据库都要通过，才可以设计或执行
+dev-yard req test PROJ-101 --design-only   # 只设计用例（qa-design + 数据核实），停下等人工审核，不建票
 dev-yard req test PROJ-101          # 执行已审核用例，失败只记报告，人工在失败用例上「下 bug」，通过则 phase=done
 dev-yard req test PROJ-101 --env test   # 指定环境；缺省用 qa.yaml 的 active_env
 dev-yard req test PROJ-101 --approve    # 人工审核通过当前用例（只标记，不执行）
@@ -318,7 +319,8 @@ dev-yard web --host 0.0.0.0 --allow-remote
 | `dev-yard req triage <key>` | 给待判定失败用例批量下 bug | `--product/--all` |
 | `dev-yard req change <key>` | 轻量变更：追加变更记录 + 更新 SPEC + 建一张轻量票 | `--note`, `--repo`, `--grill`, `--run`, `--print` |
 | `dev-yard req changes <key>` | 打印该需求的变更记录 | |
-| `dev-yard qa check-env` | 解析 exec 配方、ping、hello 回显 | `--env`, `--jira` |
+| `dev-yard qa ready <key>` | 设计/执行前的前置：环境、账号、数据库都要通过 | `--env` |
+| `dev-yard qa check-env` | 解析 exec 配方、ping、hello 回显（数据库失败只警告） | `--env`, `--jira` |
 | `dev-yard qa status <key>` | 读 `qa/state.yaml` + 证据推导当前态、待判定失败项、隔离模型池与下一步 | |
 | `dev-yard req accept-test <key>` | 录入测试报告 | `--verdict`, `--body-file` |
 | `dev-yard grill <key>` | 需求答辩与对齐 | `--print`, `--dry-run` |

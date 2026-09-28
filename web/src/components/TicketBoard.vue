@@ -245,6 +245,7 @@
                       class="ghx-card-gap"
                       :test-case="c"
                       :jira="jira"
+                      :review-approved="reviewApproved"
                       :rerunning="rerunningCase === c.id"
                       :disabled="rerunningCase !== ''"
                       @preview-screenshot="$emit('preview-screenshot', $event)"
@@ -281,6 +282,7 @@
                 class="mb-3"
                 :test-case="c"
                 :jira="jira"
+                :review-approved="reviewApproved"
                 show-state
                 :rerunning="rerunningCase === c.id"
                 :disabled="rerunningCase !== ''"
@@ -296,7 +298,7 @@
           </template>
           <div v-else class="empty-section-placeholder text-center py-6 text-medium-emphasis">
             <v-icon :icon="mdiFlaskOutline" size="28" class="mb-1 text-disabled" />
-            <div class="text-caption">尚未生成测试用例。提测后点「设计用例」生成，审核后再「执行用例」。</div>
+            <div class="text-caption">还没有用例。先「检查环境」，通过后「设计用例」，审核通过再「执行用例」。</div>
           </div>
         </div>
       </v-expand-transition>
@@ -432,7 +434,7 @@
           </template>
           <div v-else class="empty-section-placeholder text-center py-6 text-medium-emphasis">
             <v-icon :icon="mdiBugCheckOutline" size="28" class="mb-1 text-success" />
-            <div class="text-caption">当前没有发现 Bug 或缺陷。在失败用例上点「下 bug」即可人工建票。</div>
+            <div class="text-caption">还没有 bug 票。用例审核通过并执行失败后，在失败用例上「下 bug」才会建票。</div>
           </div>
         </div>
       </v-expand-transition>
@@ -469,12 +471,14 @@ const props = withDefaults(
     qaProgress?: QaProgress | null;
     jira: string;
     phase?: string;
+    reviewApproved?: boolean;
     rerunningCase?: string;
   }>(),
   {
     qaCases: () => [],
     qaProgress: null,
     phase: "open",
+    reviewApproved: false,
     rerunningCase: "",
   }
 );
