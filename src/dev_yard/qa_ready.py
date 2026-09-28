@@ -81,22 +81,43 @@ def _harden_db(cfg: QaConfig, steps: list[dict[str, str]]) -> list[dict[str, str
                 if not item.get("detail"):
                     item["detail"] = "数据库连不上"
         out.append(item)
-    if not cfg.env.db_url:
+    catalogs = list(getattr(cfg.env, "db_catalogs", ()) or ())
+    if not catalogs and not cfg.env.db_url:
         out.append(
             {
                 "step": "db",
                 "status": "fail",
-                "detail": "未配置 db.url；造数和断言都走这条连接",
+                "detail": "未配置 db.url / catalogs；造数和断言都走这些连接",
             }
         )
-    elif not saw_db:
+        return out
+    if not saw_db:
         out.append(
             {
                 "step": "db",
                 "status": "fail",
-                "detail": "没有完成数据库检查（需要本机 usql，并对 db.url 执行 select 1）",
+                "detail": "没有完成数据库检查（需要本机 usql，并对每个 catalog 执行 select 1）",
             }
         )
+        return out
+    names = [c.name for c in catalogs] if catalogs else [cfg.env.db_default or "default"]
+    probed = {
+        str(s.get("catalog") or "")
+        for s in out
+        if s.get("step") == "db"
+    }
+    if probed == {""} or not catalogs:
+        return out
+    for name in names:
+        if name not in probed:
+            out.append(
+                {
+                    "step": "db",
+                    "catalog": name,
+                    "status": "fail",
+                    "detail": f"{name}: 没有完成数据库检查（需要本机 usql，并对 db.url 执行 select 1）",
+                }
+            )
     return out
 
 

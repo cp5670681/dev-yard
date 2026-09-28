@@ -440,7 +440,10 @@ class LocalExecutor(ScriptExecutor):
                 f"cannot run {script.name}: freeze worktree missing for this case",
                 error_class=ExecErrorClass.CONFIG,
             )
-        if not self.env.db_url:
+        extra_env: dict[str, str] = {}
+        if env_extra:
+            extra_env.update({k: v for k, v in env_extra.items() if k == "DATABASE_URL"})
+        if not extra_env.get("DATABASE_URL") and not self.env.db_url:
             raise TestRejected(
                 "script.runner needs qa.yaml db.url so it talks to the same DB as the browser, "
                 "not the worktree's local database.yml",
@@ -454,8 +457,7 @@ class LocalExecutor(ScriptExecutor):
             cmd = _remote_runner(self.spec, script)
             cwd = wt
             stdin = _script_bytes(script)
-        extra_env: dict[str, str] = {}
-        if self.env.db_url:
+        if "DATABASE_URL" not in extra_env and self.env.db_url:
             extra_env["DATABASE_URL"] = self.env.db_url
         return _run_proc(
             cmd,
@@ -1068,34 +1070,70 @@ def check_env(
                 error_class=result.error_class or ExecErrorClass.SCRIPT,
             )
         steps.append({"step": "hello", "status": "ok", "detail": HELLO})
-        if cfg.env.db_url:
-            usql = shutil.which("usql")
-            if usql:
-                try:
-                    r = subprocess.run(
-                        [usql, cfg.env.db_url, "-c", "select 1"],
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
-                    )
-                    if r.returncode != 0:
-                        steps.append(
-                            {
-                                "step": "db",
-                                "status": "warn",
-                                "detail": "db.url 从本机不通；.sql 造数需宿主能直连该库",
-                            }
-                        )
-                    else:
-                        steps.append({"step": "db", "status": "ok", "detail": "usql select 1"})
-                except (subprocess.TimeoutExpired, OSError) as e:
+        catalogs = list(getattr(cfg.env, "db_catalogs", ()) or ())
+        if not catalogs and cfg.env.db_url:
+            from dev_yard.qa_config import QaDbCatalog
+
+            catalogs = [QaDbCatalog(name=cfg.env.db_default or "default", url=cfg.env.db_url)]
+        usql = shutil.which("usql")
+        for cat in catalogs:
+            if not cat.url:
+                steps.append(
+                    {
+                        "step": "db",
+                        "catalog": cat.name,
+                        "status": "warn",
+                        "detail": f"{cat.name}: 未配置 url；.sql 造数需宿主能直连该库",
+                    }
+                )
+                continue
+            if not usql:
+                steps.append(
+                    {
+                        "step": "db",
+                        "catalog": cat.name,
+                        "status": "warn",
+                        "detail": f"{cat.name}: 没有本机 usql，无法探测",
+                    }
+                )
+                continue
+            try:
+                r = subprocess.run(
+                    [usql, cat.url, "-c", "select 1"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if r.returncode != 0:
                     steps.append(
                         {
                             "step": "db",
+                            "catalog": cat.name,
                             "status": "warn",
-                            "detail": f"db.url 从本机超时/不通（{e}）；.sql 造数需宿主能直连该库",
+                            "detail": f"{cat.name}: db.url 从本机不通；.sql 造数需宿主能直连该库",
                         }
                     )
+                else:
+                    steps.append(
+                        {
+                            "step": "db",
+                            "catalog": cat.name,
+                            "status": "ok",
+                            "detail": f"{cat.name}: usql select 1",
+                        }
+                    )
+            except (subprocess.TimeoutExpired, OSError) as e:
+                steps.append(
+                    {
+                        "step": "db",
+                        "catalog": cat.name,
+                        "status": "warn",
+                        "detail": (
+                            f"{cat.name}: db.url 从本机超时/不通（{e}）；"
+                            ".sql 造数需宿主能直连该库"
+                        ),
+                    }
+                )
         return {
             "ok": True,
             "env": cfg.active_env,

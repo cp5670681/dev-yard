@@ -398,6 +398,7 @@ def test_save_keeps_a_cleared_managed_key_cleared(tmp_path: Path):
     )
     payload = qa_payload(root)
     payload["envs"]["local"]["db"]["url"] = ""
+    payload["envs"]["local"]["db"]["catalogs"] = []
     save_qa_config(root, payload)
     data = yaml.safe_load((root / "qa.yaml").read_text(encoding="utf-8"))
     assert "db" not in data["envs"]["local"]
@@ -557,6 +558,85 @@ def test_payload_raises_on_corrupt_yaml(tmp_path: Path):
     (root / "qa.yaml").write_text("envs: [unclosed\n", encoding="utf-8")
     with pytest.raises(QaConfigUnreadable, match="qa.yaml"):
         qa_payload(root)
+
+
+def test_load_named_catalogs_and_default(tmp_path: Path):
+    root = _yard(tmp_path)
+    _configure_pi(root)
+    (root / "qa.yaml").write_text(
+        "workers:\n  - {id: a, provider: rcc, model: grok-4}\n"
+        "envs:\n  local:\n    base_url: http://127.0.0.1:8080\n"
+        "    db:\n      default: research\n"
+        "      catalogs:\n"
+        "        research: {url: postgres://r/db, verify_url: postgres://ro/db}\n"
+        "        ops: {url: postgres://o/db}\n",
+        encoding="utf-8",
+    )
+    cfg = load_qa_config(root)
+    assert cfg.env.db_default == "research"
+    assert cfg.env.db_url == "postgres://r/db"
+    assert cfg.env.verify_db_url == "postgres://ro/db"
+    assert [c.name for c in cfg.env.db_catalogs] == ["research", "ops"]
+    assert cfg.env.catalog("ops").url == "postgres://o/db"
+    from dev_yard.qa_config import connect_url
+
+    assert connect_url(cfg, "ops") == "postgres://o/db"
+    assert connect_url(cfg, None, verify=True) == "postgres://ro/db"
+
+
+def test_legacy_url_is_the_default_catalog(tmp_path: Path):
+    root = _yard(tmp_path)
+    save_qa_config(root, _payload(root))
+    cfg = load_qa_config(root)
+    assert cfg.env.db_default == "default"
+    assert len(cfg.env.db_catalogs) == 1
+    assert cfg.env.catalog(None).url == "postgres://localhost:5432/app"
+
+
+def test_save_catalogs_roundtrip(tmp_path: Path):
+    root = _yard(tmp_path)
+    payload = _payload(root)
+    payload["envs"]["local"]["db"] = {
+        "default": "research",
+        "catalogs": [
+            {"name": "research", "url": "postgres://r/db", "verify_url": ""},
+            {"name": "ops", "url": "postgres://o/db", "verify_url": ""},
+        ],
+        "exec": "host",
+    }
+    save_qa_config(root, payload)
+    data = yaml.safe_load((root / "qa.yaml").read_text(encoding="utf-8"))
+    db = data["envs"]["local"]["db"]
+    assert db["default"] == "research"
+    assert db["catalogs"]["research"]["url"] == "postgres://r/db"
+    assert "url" not in db
+    cfg = load_qa_config(root)
+    assert cfg.env.db_url == "postgres://r/db"
+    assert cfg.env.catalog("ops").url == "postgres://o/db"
+
+
+def test_save_masked_payload_keeps_catalog_urls(tmp_path: Path):
+    root = _yard(tmp_path)
+    payload = _payload(root)
+    payload["envs"]["local"]["db"] = {
+        "default": "research",
+        "catalogs": [
+            {"name": "research", "url": "postgres://r/db", "verify_url": "postgres://ro/db"},
+            {"name": "ops", "url": "postgres://o/db", "verify_url": ""},
+        ],
+        "exec": "host",
+    }
+    save_qa_config(root, payload)
+    again = qa_payload(root)
+    db = again["envs"]["local"]["db"]
+    assert db["url"] == MASK
+    assert db["catalogs"][0]["url"] == MASK
+    again["envs"]["local"]["notes"] = ["改过"]
+    save_qa_config(root, again)
+    cfg = load_qa_config(root)
+    assert cfg.env.db_url == "postgres://r/db"
+    assert cfg.env.catalog("ops").url == "postgres://o/db"
+    assert cfg.env.verify_db_url == "postgres://ro/db"
 
 
 def test_save_refuses_to_clobber_a_corrupt_file(tmp_path: Path):

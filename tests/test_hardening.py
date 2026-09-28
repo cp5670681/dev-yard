@@ -116,7 +116,7 @@ def test_sql_script_always_runs_on_host(tmp_path: Path, monkeypatch):
 
     seen: dict[str, str] = {}
 
-    def fake_sql(cfg, script, on_log):
+    def fake_sql(cfg, script, on_log, catalog=None):
         seen["script"] = script.name
         return "ok"
 
@@ -127,6 +127,41 @@ def test_sql_script_always_runs_on_host(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("dev_yard.script_exec.resolve_executor", no_executor)
     assert qa_exec.run_case_script(tmp_path, "AB-1", cfg, job, "setup") == "ok"
     assert seen["script"] == "setup.sql"
+
+
+def test_runner_script_fails_closed_on_unknown_catalog(tmp_path: Path, monkeypatch):
+    from dev_yard import qa_exec
+    from dev_yard.qa_config import QaBrowser, QaConfig, QaDbCatalog, QaEnv
+
+    case_dir = tmp_path / "cases"
+    case_dir.mkdir()
+    (case_dir / "setup.rb").write_text("puts 1\n", encoding="utf-8")
+    job = CaseJob(
+        id="c1",
+        title="t",
+        repo="be",
+        setup="setup.rb",
+        db="ops",
+        path=str(case_dir / "case-c1.md"),
+    )
+    cfg = QaConfig(
+        active_env="test",
+        env=QaEnv(
+            name="test",
+            base_url="http://x",
+            db_default="research",
+            db_catalogs=(QaDbCatalog(name="research", url="postgres://r/db"),),
+        ),
+        browser=QaBrowser(),
+        workers=(),
+    )
+
+    def no_executor(*args, **kwargs):
+        raise AssertionError("must not run a runner against the default catalog")
+
+    monkeypatch.setattr("dev_yard.script_exec.resolve_executor", no_executor)
+    with pytest.raises(TestRejected, match="catalog"):
+        qa_exec.run_case_script(tmp_path, "AB-1", cfg, job, "setup")
 
 
 def test_shell_substitution_is_quoted(monkeypatch):

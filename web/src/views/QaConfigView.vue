@@ -187,16 +187,67 @@
                   hint="可留空；留空则造数只允许 .sql 脚本。"
                   class="mb-4"
                 />
-                <v-text-field
-                  v-model="currentEnv.db.url"
-                  label="数据库连接串 db.url"
+                <p class="text-body-2 mb-2">数据库 catalogs</p>
+                <p class="text-caption text-medium-emphasis mb-3">
+                  连接挂在环境上，不挂在仓库上。多个仓可共用一个 catalog；一个仓可声明多个。用例
+                  <code>data.db</code> 点名；不写则用默认。
+                </p>
+                <v-select
+                  v-if="(currentEnv.db.catalogs || []).length"
+                  v-model="currentEnv.db.default"
+                  :items="(currentEnv.db.catalogs || []).map((c) => c.name).filter(Boolean)"
+                  label="默认 catalog"
                   variant="outlined"
                   density="comfortable"
-                  placeholder="postgres://user:pass@host:5432/db"
-                  :prepend-inner-icon="mdiDatabaseOutline"
-                  persistent-hint
-                  hint="可留空；留空则禁止用 usql 做 DB 断言。密码含特殊字符需 URL 编码。"
+                  class="mb-3"
+                  hide-details
                 />
+                <div
+                  v-for="(cat, i) in currentEnv.db.catalogs || []"
+                  :key="i"
+                  class="d-flex flex-column ga-2 mb-4 pa-3"
+                  style="border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity)); border-radius: 8px"
+                >
+                  <div class="d-flex ga-2 align-center">
+                    <v-text-field
+                      v-model="cat.name"
+                      label="名字"
+                      variant="outlined"
+                      density="comfortable"
+                      hide-details
+                      placeholder="research"
+                    />
+                    <v-btn
+                      :icon="mdiDeleteOutline"
+                      variant="text"
+                      size="small"
+                      color="error"
+                      title="删除"
+                      @click="removeCatalog(i)"
+                    />
+                  </div>
+                  <v-text-field
+                    v-model="cat.url"
+                    label="url"
+                    variant="outlined"
+                    density="comfortable"
+                    placeholder="postgres://user:pass@host:5432/db"
+                    :prepend-inner-icon="mdiDatabaseOutline"
+                    persistent-hint
+                    hint="写权限 DSN；密码含特殊字符需 URL 编码。"
+                  />
+                  <v-text-field
+                    v-model="cat.verify_url"
+                    label="verify_url（可选，只读核实）"
+                    variant="outlined"
+                    density="comfortable"
+                    hide-details
+                    placeholder="留空则核实也走 url"
+                  />
+                </div>
+                <v-btn variant="tonal" size="small" :prepend-icon="mdiPlus" @click="addCatalog">
+                  添加 catalog
+                </v-btn>
               </v-card-text>
             </v-window-item>
 
@@ -859,11 +910,27 @@ function blankExec(): QaExecCfg {
   };
 }
 
+function addCatalog() {
+  if (!currentEnv.value) return;
+  if (!currentEnv.value.db.catalogs) currentEnv.value.db.catalogs = [];
+  currentEnv.value.db.catalogs.push({ name: "", url: "", verify_url: "" });
+  if (!currentEnv.value.db.default) currentEnv.value.db.default = "";
+}
+
+function removeCatalog(i: number) {
+  const env = currentEnv.value;
+  if (!env?.db.catalogs) return;
+  env.db.catalogs.splice(i, 1);
+  if (env.db.default && !env.db.catalogs.some((c) => c.name === env.db.default)) {
+    env.db.default = env.db.catalogs[0]?.name || "default";
+  }
+}
+
 function blankEnv(): QaEnvCfg {
   return {
     base_url: "",
     auth: { default: "default", accounts: {} },
-    db: { url: "", exec: "host" },
+    db: { url: "", default: "default", catalogs: [], exec: "host" },
     script: { runner: "" },
     notes: [],
     exec: blankExec(),
@@ -1148,7 +1215,19 @@ async function save() {
       envs[name] = {
         base_url: env.base_url,
         auth: { default: env.auth.default, accounts: buildAccounts(draft.accounts) },
-        db: { ...env.db, exec: env.exec?.db_exec || env.db.exec || "host" },
+        db: (() => {
+          const catalogs = (env.db.catalogs || []).filter((c) => c.name.trim());
+          const def = env.db.default || catalogs[0]?.name || "default";
+          const chosen = catalogs.find((c) => c.name === def) || catalogs[0];
+          return {
+            ...env.db,
+            catalogs,
+            default: def,
+            url: chosen?.url || env.db.url || "",
+            verify_url: chosen?.verify_url || env.db.verify_url || "",
+            exec: env.exec?.db_exec || env.db.exec || "host",
+          };
+        })(),
         script: { ...env.script },
         exec: { ...(env.exec || blankExec()) },
         notes: draft.notes

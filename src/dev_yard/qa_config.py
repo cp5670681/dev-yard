@@ -43,7 +43,10 @@ _MANAGED_ACCOUNT_KEYS = frozenset(
     {"username", "password", "state_file", "username_env", "password_env"}
 )
 _MANAGED_AUTH_KEYS = frozenset({"default", "accounts"})
-_MANAGED_DB_KEYS = frozenset({"url", "url_env", "exec"})
+_MANAGED_DB_KEYS = frozenset(
+    {"url", "url_env", "exec", "verify_url", "default", "catalogs"}
+)
+_CATALOG_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 _MANAGED_SCRIPT_KEYS = frozenset({"runner"})
 
 # Secrets are stored plaintext in qa.yaml (gitignored). The web form never sees
@@ -84,6 +87,20 @@ class QaAccount:
 
 
 @dataclass(frozen=True)
+class QaDbCatalog:
+    """One named database connection inside an env.
+
+    Connections live on the env, not on a repo. Several repos may share a
+    catalog; one repo may name several. `url` is the write DSN (setup/cleanup);
+    `verify_url` is an optional read-only DSN for design-time verify.sql.
+    """
+
+    name: str
+    url: str = ""
+    verify_url: str = ""
+
+
+@dataclass(frozen=True)
 class QaEnv:
     name: str
     base_url: str
@@ -93,10 +110,45 @@ class QaEnv:
     # Optional restricted (read-only) DSN the design-time `verify.sql` runs on,
     # so verifying data does not need the write credentials `db.url` carries.
     verify_db_url: str = ""
+    db_default: str = "default"
+    db_catalogs: tuple[QaDbCatalog, ...] = ()
     script_runner: str = ""
     notes: tuple[str, ...] = ()
     db_exec: str = "host"
     exec_cfg: Any = None
+
+    def __post_init__(self) -> None:
+        if self.db_catalogs:
+            default = self.db_default or self.db_catalogs[0].name
+            found = next(
+                (c for c in self.db_catalogs if c.name == default),
+                self.db_catalogs[0],
+            )
+            object.__setattr__(self, "db_default", default)
+            if not self.db_url:
+                object.__setattr__(self, "db_url", found.url)
+            if not self.verify_db_url:
+                object.__setattr__(self, "verify_db_url", found.verify_url)
+            return
+        if self.db_url or self.verify_db_url:
+            name = self.db_default or "default"
+            object.__setattr__(self, "db_default", name)
+            object.__setattr__(
+                self,
+                "db_catalogs",
+                (
+                    QaDbCatalog(
+                        name=name, url=self.db_url, verify_url=self.verify_db_url
+                    ),
+                ),
+            )
+
+    def catalog(self, name: str | None = None) -> QaDbCatalog | None:
+        key = (name or "").strip() or self.db_default
+        for item in self.db_catalogs:
+            if item.name == key:
+                return item
+        return None
 
 
 @dataclass(frozen=True)
@@ -268,6 +320,110 @@ def _parse_auth(raw: Any) -> tuple[str, dict[str, QaAccount]]:
     return default, _parse_accounts(auth.get("accounts"))
 
 
+def _catalog_name(value: str, field: str) -> str:
+    name = _blank(value)
+    if not name or not _CATALOG_NAME.match(name):
+        raise TestRejected(
+            f"{field} must be a catalog name (start with a letter; letters, "
+            "digits, _-)"
+        )
+    return name
+
+
+def _parse_db(env_name: str, db: dict[str, Any]) -> tuple[str, tuple[QaDbCatalog, ...]]:
+    """Named catalogs plus the default name. Legacy `url` becomes that catalog."""
+    field = f"qa.yaml envs.{env_name}.db"
+    catalogs_raw = db.get("catalogs")
+    items: list[QaDbCatalog] = []
+    if catalogs_raw is None:
+        catalogs_raw = {}
+    if catalogs_raw and not isinstance(catalogs_raw, dict):
+        raise TestRejected(f"{field}.catalogs must be a mapping")
+    if isinstance(catalogs_raw, dict):
+        for cname, crow in catalogs_raw.items():
+            key = _catalog_name(str(cname), f"{field}.catalogs")
+            if not isinstance(crow, dict):
+                raise TestRejected(f"{field}.catalogs.{key} must be a mapping")
+            items.append(
+                QaDbCatalog(
+                    name=key,
+                    url=_blank(crow.get("url")),
+                    verify_url=_blank(crow.get("verify_url")),
+                )
+            )
+    default_name = _blank(db.get("default"))
+    legacy_url = _blank(db.get("url"))
+    legacy_verify = _blank(db.get("verify_url"))
+    if not items and (legacy_url or legacy_verify):
+        default_name = default_name or "default"
+        items = [
+            QaDbCatalog(
+                name=default_name, url=legacy_url, verify_url=legacy_verify
+            )
+        ]
+    elif items:
+        if default_name:
+            default_name = _catalog_name(default_name, f"{field}.default")
+        else:
+            default_name = items[0].name
+        names = {c.name for c in items}
+        if default_name not in names:
+            if legacy_url or legacy_verify:
+                items.insert(
+                    0,
+                    QaDbCatalog(
+                        name=default_name,
+                        url=legacy_url,
+                        verify_url=legacy_verify,
+                    ),
+                )
+            else:
+                raise TestRejected(
+                    f"{field}.default {default_name!r} is not a catalog"
+                )
+        elif legacy_url or legacy_verify:
+            filled: list[QaDbCatalog] = []
+            for cat in items:
+                if cat.name == default_name:
+                    filled.append(
+                        QaDbCatalog(
+                            name=cat.name,
+                            url=cat.url or legacy_url,
+                            verify_url=cat.verify_url or legacy_verify,
+                        )
+                    )
+                else:
+                    filled.append(cat)
+            items = filled
+    return default_name or "default", tuple(items)
+
+
+def connect_url(
+    cfg: QaConfig,
+    catalog: str | None = None,
+    *,
+    verify: bool = False,
+    what: str = "db.url",
+) -> str:
+    """DSN for a catalog. `verify=True` prefers that catalog's verify_url."""
+    env = cfg.env
+    name = (catalog or "").strip()
+    cat = env.catalog(name or None) if hasattr(env, "catalog") else None
+    if name and cat is None:
+        raise TestRejected(f"qa.yaml has no catalog {name!r}")
+    if cat is not None:
+        url = cat.verify_url if verify and cat.verify_url else cat.url
+        if not url:
+            raise TestRejected(f"qa.yaml has no {what} (catalog {cat.name})")
+        return url
+    url = env.verify_db_url if verify and getattr(env, "verify_db_url", "") else env.db_url
+    if verify and not url:
+        url = env.db_url
+    if not url:
+        raise TestRejected(f"qa.yaml has no {what}")
+    return url
+
+
 def _parse_env(name: str, raw: Any) -> QaEnv:
     if not isinstance(raw, dict):
         raise TestRejected(f"qa.yaml envs.{name} must be a mapping")
@@ -286,13 +442,17 @@ def _parse_env(name: str, raw: Any) -> QaEnv:
 
     exec_cfg = parse_exec(name, raw, script_runner=script_runner)
     db_exec = _blank(db.get("exec")) or "host"
+    db_default, catalogs = _parse_db(name, db)
+    found = next((c for c in catalogs if c.name == db_default), None)
     return QaEnv(
         name=name,
         base_url=base_url,
         auth_default=default,
         accounts=filled,
-        db_url=_blank(db.get("url")),
-        verify_db_url=_blank(db.get("verify_url")),
+        db_url=found.url if found else "",
+        verify_db_url=found.verify_url if found else "",
+        db_default=db_default,
+        db_catalogs=catalogs,
         script_runner=script_runner,
         notes=tuple(str(n) for n in notes_raw),
         db_exec=db_exec,
@@ -656,6 +816,93 @@ def _raw_mapping(value: Any, field: str) -> dict[str, Any]:
     return value
 
 
+def _unmask_secret(value: str, previous: str) -> str:
+    text = _blank(value)
+    if text == MASK:
+        return _blank(previous)
+    return text
+
+
+def _write_db_catalogs(
+    db_out: dict[str, Any],
+    db: dict[str, Any],
+    prev_db: dict[str, Any],
+    field: str,
+) -> None:
+    prev_cats = prev_db.get("catalogs") if isinstance(prev_db.get("catalogs"), dict) else {}
+    catalogs_in = db.get("catalogs")
+    parsed: list[tuple[str, str, str]] = []
+    if isinstance(catalogs_in, list):
+        for i, item in enumerate(catalogs_in):
+            row = _raw_mapping(item, f"{field}.catalogs[{i}]")
+            name = _blank(row.get("name"))
+            if not name:
+                continue
+            prev_row = prev_cats.get(name) if isinstance(prev_cats.get(name), dict) else {}
+            if not prev_row and name == (_blank(prev_db.get("default")) or "default"):
+                prev_row = {
+                    "url": prev_db.get("url"),
+                    "verify_url": prev_db.get("verify_url"),
+                }
+            url = _unmask_secret(row.get("url") or "", _blank(prev_row.get("url")))
+            verify = _unmask_secret(
+                row.get("verify_url") or "", _blank(prev_row.get("verify_url"))
+            )
+            parsed.append((name, url, verify))
+    default = _blank(db.get("default"))
+    prev_default = _blank(prev_db.get("default")) or "default"
+    prev_default_url = _blank(prev_db.get("url"))
+    prev_default_verify = _blank(prev_db.get("verify_url"))
+    prev_default_row = prev_cats.get(prev_default)
+    if isinstance(prev_default_row, dict):
+        prev_default_url = _blank(prev_default_row.get("url")) or prev_default_url
+        prev_default_verify = (
+            _blank(prev_default_row.get("verify_url")) or prev_default_verify
+        )
+    # Compact `url` is MASK on the form; applying it would wipe catalog DSNs.
+    if "url" in db:
+        top = _unmask_secret(db.get("url") or "", prev_default_url)
+        if parsed:
+            if top:
+                if not default:
+                    default = parsed[0][0]
+                parsed = [
+                    (name, top, verify) if name == default else (name, url, verify)
+                    for name, url, verify in parsed
+                ]
+        elif top:
+            default = default or "default"
+            parsed = [
+                (
+                    default,
+                    top,
+                    _unmask_secret(db.get("verify_url") or "", prev_default_verify),
+                )
+            ]
+    if not parsed:
+        return
+    if not default:
+        default = parsed[0][0]
+    compact = len(parsed) == 1 and parsed[0][0] == "default"
+    if compact:
+        name, url, verify = parsed[0]
+        if url:
+            db_out["url"] = url
+        if verify:
+            db_out["verify_url"] = verify
+        return
+    catalogs_out: dict[str, Any] = {}
+    for name, url, verify in parsed:
+        entry: dict[str, str] = {}
+        if url:
+            entry["url"] = url
+        if verify:
+            entry["verify_url"] = verify
+        catalogs_out[name] = entry
+    db_out["default"] = default
+    db_out["catalogs"] = catalogs_out
+
+
 def _env_to_raw(raw: Any, field: str, previous: Any = None) -> dict[str, Any]:
     """Form payload for one env → the YAML mapping that env is written as.
 
@@ -699,17 +946,13 @@ def _env_to_raw(raw: Any, field: str, previous: Any = None) -> dict[str, Any]:
     db = _raw_mapping(env.get("db"), f"{field}.db")
     prev_db = prev.get("db") if isinstance(prev.get("db"), dict) else {}
     db_out = {k: v for k, v in prev_db.items() if k not in _MANAGED_DB_KEYS}
-    db_url = _blank(db.get("url"))
-    if db_url == MASK:
-        db_url = _blank(prev_db.get("url"))
-    if db_url:
-        db_out["url"] = db_url
     db_exec = _blank(db.get("exec"))
     exec_form = env.get("exec") if isinstance(env.get("exec"), dict) else {}
     if not db_exec:
         db_exec = _blank(exec_form.get("db_exec"))
     if db_exec and db_exec != "host":
         db_out["exec"] = db_exec
+    _write_db_catalogs(db_out, db, prev_db, f"{field}.db")
     if db_out:
         out["db"] = db_out
 
@@ -855,16 +1098,50 @@ def _env_payload(raw: Any) -> dict[str, Any]:
             "default": _blank(auth.get("default")) or "default",
             "accounts": accounts,
         },
-        "db": {
-            "url": MASK if _blank(db.get("url")) else "",
-            "exec": _blank(db.get("exec")) or "host",
-        },
+        "db": _db_payload(db),
         "script": {"runner": _blank(script.get("runner"))},
         "notes": [str(n) for n in notes],
         "exec": exec_payload(env),
     }
     payload["exec"]["db_exec"] = payload["db"]["exec"]
     return payload
+
+
+def _db_payload(db: dict[str, Any]) -> dict[str, Any]:
+    catalogs_raw = db.get("catalogs") if isinstance(db.get("catalogs"), dict) else {}
+    catalogs: list[dict[str, str]] = []
+    if catalogs_raw:
+        for name, item in catalogs_raw.items():
+            row = item if isinstance(item, dict) else {}
+            catalogs.append(
+                {
+                    "name": str(name),
+                    "url": MASK if _blank(row.get("url")) else "",
+                    "verify_url": MASK if _blank(row.get("verify_url")) else "",
+                }
+            )
+    elif _blank(db.get("url")) or _blank(db.get("verify_url")):
+        catalogs.append(
+            {
+                "name": _blank(db.get("default")) or "default",
+                "url": MASK if _blank(db.get("url")) else "",
+                "verify_url": MASK if _blank(db.get("verify_url")) else "",
+            }
+        )
+    default = _blank(db.get("default"))
+    if not default and catalogs:
+        default = catalogs[0]["name"]
+    chosen = next((c for c in catalogs if c["name"] == default), None)
+    if chosen is None and catalogs:
+        chosen = catalogs[0]
+        default = chosen["name"]
+    return {
+        "url": chosen["url"] if chosen else "",
+        "verify_url": chosen["verify_url"] if chosen else "",
+        "default": default or "default",
+        "catalogs": catalogs,
+        "exec": _blank(db.get("exec")) or "host",
+    }
 
 
 def _browser_payload(raw: Any) -> dict[str, Any]:

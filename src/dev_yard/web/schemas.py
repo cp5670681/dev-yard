@@ -50,6 +50,7 @@ class RepoPiIn(BaseModel):
     model: str = ""
     test_branch: str | None = None
     note: str | None = None
+    databases: list[str] | None = None
 
 
 class QaConfigIn(BaseModel):

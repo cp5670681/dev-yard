@@ -63,7 +63,7 @@ description: >
 7. 跨仓改动拆成多条 case，或 `covers` 只含一个主仓。每条 frontmatter 必有 `repo:`（yard alias）。
 8. `depends_on` 仅当共享可变数据或业务先后时写；无依赖省略，以便并发领取。
 9. 需要非默认账号的用例，在 frontmatter 写 `account: <account_key>`；名字必须来自 `context.md` 的 Accounts 列表（宿主跑前校验，未配置会直接报错让你先跑 `dev-yard req accounts <JIRA> --auto`）。不写就用 `account.default`。若需新增账号，按「权限账号与账号发现」写 `qa/accounts-discover.sql`（只读单条 `SELECT`，`username | account_key` 两列）并在 OPEN-QUESTIONS 注明。
-10. 造数优先 `.sql`（host usql 打 `qa.yaml` 的 db.url；`db.exec: inherit` 时走与脚本同一条 exec 管道）。非 SQL 脚本由宿主按本次 env 的 `exec` 配方执行（local = freeze worktree + stdin；remote = 已部署现场 + stdin）。脚本契约：
+10. 造数优先 `.sql`（host usql 打用例 `data.db` 对应的 catalog，缺省为 `qa.yaml` 该 env 的 `db.default`）。非 SQL 脚本由宿主按本次 env 的 `exec` 配方执行（local = freeze worktree + stdin；remote = 已部署现场 + stdin）。脚本契约：
     - **单文件**，不要 `require` 邻居（多文件才用 payload bundle）。
     - 状态落 **DB**，禁止把 setup→cleanup 约定写到执行现场本地文件（pod 会换副本）。
     - 业务参数只读 `ENV['QA_ENV']` / `QA_JIRA` / `QA_CASE_ID` / `QA_SCRIPT_KIND`，**不要读 ARGV**（stdin 模式下 ARGV 是空的）。
@@ -88,9 +88,9 @@ UI 预期只有在「该区域的数据确实会被 setup 造出（或已被核�
 - **编辑/保存路径的必填字段**：种子记录必须带上保存时前端/后端会校验的字段（yard 实例：`l_salutation/province_id/city_id/l_address`），否则「更新」被校验拦住，断言根本执行不到。
 - 每个断言对象都要能追到 setup：前置里逐条列出 setup 会创建/修改的实体及关联、键值。
 
-**表/列名不要猜**：宿主在 `qa/context.md` 的 **Database columns** 写入了当前 env 的 `information_schema`（表: 列, …）。verify.sql / setup 只能用那些列，或 worktree 里的 `db/schema.rb` / `db/structure.sql` / `prisma/schema.prisma`。Ruby 常量、yml 配置数组、前端字段名不是 PG 列。设计阶段不要自己跑 usql 探库（DSN 在 qa.yaml，由宿主查）。不要编造 `id=1001`：要么 setup INSERT 这批种子，要么按业务条件（last/version/名称）SELECT 库里已有行。
+**表/列名不要猜**：宿主在 `qa/context.md` 的 **Database columns** 按 catalog 写入了 `information_schema`（表: 列, …）。verify.sql / setup 只能用对应 catalog 下的列，或 worktree 里的 `db/schema.rb` / `db/structure.sql` / `prisma/schema.prisma`。一仓多库时 frontmatter 写 `data.db: <catalog>`（名字来自 context 的 db catalogs / 该仓 `databases`）。Ruby 常量、yml 配置数组、前端字段名不是 PG 列。设计阶段不要自己跑 usql 探库（DSN 在 qa.yaml，由宿主查）。不要编造 `id=1001`：要么 setup INSERT 这批种子，要么按业务条件（last/version/名称）SELECT 库里已有行。
 
-**只读自检 → 写成可执行的 `verify.sql`（强制）**：依赖「线上已有数据」或自带种子的用例，都要在 frontmatter 声明 `data.verify: verify.sql`，内容是**单条只读查询**（`SELECT`/`SHOW`/`DESC`/`EXPLAIN`，连接串取 `qa.yaml` 的 `db.url`，配了只读的 `db.verify_url` 则用它），语义为**返回 ≥1 行即通过**（写成 `SELECT ... WHERE <前置条件>`，0 行即失败）。宿主在设计期真跑它，失败会带着结果回灌给你重做。
+**只读自检 → 写成可执行的 `verify.sql`（强制）**：依赖「线上已有数据」或自带种子的用例，都要在 frontmatter 声明 `data.verify: verify.sql`（非默认库再加 `data.db`），内容是**单条只读查询**（`SELECT`/`SHOW`/`DESC`/`EXPLAIN`，连接串取该 catalog 的 `url`，配了只读 `verify_url` 则用它），语义为**返回 ≥1 行即通过**（写成 `SELECT ... WHERE <前置条件>`，0 行即失败）。宿主在设计期真跑它，失败会带着结果回灌给你重做。
 
 - 每个断言对象都要能追到 `verify.sql`：**FROM/JOIN 里的每张表名**和**至少一个列名**写进用例正文。宿主 lint 发现缺名时，补一行 `<!-- host-verify: ... -->` 后继续跑 SQL 和 setup，**不会为此重开设计**。回灌只发生在 setup 失败或查询 0 行，并且只改那些用例。例外：`_qa_` 前缀的表是宿主内部表（如种子登记表 `_qa_exec_seeds`），不算正文表、也不要求出现在正文里；**其它真实业务表（含 JOIN 出来的辅助表）仍必须写进正文**。
 - `verify.sql` 可以有 `--` / `/* */` 注释（含表头注释）；宿主剥掉注释和字符串字面量后再看语句，第一条有效 token 必须是 `SELECT`/`SHOW`/`DESC`/`DESCRIBE`/`EXPLAIN`/`WITH`/`TABLE`，整条只读、单语句。注释或字符串里出现 delete/update 等词不算写操作。只查 `_qa_*` 内部表（不 JOIN 任何业务表）会被标为「空转豁免」供人抽查，断言对象要落到业务表。
@@ -144,7 +144,7 @@ repo: <alias>
 covers: [D1]
 depends_on: []
 account: <可选；context.md Accounts 里的账号名，缺省=default>
-data: { setup: setup.sql, cleanup: cleanup.sql, verify: verify.sql }
+data: { db: research, setup: setup.sql, cleanup: cleanup.sql, verify: verify.sql }
 ---
 
 ## 前置

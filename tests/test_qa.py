@@ -2866,10 +2866,10 @@ def test_recheck_db_assertions_flags_false_pass(tmp_path: Path, monkeypatch):
         ],
     }
 
-    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None: "3")
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None, **k: "3")
     assert recheck_db_assertions(cfg, job, result) == []
 
-    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None: "0")
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None, **k: "0")
     problems = recheck_db_assertions(cfg, job, result)
     assert len(problems) == 1
     assert problems[0]["actual"] == "0"
@@ -2893,10 +2893,10 @@ def test_recheck_accepts_prose_expected_when_recorded_cell_matches(tmp_path: Pat
             }
         ],
     }
-    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None: "0")
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None, **k: "0")
     assert recheck_db_assertions(cfg, job, result) == []
 
-    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None: "1")
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None, **k: "1")
     problems = recheck_db_assertions(cfg, job, result)
     assert len(problems) == 1
     assert problems[0]["actual"] == "1"
@@ -2920,9 +2920,9 @@ def test_recheck_two_word_expected_still_compares_to_cell(tmp_path: Path, monkey
             }
         ],
     }
-    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None: "Jane Doe")
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None, **k: "Jane Doe")
     assert recheck_db_assertions(cfg, job, result) == []
-    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None: "other")
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None, **k: "other")
     assert len(recheck_db_assertions(cfg, job, result)) == 1
 
 
@@ -2944,7 +2944,7 @@ def test_recheck_scalar_expected_still_wins_over_recorded_actual(tmp_path: Path,
             }
         ],
     }
-    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None: "0")
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None, **k: "0")
     problems = recheck_db_assertions(cfg, job, result)
     assert len(problems) == 1
 
@@ -3189,13 +3189,17 @@ def test_verify_case_uses_verify_db_url(tmp_path: Path, monkeypatch):
     )
     seen: dict[str, str] = {}
 
-    def fake_count(c, sql, on_log=None):
-        seen["url"] = c.env.db_url
+    def fake_count(c, sql, on_log=None, catalog=None, verify=False):
+        from dev_yard.qa_config import connect_url
+
+        seen["url"] = connect_url(c, catalog, verify=verify)
+        seen["verify"] = verify
         return 1
 
     monkeypatch.setattr("dev_yard.qa_verify.run_sql_count", fake_count)
     assert verify_case(tmp_path, "J-1", cfg, job).status == "passed"
     assert seen["url"] == "postgres://ro:p@h/db"
+    assert seen["verify"] is True
 
 
 def test_run_prompt_hides_password(tmp_path: Path, git_src: Path, monkeypatch):
@@ -3349,7 +3353,7 @@ def test_recheck_leaves_bilateral_prose_unverified(tmp_path: Path, monkeypatch):
             }
         ],
     }
-    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None: "1")
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None, **k: "1")
     problems = recheck_db_assertions(cfg, job, result)
     assert len(problems) == 1
     assert problems[0]["kind"] == "unverified"
@@ -4064,6 +4068,23 @@ def test_lint_cases_flags_missing_verify(tmp_path: Path, git_src: Path, monkeypa
     # A pure-UI case stays exempt.
     ui = [CaseJob(id="case-03", title="t", repo="backend", body="# ui only\n")]
     assert lint_cases(yard, "QA-LINT2", cfg, ui) == []
+
+
+def test_lint_cases_flags_unknown_data_db(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.qa import lint_cases
+    from dev_yard.qa_config import load_qa_config
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-LINTDB")
+    qa = yard / "reqs" / "QA-LINTDB" / "qa"
+    qa.mkdir(parents=True, exist_ok=True)
+    cfg = load_qa_config(yard)
+    cases = [
+        CaseJob(id="case-01", title="t", repo="backend", db="no-such-db"),
+    ]
+    problems = lint_cases(yard, "QA-LINTDB", cfg, cases)
+    assert any("data.db" in p and "no-such-db" in p for p in problems)
 
 
 def test_approve_refused_on_lint_problem(tmp_path: Path, git_src: Path, monkeypatch):

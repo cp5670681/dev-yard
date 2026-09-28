@@ -124,6 +124,8 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
         segments = [f"branch {branch}", f"base {base}", f"role {role}"]
         if repo and repo.note:
             segments.append(f"note {repo.note}")
+        if repo and repo.databases:
+            segments.append("databases " + ",".join(repo.databases))
         # The exact ref to diff against. The worktree's own local `base` may be
         # stale (fetch updates origin/<base> only), and an imported requirement
         # may fork from an older/other base; both are answered by freeze_base.
@@ -136,7 +138,6 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
         lines.append(f"- {alias}: {wt.resolve()}  (" + ", ".join(segments) + ")")
     env = cfg.env
     routes = _meta_routes(qa)
-    db = "configured" if env.db_url else "not configured"
     headed = "true" if cfg.headed else "false"
     others = [n for n in cfg.env_names if n != cfg.active_env]
     lines += [
@@ -150,7 +151,7 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
         f"- account.default: {env.auth_default or '(none)'}",
         f"- concurrency: {cfg.total_concurrency} "
         "(state-save is only allowed when this is 1)",
-        f"- db: {db} (qa.yaml envs.{cfg.active_env}.db.url)",
+        f"- db: {_db_context_line(env)}",
         f"- script.runner: {env.script_runner or '(sql only)'}",
         f"- exec.use: {getattr(env.exec_cfg, 'use', None) or 'local'}",
         f"- exec.site: {getattr(env.exec_cfg, 'site', None) or 'local'}",
@@ -178,16 +179,16 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
         "",
         "## Database columns",
         "",
-        "verify.sql 和 setup 的表名、列名必须来自本节（宿主已对当前 env 查过 "
-        "information_schema）或下列 schema 文件。不要猜列名，不要把代码常量"
+        "verify.sql 和 setup 的表名、列名必须来自本节（宿主已按 catalog 查过 "
+        "information_schema）或下列 schema 文件。非默认库在用例 frontmatter 写 "
+        "`data.db: <catalog>`。不要猜列名，不要把代码常量"
         "（NEED_RENOVATION_TYPE 等）写成表字段，不要编造主键 id=1001。",
     ]
     schema_files = worktree_schema_files(root, jira, aliases)
     if schema_files:
         lines.extend(schema_files)
-    live = dump_live_schema(cfg)
+    live = dump_live_schema(cfg, names=_catalogs_for_requirement(root, jira, cfg))
     if live:
-        lines.append("Live columns (current env):")
         lines.extend(live)
     else:
         lines.append(
@@ -315,6 +316,7 @@ def discover_cases(qa: Path) -> list[CaseJob]:
                 verify=str(data.get("verify") or "").strip(),
                 writes=writes,
                 identity=str(data.get("identity") or "").strip(),
+                db=str(data.get("db") or "").strip(),
             )
         )
     return out
@@ -333,6 +335,46 @@ def split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     if not isinstance(data, dict):
         return {}, body
     return data, body
+
+
+def _db_context_line(env: Any) -> str:
+    catalogs = list(getattr(env, "db_catalogs", ()) or ())
+    if not catalogs:
+        return "not configured (qa.yaml db.catalogs / db.url)"
+    parts = [
+        f"{c.name}{'*' if c.name == env.db_default else ''}" for c in catalogs
+    ]
+    return (
+        f"{', '.join(parts)} (default {env.db_default}; "
+        "case `data.db` selects one; * = default)"
+    )
+
+
+def _catalogs_for_requirement(root: Path, jira: str, cfg: QaConfig) -> list[str]:
+    """Catalogs this requirement should dump: declared on involved repos, else all."""
+    repos = load_repos(root)
+    aliases = _involved_aliases(root, jira)
+    names: list[str] = []
+    seen: set[str] = set()
+    fallback = False
+    for alias in aliases:
+        repo = repos.get(alias)
+        declared = list(repo.databases) if repo and repo.databases else []
+        if declared:
+            for name in declared:
+                if name not in seen:
+                    seen.add(name)
+                    names.append(name)
+        else:
+            fallback = True
+    if fallback or not names:
+        for cat in cfg.env.db_catalogs:
+            if cat.name not in seen:
+                seen.add(cat.name)
+                names.append(cat.name)
+    if not names and cfg.env.db_default:
+        names = [cfg.env.db_default]
+    return names
 
 
 def _involved_aliases(root: Path, jira: str) -> list[str]:
@@ -694,7 +736,8 @@ def lint_cases(
     point no case covers. Returns human-readable problems (empty = clean).
     """
     problems: list[str] = []
-    repos = set(load_repos(root))
+    repos_map = load_repos(root)
+    repos = set(repos_map)
     for job in cases:
         if not job.repo:
             problems.append(f"{job.id}: 缺少 repo")
@@ -704,6 +747,21 @@ def lint_cases(
             problems.append(f"{job.id}: account {job.account!r} 未配置")
         if job.writes and not job.identity:
             problems.append(f"{job.id}: data.writes 需要配套 data.identity")
+        if job.db:
+            cat = cfg.env.catalog(job.db)
+            if cat is None:
+                names = ", ".join(c.name for c in cfg.env.db_catalogs) or "(none)"
+                problems.append(
+                    f"{job.id}: data.db {job.db!r} 不是 qa.yaml catalogs（{names}）"
+                )
+            else:
+                repo = repos_map.get(job.repo)
+                allowed = list(repo.databases) if repo and repo.databases else []
+                if allowed and job.db not in allowed:
+                    problems.append(
+                        f"{job.id}: data.db {job.db!r} 不在仓 {job.repo} 声明的 "
+                        f"databases（{', '.join(allowed)}）"
+                    )
         if needs_verify(job) and not job.verify:
             problems.append(
                 f"{job.id}: 声明了 setup/cleanup 或 DB 预期，但缺少 data.verify"
@@ -770,7 +828,9 @@ def _duties(kind: str, jira: str) -> str:
             "feeds failures back to you. A pure-UI case writes `SELECT 1` and is "
             "flagged as an exemption.\n"
             "Column names come from context.md Database columns (host dumped "
-            "information_schema) or worktree schema.rb. Never invent columns or "
+            "information_schema per named catalog) or worktree schema.rb. "
+            "When a case talks to a non-default database, set `data.db` to that "
+            "catalog name. Never invent columns or "
             "treat app constants as table fields. Do not invent primary keys in "
             "verify.sql without a setup that inserts those rows.\n"
             "seed must hard self-prove: every entity/field/link a case asserts must "

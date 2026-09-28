@@ -366,6 +366,7 @@ export interface Repo {
   provider: string;
   model: string;
   test_branch: string;
+  databases: string;
 }
 
 export interface Meta {
@@ -471,7 +472,13 @@ export interface QaExecCfg {
 export interface QaEnvCfg {
   base_url: string;
   auth: { default: string; accounts: Record<string, QaAccountCfg> };
-  db: { url: string; exec?: string };
+  db: {
+    url: string;
+    verify_url?: string;
+    default?: string;
+    catalogs?: { name: string; url: string; verify_url: string }[];
+    exec?: string;
+  };
   script: { runner: string };
   notes: string[];
   exec: QaExecCfg;

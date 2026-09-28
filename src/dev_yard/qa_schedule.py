@@ -90,6 +90,7 @@ class CaseJob:
     assertions: list[Any] = field(default_factory=list)
     writes: list[str] = field(default_factory=list)
     identity: str = ""
+    db: str = ""
     defect_class: str = ""
     # How many times an environment-class block has been requeued in this run
     # (M2). Bounded by `retry_attempts`; never written to result.yaml.

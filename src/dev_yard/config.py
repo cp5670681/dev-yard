@@ -77,6 +77,7 @@ class Repo:
     provider: str | None = None
     model: str | None = None
     test_branch: str | None = None
+    databases: tuple[str, ...] = ()
 
     def source_path(self, root: Path) -> Path:
         if self.path:
@@ -224,6 +225,18 @@ def resolve_pi_choice(
     return None, None
 
 
+def _database_names(raw: Any, alias: str) -> tuple[str, ...]:
+    if raw is None or raw == "":
+        return ()
+    if isinstance(raw, str):
+        items = [p.strip() for p in raw.replace(",", " ").split() if p.strip()]
+    elif isinstance(raw, list):
+        items = [str(x).strip() for x in raw if str(x).strip()]
+    else:
+        raise ValueError(f"repos.yaml {alias}.databases must be a list of catalog names")
+    return tuple(items)
+
+
 def load_repos(root: Path) -> dict[str, Repo]:
     data = load_workspace(root)
     out: dict[str, Repo] = {}
@@ -240,6 +253,7 @@ def load_repos(root: Path) -> dict[str, Repo]:
             provider=_blank(raw.get("provider")),
             model=_blank(raw.get("model")),
             test_branch=_blank(raw.get("test_branch")),
+            databases=_database_names(raw.get("databases"), alias),
         )
     return out
 
@@ -414,6 +428,8 @@ def save_repos(root: Path, repos: dict[str, Repo]) -> None:
             entry["note"] = note
         if r.path:
             entry["path"] = str(r.path)
+        if r.databases:
+            entry["databases"] = list(r.databases)
         test_branch = _blank(r.test_branch)
         if test_branch:
             gitops.assert_branch_name(test_branch)

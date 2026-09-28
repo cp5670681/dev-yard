@@ -16,7 +16,7 @@ import time
 import uuid
 from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -320,14 +320,17 @@ def _safe_ident(name: str) -> str | None:
     return None
 
 
-def _agg_cells(cfg: QaConfig, sql: str) -> str:
+def _agg_cells(cfg: QaConfig, sql: str, catalog: str | None = None) -> str:
     try:
-        return (run_sql_value(cfg, sql) or "").strip()
-    except TestRejected:
-        return ""
+        return (run_sql_value(cfg, sql, catalog=catalog) or "").strip()
+    except (TestRejected, TypeError):
+        try:
+            return (run_sql_value(cfg, sql) or "").strip()
+        except TestRejected:
+            return ""
 
 
-def _table_columns(cfg: QaConfig, table: str) -> list[str]:
+def _table_columns(cfg: QaConfig, table: str, catalog: str | None = None) -> list[str]:
     ident = _safe_ident(table)
     if not ident:
         return []
@@ -337,12 +340,13 @@ def _table_columns(cfg: QaConfig, table: str) -> list[str]:
         "FROM information_schema.columns "
         "WHERE table_schema NOT IN ('pg_catalog','information_schema') "
         f"AND table_name = '{ident}'",
+        catalog,
     )
     names = [p.strip() for p in cell.split(",") if p.strip()]
     return names[:40]
 
 
-def _sample_ids(cfg: QaConfig, table: str) -> str:
+def _sample_ids(cfg: QaConfig, table: str, catalog: str | None = None) -> str:
     ident = _safe_ident(table)
     if not ident:
         return ""
@@ -351,6 +355,7 @@ def _sample_ids(cfg: QaConfig, table: str) -> str:
         "SELECT string_agg(id::text, ',') FROM ("
         f"SELECT id FROM {ident} LIMIT 5"
         ") qa_sample",
+        catalog,
     )
 
 
@@ -375,23 +380,56 @@ _SCHEMA_DUMP_MAX_CHARS = 80000
 _SCHEMA_FILES = ("db/schema.rb", "db/structure.sql", "prisma/schema.prisma")
 
 
-def dump_live_schema(cfg: QaConfig) -> list[str]:
-    """Current-env table: columns from information_schema. Empty if DB is down."""
-    if not getattr(cfg.env, "db_url", ""):
-        return []
-    try:
-        rows = run_sql_lines(cfg, _SCHEMA_DUMP_SQL)
-    except TestRejected:
-        return []
+def dump_live_schema(cfg: QaConfig, names: list[str] | None = None) -> list[str]:
+    """Table: columns from information_schema, per named catalog.
+
+    Empty if no DSN or every probe fails. A single catalog keeps the historical
+    unprefixed `- table: cols` lines so existing tests and prompts stay stable.
+    """
+    catalogs = list(getattr(cfg.env, "db_catalogs", ()) or ())
+    if names is not None:
+        wanted = [n for n in names if n]
+        catalogs = [c for c in catalogs if c.name in wanted]
+        if not catalogs:
+            return []
+    elif not catalogs:
+        url = getattr(cfg.env, "db_url", "")
+        if not url:
+            return []
+        catalogs = []  # fall through to a nameless dump
     lines: list[str] = []
     size = 0
-    for row in rows[:_SCHEMA_DUMP_MAX_LINES]:
-        line = f"- {row}"
+    targets = catalogs or [None]
+    multi = len(catalogs) > 1
+
+    def _append(line: str) -> bool:
+        nonlocal size
         size += len(line) + 1
         if size > _SCHEMA_DUMP_MAX_CHARS:
             lines.append("- …(truncated)")
-            break
+            return False
         lines.append(line)
+        return True
+
+    for cat in targets:
+        catalog_name = cat.name if cat is not None else None
+        if multi and catalog_name:
+            if lines:
+                lines.append("")
+            heading = f"Live columns (`{catalog_name}`):"
+            if not _append(heading):
+                break
+        try:
+            rows = run_sql_lines(cfg, _SCHEMA_DUMP_SQL, catalog=catalog_name)
+        except (TestRejected, TypeError):
+            # TypeError: tests stub run_sql_lines without catalog=.
+            try:
+                rows = run_sql_lines(cfg, _SCHEMA_DUMP_SQL)
+            except TestRejected:
+                continue
+        for row in rows[:_SCHEMA_DUMP_MAX_LINES]:
+            if not _append(f"- {row}"):
+                return lines
     return lines
 
 
@@ -421,7 +459,7 @@ def enrich_verify_hint(cfg: QaConfig, job: CaseJob, result: VerifyResult) -> str
             "列名从 worktree schema.rb / ORM 读。"
         )
         for table in tables:
-            cols = _table_columns(cfg, table)
+            cols = _table_columns(cfg, table, job.db or None)
             if cols:
                 parts.append(f"表 {table} 现有列: {', '.join(cols)}")
     if result.rows < 1 and (err == "0 rows" or "0 rows" in err):
@@ -442,7 +480,7 @@ def enrich_verify_hint(cfg: QaConfig, job: CaseJob, result: VerifyResult) -> str
                 "或补 setup 造出 verify 所断言的数据。"
             )
         for table in tables[:2]:
-            sample = _sample_ids(cfg, table)
+            sample = _sample_ids(cfg, table, job.db or None)
             if sample:
                 parts.append(f"表 {table} 样例 id: {sample}")
     hint = " ".join(parts).strip()
@@ -571,13 +609,12 @@ def verify_case(
             result.error = f"setup error: {e}"
             return finish()
 
-    # A restricted read-only role (db.verify_url) can be used for the verify
-    # query without granting the design agent write access to the shared DB.
-    verify_cfg = cfg
-    if getattr(cfg.env, "verify_db_url", ""):
-        verify_cfg = replace(cfg, env=replace(cfg.env, db_url=cfg.env.verify_db_url))
+    # A restricted read-only role (catalog.verify_url / db.verify_url) is used
+    # for the verify query so design does not need the write DSN.
     try:
-        result.rows = run_sql_count(verify_cfg, text, on_log=on_log)
+        result.rows = run_sql_count(
+            cfg, text, on_log=on_log, catalog=job.db or None, verify=True
+        )
     except TestRejected as e:
         if verify_env_error(e):
             # Infrastructure, not a case gap: never feed this back to design.
@@ -595,7 +632,7 @@ def verify_case(
     else:
         result.status = "passed"
         result.reason = "数据前置已核实"
-        _bind_identity(verify_cfg, job, result, on_log)
+        _bind_identity(cfg, job, result, on_log)
 
     _cleanup(root, jira, cfg, job, result, on_log, executor)
     return finish()
@@ -618,7 +655,9 @@ def _bind_identity(
         return
     try:
         assert_readonly_sql(job.identity)
-        cell = run_sql_value(cfg, job.identity, on_log=on_log).strip()
+        cell = run_sql_value(
+            cfg, job.identity, on_log=on_log, catalog=job.db or None, verify=True
+        ).strip()
     except TestRejected as e:
         _fail_bind(result, f"identity query failed: {e}")
         return

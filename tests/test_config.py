@@ -78,6 +78,19 @@ def test_repo_add_blank_alias_uses_project_name(tmp_path: Path, git_src: Path):
     assert git_src.name in load_repos(yard)
 
 
+def test_repo_databases_roundtrip(tmp_path: Path, git_src: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "be", str(git_src), "main", "be", str(git_src))
+    repo_set_pi(yard, "be", None, None, databases=["research", "ops"])
+    loaded = load_repos(yard)["be"]
+    assert loaded.databases == ("research", "ops")
+    raw = (yard / "repos.yaml").read_text(encoding="utf-8")
+    assert "research" in raw
+    repo_set_pi(yard, "be", None, None, databases=[])
+    assert load_repos(yard)["be"].databases == ()
+
+
 def test_save_repos_keeps_pi_section(tmp_path: Path, git_src: Path):
     yard = tmp_path / "yard"
     init_yard(yard)

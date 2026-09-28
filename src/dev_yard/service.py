@@ -130,6 +130,7 @@ def repo_add(
     model: str | None = None,
     test_branch: str | None = None,
     note: str | None = None,
+    databases: tuple[str, ...] | list[str] | None = None,
 ) -> Repo:
     repos = load_repos(root)
     alias = (alias or "").strip() or git_project_name(url)
@@ -144,6 +145,7 @@ def repo_add(
         provider=pair[0] if pair else None,
         model=pair[1] if pair else None,
         test_branch=(test_branch or "").strip() or None,
+        databases=tuple(d for d in (databases or []) if str(d).strip()),
     )
     source = repo.source_path(root)
     if repo.path and not (source / ".git").exists():
@@ -171,6 +173,7 @@ def repo_set_pi(
     model: str | None,
     test_branch: str | None = None,
     note: str | None = None,
+    databases: list[str] | tuple[str, ...] | None = None,
 ) -> Repo:
     repos = load_repos(root)
     repo = repos.get(alias)
@@ -184,6 +187,8 @@ def repo_set_pi(
         repo.test_branch = test_branch.strip() or None
     if note is not None:
         repo.note = note.strip() or None
+    if databases is not None:
+        repo.databases = tuple(str(d).strip() for d in databases if str(d).strip())
     save_repos(root, repos)
     return repo
 

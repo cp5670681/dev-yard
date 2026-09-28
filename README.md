@@ -140,7 +140,7 @@ dev-yard review PROJ-101 --contract # 跨仓契约校验
 
 # 8. 提测与修复闭环
 dev-yard req submit-test PROJ-101
-# 工作区根放 qa.yaml（envs.<环境>.base_url + auth.accounts 账号密码 + db.url，均明文直存、文件已 gitignore；db.verify_url 可选，给设计期只读核实用；测试模型也在这里：可选 design（qa-design）与 workers 模型池（qa-run））后：
+# 工作区根放 qa.yaml（envs.<环境>.base_url + auth.accounts 账号密码 + db.catalogs 命名库连接，均明文直存、文件已 gitignore；兼容旧的单条 db.url；catalog.verify_url 可选，给设计期只读核实用；仓可在 repos.yaml 用 databases 引用 catalog 名；测试模型也在这里：可选 design（qa-design）与 workers 模型池（qa-run））后：
 dev-yard req accounts PROJ-101 --env test   # 本需求要多账号时先配：写 .yard-qa/requirements/<JIRA>/accounts.yaml（随需求变，已 gitignore）
 dev-yard req accounts PROJ-101 --auto        # 权限会漂移：按 qa/accounts-discover.sql（username | account_key）一键发现并改绑本需求账号，复用全局默认账号密码，不动全局账号
 dev-yard req accounts PROJ-101 --refresh     # 清本需求账号的缓存登录态强制重登；--auto --refresh 发现后一并刷新

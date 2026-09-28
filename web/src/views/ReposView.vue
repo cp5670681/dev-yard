@@ -47,6 +47,7 @@
               <div class="text-caption text-medium-emphasis mt-1">base {{ r.default_base }}</div>
               <div v-if="r.note" class="text-caption text-medium-emphasis text-break">{{ r.note }}</div>
               <div class="text-caption text-medium-emphasis">测试分支 {{ r.test_branch || "（未配）" }}</div>
+              <div v-if="r.databases" class="text-caption text-medium-emphasis">库 {{ r.databases }}</div>
               <div class="text-caption text-medium-emphasis">实现 {{ repoPiLabel(r) }}</div>
               <div class="text-caption text-break mt-1">{{ r.url }}</div>
               <div class="text-caption text-break">{{ r.path || "（托管 clone）" }}</div>
@@ -64,6 +65,7 @@
               <th>url</th>
               <th>path</th>
               <th>测试分支</th>
+              <th>库</th>
               <th>实现模型</th>
               <th></th>
             </tr>
@@ -94,6 +96,7 @@
                 {{ r.path || "（托管 clone）" }}
               </td>
               <td class="text-caption">{{ r.test_branch || "（未配）" }}</td>
+              <td class="text-caption">{{ r.databases || "—" }}</td>
               <td class="text-caption">{{ repoPiLabel(r) }}</td>
               <td>
                 <v-btn size="small" variant="text" @click="openEdit(r)">改</v-btn>
@@ -219,6 +222,16 @@
             placeholder="给人/模型看，如对应环境 URL"
             variant="outlined"
             density="comfortable"
+            class="mb-3"
+            hide-details
+            clearable
+          />
+          <v-text-field
+            v-model="editDatabases"
+            label="数据库 catalogs（逗号分隔，对应 qa.yaml 里的名字）"
+            placeholder="如 research, research_ops"
+            variant="outlined"
+            density="comfortable"
             hide-details
             clearable
           />
@@ -267,6 +280,7 @@ const editProvider = ref("");
 const editModel = ref("");
 const editTestBranch = ref("");
 const editNote = ref("");
+const editDatabases = ref("");
 const catalog = ref<PiCatalogProvider[]>([]);
 const jobId = ref(typeof route.query.job === "string" ? route.query.job : "");
 const urlRule = (v: string) => !!v.trim() || "需要 git url";
@@ -397,6 +411,7 @@ function openEdit(r: Repo) {
   editModel.value = r.model || "";
   editTestBranch.value = r.test_branch || "";
   editNote.value = r.note || "";
+  editDatabases.value = r.databases || "";
   ensureSaved(r.provider, r.model);
   editDialog.value = true;
 }
@@ -412,6 +427,10 @@ async function saveEdit() {
       editModel.value,
       editTestBranch.value,
       editNote.value,
+      editDatabases.value
+        .split(/[,\s]+/)
+        .map((s) => s.trim())
+        .filter(Boolean),
     );
     editDialog.value = false;
     snack.notify("已写入仓库设置", "success");

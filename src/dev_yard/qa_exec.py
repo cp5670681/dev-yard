@@ -16,6 +16,7 @@ from dev_yard.qa_config import (
     QaAccount,
     QaConfig,
     TestRejected,
+    connect_url,
     default_state_file,
     redact_qa_yaml,
 )
@@ -264,8 +265,15 @@ def run_case_script(
     # .sql 造数/清理一律在宿主用 usql 跑：无论 exec.use / db.exec 怎么配，
     # 都不把 SQL 丢进现场（pod 里既无 psql 也无 usql，且远端退出码会被吞）。
     if script.suffix.lower() == ".sql":
-        return _run_sql(cfg, script, on_log)
+        return _run_sql(cfg, script, on_log, catalog=job.db or None)
     started = time.time()
+    db_env: dict[str, str] = {}
+    needs_db = bool(job.db) or bool(getattr(cfg.env, "db_catalogs", ())) or bool(
+        cfg.env.db_url
+    )
+    if needs_db:
+        db_env["DATABASE_URL"] = connect_url(cfg, job.db or None)
+        db_env["QA_DB"] = job.db or cfg.env.db_default or "default"
     if executor is None:
         executor = resolve_executor(
             cfg.env, base_url=cfg.env.base_url, worktree=wt, root=root
@@ -286,6 +294,7 @@ def run_case_script(
                 "QA_JIRA": jira,
                 "QA_CASE_ID": job.id,
                 "QA_SCRIPT_KIND": kind,
+                **db_env,
             },
         )
         if result.code != 0:
@@ -303,15 +312,23 @@ def run_case_script(
             _revert_new_paths(wt, before, window=(started, time.time()))
 
 
-def _run_sql(cfg: QaConfig, script: Path, on_log: Any | None) -> str:
-    if not cfg.env.db_url:
-        raise TestRejected("qa.yaml has no db.url; cannot run .sql setup/cleanup")
+def _run_sql(
+    cfg: QaConfig,
+    script: Path,
+    on_log: Any | None,
+    catalog: str | None = None,
+) -> str:
+    try:
+        url = connect_url(cfg, catalog)
+    except TestRejected as e:
+        raise TestRejected("qa.yaml has no db.url; cannot run .sql setup/cleanup") from e
     binary = shutil.which("usql")
     if not binary:
         raise TestRejected("usql not found; cannot run .sql setup/cleanup")
-    cmd = [binary, cfg.env.db_url, "-f", str(script)]
+    cmd = [binary, url, "-f", str(script)]
     if on_log is not None:
-        on_log(f"$ usql <db.url> -f {script}")
+        name = catalog or cfg.env.db_default or "db.url"
+        on_log(f"$ usql <{name}> -f {script}")
     r = _run(cmd, timeout=300, label=f"usql {script.name}")
     if r.returncode != 0:
         err = redact_qa_yaml((r.stderr or r.stdout or "").strip()) or str(r.returncode)
@@ -414,7 +431,14 @@ def assert_readonly_sql(text: str, *, what: str = "verify.sql") -> str:
     return clean
 
 
-def run_sql_value(cfg: QaConfig, sql: str, on_log: Any | None = None) -> str:
+def run_sql_value(
+    cfg: QaConfig,
+    sql: str,
+    on_log: Any | None = None,
+    catalog: str | None = None,
+    *,
+    verify: bool = False,
+) -> str:
     """Run a read-only verify statement and return its first scalar cell.
 
     Used to re-check a worker's `db` assertion independently: the host runs the
@@ -422,15 +446,18 @@ def run_sql_value(cfg: QaConfig, sql: str, on_log: Any | None = None) -> str:
     output is returned as "" so the caller can flag the mismatch.
     """
     body = assert_readonly_sql(sql, what="db assertion sql")
-    if not cfg.env.db_url:
-        raise TestRejected("qa.yaml has no db.url; cannot re-check db assertion")
+    try:
+        url = connect_url(cfg, catalog, verify=verify)
+    except TestRejected as e:
+        raise TestRejected("qa.yaml has no db.url; cannot re-check db assertion") from e
     binary = shutil.which("usql")
     if not binary:
         raise TestRejected("usql not found; cannot re-check db assertion")
     if on_log is not None:
-        on_log(f"$ usql <db.url> -t -A -c {body[:200]}")
+        label = catalog or cfg.env.db_default or "db.url"
+        on_log(f"$ usql <{label}> -t -A -c {body[:200]}")
     r = _run(
-        [binary, cfg.env.db_url, "-t", "-A", "-c", body],
+        [binary, url, "-t", "-A", "-c", body],
         timeout=120,
         label="usql recheck",
     )
@@ -465,7 +492,7 @@ def recheck_db_assertions(
             continue
         expected = item.get("expected")
         try:
-            got = run_sql_value(cfg, sql, on_log=on_log)
+            got = run_sql_value(cfg, sql, on_log=on_log, catalog=job.db or None)
         except TestRejected as e:
             # Could not run the check (usql missing, bad SQL): report it, but
             # do not fail the case — only a real value mismatch downgrades.
@@ -584,18 +611,28 @@ def _scalar_eq(expected: Any, got: str) -> bool:
     return " ".join(str(expected).split()).casefold() == " ".join(got.split()).casefold()
 
 
-def run_sql_lines(cfg: QaConfig, sql: str, on_log: Any | None = None) -> list[str]:
+def run_sql_lines(
+    cfg: QaConfig,
+    sql: str,
+    on_log: Any | None = None,
+    catalog: str | None = None,
+    *,
+    verify: bool = False,
+) -> list[str]:
     """Run a read-only statement and return non-empty stdout lines (usql -t -A)."""
     body = assert_readonly_sql(sql)
-    if not cfg.env.db_url:
-        raise TestRejected("qa.yaml has no db.url; cannot query schema")
+    try:
+        url = connect_url(cfg, catalog, verify=verify)
+    except TestRejected as e:
+        raise TestRejected("qa.yaml has no db.url; cannot query schema") from e
     binary = shutil.which("usql")
     if not binary:
         raise TestRejected("usql not found; cannot query schema")
     if on_log is not None:
-        on_log(f"$ usql <db.url> -t -A -c {body[:200]}")
+        label = catalog or cfg.env.db_default or "db.url"
+        on_log(f"$ usql <{label}> -t -A -c {body[:200]}")
     r = _run(
-        [binary, cfg.env.db_url, "-t", "-A", "-c", body],
+        [binary, url, "-t", "-A", "-c", body],
         timeout=120,
         label="usql schema",
     )
@@ -605,7 +642,14 @@ def run_sql_lines(cfg: QaConfig, sql: str, on_log: Any | None = None) -> list[st
     return [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
 
 
-def run_sql_count(cfg: QaConfig, sql: str, on_log: Any | None = None) -> int:
+def run_sql_count(
+    cfg: QaConfig,
+    sql: str,
+    on_log: Any | None = None,
+    catalog: str | None = None,
+    *,
+    verify: bool = False,
+) -> int:
     """Row count of a read-only verify statement, run host-side via usql.
 
     A `SELECT`/`WITH` is wrapped in `count(*)`, so the count is a real number
@@ -613,17 +657,20 @@ def run_sql_count(cfg: QaConfig, sql: str, on_log: Any | None = None) -> int:
     heads report the number of output lines.
     """
     body = assert_readonly_sql(sql)
-    if not cfg.env.db_url:
-        raise TestRejected("qa.yaml has no db.url; cannot verify data")
+    try:
+        url = connect_url(cfg, catalog, verify=verify)
+    except TestRejected as e:
+        raise TestRejected("qa.yaml has no db.url; cannot verify data") from e
     binary = shutil.which("usql")
     if not binary:
         raise TestRejected("usql not found; cannot verify data")
     head = body.split(None, 1)[0].lower()
     query = f"SELECT count(*) FROM ({body}) AS qa_verify" if head in {"select", "with"} else body
     if on_log is not None:
-        on_log(f"$ usql <db.url> -t -A -c {query[:200]}")
+        label = catalog or cfg.env.db_default or "db.url"
+        on_log(f"$ usql <{label}> -t -A -c {query[:200]}")
     r = _run(
-        [binary, cfg.env.db_url, "-t", "-A", "-c", query],
+        [binary, url, "-t", "-A", "-c", query],
         timeout=120,
         label="usql verify",
     )

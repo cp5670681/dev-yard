@@ -329,6 +329,7 @@ export function setRepoPi(
   model: string | null,
   test_branch: string | null,
   note: string | null,
+  databases?: string[] | null,
 ) {
   return api<Repo[]>(`/api/repos/${encodeURIComponent(alias)}`, {
     method: "PUT",
@@ -337,6 +338,7 @@ export function setRepoPi(
       model: model ?? "",
       test_branch: test_branch ?? "",
       note: note ?? "",
+      databases: databases ?? null,
     }),
   });
 }

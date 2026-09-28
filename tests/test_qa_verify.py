@@ -212,7 +212,7 @@ def test_verify_case_missing_verify_is_failure(tmp_path: Path):
 def test_verify_case_zero_rows_fails_and_writes_artifact(tmp_path: Path, monkeypatch):
     job = _case_job(tmp_path, verify_sql="SELECT id FROM projects WHERE id=669215")
     monkeypatch.setattr(
-        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None: 0
+        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None, **k: 0
     )
     result = verify_case(tmp_path, JIRA, _cfg(tmp_path), job, fingerprint="fp")
     assert result.status == "failed"
@@ -226,7 +226,7 @@ def test_verify_case_zero_rows_fails_and_writes_artifact(tmp_path: Path, monkeyp
 def test_verify_case_passes_with_rows(tmp_path: Path, monkeypatch):
     job = _case_job(tmp_path, verify_sql="SELECT id FROM projects WHERE id=669215")
     monkeypatch.setattr(
-        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None: 1
+        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None, **k: 1
     )
     assert verify_case(tmp_path, JIRA, _cfg(tmp_path), job).status == "passed"
 
@@ -311,7 +311,7 @@ def test_write_blocked_artifact(tmp_path: Path):
 def test_host_notes_missing_names_then_runs_sql(tmp_path: Path, monkeypatch):
     seen: list[str] = []
 
-    def rows(cfg, sql, on_log=None):
+    def rows(cfg, sql, on_log=None, **k):
         seen.append(sql)
         return 1
 
@@ -332,7 +332,7 @@ def test_host_notes_missing_names_then_runs_sql(tmp_path: Path, monkeypatch):
 
 def test_missing_table_name_does_not_redesign(tmp_path: Path, git_src: Path, monkeypatch):
     monkeypatch.setattr(
-        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None: 1
+        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None, **k: 1
     )
     yard = _testing_req(tmp_path, git_src, "QA-VL")
 
@@ -398,7 +398,7 @@ def test_salient_error_keeps_the_exception_not_the_boot_log():
 def test_repair_prompt_does_not_ask_for_a_redesign(tmp_path: Path, git_src: Path, monkeypatch):
     calls = {"n": 0}
 
-    def rows(cfg, sql, on_log=None):
+    def rows(cfg, sql, on_log=None, **k):
         calls["n"] += 1
         return 0 if calls["n"] == 1 else 1
 
@@ -478,10 +478,57 @@ def test_dump_live_schema_formats_rows(monkeypatch):
 
     monkeypatch.setattr(
         "dev_yard.qa_verify.run_sql_lines",
-        lambda cfg, sql, on_log=None: ["projects: id, last, version", "users: id, name"],
+        lambda cfg, sql, on_log=None, **k: ["projects: id, last, version", "users: id, name"],
     )
     lines = dump_live_schema(_Cfg())  # type: ignore[arg-type]
     assert lines == ["- projects: id, last, version", "- users: id, name"]
+
+
+def test_dump_live_schema_prefixes_each_catalog(monkeypatch):
+    from dev_yard.qa_config import QaConfig, QaDbCatalog, QaEnv, QaBrowser
+    from dev_yard.qa_verify import dump_live_schema
+
+    env = QaEnv(
+        name="local",
+        base_url="http://127.0.0.1",
+        db_catalogs=(
+            QaDbCatalog(name="research", url="postgres://r/db"),
+            QaDbCatalog(name="ops", url="postgres://o/db"),
+        ),
+        db_default="research",
+    )
+    cfg = QaConfig(active_env="local", env=env, browser=QaBrowser(), workers=())
+    seen: list[str | None] = []
+
+    def fake_lines(c, sql, on_log=None, catalog=None, verify=False):
+        seen.append(catalog)
+        return [f"{catalog or 'default'}: id"]
+
+    monkeypatch.setattr("dev_yard.qa_verify.run_sql_lines", fake_lines)
+    lines = dump_live_schema(cfg, names=["research", "ops"])
+    assert seen == ["research", "ops"]
+    assert "Live columns (`research`):" in lines
+    assert "Live columns (`ops`):" in lines
+    assert "- research: id" in lines
+    assert "- ops: id" in lines
+
+
+def test_dump_live_schema_unknown_names_are_empty(monkeypatch):
+    from dev_yard.qa_config import QaConfig, QaDbCatalog, QaEnv, QaBrowser
+    from dev_yard.qa_verify import dump_live_schema
+
+    env = QaEnv(
+        name="local",
+        base_url="http://127.0.0.1",
+        db_catalogs=(QaDbCatalog(name="research", url="postgres://r/db"),),
+        db_default="research",
+    )
+    cfg = QaConfig(active_env="local", env=env, browser=QaBrowser(), workers=())
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.run_sql_lines",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not dump")),
+    )
+    assert dump_live_schema(cfg, names=["no-such-db"]) == []
 
 
 def test_prior_defects_reads_previous_runs(tmp_path: Path):
@@ -591,7 +638,7 @@ def test_run_sql_count_counts_rows(tmp_path: Path, monkeypatch):
 
 def test_verify_only_reports_summary(tmp_path: Path, git_src: Path, monkeypatch):
     monkeypatch.setattr(
-        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None: 1
+        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None, **k: 1
     )
     yard = _testing_req(tmp_path, git_src, "QA-V1")
     writer = _CaseWriter(yard, "QA-V1")
@@ -604,7 +651,7 @@ def test_verify_only_reports_summary(tmp_path: Path, git_src: Path, monkeypatch)
 def test_design_loop_repairs_data_gap(tmp_path: Path, git_src: Path, monkeypatch):
     calls = {"n": 0}
 
-    def rows(cfg, sql, on_log=None):
+    def rows(cfg, sql, on_log=None, **k):
         calls["n"] += 1
         return 0 if calls["n"] == 1 else 1
 
@@ -632,7 +679,7 @@ def test_exhausted_verify_loop_records_final_failures(
     tmp_path: Path, git_src: Path, monkeypatch
 ):
     monkeypatch.setattr(
-        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None: 0
+        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None, **k: 0
     )
     yard = _testing_req(tmp_path, git_src, "QA-V6")
     _write_qa_yaml(yard, "\ndesign:\n  verify_attempts: 2\n")
@@ -663,7 +710,7 @@ def test_exhausted_verify_loop_records_final_failures(
 
 def test_approve_refused_until_verified(tmp_path: Path, git_src: Path, monkeypatch):
     monkeypatch.setattr(
-        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None: 0
+        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None, **k: 0
     )
     yard = _testing_req(tmp_path, git_src, "QA-V3")
     writer = _CaseWriter(yard, "QA-V3")
@@ -697,7 +744,7 @@ def test_approve_refused_until_verified(tmp_path: Path, git_src: Path, monkeypat
 
 def test_approve_after_verify_redesign_awaits_review(tmp_path: Path, git_src: Path, monkeypatch):
     monkeypatch.setattr(
-        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None: 0
+        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None, **k: 0
     )
     yard = _testing_req(tmp_path, git_src, "QA-V5")
     writer = _CaseWriter(
@@ -721,7 +768,7 @@ def test_approve_after_verify_redesign_awaits_review(tmp_path: Path, git_src: Pa
 
 
 def test_no_verify_skips_the_loop(tmp_path: Path, git_src: Path, monkeypatch):
-    def boom(cfg, sql, on_log=None):
+    def boom(cfg, sql, on_log=None, **k):
         raise AssertionError("run_sql_count must not run with --no-verify")
 
     monkeypatch.setattr("dev_yard.qa_verify.run_sql_count", boom)
@@ -735,7 +782,7 @@ def test_verify_env_error_blocks_not_fails(tmp_path: Path, monkeypatch):
     """A DB/usql failure is an environment block, not a case data gap (M5)."""
     job = _case_job(tmp_path, verify_sql="SELECT id FROM projects WHERE id=669215")
 
-    def boom(cfg, sql, on_log=None):
+    def boom(cfg, sql, on_log=None, **k):
         raise TestRejected("usql not found; cannot verify data")
 
     monkeypatch.setattr("dev_yard.qa_verify.run_sql_count", boom)
@@ -750,7 +797,7 @@ def test_verify_env_error_does_not_block_design_loop(tmp_path: Path, git_src: Pa
     """An env-blocked verify must not trigger a design redesign (M5)."""
     calls = {"n": 0}
 
-    def boom(cfg, sql, on_log=None):
+    def boom(cfg, sql, on_log=None, **k):
         calls["n"] += 1
         raise TestRejected("connection refused")
 
@@ -838,7 +885,7 @@ def test_env_lock_no_wait_leaves_flag_unset(tmp_path: Path):
 def test_verify_env_block_is_retried(tmp_path: Path, git_src: Path, monkeypatch):
     calls = {"n": 0}
 
-    def boom(cfg, sql, on_log=None):
+    def boom(cfg, sql, on_log=None, **k):
         calls["n"] += 1
         raise TestRejected("connection refused")
 
