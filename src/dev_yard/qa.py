@@ -868,8 +868,19 @@ def _design_prompt(
     verify_feedback: str | None = None,
     history: str | None = None,
     repair_only: bool = False,
+    contract_fix: bool = False,
 ) -> str:
     spec = load_registry(root)["qa-design"]
+    if contract_fix and verify_feedback and verify_feedback.strip():
+        extra = (
+            "契约修补。这不是重新设计。\n"
+            "只改清单点名的问题：给已有用例补上 covers，或补上 data.verify / repo / identity。\n"
+            "不要改其它用例的步骤和预期，不要 diff，不要读 dev-yard 的 src/。\n"
+            "改动点没有 covers 时，加到已经在断言该行为的用例上；没有这样的用例再补一条。\n"
+            "缺账号保持未覆盖，不要为账号重写用例。\n\n"
+            + verify_feedback.strip()
+        )
+        return session_prompt_for(spec, root, jira, extra=extra)
     if repair_only and verify_feedback and verify_feedback.strip():
         extra = (
             "数据核实修补。这不是重新设计。\n"
@@ -2170,9 +2181,10 @@ def _req_test(
                 jira,
                 cfg,
                 verify_feedback=(
-                    "宿主静态契约检查未通过，请修正后重写用例：\n"
+                    "宿主静态契约检查未通过，请只修正这些问题：\n"
                     + "\n".join(f"- {p}" for p in problems)
                 ),
+                contract_fix=True,
             )
             _mark_design_pending(qa)
             result = _ensure_design_runner().start(
@@ -2182,13 +2194,25 @@ def _req_test(
             )
             _raise_if_cancelled(cancel_check, "qa-design")
             if not result.ok:
-                raise TestRejected(
-                    f"qa-design 契约修正失败: {result.summary or result.exit_code}"
-                )
-            cases = discover_cases(qa)
-            _finish_design(qa)
-            # The changed case set invalidates any prior approval; the review
-            # gate holds it for a fresh look (no need to force `rejected`).
+                # The first design already finished. A stalled patch must not
+                # leave the pending sentinel, or the next click redesigns
+                # every case on the same model.
+                if read_design_marker(qa) is None:
+                    raise TestRejected(
+                        f"qa-design 契约修正失败: {result.summary or result.exit_code}"
+                    )
+                (qa / _DESIGN_PENDING).unlink(missing_ok=True)
+                if on_log is not None:
+                    on_log(
+                        "契约修正没有得到模型回复，已保留本轮用例并继续数据核实："
+                        f"{result.summary or result.exit_code}\n"
+                        "未改掉的契约问题仍会挡住审核。\n"
+                    )
+            else:
+                cases = discover_cases(qa)
+                _finish_design(qa)
+                # The changed case set invalidates any prior approval; the review
+                # gate holds it for a fresh look (no need to force `rejected`).
 
     # M1/M3: prove each case's declared data prerequisites host-side. Failures
     # loop back into design (bounded); the final verdict is written so the gate

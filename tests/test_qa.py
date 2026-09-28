@@ -4150,6 +4150,68 @@ def test_lint_problem_triggers_one_design_fix(
     assert result["lint"] == []
 
 
+def test_contract_fix_stall_keeps_finished_design(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard.qa import design_pending, read_design_marker
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-LS")
+    qa = yard / "reqs" / "QA-LS" / "qa"
+    qa.mkdir(parents=True, exist_ok=True)
+    (qa / "meta.yaml").write_text(
+        "changes:\n  - {id: D1, repo: backend}\n  - {id: D2, repo: backend}\n",
+        encoding="utf-8",
+    )
+    logs: list[str] = []
+
+    class _StallRunner(Runner):
+        def __init__(self):
+            self.called = 0
+            self.prompts: list[str] = []
+
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            self.called += 1
+            self.prompts.append(prompt)
+            if self.called == 1:
+                d = qa / "cases" / "mod"
+                d.mkdir(parents=True, exist_ok=True)
+                (d / "case-01.md").write_text(
+                    "---\nid: case-01\ntitle: t\nrepo: backend\ncovers: [D1]\n---\n\nbody\n",
+                    encoding="utf-8",
+                )
+                return RunResult(ok=True, summary="designed")
+            return RunResult(
+                ok=False,
+                summary="Stream produced no non-ping SSE event within 80000ms",
+                exit_code=1,
+            )
+
+    runner = _StallRunner()
+    result = req_test(
+        yard,
+        "QA-LS",
+        print_mode=True,
+        design_only=True,
+        verify=False,
+        runner=runner,
+        on_log=logs.append,
+    )
+    assert runner.called == 2
+    assert "契约修补" in runner.prompts[1]
+    assert "git diff" not in runner.prompts[1]
+    assert "D2" in runner.prompts[1]
+    assert not design_pending(qa)
+    marker = read_design_marker(qa)
+    assert marker is not None and marker["cases"] == ["case-01"]
+    assert any("改动点 D2 未被任何用例 covers" in item for item in result["lint"])
+    assert any("保留本轮用例" in line for line in logs)
+    assert "covers: [D1]" in (qa / "cases" / "mod" / "case-01.md").read_text(
+        encoding="utf-8"
+    )
+
+
 def test_missing_account_does_not_redesign(
     tmp_path: Path, git_src: Path, monkeypatch
 ):
