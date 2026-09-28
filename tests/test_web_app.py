@@ -1301,6 +1301,9 @@ def test_repo_form_role_is_free_text(tmp_path: Path, git_src: Path):
     assert 'v-text-field v-model="role"' in vue
     assert 'v-model="note"' in vue
     assert "备注" in vue
+    assert 'v-model="editDatabases"' in vue
+    assert "multiple" in vue
+    assert "逗号分隔" not in vue
     r = client.post(
         "/api/repos",
         json={

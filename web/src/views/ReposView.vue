@@ -166,6 +166,21 @@
                   @update:model-value="onAddModelChange"
                 />
               </v-col>
+              <v-col cols="12">
+                <v-select
+                  v-model="addDatabases"
+                  :items="dbCatalogItems"
+                  label="数据库"
+                  variant="outlined"
+                  density="comfortable"
+                  multiple
+                  chips
+                  closable-chips
+                  clearable
+                  persistent-hint
+                  :hint="dbCatalogHint"
+                />
+              </v-col>
             </v-row>
           </v-form>
         </v-card-text>
@@ -226,14 +241,18 @@
             hide-details
             clearable
           />
-          <v-text-field
+          <v-select
             v-model="editDatabases"
-            label="数据库 catalogs（逗号分隔，对应 qa.yaml 里的名字）"
-            placeholder="如 research, research_ops"
+            :items="dbCatalogItems"
+            label="数据库"
             variant="outlined"
             density="comfortable"
-            hide-details
+            multiple
+            chips
+            closable-chips
             clearable
+            persistent-hint
+            :hint="dbCatalogHint"
           />
         </v-card-text>
         <v-card-actions>
@@ -251,8 +270,8 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useDisplay } from "vuetify";
 import { mdiContentCopy, mdiSourceRepository } from "@mdi/js";
-import { addRepo, getPiSettings, listRepos, setRepoPi } from "@/api/client";
-import type { JobSnapshot, PiCatalogProvider, Repo } from "@/api/types";
+import { addRepo, getPiSettings, getQaConfig, listRepos, setRepoPi } from "@/api/client";
+import type { JobSnapshot, PiCatalogProvider, QaConfigPayload, Repo } from "@/api/types";
 import { useSnack } from "@/composables/snack";
 import JobPanel from "@/components/JobPanel.vue";
 
@@ -273,6 +292,7 @@ const path = ref("");
 const addProvider = ref("");
 const addModel = ref("");
 const addTestBranch = ref("");
+const addDatabases = ref<string[]>([]);
 const editDialog = ref(false);
 const editBusy = ref(false);
 const editAlias = ref("");
@@ -280,11 +300,43 @@ const editProvider = ref("");
 const editModel = ref("");
 const editTestBranch = ref("");
 const editNote = ref("");
-const editDatabases = ref("");
+const editDatabases = ref<string[]>([]);
+const dbCatalogNames = ref<string[]>([]);
 const catalog = ref<PiCatalogProvider[]>([]);
 const jobId = ref(typeof route.query.job === "string" ? route.query.job : "");
 const urlRule = (v: string) => !!v.trim() || "需要 git url";
 const providerItems = computed(() => catalog.value.map((p) => p.id));
+const dbCatalogItems = computed(() => {
+  const names = [...dbCatalogNames.value];
+  for (const name of [...addDatabases.value, ...editDatabases.value]) {
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names;
+});
+const dbCatalogHint = computed(() =>
+  dbCatalogNames.value.length
+    ? "来自测试配置 qa.yaml 的 catalogs，可多选"
+    : "还没有 catalog，先到测试配置里加库",
+);
+
+function splitDatabases(raw: string | undefined): string[] {
+  return (raw || "")
+    .split(/[,\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function catalogNamesFromQa(payload: QaConfigPayload | null): string[] {
+  if (!payload) return [];
+  const names: string[] = [];
+  for (const env of Object.values(payload.envs || {})) {
+    for (const row of env.db?.catalogs || []) {
+      const name = (row.name || "").trim();
+      if (name && !names.includes(name)) names.push(name);
+    }
+  }
+  return names;
+}
 
 function modelItems(providerId: string | null | undefined): string[] {
   const pid = providerId || "";
@@ -357,6 +409,12 @@ onMounted(async () => {
     const cfg = await getPiSettings();
     catalog.value = cfg.catalog?.providers || [];
     for (const r of repos.value) ensureSaved(r.provider, r.model);
+    try {
+      const qa = await getQaConfig();
+      dbCatalogNames.value = catalogNamesFromQa(qa.payload);
+    } catch {
+      dbCatalogNames.value = [];
+    }
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   }
@@ -386,6 +444,7 @@ async function submit() {
       provider: addProvider.value,
       model: addModel.value,
       test_branch: addTestBranch.value,
+      databases: addDatabases.value,
     });
     jobId.value = out.jobs[0]?.id || "";
     dialog.value = false;
@@ -411,7 +470,7 @@ function openEdit(r: Repo) {
   editModel.value = r.model || "";
   editTestBranch.value = r.test_branch || "";
   editNote.value = r.note || "";
-  editDatabases.value = r.databases || "";
+  editDatabases.value = splitDatabases(r.databases);
   ensureSaved(r.provider, r.model);
   editDialog.value = true;
 }
@@ -427,10 +486,7 @@ async function saveEdit() {
       editModel.value,
       editTestBranch.value,
       editNote.value,
-      editDatabases.value
-        .split(/[,\s]+/)
-        .map((s) => s.trim())
-        .filter(Boolean),
+      editDatabases.value,
     );
     editDialog.value = false;
     snack.notify("已写入仓库设置", "success");

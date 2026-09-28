@@ -310,6 +310,7 @@ export function addRepo(payload: {
   provider?: string | null;
   model?: string | null;
   test_branch?: string | null;
+  databases?: string[];
 }) {
   return api<JobsOut>("/api/repos", {
     method: "POST",

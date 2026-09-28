@@ -43,6 +43,7 @@ class RepoAddIn(BaseModel):
     provider: str = ""
     model: str = ""
     test_branch: str = ""
+    databases: list[str] = Field(default_factory=list)
 
 
 class RepoPiIn(BaseModel):
