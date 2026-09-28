@@ -855,6 +855,11 @@ def _finish_design(qa: Path) -> dict[str, Any]:
     return marker
 
 
+def _is_account_gap(problem: str) -> bool:
+    """An unconfigured `account:` is a coverage gap, not a design defect."""
+    return ": account " in problem and "未配置" in problem
+
+
 def _design_prompt(
     root: Path,
     jira: str,
@@ -862,8 +867,20 @@ def _design_prompt(
     feedback: str | None = None,
     verify_feedback: str | None = None,
     history: str | None = None,
+    repair_only: bool = False,
 ) -> str:
     spec = load_registry(root)["qa-design"]
+    if repair_only and verify_feedback and verify_feedback.strip():
+        extra = (
+            "数据核实修补。这不是重新设计。\n"
+            "只改失败清单里的用例文件（setup、cleanup、verify.sql、该用例的前置）。\n"
+            "不要改其它用例，不要 diff，不要读 dev-yard 的 src/。\n"
+            "错误里的异常行是结论；忽略 Rails 启动警告。\n"
+            "模型不认的字段从 setup 删掉，按 worktree 里该模型的列来写。\n"
+            "缺账号保持未覆盖，不要为账号重写用例。\n\n"
+            + verify_feedback.strip()
+        )
+        return session_prompt_for(spec, root, jira, extra=extra)
     extra = _duties("design", jira) + "\n\n" + _context_block(root, jira, cfg)
     if history and history.strip():
         extra += "\n\n# 历史数据缺口（上一轮 run 记录，本轮必须修掉）\n\n" + history.strip()
@@ -990,7 +1007,11 @@ def _verify_loop(
             on_log=on_log,
             cancel_check=cancel_check,
         )
-        failures = [r for r in results.values() if r.status == "failed"]
+        failures = [
+            r
+            for r in results.values()
+            if r.status == "failed" and not r.lint.get("skip_design")
+        ]
         blocked = [r for r in results.values() if r.status == "blocked"]
         if not failures and not blocked:
             break
@@ -1008,7 +1029,7 @@ def _verify_loop(
                 break
             if on_log is not None:
                 on_log(
-                    f"数据核实 {len(failures)} 条未通过，回灌 design 重做"
+                    f"数据核实 {len(failures)} 条未通过，只修补这些用例"
                     f"（第 {case_round}/{case_attempts - 1} 次）\n"
                 )
             prompt = _design_prompt(
@@ -1016,7 +1037,7 @@ def _verify_loop(
                 jira,
                 cfg,
                 verify_feedback=render_feedback(results),
-                history=history_text or None,
+                repair_only=True,
             )
             _mark_design_pending(qa)
             result = design_runner().start(
@@ -2131,6 +2152,14 @@ def _req_test(
         and not allow_unverified
     ):
         problems = lint_cases(root, jira, cfg, cases)
+        account_gaps = [p for p in problems if _is_account_gap(p)]
+        problems = [p for p in problems if p not in account_gaps]
+        if account_gaps and on_log is not None:
+            on_log(
+                "缺账号不回灌设计，保持未覆盖："
+                + "；".join(account_gaps)
+                + "\n"
+            )
         if problems:
             if on_log is not None:
                 on_log("用例契约检查未通过，回灌 design 修正："

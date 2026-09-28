@@ -80,6 +80,89 @@ def _truncate(text: str, cap: int = _STDOUT_CAP) -> str:
     return text if len(text) <= cap else text[:cap] + f"\n...({len(text) - cap} more)"
 
 
+_LINT_NAMES = re.compile(r"引用了表 (.+)，但|的列 (.+) 未出现")
+_HOST_NOTE = re.compile(r"<!-- host-verify: .*? -->")
+# Rails runner boots with pages of warnings before the real exception. The
+# design repair only needs the exception, so drop the boot noise.
+_BOOT_NOISE = (
+    "warn --",
+    "warning:",
+    "has_rdoc",
+    "already initialized constant",
+    "fatal: not a git repository",
+    "bootsnap",
+    "gem::specification",
+    "character class has",
+)
+
+
+def salient_error(text: str, limit: int = _MAX_ATTEMPTS_REASON) -> str:
+    """The part of a setup/verify failure the repair pass can act on."""
+    raw = (text or "").replace("\\n", "\n").replace("\\t", " ")
+    kept: list[str] = []
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        low = s.lower()
+        if low.startswith("w, [") or any(noise in low for noise in _BOOT_NOISE):
+            continue
+        kept.append(s)
+    hit = [
+        s
+        for s in kept
+        if "error" in s.lower() or "exception" in s.lower() or "不存在" in s
+    ]
+    chosen = hit[-3:] if hit else kept[-6:]
+    out = "\n".join(chosen).strip()
+    if len(out) > limit:
+        out = out[-limit:]
+    if out:
+        return out
+    tail = (text or "").strip()
+    return tail[-limit:] if len(tail) > limit else tail
+
+
+def _lint_names(lint: dict[str, Any]) -> list[str]:
+    detail = str(lint.get("detail") or "")
+    found = _LINT_NAMES.search(detail)
+    if not found:
+        return []
+    raw = found.group(1) or found.group(2) or ""
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def note_lint_names(job: CaseJob, lint: dict[str, Any]) -> list[str]:
+    """Write missing table/column names into the case so lint can proceed.
+
+    A missing name is not a data failure. The host records it and keeps going;
+    setup errors and zero-row queries are what come back to design.
+    """
+    names = _lint_names(lint)
+    if not names or not job.path:
+        return []
+    path = Path(job.path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    prev: list[str] = []
+    old = _HOST_NOTE.search(job.body or "")
+    if old:
+        raw = old.group(0).split(":", 1)[-1].removesuffix("-->")
+        prev = [part.strip() for part in raw.split(",") if part.strip()]
+    merged: list[str] = []
+    for name in [*prev, *names]:
+        if name not in merged:
+            merged.append(name)
+    note = "<!-- host-verify: " + ", ".join(merged) + " -->"
+    text = _HOST_NOTE.sub("", text).rstrip() + "\n" + note + "\n"
+    path.write_text(text, encoding="utf-8")
+    body = _HOST_NOTE.sub("", job.body or "").rstrip()
+    job.body = body + "\n" + note + "\n"
+    return names
+
+
 @dataclass
 class VerifyResult:
     """Outcome of verifying one case's declared data prerequisites."""
@@ -301,9 +384,23 @@ def verify_case(
         return finish()
 
     result.lint = lint_verify(job, text)
+    noted: list[str] = []
+    for _ in range(2):
+        if result.lint.get("ok"):
+            break
+        added = note_lint_names(job, result.lint)
+        if not added:
+            break
+        noted.extend(added)
+        result.lint = lint_verify(job, text)
+    if noted:
+        result.lint = {**result.lint, "noted": noted}
     if not result.lint.get("ok"):
+        # Name gaps are a host note, not a design round. Anything left here
+        # could not be noted (no case file); still do not spend a design pass.
         result.status = "failed"
         result.error = str(result.lint.get("detail") or "verify-lint failed")
+        result.lint["skip_design"] = True
         return finish()
 
     if job.setup:
@@ -790,24 +887,24 @@ def render_feedback(
 ) -> str:
     """Structured failure list fed back into the design agent."""
     lines = [
-        "宿主在设计期执行了数据核实（verify.sql），以下用例未通过。"
-        "请修正 setup / verify.sql / 用例前置，使它们真能取到数据；"
-        "不要放宽规则，也不要写空转的 verify.sql。",
+        "数据核实未通过。只改下列用例的 setup / cleanup / verify.sql。",
+        "不要改其它用例，不要放宽预期，不要用 SELECT 1 掩盖真断言。",
         "",
     ]
     for cid in sorted(results):
         r = results[cid]
-        if r.status != "failed":
+        if r.status != "failed" or r.lint.get("skip_design"):
             continue
         lines.append(f"## {cid}")
-        lines.append(f"- verify.sql: `{r.verify_sql or '(缺失)'}`")
+        sql = " ".join((r.verify_sql or "").split())
+        if len(sql) > 240:
+            sql = sql[:240] + "…"
+        lines.append(f"- verify.sql: `{sql or '(缺失)'}`")
         lines.append(f"- 实际行数: {r.rows}")
-        if r.lint.get("detail"):
-            lines.append(f"- lint: {r.lint['detail']}")
         if r.error:
-            lines.append(f"- 错误: {_truncate(r.error, limit)}")
+            lines.append(f"- 错误: {salient_error(r.error, limit)}")
         if r.setup_stdout:
-            lines.append(f"- setup stdout: {_truncate(r.setup_stdout, limit)}")
+            lines.append(f"- setup stdout: {salient_error(r.setup_stdout, limit)}")
         lines.append("")
     return "\n".join(lines).strip()
 

@@ -121,10 +121,15 @@ def _case_dir(tmp_path: Path, jira: str = JIRA) -> Path:
     return case_dir
 
 
-def _case_job(tmp_path: Path, *, verify_sql: str | None, setup: str = "") -> CaseJob:
+def _case_job(
+    tmp_path: Path,
+    *,
+    verify_sql: str | None,
+    setup: str = "",
+    body: str = "## 预期\n- DB: projects.id=669215\n",
+) -> CaseJob:
     case_dir = _case_dir(tmp_path)
     path = case_dir / "case-01.md"
-    body = "## 预期\n- DB: projects.id=669215\n"
     path.write_text(
         "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\n" + body,
         encoding="utf-8",
@@ -301,6 +306,124 @@ def test_write_blocked_artifact(tmp_path: Path):
     text = path.read_text(encoding="utf-8")
     assert "case-01" in text and "case-02" not in text
     assert write_blocked(tmp_path, JIRA, {"case-02": results["case-02"]}) is None
+
+
+def test_host_notes_missing_names_then_runs_sql(tmp_path: Path, monkeypatch):
+    seen: list[str] = []
+
+    def rows(cfg, sql, on_log=None):
+        seen.append(sql)
+        return 1
+
+    monkeypatch.setattr("dev_yard.qa_verify.run_sql_count", rows)
+    job = _case_job(
+        tmp_path,
+        body="## 步骤\n1. 打开页面\n",
+        verify_sql="SELECT id FROM projects WHERE id=1",
+    )
+    result = verify_case(tmp_path, JIRA, _cfg(tmp_path), job)
+    assert result.status == "passed"
+    assert seen and "projects" in seen[0]
+    text = Path(job.path).read_text(encoding="utf-8")
+    assert "host-verify:" in text
+    assert "projects" in text and "id" in text
+    assert result.lint.get("noted")
+
+
+def test_missing_table_name_does_not_redesign(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None: 1
+    )
+    yard = _testing_req(tmp_path, git_src, "QA-VL")
+
+    class _Once(Runner):
+        def __init__(self):
+            self.called = 0
+
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            self.called += 1
+            d = yard / "reqs" / "QA-VL" / "qa" / "cases" / "mod"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "case-01.md").write_text(
+                "---\nid: case-01\ntitle: t\nrepo: backend\n"
+                "data: { verify: verify.sql }\n---\n\n打开页面\n",
+                encoding="utf-8",
+            )
+            (d / "verify.sql").write_text(
+                "SELECT id FROM projects WHERE id=1\n", encoding="utf-8"
+            )
+            return RunResult(ok=True, summary="designed")
+
+    writer = _Once()
+    result = req_test(yard, "QA-VL", print_mode=True, design_only=True, runner=writer)
+    assert writer.called == 1
+    assert result["verify"]["summary"]["passed"] == 1
+    case = yard / "reqs" / "QA-VL" / "qa" / "cases" / "mod" / "case-01.md"
+    assert "host-verify:" in case.read_text(encoding="utf-8")
+
+
+def test_render_feedback_omits_name_gaps_and_keeps_real_failures():
+    text = render_feedback(
+        {
+            "case-01": VerifyResult(
+                case="case-01",
+                status="failed",
+                error="verify.sql 引用了表 projects，但用例正文从未提及",
+                lint={"skip_design": True},
+            ),
+            "case-02": VerifyResult(case="case-02", status="failed", error="0 rows"),
+        }
+    )
+    assert "case-02" in text and "0 rows" in text
+    assert "case-01" not in text
+
+
+def test_salient_error_keeps_the_exception_not_the_boot_log():
+    from dev_yard.qa_verify import salient_error
+
+    blob = (
+        "setup failed: jms-k8s case-01-setup.rb failed: "
+        "W, [2026-09-28T13:00:43] WARN -- : OmniAuth noise\n"
+        "Gem::Specification#has_rdoc= is deprecated\n"
+        "fatal: not a git repository (or any of the parent directories): .git\n"
+        "unknown attribute 'publish_value_type' for Project. "
+        "(ActiveModel::UnknownAttributeError)\n"
+    )
+    text = salient_error(blob)
+    assert "publish_value_type" in text
+    assert "WARN --" not in text
+    assert "has_rdoc" not in text
+
+
+def test_repair_prompt_does_not_ask_for_a_redesign(tmp_path: Path, git_src: Path, monkeypatch):
+    calls = {"n": 0}
+
+    def rows(cfg, sql, on_log=None):
+        calls["n"] += 1
+        return 0 if calls["n"] == 1 else 1
+
+    monkeypatch.setattr("dev_yard.qa_verify.run_sql_count", rows)
+    yard = _testing_req(tmp_path, git_src, "QA-VR")
+    prompts: list[str] = []
+
+    class _RepairWriter(_CaseWriter):
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            prompts.append(prompt)
+            return super().start(prompt, cwd, extra_read_paths, repo)
+
+    writer = _RepairWriter(
+        yard,
+        "QA-VR",
+        bodies=[
+            "SELECT id FROM projects WHERE id=669215",
+            "SELECT id FROM projects WHERE id=1",
+        ],
+    )
+    req_test(yard, "QA-VR", print_mode=True, runner=writer)
+    assert writer.called == 2
+    assert "数据核实修补" in prompts[1]
+    assert "不要 diff" in prompts[1]
+    assert "git diff" not in prompts[1]
 
 
 def test_render_feedback_lists_only_failures():

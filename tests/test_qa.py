@@ -4150,6 +4150,46 @@ def test_lint_problem_triggers_one_design_fix(
     assert result["lint"] == []
 
 
+def test_missing_account_does_not_redesign(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-LA")
+    logs: list[str] = []
+
+    class _AccountRunner(Runner):
+        def __init__(self):
+            self.called = 0
+            self.prompts: list[str] = []
+
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            self.called += 1
+            self.prompts.append(prompt)
+            d = yard / "reqs" / "QA-LA" / "qa" / "cases" / "mod"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "case-01.md").write_text(
+                "---\nid: case-01\ntitle: t\nrepo: backend\naccount: no_perm\n---\n\n"
+                "未覆盖（缺账号 no_perm）\n",
+                encoding="utf-8",
+            )
+            return RunResult(ok=True, summary="designed")
+
+    runner = _AccountRunner()
+    result = req_test(
+        yard,
+        "QA-LA",
+        print_mode=True,
+        design_only=True,
+        verify=False,
+        runner=runner,
+        on_log=logs.append,
+    )
+    assert runner.called == 1
+    assert any("缺账号不回灌" in line for line in logs)
+    assert any("no_perm" in item for item in result["lint"])
+
+
 def test_pool_preflight_drops_bad_pool(tmp_path: Path, git_src: Path, monkeypatch):
     from dev_yard import qa_state as qa_st
 
