@@ -100,6 +100,13 @@ envs:
 | 退出码 | 非 0 仍返回 `ExecResult`，由上层标 `TestRejected` / case `blocked`。 |
 | cwd | `local`：freeze worktree。远程：`with.workdir`（空 = 镜像默认工作目录，配方不加 `cd`）。 |
 
+**「runner 从 stdin 读」是要求，`-` 只是多数 runner 的实现约定，不是全部。** 老 Rails 的 `script/runner`（2.1.x）把参数当**代码或文件路径**，压根没有 stdin 模式：宿主拼出的 `script/runner -` 会被它 `eval("-")` → `(eval):1: syntax error, unexpected $end`，而 stdin 里的脚本一个字节都没被读。预检 hello 于是报「回显失败 site=…」，看起来像环境故障，实际是 runner 语义不兼容。两条退路：
+
+1. **把管道接到文件参数上**：`runner: ruby script/runner /dev/stdin`。它命中自己的 `File.exist?` 分支去 `File.read('/dev/stdin')`，等价于显式声明「这个 runner 用文件路径吃 stdin」。已实测（2026-09-29，dev/reach pod，Rails 2.1.1 / Ruby 1.8）。
+2. **`payload: bundle`**（§3.5）：脚本按**文件名**跑，同样走文件分支。
+
+判据：预检 hello 若报 `(eval):1: syntax error`，先怀疑 runner 不读 stdin，而不是环境不通。
+
 脚本规则（qa-design 与 `context.md` 必须写上，否则远程必翻）：
 
 1. **单文件。** 默认不支持 `require` 邻居。需要多文件时走 `payload: bundle`（§3.5），不是悄悄依赖盘上的相对路径。
@@ -188,7 +195,7 @@ exec:
       reach:
         namespace: research
         container: reach
-        runner: ruby script/runner
+        runner: ruby script/runner /dev/stdin  # Rails 2.1.1 不认 `-`，见 §3.1
         base_url: http://in.dev1.example.com
         pod:
           pattern: "^reach.{,17}$"
@@ -203,7 +210,7 @@ exec:
 3. 0 个 / 多个且未定义选哪个：失败，错误类 `PodNotFound`。多副本时取 Running 列表的第一项可以，但脚本必须遵守 §3.1 第 3 条。
 4. `kubectl exec` **必须** `-c {container}`。
 
-stdin 模式：`kubectl exec -i ... -- {runner} -`。多层引号由代码生成 argv 数组，不经用户 shell 模板。
+stdin 模式：`kubectl exec -i ... -- {runner} -`。多层引号由代码生成 argv 数组，不经用户 shell 模板。runner 不认 `-` 时见 §3.1 的 legacy 说明。
 
 SSH 复用：同一 run 内对同一 `{port,身份串}` 开 `ControlMaster`，避免 50 次 JMS 握手。进程退出或 run 结束拆掉 master。这是实现细节，配置不出现。
 
