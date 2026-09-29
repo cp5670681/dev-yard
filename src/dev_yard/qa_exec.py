@@ -40,14 +40,24 @@ _WRITE_SQL = re.compile(
 )
 
 
-def state_path(root: Path, cfg: QaConfig, acct: QaAccount) -> Path:
+def state_path(
+    root: Path, cfg: QaConfig, acct: QaAccount, *, site: str = ""
+) -> Path:
     rel = acct.state_file or default_state_file(cfg.active_env, acct.name)
+    site = (site or "").strip()
+    default = (getattr(getattr(cfg.env, "exec_cfg", None), "exec_default", None) or "").strip()
+    if site and site != default:
+        path = Path(rel)
+        slug = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in site) or "site"
+        rel = str(path.with_name(f"{path.stem}-{slug}{path.suffix}"))
     path = Path(rel)
     return path if path.is_absolute() else root / path
 
 
-def auth_replay_path(root: Path, cfg: QaConfig, acct: QaAccount) -> Path:
-    state = state_path(root, cfg, acct)
+def auth_replay_path(
+    root: Path, cfg: QaConfig, acct: QaAccount, *, site: str = ""
+) -> Path:
+    state = state_path(root, cfg, acct, site=site)
     return state.with_suffix(".replay.sh")
 
 
@@ -104,6 +114,8 @@ def ensure_auth(
     cfg: QaConfig,
     names: list[str] | None = None,
     on_log: Any | None = None,
+    *,
+    sites: list[str] | None = None,
 ) -> dict[str, str]:
     """Pre-check auth states in workspace, or run saved replay scripts.
 
@@ -114,21 +126,28 @@ def ensure_auth(
     env = cfg.env
     if names is None:
         names = [env.auth_default] if env.auth_default else []
+    spec = getattr(env, "exec_cfg", None)
+    if sites is None:
+        sites = [s.name for s in getattr(spec, "sites", ()) or ()] or [""]
     failures: dict[str, str] = {}
     binary: str | None = None
     for name in names:
         acct = env.accounts.get(name)
         if acct is None:
             continue
-        try:
-            binary = _ensure_one(root, cfg, name, acct, binary, on_log)
-        except _AiAuthPending as e:
-            if on_log is not None:
-                on_log(f"{e}\n")
-        except TestRejected as e:
-            failures[name] = str(e)
-            if on_log is not None:
-                on_log(f"auth for {name} failed: {e}\n")
+        for site in sites:
+            try:
+                binary = _ensure_one(
+                    root, cfg, name, acct, binary, on_log, site=site or ""
+                )
+            except _AiAuthPending as e:
+                if on_log is not None:
+                    on_log(f"{e}\n")
+            except TestRejected as e:
+                key = f"{name}/{site}" if site else name
+                failures[key] = str(e)
+                if on_log is not None:
+                    on_log(f"auth for {key} failed: {e}\n")
     return failures
 
 
@@ -139,9 +158,11 @@ def _ensure_one(
     acct: QaAccount,
     binary: str | None,
     on_log: Any | None,
+    *,
+    site: str = "",
 ) -> str:
-    state = state_path(root, cfg, acct)
-    replay = auth_replay_path(root, cfg, acct)
+    state = state_path(root, cfg, acct, site=site)
+    replay = auth_replay_path(root, cfg, acct, site=site)
     state.parent.mkdir(parents=True, exist_ok=True)
     has_creds = bool(acct.username and acct.password)
 
@@ -162,7 +183,9 @@ def _ensure_one(
     if replay.is_file():
         if on_log is not None:
             on_log(f"replaying saved auth script: {replay}")
-        if _run_auth_replay(binary, cfg, acct, state, replay, root, on_log):
+        if _run_auth_replay(
+            binary, cfg, acct, state, replay, root, on_log, site=site
+        ):
             return binary
 
     # 3. AI Exploration path:
@@ -185,11 +208,15 @@ def _run_auth_replay(
     replay: Path,
     root: Path,
     on_log: Any | None,
+    *,
+    site: str = "",
 ) -> bool:
+    from dev_yard.exec_cfg import origin_for_site
+
     session = "qap-preload"
     env = os.environ.copy()
     env["PLAYWRIGHT_SESSION"] = session
-    env["BASE_URL"] = cfg.env.base_url
+    env["BASE_URL"] = origin_for_site(cfg.env, site) or cfg.env.base_url
     env["USERNAME"] = acct.username or ""
     env["PASSWORD"] = acct.password or ""
     if on_log is not None:
@@ -259,6 +286,12 @@ def exec_site_for_job(root: Path, cfg: QaConfig, job: CaseJob) -> str | None:
     return default or None
 
 
+def origin_for_job(root: Path, cfg: QaConfig, job: CaseJob) -> str:
+    from dev_yard.exec_cfg import origin_for_site
+
+    return origin_for_site(cfg.env, exec_site_for_job(root, cfg, job))
+
+
 def run_case_script(
     root: Path,
     jira: str,
@@ -293,9 +326,10 @@ def run_case_script(
 
     site_name = exec_site_for_job(root, cfg, job)
     if executor is None:
+        origin = origin_for_job(root, cfg, job)
         executor = resolve_executor(
             cfg.env,
-            base_url=cfg.env.base_url,
+            base_url=origin or cfg.env.base_url,
             worktree=wt,
             root=root,
             site=site_name,

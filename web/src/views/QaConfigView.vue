@@ -173,7 +173,7 @@
                   placeholder="http://127.0.0.1:8080"
                   :prepend-inner-icon="mdiWeb"
                   persistent-hint
-                  hint="跑测时浏览器从这里开；默认环境必填，其他环境可以留空。"
+                  hint="缺省 origin。仓绑了 exec site 且 site 填了 origin 时，用例走 site 的地址。"
                   class="mb-4"
                 />
                 <v-text-field
@@ -340,8 +340,8 @@
                     </v-btn>
                   </div>
                   <p class="text-caption text-medium-emphasis mb-3">
-                    运输层（JMS/节点）挂在环境上；pod / runner 按仓拆。仓库
-                    <code>exec</code> 点名；不写则用默认。
+                    运输层（JMS/节点）挂在环境上；pod / runner / origin 按仓拆。仓库
+                    <code>exec</code> 点名；不写则用默认 site。origin 空则回落到环境 base_url。
                   </p>
                   <v-select
                     v-if="(currentEnv.exec.sites || []).length"
@@ -389,6 +389,13 @@
                       label="workdir（空=不加 cd）"
                       variant="outlined"
                       density="comfortable"
+                    />
+                    <v-text-field
+                      v-model="site.base_url"
+                      label="origin / base_url（空=环境缺省）"
+                      variant="outlined"
+                      density="comfortable"
+                      placeholder="http://research.dev1.rccchina.com"
                     />
                     <template v-if="currentEnv.exec.use === 'jms-k8s'">
                       <v-text-field v-model="site.namespace" label="namespace" variant="outlined" density="comfortable" />
@@ -992,6 +999,7 @@ function blankExecSite() {
     container: "",
     pod_selector: "",
     pod_pattern: "",
+    base_url: "",
   };
 }
 

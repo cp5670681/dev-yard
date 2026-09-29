@@ -69,6 +69,18 @@ def _account_step(root: Path, cfg: QaConfig, cases: list[CaseJob]) -> dict[str, 
     }
 
 
+def _harden_origin(steps: list[dict[str, str]]) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for step in steps:
+        item = dict(step)
+        if item.get("step") == "origin" and item.get("status") != "ok":
+            item["status"] = "fail"
+            if not item.get("detail"):
+                item["detail"] = "site origin 打不开"
+        out.append(item)
+    return out
+
+
 def _harden_db(cfg: QaConfig, steps: list[dict[str, str]]) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     saw_db = False
@@ -147,7 +159,7 @@ def assess_ready(
             jira=jira,
             worktree=_worktree(root, jira),
         )
-        steps = _harden_db(cfg, list(checked.get("steps") or []))
+        steps = _harden_origin(_harden_db(cfg, list(checked.get("steps") or [])))
         env_ok = True
     except (TestRejected, ExecUnreachable) as e:
         steps = [{"step": "env", "status": "fail", "detail": str(e)}]

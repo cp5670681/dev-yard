@@ -32,10 +32,13 @@ from dev_yard.qa_config import (
 from dev_yard.qa_exec import (
     diagnose_pi_exit,
     ensure_auth,
+    exec_site_for_job,
     normalize_case_result,
+    origin_for_job,
     recheck_db_assertions,
     replay_path,
     run_case_script,
+    state_path,
 )
 from dev_yard.qa_report import has_design_blocked_skip, map_qa_result, triage_buckets
 from dev_yard.qa_review import (
@@ -148,7 +151,8 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
         "",
         f"- env: {cfg.active_env}",
         f"- available envs: {', '.join(cfg.env_names) or cfg.active_env}",
-        f"- base_url: {redact_url(env.base_url)}",
+        f"- base_url: {redact_url(env.base_url)}（缺省 origin；用例用仓 exec site 的 origin）",
+        f"- origins: {_origins_line(env)}",
         f"- browser: {cfg.browser.channel} headed={headed}",
         f"- account.default: {env.auth_default or '(none)'}",
         f"- concurrency: {cfg.total_concurrency} "
@@ -160,7 +164,9 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
         f"- exec.default: {getattr(env.exec_cfg, 'exec_default', None) or '(unnamed)'}",
         f"- exec.sites: {_exec_sites_line(env)}",
         "",
-        "This run uses only the env above; do not switch env or guess another host.",
+        "This run uses the env above. Each case opens **that case's site origin** "
+        "(repo → repos.yaml exec → exec.sites.base_url); do not paste another "
+        "site's path onto the env default host.",
     ]
     site = getattr(env.exec_cfg, "site", None) or "local"
     if site == "remote":
@@ -211,10 +217,12 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
     lines += ["", "## Routes", ""]
     if routes:
         for name, route in routes.items():
-            lines.append(f"- {name}: {redact_url(env.base_url.rstrip('/') + route)}")
+            lines.append(
+                f"- {name}: {route}  （拼到该用例 site 的 origin 上，不要用缺省 host 硬套）"
+            )
     else:
         lines.append(
-            "(none in meta.yaml; read frontend route code and join with base_url)"
+            "(none in meta.yaml; read frontend route code and join with the case site origin)"
         )
     lines += [
         "",
@@ -233,7 +241,8 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
     lines += [
         "",
         "A case frontmatter `account:` picks one of the above; no `account` uses "
-        "the default. Load that account's state_file before the case steps if available. "
+        "the default. Login state is per account × origin (non-default sites get "
+        "`-{site}` on the state_file stem). Load the file for **this case's site**. "
         "If not authenticated or redirected to login, inspect the login form dynamically "
         "and complete login with the account's credentials.",
         "Passwords are not listed in evidence files. Never copy a password into result.yaml "
@@ -351,6 +360,21 @@ def _exec_sites_line(env: Any) -> str:
         for s in sites
     ]
     return ", ".join(parts) + "（仓 repos.yaml exec 点名；* = 默认）"
+
+
+def _origins_line(env: Any) -> str:
+    from dev_yard.exec_cfg import origin_for_site
+
+    spec = getattr(env, "exec_cfg", None)
+    sites = list(getattr(spec, "sites", ()) or ())
+    if not sites:
+        return redact_url(env.base_url)
+    parts = []
+    for s in sites:
+        mark = "*" if s.name == spec.exec_default else ""
+        url = origin_for_site(env, s.name)
+        parts.append(f"{s.name}{mark}={redact_url(url)}")
+    return ", ".join(parts) + "（* = 默认）"
 
 
 def _db_context_line(env: Any) -> str:
@@ -705,20 +729,32 @@ def _check_case_accounts(cfg: QaConfig, cases: list[CaseJob], jira: str) -> None
             )
 
 
-def _case_auth_env(cfg: QaConfig, job: CaseJob) -> dict[str, str]:
+def _case_auth_env(root: Path, cfg: QaConfig, job: CaseJob) -> dict[str, str]:
     """Credentials for a case, handed to the worker via env, never the prompt."""
     name = _case_account(cfg, job)
     acct = cfg.env.accounts.get(name) if name else None
     if acct is None:
         return {}
-    state_str = acct.state_file or str(
-        default_state_file(cfg.active_env, acct.name)
-    )
+    site = exec_site_for_job(root, cfg, job) or ""
+    origin = origin_for_job(root, cfg, job)
+    state = state_path(root, cfg, acct, site=site)
+    replay = state.with_suffix(".replay.sh")
+    try:
+        state_str = str(state.relative_to(root))
+    except ValueError:
+        state_str = str(state)
+    try:
+        replay_str = str(replay.relative_to(root))
+    except ValueError:
+        replay_str = str(replay)
     return {
         "YARD_QA_USERNAME": acct.username or "",
         "YARD_QA_PASSWORD": acct.password or "",
         "YARD_QA_STATE_FILE": state_str,
-        "YARD_QA_AUTH_REPLAY": str(Path(state_str).with_suffix(".replay.sh")),
+        "YARD_QA_AUTH_REPLAY": replay_str,
+        "YARD_QA_BASE_URL": origin or cfg.env.base_url,
+        "YARD_QA_EXEC_SITE": site,
+        "BASE_URL": origin or cfg.env.base_url,
     }
 
 
@@ -736,9 +772,30 @@ def _preload_auth(
     cfg: QaConfig,
     names: list[str] | None = None,
     on_log: LogFn | None = None,
+    cases: list[CaseJob] | None = None,
 ) -> dict[str, str]:
     """Ensure sessions exist; returns {account: error} for the ones that failed."""
-    return ensure_auth(root, cfg, names, on_log)
+    sites: list[str] = []
+    for job in cases or []:
+        site = exec_site_for_job(root, cfg, job) or ""
+        if site not in sites:
+            sites.append(site)
+    return ensure_auth(root, cfg, names, on_log, sites=sites or None)
+
+
+def _auth_failure_for(
+    root: Path, cfg: QaConfig, job: CaseJob, failures: dict[str, str]
+) -> str | None:
+    """Match ensure_auth keys: `{account}/{site}` or bare account."""
+    acct = _case_account(cfg, job)
+    if not acct:
+        return None
+    site = exec_site_for_job(root, cfg, job) or ""
+    if site:
+        keyed = failures.get(f"{acct}/{site}")
+        if keyed is not None:
+            return keyed
+    return failures.get(acct)
 
 
 def lint_cases(
@@ -856,7 +913,9 @@ def _duties(kind: str, jira: str) -> str:
             "Column names come from context.md Database columns (host dumped "
             "information_schema per named catalog) or worktree schema.rb. "
             "When a case talks to a non-default database, set `data.db` to that "
-            "catalog name. Never invent columns or "
+            "catalog name. Page URLs use that case's repo exec-site origin "
+            "(context.md origins), not the env default host for another site. "
+            "One case, one origin; cross-app flows use depends_on. Never invent columns or "
             "treat app constants as table fields. Do not invent primary keys in "
             "verify.sql without a setup that inserts those rows.\n"
             "seed must hard self-prove: every entity/field/link a case asserts must "
@@ -875,8 +934,10 @@ def _duties(kind: str, jira: str) -> str:
         f"Write only under {qa}. Do not change any worktree file.\n"
         "Do not git checkout, commit, push, switch, or deploy.\n"
         "Do not spawn other cases. Do not change case expected values to go green.\n"
-        "URLs come from context.md base_url + Routes, else frontend route code. "
-        "Do not guess hosts. Hash routers need `#/` in the path.\n"
+        "URLs come from this case's site origin (context.md origins / "
+        "$YARD_QA_BASE_URL) + Routes or frontend route code. "
+        "Do not guess hosts or reuse another site's origin. "
+        "Hash routers need `#/` in the path.\n"
         "Authentication: load state_file if available. If unauthenticated or redirected to login, "
         "inspect the page dynamically with snapshot, fill credentials, submit, and save state.\n"
         "Host already ran data.setup if the case has one; do not re-run it. "
@@ -1035,17 +1096,25 @@ def _run_prompt(root: Path, jira: str, cfg: QaConfig, job: CaseJob, run_id: str)
     acct = cfg.env.accounts.get(account)
     account_line = f"Account: {account or '(none)'}"
     if acct:
-        state_str = acct.state_file or str(default_state_file(cfg.active_env, acct.name, jira))
+        site = exec_site_for_job(root, cfg, job) or ""
+        origin = origin_for_job(root, cfg, job) or cfg.env.base_url
+        state = state_path(root, cfg, acct, site=site)
+        try:
+            state_str = str(state.relative_to(root))
+        except ValueError:
+            state_str = str(state)
         replay_str = str(Path(state_str).with_suffix(".replay.sh"))
         account_line += (
-            f"\nAccount Details (credentials are in the environment, not the prompt):\n"
+            f"\nCase origin: {origin} (site {site or '(default)'})\n"
+            f"Account Details (credentials are in the environment, not the prompt):\n"
             f"  username: $YARD_QA_USERNAME\n"
             f"  password: $YARD_QA_PASSWORD (never echo this)\n"
+            f"  base_url: $YARD_QA_BASE_URL\n"
             f"  state_file: {state_str}\n"
             f"  auth_replay: {replay_str}\n"
             f"Login & Session Protocol:\n"
             f"  1. If `{state_str}` exists, run `playwright-cli -s=qap-{job.id} state-load {state_str}`.\n"
-            f"  2. Navigate to target URL. If unauthenticated / on login page:\n"
+            f"  2. Open $YARD_QA_BASE_URL (this case's site). If unauthenticated / on login page:\n"
             f"     - If `{replay_str}` exists, replay or reference its login commands.\n"
             f"     - Otherwise, explore login form with snapshot (inspect actual inputs/buttons dynamically).\n"
             f"     - Fill username/password from the env vars above, submit, and verify entry into system.\n"
@@ -2601,14 +2670,16 @@ def _req_test(
         resolved = _case_account(cfg, job)
         if resolved in cfg.env.accounts:
             job.account = resolved
-    auth_failures = _preload_auth(root, cfg, _used_accounts(cfg, cases), on_log)
+    auth_failures = _preload_auth(
+        root, cfg, _used_accounts(cfg, cases), on_log, cases=cases
+    )
     if auth_failures:
         stamp = now_iso()
         for job in cases:
-            acct = _case_account(cfg, job)
-            if acct in auth_failures:
+            why = _auth_failure_for(root, cfg, job, auth_failures)
+            if why is not None:
                 job.state = "blocked"
-                job.reason = f"auth failed: {auth_failures[acct]}"
+                job.reason = f"auth failed: {why}"
                 job.blocked_class = "auth"
                 job.ended_at = stamp
 
@@ -2655,8 +2726,22 @@ def _req_test(
             if cand.is_dir():
                 first_wt = cand
                 break
+    first_origin = (
+        origin_for_job(root, cfg, next((c for c in cases if c.repo), cases[0]))
+        if cases
+        else cfg.env.base_url
+    )
+    first_site = (
+        exec_site_for_job(root, cfg, next((c for c in cases if c.repo), cases[0]))
+        if cases
+        else None
+    )
     executor = resolve_executor(
-        cfg.env, base_url=cfg.env.base_url, worktree=first_wt, root=root
+        cfg.env,
+        base_url=first_origin or cfg.env.base_url,
+        worktree=first_wt,
+        root=root,
+        site=first_site,
     )
     if executor.cross_site_warning and on_log is not None:
         on_log(executor.cross_site_warning + "\n")
@@ -2777,7 +2862,7 @@ def _req_test(
             # never let a stale file stand in for this run's outcome.
             result_path.unlink(missing_ok=True)
             _raise_if_cancelled(cancel_check, f"qa-run {job.id}")
-            auth_env = _case_auth_env(cfg, job)
+            auth_env = _case_auth_env(root, cfg, job)
             code, raw = run_pi_print_tracked(
                 argv,
                 root,

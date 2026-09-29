@@ -182,17 +182,19 @@ exec:
         container: web
         runner: bin/rails runner
         workdir: /var/www/research  # 空 = 不加 cd；禁止猜 /app
+        base_url: http://research.dev1.example.com  # 空 = 用 env.base_url
         pod:
           selector: "app=research-web,tier=web"
       reach:
         namespace: research
         container: reach
         runner: ruby script/runner
+        base_url: http://in.dev1.example.com
         pod:
           pattern: "^reach.{,17}$"
 ```
 
-运输层（`jms` / `nodes` / `use`）挂在 env 上；pod、container、runner 按 **named site** 拆。仓在 `repos.yaml` 写 `exec: reach`，用例用票上的 `repo:` 选现场。旧的扁平 `with.namespace` / `with.runner` 仍可读，等于一个未命名现场。
+运输层（`jms` / `nodes` / `use`）挂在 env 上；pod、container、runner、**origin** 按 **named site** 拆。仓在 `repos.yaml` 写 `exec: reach`，用例用票上的 `repo:` 选现场（一条用例一个 origin）。`envs.*.base_url` 是缺省 origin。旧的扁平 `with.namespace` / `with.runner` 仍可读，等于一个未命名现场。 Playwright 登录态按账号 × origin 分文件。`check-env` 会对每个 site 的 origin 做 HTTP GET。
 
 选 pod（每次 ping/run 现解析，禁止跨调用缓存名字——hash 随重启变）：
 

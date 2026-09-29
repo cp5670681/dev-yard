@@ -1917,6 +1917,64 @@ def test_req_test_blocks_only_cases_on_failed_account(
     assert result["summary"]["blocked"] == 1
 
 
+def test_req_test_blocks_named_site_auth_failure(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-AUTH-SITE")
+    _write_qa_yaml(
+        yard,
+        "    auth:\n      default: admin\n      accounts:\n"
+        "        admin: { username: admin, password: pw, "
+        "state_file: .yard-qa/auth-local-admin.json }\n"
+        "        buyer: { username: buyer, password: pw, "
+        "state_file: .yard-qa/auth-local-buyer.json }\n",
+    )
+    (yard / ".yard-qa").mkdir(parents=True, exist_ok=True)
+    for n in ("auth-local-admin.json", "auth-local-buyer.json"):
+        (yard / ".yard-qa" / n).write_text("{}", encoding="utf-8")
+    _write_case(
+        yard,
+        "QA-AUTH-SITE",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+    _write_case(
+        yard,
+        "QA-AUTH-SITE",
+        "case-02.md",
+        "---\nid: case-02\ntitle: t\nrepo: backend\naccount: buyer\n---\n\nbody\n",
+    )
+
+    def fake_site(_root, _cfg, job):
+        return "reach" if job.id == "case-02" else "research"
+
+    monkeypatch.setattr("dev_yard.qa.exec_site_for_job", fake_site)
+    monkeypatch.setattr(
+        "dev_yard.qa._preload_auth",
+        lambda *a, **k: {"buyer/reach": "login failed"},
+    )
+    seen: list[str] = []
+
+    def run(job, slot):
+        seen.append(job.id)
+        return {"status": "passed", "repo": "backend"}
+
+    result = req_test(
+        yard,
+        "QA-AUTH-SITE",
+        print_mode=True,
+        run_only=True,
+        unsafe_skip_review=True,
+        ingest=False,
+        case_runner=run,
+    )
+    assert seen == ["case-01"]
+    assert result["summary"]["passed"] == 1
+    assert result["summary"]["blocked"] == 1
+
+
 def test_req_test_setup_failure_still_runs_cleanup(
     tmp_path: Path, git_src: Path, monkeypatch
 ):

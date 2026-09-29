@@ -15,9 +15,17 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
-from dev_yard.exec_cfg import QaExec, bind_site, default_exec, is_local_base_url
+from dev_yard.exec_cfg import (
+    QaExec,
+    bind_site,
+    default_exec,
+    is_local_base_url,
+    origin_for_site,
+)
 from dev_yard.qa_config import QaEnv, TestRejected, redact_qa_yaml
 
 LogFn = Callable[[str], None]
@@ -987,6 +995,18 @@ def _first_worktree(root: Path, jira: str | None) -> Path | None:
     return candidates[0] if candidates else None
 
 
+def _probe_origin(url: str) -> tuple[bool, str]:
+    if not url:
+        return False, "empty origin"
+    try:
+        urlopen(Request(url, method="GET"), timeout=8)
+        return True, ""
+    except HTTPError:
+        return True, ""
+    except (URLError, TimeoutError, OSError) as e:
+        return False, str(e)
+
+
 def hello_source(runner: str) -> tuple[str, str]:
     text = runner.lower()
     if "python" in text:
@@ -1042,9 +1062,10 @@ def check_env(
     executor = None
     try:
         for site_name in site_names:
+            origin = origin_for_site(cfg.env, site_name or None) or cfg.env.base_url
             executor = resolve_executor(
                 cfg.env,
-                base_url=cfg.env.base_url,
+                base_url=origin,
                 worktree=worktree,
                 root=root,
                 site=site_name or None,
@@ -1087,6 +1108,19 @@ def check_env(
                     error_class=result.error_class or ExecErrorClass.SCRIPT,
                 )
             steps.append({"step": "hello", "status": "ok", "detail": f"{label} {HELLO}"})
+            ok_http, http_detail = _probe_origin(origin)
+            steps.append(
+                {
+                    "step": "origin",
+                    "site": label,
+                    "status": "ok" if ok_http else "warn",
+                    "detail": (
+                        f"{label}: {origin} ok"
+                        if ok_http
+                        else f"{label}: {origin} 不通（{http_detail}）"
+                    ),
+                }
+            )
             executor.close()
             executor = None
         catalogs = list(getattr(cfg.env, "db_catalogs", ()) or ())

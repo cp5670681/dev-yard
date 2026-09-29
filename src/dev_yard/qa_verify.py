@@ -842,8 +842,14 @@ def verify_cases(
                     break
                 if job.setup and not job.setup.lower().endswith(".sql") and executor is None:
                     wt = paths.req_worktree(root, jira, job.repo) if job.repo else None
+                    from dev_yard.qa_exec import exec_site_for_job, origin_for_job
+
                     executor = resolve_executor(
-                        cfg.env, base_url=cfg.env.base_url, worktree=wt, root=root
+                        cfg.env,
+                        base_url=origin_for_job(root, cfg, job) or cfg.env.base_url,
+                        worktree=wt,
+                        root=root,
+                        site=exec_site_for_job(root, cfg, job),
                     )
                 results[job.id] = verify_case(
                     root,

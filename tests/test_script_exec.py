@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from dev_yard.exec_cfg import bind_site, exec_from_form, parse_exec
+from dev_yard.exec_cfg import bind_site, exec_from_form, origin_for_site, parse_exec
 from dev_yard.qa_config import TestRejected, load_qa_config, save_qa_config
 from dev_yard.script_exec import (
     HELLO,
@@ -709,3 +709,123 @@ def test_resolve_executor_named_site(tmp_path: Path):
     ex = resolve_executor(cfg.env, base_url=cfg.env.base_url, site="reach")
     assert ex.spec.runner == "ruby script/runner"
     assert ex.spec.k8s_container == "reach"
+
+
+def test_origin_for_site_prefers_site_base_url(tmp_path: Path):
+    root = _yard(tmp_path)
+    _write_env(
+        root,
+        {
+            "base_url": "http://research.dev1.example.com",
+            "exec": {
+                "use": "jms-k8s",
+                "with": {
+                    "jms": {"host": "jms.example.com", "port": 22222, "user": "alice@root"},
+                    "default_node": "k8s-1",
+                    "nodes": {"k8s-1": "10.0.1.5"},
+                    "default": "research",
+                    "sites": {
+                        "research": {
+                            "runner": "bin/rails runner",
+                            "namespace": "dev",
+                            "container": "research",
+                            "base_url": "http://research.dev1.example.com",
+                            "pod": {"pattern": "^research"},
+                        },
+                        "reach": {
+                            "runner": "ruby script/runner",
+                            "namespace": "dev",
+                            "container": "reach",
+                            "base_url": "http://in.dev1.example.com",
+                            "pod": {"pattern": "^reach"},
+                        },
+                    },
+                },
+            },
+        },
+        name="test",
+    )
+    cfg = load_qa_config(root)
+    assert origin_for_site(cfg.env, "research") == "http://research.dev1.example.com"
+    assert origin_for_site(cfg.env, "reach") == "http://in.dev1.example.com"
+    assert origin_for_site(cfg.env, None) == "http://research.dev1.example.com"
+    reach = bind_site(cfg.env.exec_cfg, "reach")
+    assert reach.origin == "http://in.dev1.example.com"
+
+
+def test_origin_for_site_falls_back_to_env_base_url(tmp_path: Path):
+    root = _yard(tmp_path)
+    _write_env(
+        root,
+        {
+            "base_url": "http://127.0.0.1:8080",
+            "exec": {
+                "use": "local",
+                "with": {
+                    "default": "research",
+                    "sites": {
+                        "research": {"runner": "bin/rails runner"},
+                        "reach": {"runner": "ruby script/runner"},
+                    },
+                },
+            },
+        },
+    )
+    cfg = load_qa_config(root)
+    assert origin_for_site(cfg.env, "reach") == "http://127.0.0.1:8080"
+
+
+def test_exec_from_form_keeps_site_base_url():
+    dumped = exec_from_form(
+        {
+            "use": "local",
+            "runner": "bin/rails runner",
+            "default": "research",
+            "sites": [
+                {
+                    "name": "research",
+                    "runner": "bin/rails runner",
+                    "base_url": "http://research.dev1.example.com",
+                },
+                {
+                    "name": "reach",
+                    "runner": "ruby script/runner",
+                    "base_url": "http://in.dev1.example.com",
+                },
+            ],
+        },
+        "envs.test.exec",
+    )
+    assert dumped is not None
+    sites = dumped["with"]["sites"]
+    assert sites["research"]["base_url"] == "http://research.dev1.example.com"
+    assert sites["reach"]["base_url"] == "http://in.dev1.example.com"
+
+
+def test_state_path_suffixes_non_default_site(tmp_path: Path):
+    from dev_yard.qa_config import QaAccount
+    from dev_yard.qa_exec import state_path
+
+    root = _yard(tmp_path)
+    _write_env(
+        root,
+        {
+            "base_url": "http://research.dev1.example.com",
+            "exec": {
+                "use": "local",
+                "with": {
+                    "default": "research",
+                    "sites": {
+                        "research": {"runner": "bin/rails runner"},
+                        "reach": {"runner": "ruby script/runner"},
+                    },
+                },
+            },
+        },
+    )
+    cfg = load_qa_config(root)
+    acct = QaAccount(name="default", state_file=".yard-qa/default.json")
+    default_p = state_path(root, cfg, acct, site="research")
+    other = state_path(root, cfg, acct, site="reach")
+    assert default_p.name == "default.json"
+    assert other.name == "default-reach.json"

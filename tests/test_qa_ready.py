@@ -51,6 +51,30 @@ def test_ready_fails_without_account(tmp_path: Path, monkeypatch):
         assert_ready(root, "QA-1", cfg)
 
 
+def test_ready_fails_when_origin_warns(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("dev_yard.qa_ready.ENABLED", True)
+    monkeypatch.setattr(
+        "dev_yard.script_exec.check_env",
+        lambda *_a, **_k: {
+            "ok": True,
+            "steps": [
+                {"step": "origin", "status": "warn", "detail": "reach: http://in.example 不通"},
+                {"step": "db", "status": "ok", "detail": "usql select 1"},
+            ],
+        },
+    )
+    root = _yard(
+        tmp_path,
+        "    auth:\n      default: default\n      accounts:\n"
+        "        default: {username: ada, password: secret}\n",
+    )
+    cfg = load_qa_config(root, None, "QA-1")
+    report = assess_ready(root, "QA-1", cfg)
+    assert report["ok"] is False
+    origin = next(s for s in report["steps"] if s["step"] == "origin")
+    assert origin["status"] == "fail"
+
+
 def test_ready_fails_when_database_warns(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("dev_yard.qa_ready.ENABLED", True)
     monkeypatch.setattr(

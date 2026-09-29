@@ -31,7 +31,16 @@ _USE_KEYS = {
 }
 _SITE_SHARED = frozenset({"default", "sites"})
 _SITE_KEYS = frozenset(
-    {"runner", "workdir", "sql_runner", "namespace", "container", "pod", "timeout"}
+    {
+        "runner",
+        "workdir",
+        "sql_runner",
+        "namespace",
+        "container",
+        "pod",
+        "timeout",
+        "base_url",
+    }
 )
 _WITH_KEYS = {
     "local": frozenset({"runner", "timeout", "workdir", "sql_runner"}) | _SITE_SHARED,
@@ -152,6 +161,7 @@ class QaExecSite:
     k8s_container: str = ""
     pod_selector: str = ""
     pod_pattern: str = ""
+    base_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -167,6 +177,8 @@ class QaExec:
     runner: str = ""
     workdir: str = ""
     inherit_workdir: str = ""
+    inherit_base_url: str = ""
+    origin: str = ""
     sql_runner: str = ""
     exec_default: str = ""
     sites: tuple[QaExecSite, ...] = ()
@@ -236,6 +248,7 @@ def _parse_exec_site(
     runner = _blank(row.get("runner")) or inherit_runner
     workdir = _blank(row.get("workdir"))
     sql_runner = _blank(row.get("sql_runner"))
+    origin = _blank(row.get("base_url"))
     container = _blank(row.get("container"))
     ns = _blank(row.get("namespace"))
     pod = row.get("pod") if isinstance(row.get("pod"), dict) else {}
@@ -261,6 +274,7 @@ def _parse_exec_site(
         k8s_container=container if use == "jms-k8s" else "",
         pod_selector=selector,
         pod_pattern=pattern,
+        base_url=origin,
     )
 
 
@@ -286,7 +300,21 @@ def bind_site(spec: QaExec, name: str | None = None) -> QaExec:
         pod_selector=found.pod_selector,
         pod_pattern=found.pod_pattern,
         exec_default=found.name,
+        inherit_base_url=spec.inherit_base_url,
+        origin=found.base_url or spec.inherit_base_url,
     )
+
+
+def origin_for_site(env: Any, site_name: str | None = None) -> str:
+    """Browser origin for a named site; empty site uses env base_url."""
+    inherit = _blank(getattr(env, "base_url", None)).rstrip("/")
+    spec = getattr(env, "exec_cfg", None)
+    if spec is None:
+        return inherit
+    if spec.sites:
+        bound = bind_site(spec, site_name)
+        return (bound.origin or inherit).rstrip("/")
+    return (getattr(spec, "origin", "") or inherit).rstrip("/")
 
 
 def parse_exec(env_name: str, raw_env: dict[str, Any], *, script_runner: str) -> QaExec:
@@ -343,6 +371,8 @@ def parse_exec(env_name: str, raw_env: dict[str, Any], *, script_runner: str) ->
         "runner": runner,
         "workdir": workdir,
         "inherit_workdir": workdir,
+        "inherit_base_url": _blank(raw_env.get("base_url")),
+        "origin": _blank(raw_env.get("base_url")),
         "sql_runner": sql_runner,
     }
     if use == "ssh":
@@ -493,6 +523,7 @@ def parse_exec(env_name: str, raw_env: dict[str, Any], *, script_runner: str) ->
             kw["k8s_container"] = bound.k8s_container
         kw["pod_selector"] = bound.pod_selector
         kw["pod_pattern"] = bound.pod_pattern
+        kw["origin"] = bound.base_url or kw.get("inherit_base_url", "")
     elif _blank(with_raw.get("default") if isinstance(with_raw, dict) else ""):
         kw["exec_default"] = _blank(with_raw.get("default"))
     return QaExec(**kw)
@@ -536,6 +567,7 @@ def exec_payload(raw_env: Any) -> dict[str, Any]:
             "container": s.container or s.k8s_container,
             "pod_selector": s.pod_selector,
             "pod_pattern": s.pod_pattern,
+            "base_url": s.base_url,
         }
         for s in ex.sites
     ]
@@ -549,6 +581,7 @@ def exec_payload(raw_env: Any) -> dict[str, Any]:
                 "container": ex.container or ex.k8s_container,
                 "pod_selector": ex.pod_selector,
                 "pod_pattern": ex.pod_pattern,
+                "base_url": ex.origin or ex.inherit_base_url,
             }
         ]
     run_text = (
@@ -679,6 +712,8 @@ def exec_from_form(raw: Any, field: str) -> dict[str, Any] | None:
                 entry["runner"] = runner
             if _blank(item.get("workdir")):
                 entry["workdir"] = _blank(item.get("workdir"))
+            if _blank(item.get("base_url")):
+                entry["base_url"] = _blank(item.get("base_url"))
             if use == "jms-k8s":
                 if _blank(item.get("namespace")):
                     entry["namespace"] = _blank(item.get("namespace"))

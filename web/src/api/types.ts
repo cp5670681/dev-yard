@@ -477,6 +477,7 @@ export interface QaExecCfg {
     container: string;
     pod_selector: string;
     pod_pattern: string;
+    base_url: string;
   }[];
 }
 
