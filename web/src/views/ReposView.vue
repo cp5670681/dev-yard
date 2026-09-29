@@ -48,6 +48,7 @@
               <div v-if="r.note" class="text-caption text-medium-emphasis text-break">{{ r.note }}</div>
               <div class="text-caption text-medium-emphasis">测试分支 {{ r.test_branch || "（未配）" }}</div>
               <div v-if="r.databases" class="text-caption text-medium-emphasis">库 {{ r.databases }}</div>
+              <div v-if="r.exec" class="text-caption text-medium-emphasis">脚本现场 {{ r.exec }}</div>
               <div class="text-caption text-medium-emphasis">实现 {{ repoPiLabel(r) }}</div>
               <div class="text-caption text-break mt-1">{{ r.url }}</div>
               <div class="text-caption text-break">{{ r.path || "（托管 clone）" }}</div>
@@ -66,6 +67,7 @@
               <th>path</th>
               <th>测试分支</th>
               <th>库</th>
+              <th>脚本现场</th>
               <th>实现模型</th>
               <th></th>
             </tr>
@@ -97,6 +99,7 @@
               </td>
               <td class="text-caption">{{ r.test_branch || "（未配）" }}</td>
               <td class="text-caption">{{ r.databases || "—" }}</td>
+              <td class="text-caption">{{ r.exec || "—" }}</td>
               <td class="text-caption">{{ repoPiLabel(r) }}</td>
               <td>
                 <v-btn size="small" variant="text" @click="openEdit(r)">改</v-btn>
@@ -181,6 +184,18 @@
                   :hint="dbCatalogHint"
                 />
               </v-col>
+              <v-col cols="12">
+                <v-select
+                  v-model="addExec"
+                  :items="execSiteItems"
+                  label="脚本执行现场"
+                  variant="outlined"
+                  density="comfortable"
+                  clearable
+                  persistent-hint
+                  :hint="execSiteHint"
+                />
+              </v-col>
             </v-row>
           </v-form>
         </v-card-text>
@@ -254,6 +269,17 @@
             persistent-hint
             :hint="dbCatalogHint"
           />
+          <v-select
+            v-model="editExec"
+            :items="execSiteItems"
+            label="脚本执行现场"
+            variant="outlined"
+            density="comfortable"
+            class="mt-3"
+            clearable
+            persistent-hint
+            :hint="execSiteHint"
+          />
         </v-card-text>
         <v-card-actions>
           <v-spacer />
@@ -293,6 +319,7 @@ const addProvider = ref("");
 const addModel = ref("");
 const addTestBranch = ref("");
 const addDatabases = ref<string[]>([]);
+const addExec = ref("");
 const editDialog = ref(false);
 const editBusy = ref(false);
 const editAlias = ref("");
@@ -301,7 +328,9 @@ const editModel = ref("");
 const editTestBranch = ref("");
 const editNote = ref("");
 const editDatabases = ref<string[]>([]);
+const editExec = ref("");
 const dbCatalogNames = ref<string[]>([]);
+const execSiteNames = ref<string[]>([]);
 const catalog = ref<PiCatalogProvider[]>([]);
 const jobId = ref(typeof route.query.job === "string" ? route.query.job : "");
 const urlRule = (v: string) => !!v.trim() || "需要 git url";
@@ -318,12 +347,36 @@ const dbCatalogHint = computed(() =>
     ? "来自测试配置 qa.yaml 的 catalogs，可多选"
     : "还没有 catalog，先到测试配置里加库",
 );
+const execSiteItems = computed(() => {
+  const names = [...execSiteNames.value];
+  for (const name of [addExec.value, editExec.value]) {
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names;
+});
+const execSiteHint = computed(() =>
+  execSiteNames.value.length
+    ? "来自 qa.yaml exec.sites，一个仓绑一个现场"
+    : "还没有 site，先到测试配置的脚本执行页加现场",
+);
 
 function splitDatabases(raw: string | undefined): string[] {
   return (raw || "")
     .split(/[,\s]+/)
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+function execSiteNamesFromQa(payload: QaConfigPayload | null): string[] {
+  if (!payload) return [];
+  const names: string[] = [];
+  for (const env of Object.values(payload.envs || {})) {
+    for (const row of env.exec?.sites || []) {
+      const name = (row.name || "").trim();
+      if (name && !names.includes(name)) names.push(name);
+    }
+  }
+  return names;
 }
 
 function catalogNamesFromQa(payload: QaConfigPayload | null): string[] {
@@ -412,8 +465,10 @@ onMounted(async () => {
     try {
       const qa = await getQaConfig();
       dbCatalogNames.value = catalogNamesFromQa(qa.payload);
+      execSiteNames.value = execSiteNamesFromQa(qa.payload);
     } catch {
       dbCatalogNames.value = [];
+      execSiteNames.value = [];
     }
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -445,6 +500,7 @@ async function submit() {
       model: addModel.value,
       test_branch: addTestBranch.value,
       databases: addDatabases.value,
+      exec: addExec.value,
     });
     jobId.value = out.jobs[0]?.id || "";
     dialog.value = false;
@@ -471,6 +527,7 @@ function openEdit(r: Repo) {
   editTestBranch.value = r.test_branch || "";
   editNote.value = r.note || "";
   editDatabases.value = splitDatabases(r.databases);
+  editExec.value = r.exec || "";
   ensureSaved(r.provider, r.model);
   editDialog.value = true;
 }
@@ -487,6 +544,7 @@ async function saveEdit() {
       editTestBranch.value,
       editNote.value,
       editDatabases.value,
+      editExec.value,
     );
     editDialog.value = false;
     snack.notify("已写入仓库设置", "success");

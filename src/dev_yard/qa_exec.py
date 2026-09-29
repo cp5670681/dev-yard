@@ -244,6 +244,21 @@ def case_script_path(job: CaseJob, name: str, kind: str) -> Path:
     return script
 
 
+def exec_site_for_job(root: Path, cfg: QaConfig, job: CaseJob) -> str | None:
+    """Named exec site for this case: repo.exec, else env default site."""
+    from dev_yard.config import load_repos
+
+    spec = getattr(cfg.env, "exec_cfg", None)
+    default = getattr(spec, "exec_default", "") or ""
+    alias = (job.repo or "").strip()
+    if alias:
+        repo = load_repos(root).get(alias)
+        bound = (getattr(repo, "exec", None) or "").strip() if repo else ""
+        if bound:
+            return bound
+    return default or None
+
+
 def run_case_script(
     root: Path,
     jira: str,
@@ -274,15 +289,23 @@ def run_case_script(
     if needs_db:
         db_env["DATABASE_URL"] = connect_url(cfg, job.db or None)
         db_env["QA_DB"] = job.db or cfg.env.db_default or "default"
+    from dev_yard.exec_cfg import bind_site
+
+    site_name = exec_site_for_job(root, cfg, job)
     if executor is None:
         executor = resolve_executor(
-            cfg.env, base_url=cfg.env.base_url, worktree=wt, root=root
+            cfg.env,
+            base_url=cfg.env.base_url,
+            worktree=wt,
+            root=root,
+            site=site_name,
         )
     else:
         # Never mutate a caller-shared executor: parallel cases in different
-        # repos would race on `worktree`.
+        # repos would race on `worktree` / named site.
         executor = copy.copy(executor)
         executor.worktree = wt
+        executor.spec = bind_site(executor.spec, site_name)
     local = executor.site == "local"
     before = gitops.porcelain_paths(wt) if local and wt and wt.is_dir() else set()
     try:
@@ -294,6 +317,7 @@ def run_case_script(
                 "QA_JIRA": jira,
                 "QA_CASE_ID": job.id,
                 "QA_SCRIPT_KIND": kind,
+                "QA_EXEC_SITE": site_name or "",
                 **db_env,
             },
         )

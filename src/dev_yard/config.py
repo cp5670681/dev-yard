@@ -78,6 +78,7 @@ class Repo:
     model: str | None = None
     test_branch: str | None = None
     databases: tuple[str, ...] = ()
+    exec: str = ""
 
     def source_path(self, root: Path) -> Path:
         if self.path:
@@ -225,6 +226,17 @@ def resolve_pi_choice(
     return None, None
 
 
+def _exec_name(raw: Any, alias: str) -> str:
+    if raw is None or raw == "":
+        return ""
+    if isinstance(raw, list):
+        items = [str(x).strip() for x in raw if str(x).strip()]
+        return items[0] if items else ""
+    if isinstance(raw, str):
+        return raw.strip()
+    raise ValueError(f"repos.yaml {alias}.exec must be a site name")
+
+
 def _database_names(raw: Any, alias: str) -> tuple[str, ...]:
     if raw is None or raw == "":
         return ()
@@ -254,6 +266,7 @@ def load_repos(root: Path) -> dict[str, Repo]:
             model=_blank(raw.get("model")),
             test_branch=_blank(raw.get("test_branch")),
             databases=_database_names(raw.get("databases"), alias),
+            exec=_exec_name(raw.get("exec"), alias),
         )
     return out
 
@@ -430,6 +443,8 @@ def save_repos(root: Path, repos: dict[str, Repo]) -> None:
             entry["path"] = str(r.path)
         if r.databases:
             entry["databases"] = list(r.databases)
+        if r.exec:
+            entry["exec"] = r.exec
         test_branch = _blank(r.test_branch)
         if test_branch:
             gitops.assert_branch_name(test_branch)

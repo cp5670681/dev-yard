@@ -222,7 +222,8 @@ def repo_list() -> None:
         pi = f"\t{r.provider}/{r.model}" if r.provider and r.model else ""
         extra = f"\t{r.note}" if r.note else ""
         dbs = f"\tdb:{','.join(r.databases)}" if r.databases else ""
-        typer.echo(f"{a}\t{r.role}\t{r.default_base}\t{r.url}{pi}{extra}{dbs}")
+        ex = f"\texec:{r.exec}" if r.exec else ""
+        typer.echo(f"{a}\t{r.role}\t{r.default_base}\t{r.url}{pi}{extra}{dbs}{ex}")
 
 
 @repo_app.command("set-model")

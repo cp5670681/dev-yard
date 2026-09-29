@@ -367,6 +367,7 @@ export interface Repo {
   model: string;
   test_branch: string;
   databases: string;
+  exec: string;
 }
 
 export interface Meta {
@@ -467,6 +468,16 @@ export interface QaExecCfg {
   skill: string;
   db_exec: string;
   parse_error?: string;
+  default?: string;
+  sites?: {
+    name: string;
+    runner: string;
+    workdir: string;
+    namespace: string;
+    container: string;
+    pod_selector: string;
+    pod_pattern: string;
+  }[];
 }
 
 export interface QaEnvCfg {

@@ -126,6 +126,8 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
             segments.append(f"note {repo.note}")
         if repo and repo.databases:
             segments.append("databases " + ",".join(repo.databases))
+        if repo and repo.exec:
+            segments.append("exec " + repo.exec)
         # The exact ref to diff against. The worktree's own local `base` may be
         # stale (fetch updates origin/<base> only), and an imported requirement
         # may fork from an older/other base; both are answered by freeze_base.
@@ -155,6 +157,8 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
         f"- script.runner: {env.script_runner or '(sql only)'}",
         f"- exec.use: {getattr(env.exec_cfg, 'use', None) or 'local'}",
         f"- exec.site: {getattr(env.exec_cfg, 'site', None) or 'local'}",
+        f"- exec.default: {getattr(env.exec_cfg, 'exec_default', None) or '(unnamed)'}",
+        f"- exec.sites: {_exec_sites_line(env)}",
         "",
         "This run uses only the env above; do not switch env or guess another host.",
     ]
@@ -335,6 +339,18 @@ def split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     if not isinstance(data, dict):
         return {}, body
     return data, body
+
+
+def _exec_sites_line(env: Any) -> str:
+    sites = list(getattr(getattr(env, "exec_cfg", None), "sites", ()) or ())
+    if not sites:
+        runner = getattr(getattr(env, "exec_cfg", None), "runner", "") or env.script_runner
+        return f"(single) runner={runner or '(sql only)'}"
+    parts = [
+        f"{s.name}{'*' if s.name == env.exec_cfg.exec_default else ''}={s.runner}"
+        for s in sites
+    ]
+    return ", ".join(parts) + "（仓 repos.yaml exec 点名；* = 默认）"
 
 
 def _db_context_line(env: Any) -> str:
@@ -762,6 +778,16 @@ def lint_cases(
                         f"{job.id}: data.db {job.db!r} 不在仓 {job.repo} 声明的 "
                         f"databases（{', '.join(allowed)}）"
                     )
+        repo = repos_map.get(job.repo)
+        site = (getattr(repo, "exec", "") or "").strip() if repo else ""
+        site_names = [
+            s.name for s in getattr(getattr(cfg.env, "exec_cfg", None), "sites", ()) or ()
+        ]
+        if site and site_names and site not in site_names:
+            problems.append(
+                f"{job.id}: 仓 {job.repo} exec {site!r} 不是 qa.yaml exec.sites"
+                f"（{', '.join(site_names)}）"
+            )
         if needs_verify(job) and not job.verify:
             problems.append(
                 f"{job.id}: 声明了 setup/cleanup 或 DB 预期，但缺少 data.verify"

@@ -311,6 +311,7 @@ export function addRepo(payload: {
   model?: string | null;
   test_branch?: string | null;
   databases?: string[];
+  exec?: string;
 }) {
   return api<JobsOut>("/api/repos", {
     method: "POST",
@@ -331,6 +332,7 @@ export function setRepoPi(
   test_branch: string | null,
   note: string | null,
   databases?: string[] | null,
+  exec?: string | null,
 ) {
   return api<Repo[]>(`/api/repos/${encodeURIComponent(alias)}`, {
     method: "PUT",
@@ -340,6 +342,7 @@ export function setRepoPi(
       test_branch: test_branch ?? "",
       note: note ?? "",
       databases: databases ?? null,
+      exec: exec ?? null,
     }),
   });
 }

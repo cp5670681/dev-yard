@@ -44,6 +44,7 @@ class RepoAddIn(BaseModel):
     model: str = ""
     test_branch: str = ""
     databases: list[str] = Field(default_factory=list)
+    exec: str = ""
 
 
 class RepoPiIn(BaseModel):
@@ -52,6 +53,7 @@ class RepoPiIn(BaseModel):
     test_branch: str | None = None
     note: str | None = None
     databases: list[str] | None = None
+    exec: str | None = None
 
 
 class QaConfigIn(BaseModel):

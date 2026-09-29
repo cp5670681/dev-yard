@@ -328,12 +328,83 @@
                   <v-text-field v-model="currentEnv.exec.jms_user" label="jms.user 前两段（alice@root）" variant="outlined" density="comfortable" class="mb-2" />
                   <v-text-field v-model="currentEnv.exec.default_node" label="default_node" variant="outlined" density="comfortable" class="mb-2" />
                   <v-textarea v-model="currentEnv.exec.nodes_text" label="nodes（每行 名: IP）" variant="outlined" density="comfortable" rows="3" class="mb-2" />
-                  <v-text-field v-model="currentEnv.exec.namespace" label="namespace" variant="outlined" density="comfortable" class="mb-2" />
-                  <v-text-field v-model="currentEnv.exec.container" label="container" variant="outlined" density="comfortable" class="mb-2" />
-                  <v-text-field v-model="currentEnv.exec.pod_selector" label="pod.selector（优先）" variant="outlined" density="comfortable" class="mb-2" />
-                  <v-text-field v-model="currentEnv.exec.pod_pattern" label="pod.pattern（无 selector 时）" variant="outlined" density="comfortable" class="mb-2" />
-                  <v-text-field v-model="currentEnv.exec.workdir" label="workdir（空=不加 cd）" variant="outlined" density="comfortable" class="mb-2" />
                 </template>
+                <div
+                  v-if="['local', 'ssh', 'docker', 'jms-k8s'].includes(currentEnv.exec.use)"
+                  class="mt-4"
+                >
+                  <div class="d-flex align-center justify-space-between mb-2">
+                    <p class="text-body-2 mb-0">执行现场 sites</p>
+                    <v-btn variant="tonal" size="small" :prepend-icon="mdiPlus" @click="addExecSite">
+                      加现场
+                    </v-btn>
+                  </div>
+                  <p class="text-caption text-medium-emphasis mb-3">
+                    运输层（JMS/节点）挂在环境上；pod / runner 按仓拆。仓库
+                    <code>exec</code> 点名；不写则用默认。
+                  </p>
+                  <v-select
+                    v-if="(currentEnv.exec.sites || []).length"
+                    v-model="currentEnv.exec.default"
+                    :items="(currentEnv.exec.sites || []).map((s) => s.name).filter(Boolean)"
+                    label="默认 site"
+                    variant="outlined"
+                    density="comfortable"
+                    class="mb-3"
+                    hide-details
+                  />
+                  <div
+                    v-for="(site, i) in currentEnv.exec.sites || []"
+                    :key="i"
+                    class="d-flex flex-column ga-2 mb-4 pa-3"
+                    style="border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity)); border-radius: 8px"
+                  >
+                    <div class="d-flex ga-2 align-center">
+                      <v-text-field
+                        v-model="site.name"
+                        label="名字"
+                        variant="outlined"
+                        density="comfortable"
+                        hide-details
+                        placeholder="research"
+                      />
+                      <v-btn
+                        :icon="mdiDeleteOutline"
+                        variant="text"
+                        size="small"
+                        color="error"
+                        title="删除"
+                        @click="removeExecSite(i)"
+                      />
+                    </div>
+                    <v-text-field
+                      v-model="site.runner"
+                      label="runner"
+                      variant="outlined"
+                      density="comfortable"
+                      placeholder="bin/rails runner"
+                    />
+                    <v-text-field
+                      v-model="site.workdir"
+                      label="workdir（空=不加 cd）"
+                      variant="outlined"
+                      density="comfortable"
+                    />
+                    <template v-if="currentEnv.exec.use === 'jms-k8s'">
+                      <v-text-field v-model="site.namespace" label="namespace" variant="outlined" density="comfortable" />
+                      <v-text-field v-model="site.container" label="container" variant="outlined" density="comfortable" />
+                      <v-text-field v-model="site.pod_selector" label="pod.selector（优先）" variant="outlined" density="comfortable" />
+                      <v-text-field v-model="site.pod_pattern" label="pod.pattern（无 selector 时）" variant="outlined" density="comfortable" />
+                    </template>
+                    <v-text-field
+                      v-if="currentEnv.exec.use === 'docker'"
+                      v-model="site.container"
+                      label="docker container"
+                      variant="outlined"
+                      density="comfortable"
+                    />
+                  </div>
+                </div>
                 <template v-else-if="currentEnv.exec.use === 'raw'">
                   <v-checkbox v-model="currentEnv.exec.shell" label="shell: true（否则 run/ping 按 argv，一行一个）" hide-details class="mb-2" />
                   <v-textarea v-model="currentEnv.exec.run_text" label="run" variant="outlined" density="comfortable" rows="3" class="mb-2" hint="宿主把脚本喂进 stdin，不要写 < {script}" persistent-hint />
@@ -907,7 +978,37 @@ function blankExec(): QaExecCfg {
     skill: "",
     db_exec: "host",
     parse_error: "",
+    default: "",
+    sites: [],
   };
+}
+
+function blankExecSite() {
+  return {
+    name: "",
+    runner: "",
+    workdir: "",
+    namespace: "",
+    container: "",
+    pod_selector: "",
+    pod_pattern: "",
+  };
+}
+
+function addExecSite() {
+  if (!currentEnv.value?.exec) return;
+  if (!currentEnv.value.exec.sites) currentEnv.value.exec.sites = [];
+  currentEnv.value.exec.sites.push(blankExecSite());
+  if (!currentEnv.value.exec.default) currentEnv.value.exec.default = "";
+}
+
+function removeExecSite(i: number) {
+  const ex = currentEnv.value?.exec;
+  if (!ex?.sites) return;
+  ex.sites.splice(i, 1);
+  if (ex.default && !ex.sites.some((s) => s.name === ex.default)) {
+    ex.default = ex.sites[0]?.name || "";
+  }
 }
 
 function addCatalog() {

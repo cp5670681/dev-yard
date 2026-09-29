@@ -16,13 +16,15 @@ envs:
         default_node: k8s-1
         nodes:
           k8s-1: 172.16.4.23
-        namespace: research
-        container: web
-        runner: bin/rails runner
-        workdir: /var/www/research
-        pod:
-          selector: "app=research-web"
-          # pattern: "^research.{,17}$"   # 没有稳定 label 时
+        default: research
+        sites:
+          research:
+            namespace: research
+            container: web
+            runner: bin/rails runner
+            workdir: /var/www/research
+            pod:
+              selector: "app=research-web"
 ```
 
 选 pod 用 `kubectl get pods --field-selector=status.phase=Running -l ... -o jsonpath=`，每次现解析。认证失败不要连着重试（会锁号）。

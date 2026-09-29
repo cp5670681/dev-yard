@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, NoReturn
 from urllib.parse import urlparse
 
@@ -29,12 +29,18 @@ _USE_KEYS = {
     "raw": _COMMON | {"run", "ping", "shell"},
     "delegate": _COMMON | {"command", "ping", "skill"},
 }
+_SITE_SHARED = frozenset({"default", "sites"})
+_SITE_KEYS = frozenset(
+    {"runner", "workdir", "sql_runner", "namespace", "container", "pod", "timeout"}
+)
 _WITH_KEYS = {
-    "local": frozenset({"runner", "timeout", "workdir", "sql_runner"}),
+    "local": frozenset({"runner", "timeout", "workdir", "sql_runner"}) | _SITE_SHARED,
     "ssh": frozenset(
         {"target", "host", "user", "port", "workdir", "runner", "timeout", "sql_runner"}
-    ),
-    "docker": frozenset({"container", "runner", "workdir", "timeout", "sql_runner"}),
+    )
+    | _SITE_SHARED,
+    "docker": frozenset({"container", "runner", "workdir", "timeout", "sql_runner"})
+    | _SITE_SHARED,
     "jms-k8s": frozenset(
         {
             "jms",
@@ -48,7 +54,8 @@ _WITH_KEYS = {
             "timeout",
             "sql_runner",
         }
-    ),
+    )
+    | _SITE_SHARED,
     "raw": frozenset(),
     "delegate": frozenset(),
 }
@@ -135,6 +142,19 @@ def _as_str_or_argv(value: Any, field: str, *, shell: bool) -> tuple[tuple[str, 
 
 
 @dataclass(frozen=True)
+class QaExecSite:
+    name: str
+    runner: str = ""
+    workdir: str = ""
+    sql_runner: str = ""
+    container: str = ""
+    namespace: str = ""
+    k8s_container: str = ""
+    pod_selector: str = ""
+    pod_pattern: str = ""
+
+
+@dataclass(frozen=True)
 class QaExec:
     use: str = "local"
     site: str = "local"
@@ -146,7 +166,10 @@ class QaExec:
     db_exec: str = "host"
     runner: str = ""
     workdir: str = ""
+    inherit_workdir: str = ""
     sql_runner: str = ""
+    exec_default: str = ""
+    sites: tuple[QaExecSite, ...] = ()
     ssh_target: str = ""
     ssh_port: int = 22
     container: str = ""
@@ -176,9 +199,94 @@ class QaExec:
         ip = self.node_ip
         return f"{self.jms_user}@{ip}@{self.jms_host}"
 
+    def named_site(self, name: str | None = None) -> QaExecSite | None:
+        key = (name or "").strip() or self.exec_default
+        if not key:
+            return None
+        for item in self.sites:
+            if item.name == key:
+                return item
+        return None
+
 
 def default_exec(*, runner: str = "", db_exec: str = "host") -> QaExec:
     return QaExec(use="local", site="local", runner=runner, db_exec=db_exec)
+
+
+def _site_name(value: str, field: str) -> str:
+    name = _blank(value)
+    if not name or not name[0].isalpha() or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-." for c in name):
+        _fail(f"{field} 必须是现场名（字母开头）")
+    return name
+
+
+def _parse_exec_site(
+    use: str,
+    name: str,
+    raw: Any,
+    field: str,
+    *,
+    inherit_runner: str,
+) -> QaExecSite:
+    key = _site_name(name, f"{field}.sites")
+    row = raw if isinstance(raw, dict) else None
+    if row is None:
+        _fail(f"{field}.sites.{key} 必须是映射")
+    _unexpected(row, _SITE_KEYS, f"{field}.sites.{key}")
+    runner = _blank(row.get("runner")) or inherit_runner
+    workdir = _blank(row.get("workdir"))
+    sql_runner = _blank(row.get("sql_runner"))
+    container = _blank(row.get("container"))
+    ns = _blank(row.get("namespace"))
+    pod = row.get("pod") if isinstance(row.get("pod"), dict) else {}
+    _unexpected(pod, frozenset({"selector", "pattern"}), f"{field}.sites.{key}.pod")
+    selector = _blank(pod.get("selector"))
+    pattern = _blank(pod.get("pattern"))
+    if use in {"local", "ssh", "docker", "jms-k8s"} and not runner:
+        _fail(f"{field}.sites.{key}.runner 必填")
+    if use == "docker" and not container:
+        _fail(f"{field}.sites.{key}.container 必填")
+    if use == "jms-k8s":
+        if not ns or not container:
+            _fail(f"{field}.sites.{key} 需要 namespace 与 container")
+        if not selector and not pattern:
+            _fail(f"{field}.sites.{key}.pod 需要 selector 或 pattern")
+    return QaExecSite(
+        name=key,
+        runner=runner,
+        workdir=workdir,
+        sql_runner=sql_runner,
+        container=container if use == "docker" else "",
+        namespace=ns,
+        k8s_container=container if use == "jms-k8s" else "",
+        pod_selector=selector,
+        pod_pattern=pattern,
+    )
+
+
+def bind_site(spec: QaExec, name: str | None = None) -> QaExec:
+    """Copy spec with named-site fields flattened onto the hot path."""
+    if not spec.sites:
+        return spec
+    key = (name or "").strip() or spec.exec_default
+    found = spec.named_site(key)
+    if found is None:
+        names = ", ".join(s.name for s in spec.sites) or "(none)"
+        _fail(f"exec site {key!r} 不在 sites（{names}）")
+    inherit_wd = spec.inherit_workdir
+    return replace(
+        spec,
+        runner=found.runner,
+        workdir=found.workdir or inherit_wd,
+        inherit_workdir=inherit_wd,
+        sql_runner=found.sql_runner or spec.sql_runner,
+        container=found.container or spec.container,
+        namespace=found.namespace,
+        k8s_container=found.k8s_container,
+        pod_selector=found.pod_selector,
+        pod_pattern=found.pod_pattern,
+        exec_default=found.name,
+    )
 
 
 def parse_exec(env_name: str, raw_env: dict[str, Any], *, script_runner: str) -> QaExec:
@@ -234,6 +342,7 @@ def parse_exec(env_name: str, raw_env: dict[str, Any], *, script_runner: str) ->
         "db_exec": db_exec,
         "runner": runner,
         "workdir": workdir,
+        "inherit_workdir": workdir,
         "sql_runner": sql_runner,
     }
     if use == "ssh":
@@ -247,16 +356,19 @@ def parse_exec(env_name: str, raw_env: dict[str, Any], *, script_runner: str) ->
                 target = host
         if not target:
             _fail(f"qa.yaml {field}.exec.with 需要 target（或 host/user）")
-        if not runner:
+        has_sites = isinstance(with_raw.get("sites"), dict) and bool(with_raw.get("sites"))
+        if not runner and not has_sites:
             _fail(f"qa.yaml {field}.exec.with.runner 必填")
         kw["ssh_target"] = target
         kw["ssh_port"] = _int(with_raw.get("port"), f"{field}.exec.with.port", 22)
     elif use == "docker":
         container = _blank(with_raw.get("container"))
-        if not container:
-            _fail(f"qa.yaml {field}.exec.with.container 必填")
-        if not runner:
-            _fail(f"qa.yaml {field}.exec.with.runner 必填")
+        has_sites = isinstance(with_raw.get("sites"), dict) and bool(with_raw.get("sites"))
+        if not has_sites:
+            if not container:
+                _fail(f"qa.yaml {field}.exec.with.container 必填")
+            if not runner:
+                _fail(f"qa.yaml {field}.exec.with.runner 必填")
         kw["container"] = container
     elif use == "jms-k8s":
         jms = with_raw.get("jms") if isinstance(with_raw.get("jms"), dict) else None
@@ -284,20 +396,22 @@ def parse_exec(env_name: str, raw_env: dict[str, Any], *, script_runner: str) ->
             )
         ns = _blank(with_raw.get("namespace"))
         k8s_container = _blank(with_raw.get("container"))
-        if not ns or not k8s_container:
-            _fail(
-                f"qa.yaml {field}.exec.with 需要 namespace 与 container"
-            )
-        if not runner:
-            _fail(f"qa.yaml {field}.exec.with.runner 必填")
         pod = with_raw.get("pod") if isinstance(with_raw.get("pod"), dict) else {}
         _unexpected(pod, frozenset({"selector", "pattern"}), f"{field}.exec.with.pod")
         selector = _blank(pod.get("selector"))
         pattern = _blank(pod.get("pattern"))
-        if not selector and not pattern:
-            _fail(
-                f"qa.yaml {field}.exec.with.pod 需要 selector 或 pattern"
-            )
+        has_sites = isinstance(with_raw.get("sites"), dict) and bool(with_raw.get("sites"))
+        if not has_sites:
+            if not ns or not k8s_container:
+                _fail(
+                    f"qa.yaml {field}.exec.with 需要 namespace 与 container"
+                )
+            if not runner:
+                _fail(f"qa.yaml {field}.exec.with.runner 必填")
+            if not selector and not pattern:
+                _fail(
+                    f"qa.yaml {field}.exec.with.pod 需要 selector 或 pattern"
+                )
         kw.update(
             jms_host=jms_host,
             jms_port=_int(jms.get("port"), f"{field}.exec.with.jms.port", 22222),
@@ -347,6 +461,40 @@ def parse_exec(env_name: str, raw_env: dict[str, Any], *, script_runner: str) ->
             if not ping_cmd:
                 _fail(f"qa.yaml {field}.exec.ping 不能为空")
         kw.update(command=command, ping_command=ping_cmd, skill=skill)
+    sites_raw = with_raw.get("sites") if isinstance(with_raw, dict) else None
+    if isinstance(sites_raw, dict) and sites_raw:
+        items = tuple(
+            _parse_exec_site(
+                use,
+                str(sname),
+                srow,
+                f"{field}.exec.with",
+                inherit_runner=runner,
+            )
+            for sname, srow in sites_raw.items()
+        )
+        default_name = _blank(with_raw.get("default")) or items[0].name
+        if default_name not in {s.name for s in items}:
+            _fail(
+                f"qa.yaml {field}.exec.with.default {default_name!r} 不在 sites 里"
+            )
+        kw["sites"] = items
+        kw["exec_default"] = default_name
+        bound = next(s for s in items if s.name == default_name)
+        kw["runner"] = bound.runner
+        kw["workdir"] = bound.workdir or kw.get("workdir", "")
+        if bound.sql_runner:
+            kw["sql_runner"] = bound.sql_runner
+        if bound.container:
+            kw["container"] = bound.container
+        if bound.namespace:
+            kw["namespace"] = bound.namespace
+        if bound.k8s_container:
+            kw["k8s_container"] = bound.k8s_container
+        kw["pod_selector"] = bound.pod_selector
+        kw["pod_pattern"] = bound.pod_pattern
+    elif _blank(with_raw.get("default") if isinstance(with_raw, dict) else ""):
+        kw["exec_default"] = _blank(with_raw.get("default"))
     return QaExec(**kw)
 
 
@@ -379,6 +527,30 @@ def exec_payload(raw_env: Any) -> dict[str, Any]:
         ex = default_exec(runner=_blank(script.get("runner")))
         parse_error = str(e)
     nodes_text = "\n".join(f"{k}: {v}" for k, v in ex.nodes)
+    sites_out: list[dict[str, str]] = [
+        {
+            "name": s.name,
+            "runner": s.runner,
+            "workdir": s.workdir,
+            "namespace": s.namespace,
+            "container": s.container or s.k8s_container,
+            "pod_selector": s.pod_selector,
+            "pod_pattern": s.pod_pattern,
+        }
+        for s in ex.sites
+    ]
+    if not sites_out and (ex.runner or ex.namespace or ex.k8s_container or ex.container):
+        sites_out = [
+            {
+                "name": ex.exec_default or "default",
+                "runner": ex.runner,
+                "workdir": ex.workdir,
+                "namespace": ex.namespace,
+                "container": ex.container or ex.k8s_container,
+                "pod_selector": ex.pod_selector,
+                "pod_pattern": ex.pod_pattern,
+            }
+        ]
     run_text = (
         ex.raw_run_shell
         if ex.shell
@@ -419,6 +591,8 @@ def exec_payload(raw_env: Any) -> dict[str, Any]:
         "skill": ex.skill,
         "db_exec": _blank(db.get("exec")) or "host",
         "parse_error": parse_error,
+        "default": ex.exec_default or (sites_out[0]["name"] if sites_out else ""),
+        "sites": sites_out,
     }
 
 
@@ -489,6 +663,46 @@ def exec_from_form(raw: Any, field: str) -> dict[str, Any] | None:
             pod["pattern"] = _blank(raw.get("pod_pattern"))
         if pod:
             with_out["pod"] = pod
+    sites_in = raw.get("sites")
+    if isinstance(sites_in, list) and sites_in:
+        sites_out: dict[str, Any] = {}
+        for item in sites_in:
+            if not isinstance(item, dict):
+                continue
+            sname = _blank(item.get("name"))
+            if not sname:
+                continue
+            entry: dict[str, Any] = {}
+            if _blank(item.get("runner")):
+                entry["runner"] = _blank(item.get("runner"))
+            elif runner:
+                entry["runner"] = runner
+            if _blank(item.get("workdir")):
+                entry["workdir"] = _blank(item.get("workdir"))
+            if use == "jms-k8s":
+                if _blank(item.get("namespace")):
+                    entry["namespace"] = _blank(item.get("namespace"))
+                if _blank(item.get("container")):
+                    entry["container"] = _blank(item.get("container"))
+                spod: dict[str, str] = {}
+                if _blank(item.get("pod_selector")):
+                    spod["selector"] = _blank(item.get("pod_selector"))
+                if _blank(item.get("pod_pattern")):
+                    spod["pattern"] = _blank(item.get("pod_pattern"))
+                if spod:
+                    entry["pod"] = spod
+            elif use == "docker" and _blank(item.get("container")):
+                entry["container"] = _blank(item.get("container"))
+            sites_out[sname] = entry
+        if sites_out:
+            with_out["sites"] = sites_out
+            default_site = _blank(raw.get("default"))
+            if default_site:
+                with_out["default"] = default_site
+            elif list(sites_out):
+                with_out["default"] = next(iter(sites_out))
+            for shared in ("namespace", "container", "pod"):
+                with_out.pop(shared, None)
     if with_out:
         out["with"] = with_out
     if use == "raw":

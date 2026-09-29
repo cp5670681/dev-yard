@@ -91,6 +91,17 @@ def test_repo_databases_roundtrip(tmp_path: Path, git_src: Path):
     assert load_repos(yard)["be"].databases == ()
 
 
+def test_repo_exec_roundtrip(tmp_path: Path, git_src: Path):
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "be", str(git_src), "main", "be", str(git_src), exec="research")
+    assert load_repos(yard)["be"].exec == "research"
+    repo_set_pi(yard, "be", None, None, exec="reach")
+    assert load_repos(yard)["be"].exec == "reach"
+    repo_set_pi(yard, "be", None, None, exec="")
+    assert load_repos(yard)["be"].exec == ""
+
+
 def test_save_repos_keeps_pi_section(tmp_path: Path, git_src: Path):
     yard = tmp_path / "yard"
     init_yard(yard)

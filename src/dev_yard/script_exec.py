@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-from dev_yard.exec_cfg import QaExec, default_exec, is_local_base_url
+from dev_yard.exec_cfg import QaExec, bind_site, default_exec, is_local_base_url
 from dev_yard.qa_config import QaEnv, TestRejected, redact_qa_yaml
 
 LogFn = Callable[[str], None]
@@ -152,10 +152,11 @@ def resolve_executor(
     base_url: str | None = None,
     worktree: Path | None = None,
     root: Path | None = None,
+    site: str | None = None,
 ) -> ScriptExecutor:
     url = base_url if base_url is not None else env.base_url
     warning = assert_same_site(env, base_url=url)
-    spec = _qa_exec(env)
+    spec = bind_site(_qa_exec(env), site)
     cls = {
         "local": LocalExecutor,
         "ssh": SshExecutor,
@@ -1036,40 +1037,58 @@ def check_env(
     steps: list[dict[str, str]] = []
     if worktree is None:
         worktree = _first_worktree(root, jira)
-    executor = resolve_executor(
-        cfg.env, base_url=cfg.env.base_url, worktree=worktree, root=root
-    )
-    if executor.cross_site_warning:
-        steps.append(
-            {"step": "cross_site", "status": "warn", "detail": executor.cross_site_warning}
-        )
-        if on_log is not None:
-            on_log(executor.cross_site_warning)
-    steps.append({"step": "resolve", "status": "ok", "detail": executor.use})
+    spec = _qa_exec(cfg.env)
+    site_names = [s.name for s in spec.sites] or [spec.exec_default or ""]
+    executor = None
     try:
-        executor.ping()
-        steps.append({"step": "ping", "status": "ok", "detail": ""})
-        name, body = hello_source(_qa_exec(cfg.env).runner or "ruby")
-        tmp = Path(tempfile.mkdtemp(prefix="yard-check-"))
-        script = tmp / name
-        script.write_text(body, encoding="utf-8")
-        result = executor.run(
-            script,
-            on_log=on_log,
-            env_extra={
-                "QA_ENV": cfg.active_env,
-                "QA_JIRA": jira or "",
-                "QA_CASE_ID": "check-env",
-                "QA_SCRIPT_KIND": "setup",
-            },
-        )
-        shutil.rmtree(tmp, ignore_errors=True)
-        if result.code != 0 or HELLO not in (result.stdout or ""):
-            raise TestRejected(
-                f"hello 回显失败: exit={result.code} stdout={result.stdout!r}",
-                error_class=result.error_class or ExecErrorClass.SCRIPT,
+        for site_name in site_names:
+            executor = resolve_executor(
+                cfg.env,
+                base_url=cfg.env.base_url,
+                worktree=worktree,
+                root=root,
+                site=site_name or None,
             )
-        steps.append({"step": "hello", "status": "ok", "detail": HELLO})
+            if executor.cross_site_warning:
+                steps.append(
+                    {
+                        "step": "cross_site",
+                        "status": "warn",
+                        "detail": executor.cross_site_warning,
+                    }
+                )
+                if on_log is not None:
+                    on_log(executor.cross_site_warning)
+            label = site_name or executor.use
+            steps.append(
+                {"step": "resolve", "status": "ok", "detail": f"{executor.use} site={label}"}
+            )
+            executor.ping()
+            steps.append({"step": "ping", "status": "ok", "detail": label})
+            name, body = hello_source(executor.spec.runner or "ruby")
+            tmp = Path(tempfile.mkdtemp(prefix="yard-check-"))
+            script = tmp / name
+            script.write_text(body, encoding="utf-8")
+            result = executor.run(
+                script,
+                on_log=on_log,
+                env_extra={
+                    "QA_ENV": cfg.active_env,
+                    "QA_JIRA": jira or "",
+                    "QA_CASE_ID": "check-env",
+                    "QA_SCRIPT_KIND": "setup",
+                    "QA_EXEC_SITE": site_name or "",
+                },
+            )
+            shutil.rmtree(tmp, ignore_errors=True)
+            if result.code != 0 or HELLO not in (result.stdout or ""):
+                raise TestRejected(
+                    f"hello 回显失败 site={label}: exit={result.code} stdout={result.stdout!r}",
+                    error_class=result.error_class or ExecErrorClass.SCRIPT,
+                )
+            steps.append({"step": "hello", "status": "ok", "detail": f"{label} {HELLO}"})
+            executor.close()
+            executor = None
         catalogs = list(getattr(cfg.env, "db_catalogs", ()) or ())
         if not catalogs and cfg.env.db_url:
             from dev_yard.qa_config import QaDbCatalog
@@ -1137,9 +1156,11 @@ def check_env(
         return {
             "ok": True,
             "env": cfg.active_env,
-            "use": executor.use,
-            "site": executor.site,
+            "use": spec.use,
+            "site": spec.site,
+            "sites": [s.name for s in spec.sites],
             "steps": steps,
         }
     finally:
-        executor.close()
+        if executor is not None:
+            executor.close()

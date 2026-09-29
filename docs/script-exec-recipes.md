@@ -175,15 +175,24 @@ exec:
     default_node: k8s-1
     nodes:
       k8s-1: 172.16.4.23
-    namespace: research
-    container: web
-    runner: bin/rails runner
-    workdir: /var/www/research  # 空 = 不加 cd；禁止猜 /app
-    # 选 pod：prefer selector；pattern 仅作退路
-    pod:
-      selector: "app=research-web,tier=web"   # kubectl -l
-      # pattern: "^research.{,17}$"           # 仅当没有稳定 label 时
+    default: research
+    sites:
+      research:
+        namespace: research
+        container: web
+        runner: bin/rails runner
+        workdir: /var/www/research  # 空 = 不加 cd；禁止猜 /app
+        pod:
+          selector: "app=research-web,tier=web"
+      reach:
+        namespace: research
+        container: reach
+        runner: ruby script/runner
+        pod:
+          pattern: "^reach.{,17}$"
 ```
+
+运输层（`jms` / `nodes` / `use`）挂在 env 上；pod、container、runner 按 **named site** 拆。仓在 `repos.yaml` 写 `exec: reach`，用例用票上的 `repo:` 选现场。旧的扁平 `with.namespace` / `with.runner` 仍可读，等于一个未命名现场。
 
 选 pod（每次 ping/run 现解析，禁止跨调用缓存名字——hash 随重启变）：
 

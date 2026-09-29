@@ -642,6 +642,7 @@ def list_repos(root: Path) -> list[dict[str, str]]:
                 "model": repo.model or "",
                 "test_branch": repo.test_branch or "",
                 "databases": ",".join(repo.databases),
+                "exec": repo.exec or "",
             }
         )
     return out

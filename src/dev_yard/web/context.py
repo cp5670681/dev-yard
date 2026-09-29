@@ -439,6 +439,7 @@ class AppContext:
                 "model": payload.model.strip() or None,
                 "test_branch": payload.test_branch.strip() or None,
                 "databases": [n.strip() for n in payload.databases if n.strip()],
+                "exec": (payload.exec or "").strip(),
             },
         )
 

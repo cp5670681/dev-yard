@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from dev_yard.exec_cfg import parse_exec
+from dev_yard.exec_cfg import bind_site, exec_from_form, parse_exec
 from dev_yard.qa_config import TestRejected, load_qa_config, save_qa_config
 from dev_yard.script_exec import (
     HELLO,
@@ -570,3 +570,142 @@ def test_payload_roundtrip_keeps_exec(tmp_path: Path):
     cfg = load_qa_config(root)
     assert cfg.env.exec_cfg.use == "ssh"
     assert cfg.env.exec_cfg.ssh_target == "me@host"
+
+
+def test_named_sites_bind_runner_and_pod():
+    spec = parse_exec(
+        "test",
+        {
+            "exec": {
+                "use": "jms-k8s",
+                "with": {
+                    "jms": {"host": "jms.example.com", "port": 22222, "user": "alice@root"},
+                    "default_node": "k8s-1",
+                    "nodes": {"k8s-1": "10.0.1.5"},
+                    "default": "research",
+                    "sites": {
+                        "research": {
+                            "runner": "bin/rails runner",
+                            "namespace": "dev",
+                            "container": "research",
+                            "pod": {"pattern": "^research.{,17}$"},
+                        },
+                        "reach": {
+                            "runner": "ruby script/runner",
+                            "namespace": "dev",
+                            "container": "reach",
+                            "pod": {"pattern": "^reach.{,17}$"},
+                        },
+                    },
+                },
+            },
+        },
+        script_runner="",
+    )
+    assert spec.exec_default == "research"
+    assert spec.runner == "bin/rails runner"
+    assert spec.k8s_container == "research"
+    reach = bind_site(spec, "reach")
+    assert reach.runner == "ruby script/runner"
+    assert reach.k8s_container == "reach"
+    assert reach.pod_pattern == "^reach.{,17}$"
+
+
+def test_bind_site_keeps_env_workdir_when_site_omits_it():
+    spec = parse_exec(
+        "test",
+        {
+            "exec": {
+                "use": "jms-k8s",
+                "with": {
+                    "jms": {"host": "jms.example.com", "port": 22222, "user": "alice@root"},
+                    "default_node": "k8s-1",
+                    "nodes": {"k8s-1": "10.0.1.5"},
+                    "workdir": "/var/www/app",
+                    "default": "research",
+                    "sites": {
+                        "research": {
+                            "runner": "bin/rails runner",
+                            "namespace": "dev",
+                            "container": "research",
+                            "pod": {"pattern": "^research"},
+                        },
+                        "reach": {
+                            "runner": "ruby script/runner",
+                            "namespace": "dev",
+                            "container": "reach",
+                            "pod": {"pattern": "^reach"},
+                        },
+                    },
+                },
+            },
+        },
+        script_runner="",
+    )
+    assert spec.workdir == "/var/www/app"
+    research = bind_site(spec, "research")
+    assert research.workdir == "/var/www/app"
+    reach = bind_site(research, "reach")
+    assert reach.workdir == "/var/www/app"
+    reach_direct = bind_site(spec, "reach")
+    assert reach_direct.workdir == "/var/www/app"
+
+
+def test_exec_from_form_copies_runner_onto_sites_and_keeps_inherit():
+    dumped = exec_from_form(
+        {
+            "use": "local",
+            "runner": "bin/rails runner",
+            "workdir": "/app",
+            "default": "research",
+            "sites": [
+                {"name": "research", "runner": "", "workdir": ""},
+                {"name": "reach", "runner": "ruby script/runner", "workdir": ""},
+            ],
+        },
+        "envs.test.exec",
+    )
+    assert dumped is not None
+    with_out = dumped["with"]
+    assert with_out["runner"] == "bin/rails runner"
+    assert with_out["workdir"] == "/app"
+    assert with_out["sites"]["research"]["runner"] == "bin/rails runner"
+    assert with_out["sites"]["reach"]["runner"] == "ruby script/runner"
+
+
+def test_resolve_executor_named_site(tmp_path: Path):
+    root = _yard(tmp_path)
+    _write_env(
+        root,
+        {
+            "base_url": "http://research.dev1.example.com",
+            "exec": {
+                "use": "jms-k8s",
+                "with": {
+                    "jms": {"host": "jms.example.com", "port": 22222, "user": "alice@root"},
+                    "default_node": "k8s-1",
+                    "nodes": {"k8s-1": "10.0.1.5"},
+                    "default": "research",
+                    "sites": {
+                        "research": {
+                            "runner": "bin/rails runner",
+                            "namespace": "dev",
+                            "container": "research",
+                            "pod": {"pattern": "^research"},
+                        },
+                        "reach": {
+                            "runner": "ruby script/runner",
+                            "namespace": "dev",
+                            "container": "reach",
+                            "pod": {"pattern": "^reach"},
+                        },
+                    },
+                },
+            },
+        },
+        name="test",
+    )
+    cfg = load_qa_config(root)
+    ex = resolve_executor(cfg.env, base_url=cfg.env.base_url, site="reach")
+    assert ex.spec.runner == "ruby script/runner"
+    assert ex.spec.k8s_container == "reach"
