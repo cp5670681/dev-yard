@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from dev_yard.script_exec import (
     ExecResult,
     ExecUnreachable,
     JmsK8sExecutor,
+    _db_probe_sql,
     _restore_remote_exit,
     check_env,
     classify_error,
@@ -446,6 +448,69 @@ def test_check_env_local(tmp_path: Path):
     assert out["ok"] is True
     assert out["use"] == "local"
     assert any(s["step"] == "hello" and s["status"] == "ok" for s in out["steps"])
+
+
+def test_db_probe_sql_picks_dialect():
+    assert _db_probe_sql("oracle://u:p@h:1522/REACH") == "select 1 from dual"
+    assert _db_probe_sql("postgresql://u:p@h:5432/app") == "select 1"
+    assert _db_probe_sql("mysql://u:p@h:3306/app") == "select 1"
+    assert _db_probe_sql("") == "select 1"
+
+
+def test_check_env_db_probe_uses_dialect_and_reports_real_error(
+    tmp_path: Path, monkeypatch
+):
+    """Oracle must be probed with `from dual`, and a failure keeps usql's error.
+
+    A bare `select 1` is a syntax error on Oracle (ORA-00923) and would be
+    reported as "从本机不通" even though the database is reachable.
+    """
+    root = _yard(tmp_path)
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "usql"
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "args = sys.argv[1:]\n"
+        "url = args[0]\n"
+        "sql = args[args.index('-c') + 1]\n"
+        "if url.startswith('oracle://') and 'from dual' not in sql.lower():\n"
+        "    sys.stderr.write('error: oracle: ORA-00923: FROM keyword not found\\n')\n"
+        "    sys.exit(1)\n"
+        "if url.startswith('mysql://'):\n"
+        "    sys.stderr.write('error: mysql: connect: connection refused\\n')\n"
+        "    sys.exit(1)\n"
+        "print('1')\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '')}")
+    _write_env(
+        root,
+        {
+            "base_url": "http://127.0.0.1:9",
+            "script": {"runner": "python3"},
+            "db": {
+                "default": "main",
+                "catalogs": {
+                    "main": {"url": "postgresql://u:p@h:5432/app"},
+                    "reach": {"url": "oracle://u:p@h:1522/REACH"},
+                    "legacy": {"url": "mysql://u:p@h:3306/app"},
+                },
+            },
+        },
+    )
+    out = check_env(root, worktree=wt)
+    probe = {s.get("catalog"): s for s in out["steps"] if s["step"] == "db"}
+    assert probe["reach"]["status"] == "ok", probe["reach"]
+    assert "from dual" in probe["reach"]["detail"]
+    assert probe["main"]["status"] == "ok", probe["main"]
+    assert probe["legacy"]["status"] == "warn"
+    assert "connection refused" in probe["legacy"]["detail"], probe["legacy"]
+    assert "从本机不通" not in probe["legacy"]["detail"]
 
 
 def test_delegate_command_reads_result_file(tmp_path: Path, monkeypatch):

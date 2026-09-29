@@ -108,7 +108,7 @@ def _harden_db(cfg: QaConfig, steps: list[dict[str, str]]) -> list[dict[str, str
             {
                 "step": "db",
                 "status": "fail",
-                "detail": "没有完成数据库检查（需要本机 usql，并对每个 catalog 执行 select 1）",
+                "detail": "没有完成数据库检查（需要本机 usql，并对每个 catalog 执行探测查询）",
             }
         )
         return out
@@ -127,7 +127,7 @@ def _harden_db(cfg: QaConfig, steps: list[dict[str, str]]) -> list[dict[str, str
                     "step": "db",
                     "catalog": name,
                     "status": "fail",
-                    "detail": f"{name}: 没有完成数据库检查（需要本机 usql，并对 db.url 执行 select 1）",
+                    "detail": f"{name}: 没有完成数据库检查（需要本机 usql，并对 db.url 执行探测查询）",
                 }
             )
     return out

@@ -362,7 +362,8 @@ def _remote_shell(
     return " && ".join(bits)
 
 
-def _clip_diag(result: ExecResult, limit: int = 240) -> str:
+def _clip_diag(result: Any, limit: int = 240) -> str:
+    """One-line redacted diagnostic from anything carrying stdout/stderr."""
     text = redact_qa_yaml((result.stderr or result.stdout or "").strip())
     text = " ".join(text.split())
     if len(text) > limit:
@@ -1016,6 +1017,17 @@ def hello_source(runner: str) -> tuple[str, str]:
     return "hello.rb", f'puts "{HELLO}"\n'
 
 
+def _db_probe_sql(url: str) -> str:
+    """Liveness query for a usql URL, in the dialect its scheme implies.
+
+    Oracle rejects a bare `SELECT 1` (ORA-00923) and Postgres has none of
+    Oracle's `dual`, so no single statement probes both. Unknown schemes keep
+    the generic form.
+    """
+    scheme = url.split("://", 1)[0].strip().lower()
+    return "select 1 from dual" if scheme.startswith("oracle") else "select 1"
+
+
 def fetch_logs(
     root: Path,
     *,
@@ -1151,8 +1163,9 @@ def check_env(
                 )
                 continue
             try:
+                sql = _db_probe_sql(cat.url)
                 r = subprocess.run(
-                    [usql, cat.url, "-c", "select 1"],
+                    [usql, cat.url, "-c", sql],
                     capture_output=True,
                     text=True,
                     timeout=5,
@@ -1163,7 +1176,10 @@ def check_env(
                             "step": "db",
                             "catalog": cat.name,
                             "status": "warn",
-                            "detail": f"{cat.name}: db.url 从本机不通；.sql 造数需宿主能直连该库",
+                            "detail": (
+                                f"{cat.name}: db 探测失败（{_clip_diag(r)}）；"
+                                ".sql 造数需宿主能直连该库"
+                            ),
                         }
                     )
                 else:
@@ -1172,7 +1188,7 @@ def check_env(
                             "step": "db",
                             "catalog": cat.name,
                             "status": "ok",
-                            "detail": f"{cat.name}: usql select 1",
+                            "detail": f"{cat.name}: usql {sql}",
                         }
                     )
             except (subprocess.TimeoutExpired, OSError) as e:
