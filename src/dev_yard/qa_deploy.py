@@ -47,6 +47,20 @@ def _ident(*groups: str | None) -> str:
     return ""
 
 
+def _read_worktree_text(path: Path) -> str | None:
+    """Worktree source may not be UTF-8; strict decode raises UnicodeDecodeError, not OSError."""
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    for enc in ("utf-8", "gb18030"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 def _diff_base(root: Path, jira: str, alias: str) -> str | None:
     wt = paths.req_worktree(root, jira, alias)
     if not (wt / ".git").exists():
@@ -125,9 +139,8 @@ def branch_new_columns(migrations: list[Path | str]) -> dict[str, set[str]]:
     net: dict[str, set[str]] = {}
     files = sorted((Path(p) for p in migrations), key=lambda p: p.name)
     for path in files:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
+        text = _read_worktree_text(path)
+        if text is None:
             continue
         added, removed = parse_migration_text(text)
         for table, cols in added.items():
@@ -155,9 +168,8 @@ def frozen_models(root: Path, jira: str, alias: str) -> set[str]:
             continue
         if path.name.lower() in {"freeze_model_concern.rb", "freeze_model.rb"}:
             continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
+        text = _read_worktree_text(path)
+        if text is None:
             continue
         if not _INCLUDE_FREEZE.search(text):
             continue

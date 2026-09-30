@@ -60,6 +60,30 @@ def test_frozen_models_scans_include(tmp_path: Path):
     assert names == {"FirmTask"}
 
 
+def test_frozen_models_reads_non_utf8_ruby(tmp_path: Path):
+    wt = tmp_path / "reqs" / "J-1" / "worktrees" / "legacy"
+    model = wt / "app" / "models"
+    other = wt / "lib"
+    model.mkdir(parents=True)
+    other.mkdir(parents=True)
+    (model / "widget.rb").write_text(
+        "class Widget < ActiveRecord::Base\n  include FreezeModelConcern\nend\n",
+        encoding="utf-8",
+    )
+    other.joinpath("note.rb").write_bytes(b"# " + bytes([0xd7, 0xd4]) + b"\n")
+    names = frozen_models(tmp_path, "J-1", "legacy")
+    assert names == {"Widget"}
+
+
+def test_branch_new_columns_reads_non_utf8_migration(tmp_path: Path):
+    path = tmp_path / "20200101000000_add.rb"
+    path.write_bytes(
+        b"# " + bytes([0xd7, 0xd4]) + b"\n"
+        b"add_column :widgets, :flag, :boolean\n"
+    )
+    assert branch_new_columns([path]) == {"widgets": {"flag"}}
+
+
 def _git_repo(path: Path) -> None:
     import subprocess
 
