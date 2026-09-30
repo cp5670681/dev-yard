@@ -72,12 +72,9 @@ _COL_MISSING = re.compile(
 )
 
 # Host-internal tables live in a reserved namespace and are exempt from the
-# "every FROM/JOIN table must be named in the case body" rule. The seed registry
-# (`_qa_exec_seeds`) is the one that matters: setup records each seeded row's id
-# there so a standalone read-only verify.sql can locate its own seed (setup may
-# run on a different replica than verify). It is a host convention, never a
-# business object a case body would name, so requiring it would fail every case
-# that seeds data.
+# "every FROM/JOIN table must be named in the case body" rule. Seed ids belong
+# in `design-verify/seeds.yaml` (setup stdout `QA_SEED`), not a business-DB
+# table; leftover `_qa_*` names in old verify.sql are still ignored here.
 _INTERNAL_TABLE_PREFIX = "_qa_"
 
 
@@ -582,6 +579,54 @@ def enrich_verify_hint(
     return hint
 
 
+_AND_SPLIT = re.compile(r"\s+AND\s+", re.I)
+_MAX_DELTA = 8
+
+
+def _where_conjuncts(sql: str) -> tuple[str, list[str], str] | None:
+    """Split a simple `... WHERE a AND b ...` into (head, conjuncts, tail)."""
+    m = re.search(r"\bWHERE\b", sql, re.I)
+    if not m:
+        return None
+    head = sql[: m.end()]
+    rest = sql[m.end() :]
+    order = re.search(
+        r"\b(GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|FETCH|OFFSET)\b", rest, re.I
+    )
+    body = rest[: order.start()] if order else rest
+    tail = rest[order.start() :] if order else ""
+    parts = [p.strip() for p in _AND_SPLIT.split(body) if p.strip()]
+    if len(parts) < 2:
+        return None
+    return head, parts, tail
+
+
+def attribute_zero_rows(
+    cfg: QaConfig,
+    sql: str,
+    catalog: str | None,
+    *,
+    on_log=None,
+) -> str:
+    """Drop WHERE conjuncts one at a time; report the first that flips 0→n."""
+    parsed = _where_conjuncts(sql)
+    if parsed is None:
+        return ""
+    head, parts, tail = parsed
+    if len(parts) > _MAX_DELTA:
+        parts = parts[:_MAX_DELTA]
+    for i, dropped in enumerate(parts):
+        remain = [p for j, p in enumerate(parts) if j != i]
+        trial = head + " " + " AND ".join(remain) + " " + tail
+        try:
+            n = run_sql_count(cfg, trial, on_log=on_log, catalog=catalog, verify=True)
+        except TestRejected:
+            continue
+        if n >= 1:
+            return f"断言 {dropped} 使结果为 0 行：去掉该项即 {n} 行"
+    return ""
+
+
 def needs_verify(job: CaseJob) -> bool:
     """Whether the case declares data prerequisites that must be proven.
 
@@ -683,13 +728,13 @@ def verify_case(
         result.lint["skip_design"] = True
         return finish()
 
+    query = text
     if job.setup:
         try:
-            result.setup_stdout = _truncate(
-                run_case_script(
-                    root, jira, cfg, job, "setup", on_log=on_log, executor=executor
-                )
+            raw_stdout = run_case_script(
+                root, jira, cfg, job, "setup", on_log=on_log, executor=executor
             )
+            result.setup_stdout = _truncate(raw_stdout)
         except TestRejected as e:
             result.status = "failed"
             result.setup_ok = False
@@ -702,12 +747,38 @@ def verify_case(
             result.setup_ok = False
             result.error = f"setup error: {e}"
             return finish()
+        from dev_yard.qa_seeds import apply_seed_placeholders, parse_qa_seeds, write_case_seeds
+
+        seeds = parse_qa_seeds(raw_stdout or "")
+        try:
+            write_case_seeds(paths.qa_dir(root, jira), job.id, seeds)
+        except OSError:
+            pass
+        query, missing = apply_seed_placeholders(text, seeds)
+        if missing:
+            result.status = "failed"
+            result.error = (
+                "verify.sql 引用了 :seed."
+                + ", :seed.".join(missing)
+                + "，但 setup stdout 没有对应的 QA_SEED 行"
+            )
+            _cleanup(root, jira, cfg, job, result, on_log, executor)
+            return finish()
+    else:
+        from dev_yard.qa_seeds import has_seed_placeholders
+
+        if has_seed_placeholders(text):
+            result.status = "failed"
+            result.error = (
+                "verify.sql 使用了 :seed. 占位符，但用例没有 setup 产出 QA_SEED"
+            )
+            return finish()
 
     # A restricted read-only role (catalog.verify_url / db.verify_url) is used
     # for the verify query so design does not need the write DSN.
     try:
         result.rows = run_sql_count(
-            cfg, text, on_log=on_log, catalog=job.db or None, verify=True
+            cfg, query, on_log=on_log, catalog=job.db or None, verify=True
         )
     except TestRejected as e:
         if verify_env_error(e):
@@ -723,6 +794,9 @@ def verify_case(
     if result.rows < 1:
         result.status = "failed"
         result.error = "0 rows"
+        attr = attribute_zero_rows(cfg, query, job.db or None, on_log=on_log)
+        if attr:
+            result.error = f"0 rows；{attr}"
     else:
         result.status = "passed"
         result.reason = "数据前置已核实"
@@ -1169,6 +1243,19 @@ def _failed_detail(cid: str, item: Any) -> dict[str, Any]:
     }
 
 
+def _failure_signature(r: VerifyResult) -> str:
+    err = salient_error(r.error or "", 200)
+    m = re.search(r"(setup_[\w.-]+)", err)
+    if m:
+        return f"setup:{m.group(1)}"
+    if r.hint:
+        return "hint:" + " ".join(r.hint.split())[:120]
+    sql = " ".join((r.verify_sql or "").split())[:120]
+    if sql:
+        return "sql:" + sql
+    return "err:" + (err[:80] or r.case)
+
+
 def render_feedback(
     results: dict[str, VerifyResult], *, limit: int = _MAX_ATTEMPTS_REASON
 ) -> str:
@@ -1181,10 +1268,23 @@ def render_feedback(
         "属「需求新增·现场未部署」子节的列必须保留断言，并在用例备注标注待部署。",
         "",
     ]
-    for cid in sorted(results):
-        r = results[cid]
-        if r.status != "failed" or r.lint.get("skip_design"):
-            continue
+    failed = [
+        results[cid]
+        for cid in sorted(results)
+        if results[cid].status == "failed" and not results[cid].lint.get("skip_design")
+    ]
+    groups: dict[str, list[VerifyResult]] = {}
+    for r in failed:
+        groups.setdefault(_failure_signature(r), []).append(r)
+    multi = {k: v for k, v in groups.items() if len(v) > 1}
+    if multi:
+        lines.append("# 根因聚类")
+        for sig, items in multi.items():
+            ids = ", ".join(r.case for r in items)
+            lines.append(f"这 {len(items)} 条同一根因（{sig}）：{ids}")
+        lines.append("")
+    for r in failed:
+        cid = r.case
         lines.append(f"## {cid}")
         sql = " ".join((r.verify_sql or "").split())
         if len(sql) > 240:

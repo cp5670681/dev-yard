@@ -40,6 +40,9 @@ def _seed_qa(yard: Path, *, progress: bool = True) -> None:
         "---\nid: case-02\ntitle: t2\npriority: P1\nrepo: backend\ncovers: [D1]\n---\n\nstep2\n",
         encoding="utf-8",
     )
+    from dev_yard.qa_review import approve_cases
+
+    approve_cases(qa)
     run = qa / "evidence" / "2026-09-16-153000"
     (run / "case-01" / "screenshots").mkdir(parents=True)
     (run / "case-02").mkdir(parents=True)
@@ -395,7 +398,7 @@ def test_qa_case_bug_rejects_passed_case(tmp_path: Path, git_src: Path, monkeypa
     _seed_qa(yard, progress=False)
     r = _client(yard).post("/api/requirements/QA-W1/qa/cases/case-02/bug")
     assert r.status_code == 400
-    assert "only failed cases" in r.json()["detail"]
+    assert "只有审核通过后跑失败的用例才能建票" in r.json()["detail"]
 
 
 def test_qa_case_bug_unknown_case_is_400(tmp_path: Path, git_src: Path, monkeypatch):

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+
 @pytest.fixture(autouse=True)
 def _skip_qa_ready_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     """Unit tests do not ping environments or open databases."""

@@ -31,6 +31,7 @@ def _write_qa_yaml(root: Path, extra: str = "") -> None:
         "workers:\n"
         "  - id: a\n    provider: rcc\n    model: grok-4\n"
         "    concurrency: 1\n    priority: 1\n"
+        "design:\n  probe_attempts: 0\n"
         "envs:\n  local:\n    base_url: http://127.0.0.1:8080\n"
         + extra,
         encoding="utf-8",
@@ -201,7 +202,9 @@ def test_design_runner_uses_qa_yaml_design_model(tmp_path: Path, git_src: Path, 
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)
     yard = _testing_req(tmp_path, git_src, "QA-DM")
-    _write_qa_yaml(yard, "design:\n  provider: rcc\n  model: glm-5.3\n")
+    _write_qa_yaml(
+        yard, "design:\n  provider: rcc\n  model: glm-5.3\n  probe_attempts: 0\n"
+    )
     design = _DesignRunner(yard, "QA-DM")
     captured: dict = {}
 
@@ -851,7 +854,7 @@ def test_preload_auth_runs_when_account_configured(tmp_path: Path, git_src: Path
     hits: list[str] = []
     seen_names: list[list[str]] = []
 
-    def fake(root, cfg, names=None, on_log=None):
+    def fake(root, cfg, names=None, on_log=None, **kwargs):
         hits.append(cfg.env.auth_default)
         seen_names.append(list(names or []))
 
@@ -3351,7 +3354,7 @@ def test_run_prompt_hides_password(tmp_path: Path, git_src: Path, monkeypatch):
     prompt = _run_prompt(yard, "QA-PW", cfg, job, "2026-01-01-000000")
     assert "s3cret" not in prompt
     assert "YARD_QA_PASSWORD" in prompt
-    env = _case_auth_env(cfg, job)
+    env = _case_auth_env(yard, cfg, job)
     assert env["YARD_QA_PASSWORD"] == "s3cret"
 
 
@@ -4927,4 +4930,122 @@ def test_reset_cases_in_run_clears_attempts(tmp_path: Path):
     assert doc is not None
     assert doc["cases"][0]["state"] == "ready"
     assert doc["cases"][0]["attempts"] == 0
+
+
+def test_lint_cases_flags_business_db_seed_table(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.qa import lint_cases
+    from dev_yard.qa_config import load_qa_config
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-SEED")
+    d = yard / "reqs" / "QA-SEED" / "qa" / "cases" / "mod"
+    d.mkdir(parents=True)
+    (d / "setup.rb").write_text(
+        "conn.execute('CREATE TABLE _qa_exec_seeds (jira varchar2(40))')\n",
+        encoding="utf-8",
+    )
+    cfg = load_qa_config(yard)
+    cases = [
+        CaseJob(
+            id="case-01",
+            title="t",
+            repo="backend",
+            path=str(d / "case-01.md"),
+            setup="setup.rb",
+        )
+    ]
+    problems = lint_cases(yard, "QA-SEED", cfg, cases)
+    assert any("QA_SEED" in p and "_qa_exec_seeds" in p for p in problems)
+
+
+def test_lint_cases_flags_missing_skip_freeze(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.qa import lint_cases
+    from dev_yard.qa_config import load_qa_config
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-FZ")
+    monkeypatch.setattr("dev_yard.qa_deploy.frozen_models", lambda *_a, **_k: {"Widget"})
+    qa = yard / "reqs" / "QA-FZ" / "qa" / "cases" / "mod"
+    qa.mkdir(parents=True)
+    (qa / "setup.rb").write_text("t = Widget.new\nt.save\n", encoding="utf-8")
+    cfg = load_qa_config(yard)
+    cases = [
+        CaseJob(
+            id="case-01",
+            title="t",
+            repo="backend",
+            path=str(qa / "case-01.md"),
+            setup="setup.rb",
+        )
+    ]
+    problems = lint_cases(yard, "QA-FZ", cfg, cases)
+    assert any("skip_freeze" in p for p in problems)
+    (qa / "setup.rb").write_text(
+        "t = Widget.new\nt.skip_freeze = true\nt.save\n", encoding="utf-8"
+    )
+    assert not any("skip_freeze" in p for p in lint_cases(yard, "QA-FZ", cfg, cases))
+
+
+def test_lint_cases_flags_unknown_constant(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.qa import lint_cases
+    from dev_yard.qa_config import load_qa_config
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-CN")
+    qa = yard / "reqs" / "QA-CN" / "qa"
+    qa.mkdir(parents=True, exist_ok=True)
+    (qa / "facts.yaml").write_text(
+        "worktrees:\n  backend:\n    constants: [Widget, Widget::ACTIVE]\n"
+        "    frozen_models: []\n",
+        encoding="utf-8",
+    )
+    d = qa / "cases" / "mod"
+    d.mkdir(parents=True)
+    (d / "setup.rb").write_text("EmployeesGroup.first\n", encoding="utf-8")
+    cfg = load_qa_config(yard)
+    cases = [
+        CaseJob(
+            id="case-01",
+            title="t",
+            repo="backend",
+            path=str(d / "case-01.md"),
+            setup="setup.rb",
+        )
+    ]
+    # EmployeesGroup is a class token, not Const::NAME — use nested form
+    (d / "setup.rb").write_text("x = EmployeesGroup::MAX\n", encoding="utf-8")
+    problems = lint_cases(yard, "QA-CN", cfg, cases)
+    assert any("EmployeesGroup::MAX" in p for p in problems)
+    (d / "setup.rb").write_text("x = Widget::ACTIVE\n", encoding="utf-8")
+    assert not any("常量" in p for p in lint_cases(yard, "QA-CN", cfg, cases))
+
+
+def test_lint_cases_flags_fetch_first_at_lint(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.qa import lint_cases
+    from dev_yard.qa_config import TestRejected, load_qa_config
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-FF")
+
+    def boom(cfg, sql, on_log=None, **k):
+        raise TestRejected("ORA-00907: missing right parenthesis FETCH FIRST")
+
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_count", boom)
+    d = yard / "reqs" / "QA-FF" / "qa" / "cases" / "mod"
+    d.mkdir(parents=True)
+    (d / "verify.sql").write_text(
+        "SELECT 1 FROM dual ORDER BY 1 FETCH FIRST 1 ROW ONLY\n", encoding="utf-8"
+    )
+    cfg = load_qa_config(yard)
+    cases = [
+        CaseJob(
+            id="case-01",
+            title="t",
+            repo="backend",
+            path=str(d / "case-01.md"),
+            verify="verify.sql",
+        )
+    ]
+    problems = lint_cases(yard, "QA-FF", cfg, cases)
+    assert any("lint 期" in p and "ORA-00907" in p for p in problems)
 

@@ -44,6 +44,7 @@ def _write_qa_yaml(root: Path, extra: str = "") -> None:
         "workers:\n"
         "  - id: a\n    provider: rcc\n    model: grok-4\n"
         "    concurrency: 1\n    priority: 1\n"
+        "design:\n  probe_attempts: 0\n"
         "envs:\n  local:\n    base_url: http://127.0.0.1:8080\n"
         "    db:\n      url: postgres://u:p@127.0.0.1:5432/qa\n"
         + extra,
@@ -159,6 +160,68 @@ def test_lint_verify_requires_identifier_in_body():
     bad = lint_verify(job, "SELECT id FROM unrelated_table WHERE id=1")
     assert not bad["ok"]
     assert "unrelated_table" in bad["detail"]
+
+
+def test_parse_and_apply_qa_seeds():
+    from dev_yard.qa_seeds import apply_seed_placeholders, parse_qa_seeds
+
+    seeds = parse_qa_seeds(
+        "noise\nQA_SEED key=task table=firm_tasks id=42\nQA_SEED key=bonus id=9\n"
+    )
+    assert seeds["task"] == {"id": "42", "table": "firm_tasks"}
+    sql, missing = apply_seed_placeholders(
+        "SELECT id FROM firm_tasks WHERE id = :seed.task AND extra = :seed.missing",
+        seeds,
+    )
+    assert "id = 42" in sql
+    assert missing == ["missing"]
+
+
+def test_verify_case_substitutes_seed_placeholder(tmp_path: Path, monkeypatch):
+    job = _case_job(
+        tmp_path,
+        verify_sql="SELECT id FROM projects WHERE id = :seed.task",
+        setup="setup.rb",
+        body="## 预期\n- DB: projects.id 由 setup 种子定位\n",
+    )
+    (Path(job.path).parent / "setup.rb").write_text("puts 'ok'\n", encoding="utf-8")
+    seen: list[str] = []
+
+    def fake_script(*_a, **_k):
+        return "QA_SEED key=task id=669215 table=projects\n"
+
+    def fake_count(cfg, sql, on_log=None, **k):
+        seen.append(sql)
+        return 1
+
+    monkeypatch.setattr("dev_yard.qa_verify.run_case_script", fake_script)
+    monkeypatch.setattr("dev_yard.qa_verify.run_sql_count", fake_count)
+    result = verify_case(tmp_path, JIRA, _cfg(tmp_path), job)
+    assert result.status == "passed"
+    assert seen and ":seed.task" not in seen[0] and "669215" in seen[0]
+    data = yaml.safe_load(
+        (paths.qa_dir(tmp_path, JIRA) / "design-verify" / "seeds.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert data["case-01"]["task"]["id"] == "669215"
+
+
+def test_verify_case_missing_qa_seed_fails(tmp_path: Path, monkeypatch):
+    job = _case_job(
+        tmp_path,
+        verify_sql="SELECT id FROM projects WHERE id = :seed.task",
+        setup="setup.rb",
+        body="## 预期\n- DB: projects.id\n",
+    )
+    (Path(job.path).parent / "setup.rb").write_text("puts 'ok'\n", encoding="utf-8")
+    monkeypatch.setattr("dev_yard.qa_verify.run_case_script", lambda *_a, **_k: "ok\n")
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.run_sql_count", lambda *_a, **_k: 1
+    )
+    result = verify_case(tmp_path, JIRA, _cfg(tmp_path), job)
+    assert result.status == "failed"
+    assert "QA_SEED" in result.error
 
 
 def test_lint_verify_exempts_internal_seed_table():
@@ -487,7 +550,7 @@ def test_dump_live_schema_formats_rows(monkeypatch):
 
 
 def test_dump_live_schema_prefixes_each_catalog(monkeypatch):
-    from dev_yard.qa_config import QaConfig, QaDbCatalog, QaEnv, QaBrowser
+    from dev_yard.qa_config import QaBrowser, QaConfig, QaDbCatalog, QaEnv
     from dev_yard.qa_verify import dump_live_schema
 
     env = QaEnv(
@@ -516,7 +579,7 @@ def test_dump_live_schema_prefixes_each_catalog(monkeypatch):
 
 
 def test_dump_live_schema_unknown_names_are_empty(monkeypatch):
-    from dev_yard.qa_config import QaConfig, QaDbCatalog, QaEnv, QaBrowser
+    from dev_yard.qa_config import QaBrowser, QaConfig, QaDbCatalog, QaEnv
     from dev_yard.qa_verify import dump_live_schema
 
     env = QaEnv(
@@ -689,7 +752,7 @@ def test_exhausted_verify_loop_records_final_failures(
         "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None, **k: 0
     )
     yard = _testing_req(tmp_path, git_src, "QA-V6")
-    _write_qa_yaml(yard, "\ndesign:\n  verify_attempts: 2\n")
+    _write_qa_yaml(yard, "\ndesign:\n  verify_attempts: 2\n  probe_attempts: 0\n")
     writer = _CaseWriter(
         yard,
         "QA-V6",
@@ -898,9 +961,75 @@ def test_verify_env_block_is_retried(tmp_path: Path, git_src: Path, monkeypatch)
 
     monkeypatch.setattr("dev_yard.qa_verify.run_sql_count", boom)
     yard = _testing_req(tmp_path, git_src, "QA-VR")
-    _write_qa_yaml(yard, "\ndesign:\n  verify_retry_attempts: 2\n")
+    _write_qa_yaml(yard, "\ndesign:\n  verify_retry_attempts: 2\n  probe_attempts: 0\n")
     writer = _CaseWriter(yard, "QA-VR")
     result = req_test(yard, "QA-VR", print_mode=True, runner=writer)
     assert writer.called == 1  # an env error must not trigger a redesign
     assert calls["n"] == 3  # initial verify + 2 retries
     assert result["verify"]["summary"]["blocked"] == 1
+
+
+def test_render_feedback_clusters_same_root_cause():
+    text = render_feedback(
+        {
+            "case-a": VerifyResult(
+                case="case-a",
+                status="failed",
+                error="setup failed: setup_overseas_dept_no_filter: n=30",
+            ),
+            "case-b": VerifyResult(
+                case="case-b",
+                status="failed",
+                error="setup failed: setup_overseas_dept_no_filter: n=31",
+            ),
+            "case-c": VerifyResult(
+                case="case-c",
+                status="failed",
+                error="0 rows",
+                verify_sql="SELECT 1 FROM dual",
+            ),
+        }
+    )
+    assert "这 2 条同一根因" in text
+    assert "case-a" in text and "case-b" in text
+    assert "case-c" in text
+
+
+def test_zero_gain_stops_identical_failure_set(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None, **k: 0
+    )
+    yard = _testing_req(tmp_path, git_src, "QA-ZG")
+    _write_qa_yaml(yard, "\ndesign:\n  verify_attempts: 3\n  probe_attempts: 0\n")
+    writer = _CaseWriter(
+        yard,
+        "QA-ZG",
+        bodies=["SELECT id FROM projects WHERE id=1", "SELECT id FROM projects WHERE id=1"],
+    )
+    result = req_test(yard, "QA-ZG", print_mode=True, runner=writer)
+    # initial design + one repair; the second repair is skipped (same fail set)
+    assert writer.called == 2
+    assert result["review"]["status"] == "rejected"
+
+
+def test_attribute_zero_rows_names_conjunct(monkeypatch):
+    from dev_yard.qa_verify import attribute_zero_rows
+
+    sql = (
+        "SELECT 1 FROM firm_tasks ft JOIN employees e ON e.id = ft.created_by "
+        "WHERE e.id = ft.created_by AND e.username = 'w.deng'"
+    )
+    seen: list[str] = []
+
+    def fake(cfg, text, on_log=None, **k):
+        seen.append(text)
+        if "e.id = ft.created_by" not in text.split("WHERE", 1)[-1]:
+            return 1
+        return 0
+
+    monkeypatch.setattr("dev_yard.qa_verify.run_sql_count", fake)
+    msg = attribute_zero_rows(None, sql, None)  # type: ignore[arg-type]
+    assert "e.id = ft.created_by" in msg
+    assert "1 行" in msg

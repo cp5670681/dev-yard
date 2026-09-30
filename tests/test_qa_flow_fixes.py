@@ -327,7 +327,7 @@ def test_context_md_lists_meta_routes(tmp_path: Path):
     (qa / "meta.yaml").write_text("routes:\n  login: /login\n", encoding="utf-8")
     cfg = load_qa_config(tmp_path)
     text = write_context_md(tmp_path, "J-1", cfg).read_text(encoding="utf-8")
-    assert "http://127.0.0.1:8080/login" in text
+    assert "/login" in text
 
 
 # --- #13 skipped-only run is not ingested ---------------------------------

@@ -183,6 +183,8 @@ class QaConfig:
     design_verify_required: bool = True
     design_verify_retry_attempts: int = 1
     design_verify_retry_backoff: float = 0.0
+    # Bounded host-mediated probe round before the first design pass (0 = skip).
+    design_probe_attempts: int = 1
     # Run-level resilience (M2/M8/M9). `retry_attempts` bounds in-run requeues
     # of environment-blocked cases; `retry_backoff` is the seconds slept before
     # a requeued case is dispatched again.
@@ -479,16 +481,16 @@ def _parse_design(raw: Any) -> tuple[str | None, str | None]:
     return _pair_or_none(raw.get("provider"), raw.get("model"), "qa.yaml design")
 
 
-def _parse_design_verify(raw: Any) -> tuple[int, bool, int, float]:
+def _parse_design_verify(raw: Any) -> tuple[int, bool, int, float, int]:
     """qa.yaml `design` verify options.
 
     Returns (verify_attempts, verify_required, verify_retry_attempts,
-    verify_retry_backoff). `verify_retry_*` bound the retry of an
+    verify_retry_backoff, probe_attempts). `verify_retry_*` bound the retry of an
     environment-blocked verification (M5) so a transient DB outage does not
     immediately stop the design pass.
     """
     if raw is None:
-        return 3, True, 1, 0.0
+        return 3, True, 1, 0.0, 1
     if not isinstance(raw, dict):
         raise TestRejected("qa.yaml design must be a mapping")
     attempts = _int(raw.get("verify_attempts"), "design.verify_attempts", 3)
@@ -500,7 +502,10 @@ def _parse_design_verify(raw: Any) -> tuple[int, bool, int, float]:
     backoff = _float(raw.get("verify_retry_backoff"), "design.verify_retry_backoff", 0.0)
     if backoff < 0:
         raise TestRejected("qa.yaml design.verify_retry_backoff must be >= 0")
-    return attempts, _as_bool(raw.get("verify_required"), True), retry, backoff
+    probes = _int(raw.get("probe_attempts"), "design.probe_attempts", 1)
+    if probes < 0:
+        raise TestRejected("qa.yaml design.probe_attempts must be >= 0")
+    return attempts, _as_bool(raw.get("verify_required"), True), retry, backoff, probes
 
 
 def _parse_workers(root: Path, raw: Any) -> tuple[QaWorker, ...]:
@@ -610,6 +615,7 @@ def _parse_config(root: Path, data: dict[str, Any], env: str | None = None) -> Q
         verify_required,
         verify_retry_attempts,
         verify_retry_backoff,
+        probe_attempts,
     ) = _parse_design_verify(data.get("design"))
     (
         retry_attempts,
@@ -632,6 +638,7 @@ def _parse_config(root: Path, data: dict[str, Any], env: str | None = None) -> Q
         design_verify_required=verify_required,
         design_verify_retry_attempts=verify_retry_attempts,
         design_verify_retry_backoff=verify_retry_backoff,
+        design_probe_attempts=probe_attempts,
         run_retry_attempts=retry_attempts,
         run_retry_backoff=retry_backoff,
         run_env_wait_timeout=env_wait,

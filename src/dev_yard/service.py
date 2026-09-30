@@ -1844,7 +1844,6 @@ def triage_qa_cases(
     from dev_yard import qa_state as qa_st
     from dev_yard.qa_board import list_runs
     from dev_yard.qa_report import classify_defect
-
     from dev_yard.qa_review import review_payload
 
     qa = paths.qa_dir(root, jira)

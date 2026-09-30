@@ -25,7 +25,6 @@ from dev_yard.parse import as_name_list
 from dev_yard.qa_config import (
     QaConfig,
     TestRejected,
-    default_state_file,
     load_qa_config,
     redact_url,
 )
@@ -293,6 +292,12 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
     lines.append("")
     path = qa / "context.md"
     path.write_text("\n".join(lines), encoding="utf-8")
+    from dev_yard.qa_facts import write_facts_yaml
+
+    try:
+        write_facts_yaml(root, jira, cfg, aliases)
+    except Exception:  # noqa: BLE001 — facts are advisory; never block design
+        pass
     return path
 
 
@@ -886,6 +891,7 @@ def lint_cases(
                 "（纯 UI 用例请显式写 `SELECT 1`）"
             )
         problems.extend(_lint_script_facts(root, jira, cfg, job, repos_map))
+        problems.extend(_lint_verify_sql_syntax(cfg, job))
     for cid in uncovered_changes(paths.qa_dir(root, jira), cases):
         problems.append(f"改动点 {cid} 未被任何用例 covers")
     return problems
@@ -896,6 +902,8 @@ _EQ_STRING = re.compile(
 )
 _WHERE_AR = re.compile(r"\.where\s*\(")
 _DELETE_ALL = re.compile(r"\b([A-Z]\w*)\.delete_all\b")
+_CREATE_QA_TABLE = re.compile(r"CREATE\s+TABLE\s+_qa_", re.I)
+_QA_EXEC_SEEDS = re.compile(r"_qa_exec_seeds", re.I)
 
 
 def _rails_major(ver: str) -> int | None:
@@ -941,8 +949,24 @@ def _lint_script_facts(
             f"{job.id}: {site_name or 'exec'} 站是 AR {rails}，无 Model.where，"
             "用 find(:all, :conditions => …)"
         )
+    if _CREATE_QA_TABLE.search(blob) or _QA_EXEC_SEEDS.search(blob):
+        out.append(
+            f"{job.id}: 不要在业务库建/查 _qa_exec_seeds；"
+            "setup stdout 打 QA_SEED key=… id=…，verify.sql 用 :seed.<key>"
+        )
+    facts = {}
+    try:
+        from dev_yard.qa_facts import lint_facts_blob, load_facts
+
+        facts = load_facts(paths.qa_dir(root, jira))
+    except Exception:  # noqa: BLE001
+        facts = {}
+    wt = (facts.get("worktrees") or {}).get(job.repo or "") if facts else {}
+    constants = list((wt or {}).get("constants") or [])
+    frozen_from_facts = set((wt or {}).get("frozen_models") or [])
+    frozen: set[str] = set()
     if job.repo:
-        frozen = frozen_models(root, jira, job.repo)
+        frozen = frozen_from_facts or frozen_models(root, jira, job.repo)
         if frozen:
             for hit in _DELETE_ALL.finditer(blob):
                 model = hit.group(1)
@@ -950,6 +974,11 @@ def _lint_script_facts(
                     out.append(
                         f"{job.id}: {model} 带 freeze_model_concern，不能 delete_all"
                     )
+    if constants or frozen:
+        from dev_yard.qa_facts import lint_facts_blob
+
+        for msg in lint_facts_blob(blob, constants, set(frozen)):
+            out.append(f"{job.id}: {msg}")
     from_tables = re.findall(r"\b(?:FROM|INTO|UPDATE|JOIN)\s+(\w+)", blob, re.I)
     tables = sorted(
         {m.group("table") for m in _EQ_STRING.finditer(blob) if m.group("table")}
@@ -978,6 +1007,42 @@ def _lint_script_facts(
                     f"{job.id}: {tname}.{col} 是 {typ.upper()}，不能写 {col} = '{lit}'"
                 )
     return out
+
+
+_SQL_SYNTAX = re.compile(
+    r"ORA-\d+|syntax|parse|FETCH FIRST|00907|00933|malformed",
+    re.I,
+)
+
+
+def _lint_verify_sql_syntax(cfg: QaConfig, job: CaseJob) -> list[str]:
+    """Run verify.sql once at lint time: 0 rows is ok; syntax/column errors are not."""
+    if not job.verify or not job.path:
+        return []
+    try:
+        path = case_script_path(job, job.verify, "verify")
+        sql = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError, TestRejected):
+        return []
+    from dev_yard.qa_exec import assert_readonly_sql, run_sql_count
+    from dev_yard.qa_seeds import has_seed_placeholders
+    from dev_yard.qa_verify import verify_env_error
+
+    if has_seed_placeholders(sql):
+        return []
+    try:
+        assert_readonly_sql(sql)
+    except TestRejected:
+        return []
+    try:
+        run_sql_count(cfg, sql, catalog=job.db or None, verify=True)
+    except TestRejected as e:
+        if verify_env_error(e):
+            return []
+        return [f"{job.id}: verify.sql 语法/列错误（lint 期）：{e}"]
+    except Exception:  # noqa: BLE001 — missing usql/DSN must not fail lint
+        return []
+    return []
 
 
 def _real_pool_probe(
@@ -1015,7 +1080,7 @@ def _duties(kind: str, jira: str) -> str:
     if kind == "design":
         return (
             "You are designing UI test cases for this freeze worktree.\n"
-            f"Write only under {qa} (meta.yaml, cases/, OPEN-QUESTIONS.md). "
+            f"Write only under {qa} (meta.yaml, cases/, OPEN-QUESTIONS.md, probes/). "
             "Do not write STATUS.yaml or REQUIREMENT/GRILL/SPEC/TICKETS.md.\n"
             "Read REQUIREMENT.md, SPEC.md, TICKETS.md. Do not call MCP or re-fetch Jira.\n"
             "Diff each worktree with `git diff <diff_base>...HEAD` "
@@ -1035,6 +1100,15 @@ def _duties(kind: str, jira: str) -> str:
             "declares setup/cleanup or a DB expectation; the host runs it and "
             "feeds failures back to you. A pure-UI case writes `SELECT 1` and is "
             "flagged as an exemption.\n"
+            "Before writing cases, read qa/facts.yaml and qa/probe-results.md "
+            "(also inlined in this prompt). Honor dialect, Rails version, and "
+            "frozen models. A constant that exists may still be the wrong kind of "
+            "id — confirm with a probe SELECT against the real table. "
+            "Setup self-checks assert named seed rows, never a live yearly total "
+            "of 1 or 2 (the test DB is dirty). "
+            "Need a live value or dialect check: write a single read-only SELECT "
+            "to qa/probes/<name>.sql (optional first line `-- probe: <catalog>`); "
+            "do not run usql yourself (DSN in qa.yaml, host runs probes). "
             "Column names come from context.md Database columns (host dumped "
             "information_schema per named catalog) or worktree schema.rb. "
             "Columns listed under 需求新增·现场未部署 must appear in assertions "
@@ -1045,7 +1119,10 @@ def _duties(kind: str, jira: str) -> str:
             "(context.md origins), not the env default host for another site. "
             "One case, one origin; cross-app flows use depends_on. Never invent columns or "
             "treat app constants as table fields. Do not invent primary keys in "
-            "verify.sql without a setup that inserts those rows.\n"
+            "verify.sql without a setup that inserts those rows. "
+            "Generated ids: setup prints `QA_SEED key=<name> id=<n>`; "
+            "host writes qa/design-verify/seeds.yaml; verify.sql uses `:seed.<name>`. "
+            "Do not CREATE TABLE _qa_* in the business catalog.\n"
             "seed must hard self-prove: every entity/field/link a case asserts must "
             "be created by setup (or verified read-only), and setup must exit(1) "
             "when its own assertion fails — not just print.\n"
@@ -1294,9 +1371,17 @@ def _run_prompt(root: Path, jira: str, cfg: QaConfig, job: CaseJob, run_id: str)
 
 
 def _context_block(root: Path, jira: str, cfg: QaConfig) -> str:
-    ctx = paths.qa_dir(root, jira) / "context.md"
+    qa = paths.qa_dir(root, jira)
+    ctx = qa / "context.md"
     text = ctx.read_text(encoding="utf-8") if ctx.is_file() else ""
-    return f"qa/context.md:\n{text}".strip()
+    from dev_yard.qa_facts import facts_prompt_block
+    from dev_yard.qa_probe import probe_prompt_block
+
+    return (
+        f"qa/context.md:\n{text}".strip()
+        + facts_prompt_block(qa)
+        + probe_prompt_block(qa)
+    )
 
 
 def _verify_loop(
@@ -1317,6 +1402,7 @@ def _verify_loop(
     results: dict[str, VerifyResult] = {}
     case_round = 0
     env_round = 0
+    prev_fail_ids: frozenset[str] | None = None
     while True:
         _raise_if_cancelled(cancel_check, "qa-verify")
         fingerprint = cases_fingerprint(qa)
@@ -1338,6 +1424,16 @@ def _verify_loop(
         if not failures and not blocked:
             break
         if failures:
+            fail_ids = frozenset(r.case for r in failures)
+            if prev_fail_ids is not None and fail_ids == prev_fail_ids:
+                reject_cases(qa, render_feedback(results))
+                if on_log is not None:
+                    on_log(
+                        f"数据核实失败集合未变（{len(failures)} 条），零收益即停，"
+                        "不再回灌 design\n"
+                    )
+                break
+            prev_fail_ids = fail_ids
             case_round += 1
             if case_round >= case_attempts:
                 # Out of retries: this verdict is what the human has to act on,
@@ -2442,6 +2538,42 @@ def _req_test(
     if need_design:
         _raise_if_cancelled(cancel_check, "qa-design")
         qa_design_refs.materialize(qa, notes=notes_text or None, refs=ref_urls)
+        if (
+            cfg.design_probe_attempts > 0
+            and not had_cases
+            and not feedback_text
+            and not redesign
+        ):
+            from dev_yard.qa_probe import run_probes
+
+            probe_extra = (
+                "探针轮。不要写 qa/cases/。\n"
+                "只写 qa/probes/*.sql：每文件一条只读 SELECT/WITH，"
+                "首行可选 `-- probe: <catalog>`。写完即停。\n"
+                "必须覆盖：每个 catalog 的方言/版本；凡当部门/角色 id 用的常量，"
+                "查它在目标表里有没有行；凡 setup 会拿来做计数自证的口径，"
+                "先查出当前基线（不要假设库是空的）。\n"
+            )
+            spec = load_registry(root)["qa-design"]
+            probe_prompt = session_prompt_for(spec, root, jira, extra=probe_extra)
+            _mark_design_pending(qa)
+            probe_result = _ensure_design_runner().start(
+                probe_prompt,
+                root,
+                attachments.with_images(root, jira, [qa, paths.req_dir(root, jira)]),
+            )
+            _raise_if_cancelled(cancel_check, "qa-design")
+            if probe_result.ok:
+                try:
+                    run_probes(qa, cfg, on_log=on_log)
+                except Exception as e:  # noqa: BLE001
+                    if on_log is not None:
+                        on_log(f"探针执行失败（继续设计）：{e}\n")
+            elif on_log is not None:
+                on_log(
+                    f"探针轮没有得到模型回复，继续设计："
+                    f"{probe_result.summary or probe_result.exit_code}\n"
+                )
         prompt = _design_prompt(
             root,
             jira,
