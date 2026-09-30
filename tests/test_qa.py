@@ -468,6 +468,46 @@ def test_context_md_names_the_selected_env(tmp_path: Path):
     assert "- base_url: https://test.example.com" in text
     assert "- test 环境" in text
     assert "## Database columns" in text
+    assert "### 需求新增·现场未部署" in text
+    assert "## 现场脚本契约" in text
+
+
+def test_context_md_freeze_models_follow_repo_exec(tmp_path: Path, monkeypatch):
+    from dev_yard.config import Repo
+    from dev_yard.qa import write_context_md
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    (yard / "qa.yaml").write_text(
+        "active_env: local\n"
+        "workers:\n  - id: a\n    provider: rcc\n    model: grok-4\n"
+        "    concurrency: 1\n    priority: 1\n"
+        "envs:\n  local:\n    base_url: http://127.0.0.1:8080\n"
+        "    exec:\n      use: local\n      with:\n"
+        "        runner: bin/rails runner\n        default: reach\n"
+        "        sites:\n          reach:\n"
+        "            runner: ruby script/runner\n            rails: '2.1.1'\n",
+        encoding="utf-8",
+    )
+    seen: list[str] = []
+
+    def fake_frozen(_root, _jira, alias):
+        seen.append(alias)
+        return {"FirmTask"} if alias == "backend" else set()
+
+    monkeypatch.setattr("dev_yard.qa_deploy.frozen_models", fake_frozen)
+    monkeypatch.setattr("dev_yard.qa._involved_aliases", lambda *_a, **_k: ["backend"])
+    monkeypatch.setattr(
+        "dev_yard.qa.load_repos",
+        lambda *_a, **_k: {
+            "backend": Repo(alias="backend", url=".", exec="reach"),
+        },
+    )
+    cfg = load_qa_config(yard)
+    text = write_context_md(yard, "QA-FZ", cfg).read_text(encoding="utf-8")
+    assert "backend" in seen
+    assert "reach" not in seen
+    assert "freeze_models=FirmTask" in text
 
 
 def test_req_test_uses_the_selected_env(tmp_path: Path, git_src: Path, monkeypatch):
@@ -4143,6 +4183,159 @@ def test_lint_cases_flags_unknown_data_db(tmp_path: Path, git_src: Path, monkeyp
     ]
     problems = lint_cases(yard, "QA-LINTDB", cfg, cases)
     assert any("data.db" in p and "no-such-db" in p for p in problems)
+
+
+def test_lint_cases_flags_legacy_where(tmp_path: Path, git_src: Path, monkeypatch):
+    from dataclasses import replace
+
+    from dev_yard.qa import lint_cases
+    from dev_yard.qa_config import load_qa_config
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-AR")
+    _write_qa_yaml(
+        yard,
+        "    exec:\n      use: local\n      with:\n"
+        "        runner: bin/rails runner\n        default: reach\n"
+        "        sites:\n          reach:\n"
+        "            runner: ruby script/runner\n            rails: '2.1.1'\n",
+    )
+    from dev_yard.config import load_repos
+
+    repos = load_repos(yard)
+    repos["backend"] = replace(repos["backend"], exec="reach")
+    monkeypatch.setattr("dev_yard.qa.load_repos", lambda *_a, **_k: repos)
+    qa = yard / "reqs" / "QA-AR" / "qa" / "cases" / "mod"
+    qa.mkdir(parents=True)
+    (qa / "setup.rb").write_text("FirmTask.where(:name => 'x')\n", encoding="utf-8")
+    (qa / "case-01.md").write_text("---\nid: case-01\nrepo: backend\n---\n", encoding="utf-8")
+    cfg = load_qa_config(yard)
+    cases = [
+        CaseJob(
+            id="case-01",
+            title="t",
+            repo="backend",
+            path=str(qa / "case-01.md"),
+            setup="setup.rb",
+        )
+    ]
+    problems = lint_cases(yard, "QA-AR", cfg, cases)
+    assert any("where" in p.lower() or "AR 2.1.1" in p for p in problems)
+    (qa / "setup.rb").write_text("FirmTask.find(:all, :conditions => ['1=1'])\n", encoding="utf-8")
+    assert not any("where" in p.lower() or "AR 2.1.1" in p for p in lint_cases(yard, "QA-AR", cfg, cases))
+
+
+def test_lint_cases_skips_where_without_rails(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.qa import lint_cases
+    from dev_yard.qa_config import load_qa_config
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-AR2")
+    qa = yard / "reqs" / "QA-AR2" / "qa" / "cases" / "mod"
+    qa.mkdir(parents=True)
+    cfg = load_qa_config(yard)
+    cases = [
+        CaseJob(
+            id="case-01",
+            title="t",
+            repo="backend",
+            path=str(qa / "case-01.md"),
+            body="FirmTask.where(:name => 'x')\n",
+        )
+    ]
+    assert lint_cases(yard, "QA-AR2", cfg, cases) == []
+
+
+def test_lint_cases_flags_delete_all_on_frozen_model(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.qa import lint_cases
+    from dev_yard.qa_config import load_qa_config
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-FR")
+    monkeypatch.setattr("dev_yard.qa_deploy.frozen_models", lambda *_a, **_k: {"FirmTask"})
+    qa = yard / "reqs" / "QA-FR" / "qa" / "cases" / "mod"
+    qa.mkdir(parents=True)
+    (qa / "cleanup.rb").write_text("FirmTask.delete_all\n", encoding="utf-8")
+    cfg = load_qa_config(yard)
+    cases = [
+        CaseJob(
+            id="case-01",
+            title="t",
+            repo="backend",
+            path=str(qa / "case-01.md"),
+            cleanup="cleanup.rb",
+        )
+    ]
+    problems = lint_cases(yard, "QA-FR", cfg, cases)
+    assert any("delete_all" in p for p in problems)
+    monkeypatch.setattr("dev_yard.qa_deploy.frozen_models", lambda *_a, **_k: set())
+    assert not any("delete_all" in p for p in lint_cases(yard, "QA-FR", cfg, cases))
+
+
+def test_lint_cases_flags_string_pk_on_numeric_column(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.qa import lint_cases
+    from dev_yard.qa_config import load_qa_config
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-PK")
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.dump_live_column_types",
+        lambda *_a, **_k: {"firm_tasks": {"id": "NUMBER"}},
+    )
+    qa = yard / "reqs" / "QA-PK" / "qa" / "cases" / "mod"
+    qa.mkdir(parents=True)
+    (qa / "verify.sql").write_text(
+        "DELETE FROM firm_tasks WHERE (id = 'qa-pg13227-c02')\n", encoding="utf-8"
+    )
+    cfg = load_qa_config(yard)
+    cases = [
+        CaseJob(
+            id="case-01",
+            title="t",
+            repo="backend",
+            path=str(qa / "case-01.md"),
+            verify="verify.sql",
+        )
+    ]
+    problems = lint_cases(yard, "QA-PK", cfg, cases)
+    assert any("NUMBER" in p and "qa-pg13227-c02" in p for p in problems)
+    monkeypatch.setattr("dev_yard.qa_verify.dump_live_column_types", lambda *_a, **_k: {})
+    assert not any("NUMBER" in p for p in lint_cases(yard, "QA-PK", cfg, cases))
+
+
+def test_req_test_does_not_start_design_when_deploy_missing(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.setattr("dev_yard.qa_ready.ENABLED", True)
+    monkeypatch.setattr(
+        "dev_yard.script_exec.check_env",
+        lambda *_a, **_k: {
+            "ok": True,
+            "steps": [
+                {"step": "ping", "status": "ok"},
+                {"step": "hello", "status": "ok"},
+                {"step": "db", "status": "ok"},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "dev_yard.qa_ready._account_step",
+        lambda *_a, **_k: {"step": "accounts", "status": "ok", "detail": "default"},
+    )
+    monkeypatch.setattr("dev_yard.qa._involved_aliases", lambda *_a, **_k: ["backend"])
+    monkeypatch.setattr(
+        "dev_yard.qa_deploy.missing_on_site",
+        lambda *_a, **_k: (
+            ["db/migrate/20260925120000_add_is_existing_contact_to_firm_tasks.rb"],
+            ["firm_tasks.is_existing_contact"],
+        ),
+    )
+    yard = _testing_req(tmp_path, git_src, "QA-DEP")
+    writer = _DesignRunner(yard, "QA-DEP")
+    with pytest.raises(TestRejected, match="缺需求分支迁移"):
+        req_test(yard, "QA-DEP", print_mode=True, design_only=True, runner=writer)
+    assert writer.called == 0
 
 
 def test_approve_refused_on_lint_problem(tmp_path: Path, git_src: Path, monkeypatch):

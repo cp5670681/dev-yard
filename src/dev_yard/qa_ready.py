@@ -133,6 +133,40 @@ def _harden_db(cfg: QaConfig, steps: list[dict[str, str]]) -> list[dict[str, str
     return out
 
 
+def _deploy_step(root: Path, jira: str, cfg: QaConfig) -> dict[str, str]:
+    """Refuse design when the live DB is missing columns this branch added."""
+    from dev_yard.qa import _involved_aliases
+    from dev_yard.qa_deploy import missing_on_site
+
+    aliases = _involved_aliases(root, jira)
+    if not aliases:
+        return {
+            "step": "deploy",
+            "status": "warn",
+            "detail": "未能判定需求迁移（无涉仓）",
+        }
+    fails: list[str] = []
+    warns: list[str] = []
+    for alias in aliases:
+        missing = missing_on_site(root, jira, cfg, alias)
+        if missing is None:
+            warns.append(f"{alias}: 未能判定需求迁移")
+            continue
+        files, cols = missing
+        if files or cols:
+            bits = list(files) + list(cols)
+            fails.append(f"{alias}: " + " ".join(bits))
+    if fails:
+        return {
+            "step": "deploy",
+            "status": "fail",
+            "detail": "现场缺需求分支迁移：" + "；".join(fails),
+        }
+    if warns:
+        return {"step": "deploy", "status": "warn", "detail": "；".join(warns)}
+    return {"step": "deploy", "status": "ok", "detail": "需求分支新增列已在现场"}
+
+
 def assess_ready(
     root: Path,
     jira: str,
@@ -165,6 +199,7 @@ def assess_ready(
         steps = [{"step": "env", "status": "fail", "detail": str(e)}]
         env_ok = False
     steps.append(_account_step(root, cfg, cases))
+    steps.append(_deploy_step(root, jira, cfg))
     ok = env_ok and all(step.get("status") != "fail" for step in steps)
     return {
         "ok": ok,
@@ -180,7 +215,7 @@ def assert_ready(
     cfg: QaConfig,
     cases: list[CaseJob] | None = None,
 ) -> dict[str, Any] | None:
-    """Refuse design and execution until environment, accounts, and db pass."""
+    """Refuse design and execution until environment, accounts, db, and deploy pass."""
     if not ENABLED:
         return None
     report = assess_ready(root, jira, cfg, cases)

@@ -88,7 +88,7 @@ UI 预期只有在「该区域的数据确实会被 setup 造出（或已被核�
 - **编辑/保存路径的必填字段**：种子记录必须带上保存时前端/后端会校验的字段（yard 实例：`l_salutation/province_id/city_id/l_address`），否则「更新」被校验拦住，断言根本执行不到。
 - 每个断言对象都要能追到 setup：前置里逐条列出 setup 会创建/修改的实体及关联、键值。
 
-**表/列名不要猜**：宿主在 `qa/context.md` 的 **Database columns** 按 catalog 写入了 `information_schema`（表: 列, …）。verify.sql / setup 只能用对应 catalog 下的列，或 worktree 里的 `db/schema.rb` / `db/structure.sql` / `prisma/schema.prisma`。一仓多库时 frontmatter 写 `data.db: <catalog>`（名字来自 context 的 db catalogs / 该仓 `databases`）。Ruby 常量、yml 配置数组、前端字段名不是 PG 列。设计阶段不要自己跑 usql 探库（DSN 在 qa.yaml，由宿主查）。不要编造 `id=1001`：要么 setup INSERT 这批种子，要么按业务条件（last/version/名称）SELECT 库里已有行。
+**表/列名不要猜**：宿主在 `qa/context.md` 的 **Database columns** 按 catalog 写入了 `information_schema`（表: 列, …）。verify.sql / setup 只能用对应 catalog 下的列，或 worktree 里的 `db/schema.rb` / `db/structure.sql` / `prisma/schema.prisma`。`### 需求新增·现场未部署（断言不得删除）` 子节里的列**必须写进断言**，现场没这列也不许删；在用例备注标注待部署。`## 现场脚本契约` 列出各 exec site 的 Rails 版本与被 freeze 的模型，setup/cleanup 必须遵守（旧 AR 不用 `.where`，freeze 模型不用 `delete_all`）。一仓多库时 frontmatter 写 `data.db: <catalog>`（名字来自 context 的 db catalogs / 该仓 `databases`）。Ruby 常量、yml 配置数组、前端字段名不是 PG 列。设计阶段不要自己跑 usql 探库（DSN 在 qa.yaml，由宿主查）。不要编造 `id=1001`：要么 setup INSERT 这批种子，要么按业务条件（last/version/名称）SELECT 库里已有行。
 
 **只读自检 → 写成可执行的 `verify.sql`（强制）**：依赖「线上已有数据」或自带种子的用例，都要在 frontmatter 声明 `data.verify: verify.sql`（非默认库再加 `data.db`），内容是**单条只读查询**（`SELECT`/`SHOW`/`DESC`/`EXPLAIN`，连接串取该 catalog 的 `url`，配了只读 `verify_url` 则用它），语义为**返回 ≥1 行即通过**（写成 `SELECT ... WHERE <前置条件>`，0 行即失败）。宿主在设计期真跑它，失败会带着结果回灌给你重做。
 

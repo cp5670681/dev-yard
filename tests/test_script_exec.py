@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from dev_yard.exec_cfg import bind_site, exec_from_form, origin_for_site, parse_exec
+from dev_yard.exec_cfg import bind_site, exec_from_form, exec_payload, origin_for_site, parse_exec
 from dev_yard.qa_config import TestRejected, load_qa_config, save_qa_config
 from dev_yard.script_exec import (
     HELLO,
@@ -736,6 +736,25 @@ def test_exec_from_form_copies_runner_onto_sites_and_keeps_inherit():
     assert with_out["workdir"] == "/app"
     assert with_out["sites"]["research"]["runner"] == "bin/rails runner"
     assert with_out["sites"]["reach"]["runner"] == "ruby script/runner"
+
+
+def test_exec_from_form_roundtrips_rails():
+    dumped = exec_from_form(
+        {
+            "use": "local",
+            "runner": "bin/rails runner",
+            "default": "reach",
+            "sites": [
+                {"name": "reach", "runner": "ruby script/runner", "rails": "2.1.1"},
+            ],
+        },
+        "envs.test.exec",
+    )
+    assert dumped is not None
+    assert dumped["with"]["sites"]["reach"]["rails"] == "2.1.1"
+    payload = exec_payload({"exec": dumped, "script": {"runner": "bin/rails runner"}})
+    reach = next(s for s in payload["sites"] if s["name"] == "reach")
+    assert reach["rails"] == "2.1.1"
 
 
 def test_resolve_executor_named_site(tmp_path: Path):

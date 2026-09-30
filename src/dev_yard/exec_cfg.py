@@ -40,6 +40,7 @@ _SITE_KEYS = frozenset(
         "pod",
         "timeout",
         "base_url",
+        "rails",
     }
 )
 _WITH_KEYS = {
@@ -162,6 +163,10 @@ class QaExecSite:
     pod_selector: str = ""
     pod_pattern: str = ""
     base_url: str = ""
+    # Rails version this site runs, e.g. "2.1.1". Declared rather than probed:
+    # it decides which ActiveRecord API a setup script may use, and getting it
+    # wrong costs a whole design round to discover.
+    rails: str = ""
 
 
 @dataclass(frozen=True)
@@ -255,6 +260,7 @@ def _parse_exec_site(
     _unexpected(pod, frozenset({"selector", "pattern"}), f"{field}.sites.{key}.pod")
     selector = _blank(pod.get("selector"))
     pattern = _blank(pod.get("pattern"))
+    rails = _blank(row.get("rails"))
     if use in {"local", "ssh", "docker", "jms-k8s"} and not runner:
         _fail(f"{field}.sites.{key}.runner 必填")
     if use == "docker" and not container:
@@ -275,6 +281,7 @@ def _parse_exec_site(
         pod_selector=selector,
         pod_pattern=pattern,
         base_url=origin,
+        rails=rails,
     )
 
 
@@ -568,6 +575,7 @@ def exec_payload(raw_env: Any) -> dict[str, Any]:
             "pod_selector": s.pod_selector,
             "pod_pattern": s.pod_pattern,
             "base_url": s.base_url,
+            "rails": s.rails,
         }
         for s in ex.sites
     ]
@@ -582,6 +590,7 @@ def exec_payload(raw_env: Any) -> dict[str, Any]:
                 "pod_selector": ex.pod_selector,
                 "pod_pattern": ex.pod_pattern,
                 "base_url": ex.origin or ex.inherit_base_url,
+                "rails": "",
             }
         ]
     run_text = (
@@ -714,6 +723,8 @@ def exec_from_form(raw: Any, field: str) -> dict[str, Any] | None:
                 entry["workdir"] = _blank(item.get("workdir"))
             if _blank(item.get("base_url")):
                 entry["base_url"] = _blank(item.get("base_url"))
+            if _blank(item.get("rails")):
+                entry["rails"] = _blank(item.get("rails"))
             if use == "jms-k8s":
                 if _blank(item.get("namespace")):
                     entry["namespace"] = _blank(item.get("namespace"))

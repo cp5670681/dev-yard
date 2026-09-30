@@ -723,7 +723,10 @@ def run_sql_count(
     if not binary:
         raise TestRejected("usql not found; cannot verify data")
     head = body.split(None, 1)[0].lower()
-    query = f"SELECT count(*) FROM ({body}) AS qa_verify" if head in {"select", "with"} else body
+    # Bare alias, never `AS`: Oracle rejects `FROM (...) AS x` with ORA-00933,
+    # while it accepts `FROM (...) x` — which Postgres and MySQL accept too, so
+    # one form covers every catalog we talk to.
+    query = f"SELECT count(*) FROM ({body}) qa_verify" if head in {"select", "with"} else body
     if on_log is not None:
         label = catalog or cfg.env.db_default or "db.url"
         on_log(f"$ usql <{label}> -t -A -c {query[:200]}")

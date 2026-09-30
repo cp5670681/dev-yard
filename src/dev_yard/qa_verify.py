@@ -444,7 +444,95 @@ def worktree_schema_files(root: Path, jira: str, aliases: list[str]) -> list[str
     return out
 
 
-def enrich_verify_hint(cfg: QaConfig, job: CaseJob, result: VerifyResult) -> str:
+_NUMERIC_TYPES = frozenset(
+    {
+        "number",
+        "numeric",
+        "integer",
+        "int",
+        "int2",
+        "int4",
+        "int8",
+        "bigint",
+        "smallint",
+        "decimal",
+        "float",
+        "double",
+        "real",
+        "binary_float",
+        "binary_double",
+        "pls_integer",
+    }
+)
+
+
+def dump_live_column_types(
+    cfg: QaConfig, tables: list[str], catalog: str | None = None
+) -> dict[str, dict[str, str]]:
+    """`{table: {col: data_type}}` for the named tables only. Empty on probe failure.
+
+    Not rendered into context.md; lint uses it to catch string literals on
+    numeric keys without dumping the whole catalog.
+    """
+    wanted = [t.strip().lower() for t in tables if t and t.strip()]
+    if not wanted:
+        return {}
+    in_list = ", ".join(f"'{t}'" for t in wanted)
+    sql = (
+        "SELECT LOWER(table_name) || '.' || LOWER(column_name) || ':' || data_type "
+        "FROM information_schema.columns "
+        "WHERE LOWER(table_name) IN (" + in_list + ") "
+        "AND table_schema NOT IN ('pg_catalog', 'information_schema')"
+    )
+    try:
+        rows = run_sql_lines(cfg, sql, catalog=catalog)
+    except (TestRejected, TypeError):
+        try:
+            rows = run_sql_lines(cfg, sql)
+        except (TestRejected, TypeError):
+            return {}
+    out: dict[str, dict[str, str]] = {}
+    for row in rows:
+        if ":" not in row or "." not in row.split(":", 1)[0]:
+            continue
+        left, typ = row.split(":", 1)
+        table, col = left.split(".", 1)
+        out.setdefault(table.strip(), {})[col.strip()] = typ.strip()
+    return out
+
+
+def is_numeric_type(typ: str) -> bool:
+    head = (typ or "").split("(")[0].strip().lower().replace(" ", "_")
+    return head in _NUMERIC_TYPES
+
+
+def _branch_added_column(root: Path | None, jira: str | None, alias: str, col: str) -> bool:
+    if root is None or not jira or not alias:
+        return False
+    from dev_yard.qa_deploy import branch_new_columns, requirement_migrations
+
+    rels = requirement_migrations(root, jira, alias)
+    if not rels:
+        return False
+    wt = paths.req_worktree(root, jira, alias)
+    wanted = branch_new_columns([wt / rel for rel in rels])
+    needle = col.lower()
+    for table, cols in wanted.items():
+        if needle == table.lower() + "." + col.lower():
+            return True
+        if any(c.lower() == needle or f"{table}.{c}".lower() == needle for c in cols):
+            return True
+    return False
+
+
+def enrich_verify_hint(
+    cfg: QaConfig,
+    job: CaseJob,
+    result: VerifyResult,
+    *,
+    root: Path | None = None,
+    jira: str | None = None,
+) -> str:
     """Tell the repair pass how to rewrite setup/verify, not just that it failed."""
     if result.status != "failed":
         return ""
@@ -454,10 +542,16 @@ def enrich_verify_hint(cfg: QaConfig, job: CaseJob, result: VerifyResult) -> str
     tables = sorted(_sql_tables(sql))
     col = missing_column(err)
     if col:
-        parts.append(
-            f"列 {col} 不存在。代码常量（如 NEED_RENOVATION_TYPE）不是表字段；"
-            "列名从 worktree schema.rb / ORM 读。"
-        )
+        if _branch_added_column(root, jira, job.repo, col):
+            parts.append(
+                f"列 {col} 属本需求新增、现场未部署，保留断言并在用例备注标注待部署。"
+                "不要从 setup / verify 删掉该列。"
+            )
+        else:
+            parts.append(
+                f"列 {col} 不存在。代码常量（如 NEED_RENOVATION_TYPE）不是表字段；"
+                "列名从 worktree schema.rb / ORM 读。"
+            )
         for table in tables:
             cols = _table_columns(cfg, table, job.db or None)
             if cols:
@@ -533,7 +627,7 @@ def verify_case(
 
     def finish() -> VerifyResult:
         if result.status == "failed" and not result.lint.get("skip_design"):
-            enrich_verify_hint(cfg, job, result)
+            enrich_verify_hint(cfg, job, result, root=root, jira=jira)
         try:
             _write_result(paths.qa_dir(root, jira), result)
         except OSError:
@@ -1083,7 +1177,8 @@ def render_feedback(
         "数据核实未通过。只改下列用例的 setup / cleanup / verify.sql。",
         "不要改其它用例，不要放宽预期，不要用 SELECT 1 掩盖真断言。",
         "0 行且 SQL 含 id=<数字>：禁止再换假主键；写 setup 造数或按业务条件查已有行。",
-        "列不存在：用提示里的真实列名；应用常量不是表字段。",
+        "列不存在：用提示里的真实列名；应用常量不是表字段。"
+        "属「需求新增·现场未部署」子节的列必须保留断言，并在用例备注标注待部署。",
         "",
     ]
     for cid in sorted(results):

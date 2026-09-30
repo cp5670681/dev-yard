@@ -30,6 +30,7 @@ from dev_yard.qa_config import (
     redact_url,
 )
 from dev_yard.qa_exec import (
+    case_script_path,
     diagnose_pi_exit,
     ensure_auth,
     exec_site_for_job,
@@ -190,7 +191,8 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
         "## Database columns",
         "",
         "verify.sql 和 setup 的表名、列名必须来自本节（宿主已按 catalog 查过 "
-        "information_schema）或下列 schema 文件。非默认库在用例 frontmatter 写 "
+        "information_schema）或下列 schema 文件。属「需求新增·现场未部署」子节的列"
+        "**必须**写进断言，不得删除。非默认库在用例 frontmatter 写 "
         "`data.db: <catalog>`。不要猜列名，不要把代码常量"
         "（NEED_RENOVATION_TYPE 等）写成表字段，不要编造主键 id=1001。",
     ]
@@ -205,6 +207,39 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
             "- live dump unavailable; read the schema files above "
             "(db/schema.rb / structure.sql / prisma)."
         )
+    from dev_yard.qa_deploy import frozen_models, undeployed_columns
+
+    undeployed = undeployed_columns(root, jira, cfg, aliases)
+    lines += ["", "### 需求新增·现场未部署（断言不得删除）", ""]
+    if undeployed:
+        for alias, col, mig in undeployed:
+            extra = f" （{mig}）" if mig else ""
+            lines.append(f"- {alias}: `{col}`{extra}")
+    else:
+        lines.append("（无；现场已含需求分支新增列）")
+    lines += ["", "## 现场脚本契约", ""]
+    spec = getattr(env, "exec_cfg", None)
+    sites = list(getattr(spec, "sites", ()) or ())
+    if sites:
+        for s in sites:
+            rails = s.rails or "（未声明）"
+            bound = [
+                a
+                for a in aliases
+                if (repos.get(a) and (repos[a].exec or "").strip() == s.name)
+                or a == s.name
+            ]
+            models: set[str] = set()
+            for alias in bound:
+                models |= frozen_models(root, jira, alias)
+            freeze = ",".join(sorted(models)) if models else "（无）"
+            lines.append(
+                f"- {s.name}: runner={s.runner or '(none)'} rails={rails} "
+                f"freeze_models={freeze}"
+            )
+    else:
+        runner = getattr(spec, "runner", None) or env.script_runner or "(sql only)"
+        lines.append(f"- (single): runner={runner}")
     if others:
         lines.append(
             f"Other envs exist ({', '.join(others)}) but are out of scope for this run."
@@ -850,9 +885,99 @@ def lint_cases(
                 f"{job.id}: 声明了 setup/cleanup 或 DB 预期，但缺少 data.verify"
                 "（纯 UI 用例请显式写 `SELECT 1`）"
             )
+        problems.extend(_lint_script_facts(root, jira, cfg, job, repos_map))
     for cid in uncovered_changes(paths.qa_dir(root, jira), cases):
         problems.append(f"改动点 {cid} 未被任何用例 covers")
     return problems
+
+
+_EQ_STRING = re.compile(
+    r"(?:(?P<table>\w+)\.)?(?P<col>\w+)\s*=\s*'(?P<lit>[^']*)'"
+)
+_WHERE_AR = re.compile(r"\.where\s*\(")
+_DELETE_ALL = re.compile(r"\b([A-Z]\w*)\.delete_all\b")
+
+
+def _rails_major(ver: str) -> int | None:
+    m = re.match(r"(\d+)", (ver or "").strip())
+    return int(m.group(1)) if m else None
+
+
+def _case_script_blob(job: CaseJob) -> str:
+    chunks = [job.body or ""]
+    for kind, name in (("setup", job.setup), ("cleanup", job.cleanup), ("verify", job.verify)):
+        if not name or not job.path:
+            continue
+        try:
+            path = case_script_path(job, name, kind)
+        except TestRejected:
+            continue
+        try:
+            chunks.append(path.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+    return "\n".join(chunks)
+
+
+def _lint_script_facts(
+    root: Path, jira: str, cfg: QaConfig, job: CaseJob, repos_map: dict
+) -> list[str]:
+    """Static B-class rules; skip when the fact is missing so we do not false-hit."""
+    from dev_yard.qa_deploy import frozen_models
+    from dev_yard.qa_verify import dump_live_column_types, is_numeric_type
+
+    blob = _case_script_blob(job)
+    if not blob.strip():
+        return []
+    out: list[str] = []
+    repo = repos_map.get(job.repo)
+    site_name = (getattr(repo, "exec", "") or "").strip() if repo else ""
+    spec = getattr(cfg.env, "exec_cfg", None)
+    site = spec.named_site(site_name) if spec and site_name else None
+    rails = (site.rails if site else "") or ""
+    major = _rails_major(rails)
+    if major is not None and major < 3 and _WHERE_AR.search(blob):
+        out.append(
+            f"{job.id}: {site_name or 'exec'} 站是 AR {rails}，无 Model.where，"
+            "用 find(:all, :conditions => …)"
+        )
+    if job.repo:
+        frozen = frozen_models(root, jira, job.repo)
+        if frozen:
+            for hit in _DELETE_ALL.finditer(blob):
+                model = hit.group(1)
+                if model in frozen:
+                    out.append(
+                        f"{job.id}: {model} 带 freeze_model_concern，不能 delete_all"
+                    )
+    from_tables = re.findall(r"\b(?:FROM|INTO|UPDATE|JOIN)\s+(\w+)", blob, re.I)
+    tables = sorted(
+        {m.group("table") for m in _EQ_STRING.finditer(blob) if m.group("table")}
+        | {t.lower() for t in from_tables}
+    )
+    types = dump_live_column_types(cfg, tables, job.db or None) if tables else {}
+    if types:
+        for m in _EQ_STRING.finditer(blob):
+            lit = m.group("lit")
+            if re.fullmatch(r"[+-]?\d+(\.\d+)?", lit or ""):
+                continue
+            table = (m.group("table") or "").lower()
+            col = (m.group("col") or "").lower()
+            hits: list[tuple[str, str]] = []
+            if table and table in types:
+                typ = types[table].get(col, "")
+                if typ and is_numeric_type(typ):
+                    hits.append((table, typ))
+            elif not table:
+                for tname, cols in types.items():
+                    typ = cols.get(col, "")
+                    if typ and is_numeric_type(typ):
+                        hits.append((tname, typ))
+            for tname, typ in hits:
+                out.append(
+                    f"{job.id}: {tname}.{col} 是 {typ.upper()}，不能写 {col} = '{lit}'"
+                )
+    return out
 
 
 def _real_pool_probe(
@@ -912,6 +1037,9 @@ def _duties(kind: str, jira: str) -> str:
             "flagged as an exemption.\n"
             "Column names come from context.md Database columns (host dumped "
             "information_schema per named catalog) or worktree schema.rb. "
+            "Columns listed under 需求新增·现场未部署 must appear in assertions "
+            "and must not be deleted. Honor ## 现场脚本契约 (Rails version, "
+            "frozen models) when writing setup/cleanup. "
             "When a case talks to a non-default database, set `data.db` to that "
             "catalog name. Page URLs use that case's repo exec-site origin "
             "(context.md origins), not the env default host for another site. "
@@ -1060,7 +1188,8 @@ def _design_prompt(
             "只改失败清单里的用例文件（setup、cleanup、verify.sql、该用例的前置）。\n"
             "不要改其它用例，不要 diff，不要读 dev-yard 的 src/。\n"
             "错误里的异常行是结论；忽略 Rails 启动警告。\n"
-            "列名以 context.md Database columns 为准；模型不认的字段从 setup 删掉。\n"
+            "列名以 context.md Database columns 为准（含「需求新增·现场未部署」子节）；"
+            "该子节的列不得删，保留断言并在用例备注标注待部署。\n"
             "缺账号保持未覆盖，不要为账号重写用例。\n\n"
             + verify_feedback.strip()
         )

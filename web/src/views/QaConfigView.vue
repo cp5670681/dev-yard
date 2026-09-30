@@ -397,6 +397,15 @@
                       density="comfortable"
                       placeholder="http://research.dev1.rccchina.com"
                     />
+                    <v-text-field
+                      v-model="site.rails"
+                      label="Rails 版本（空=不声明；如 2.1.1）"
+                      variant="outlined"
+                      density="comfortable"
+                      placeholder="2.1.1"
+                      hint="声明后 design 会按该版本 lint setup（AR 2 无 Model.where）"
+                      persistent-hint
+                    />
                     <template v-if="currentEnv.exec.use === 'jms-k8s'">
                       <v-text-field v-model="site.namespace" label="namespace" variant="outlined" density="comfortable" />
                       <v-text-field v-model="site.container" label="container" variant="outlined" density="comfortable" />
@@ -1000,6 +1009,7 @@ function blankExecSite() {
     pod_selector: "",
     pod_pattern: "",
     base_url: "",
+    rails: "",
   };
 }
 

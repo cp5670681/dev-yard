@@ -424,6 +424,8 @@ def test_repair_prompt_does_not_ask_for_a_redesign(tmp_path: Path, git_src: Path
     assert "数据核实修补" in prompts[1]
     assert "不要 diff" in prompts[1]
     assert "git diff" not in prompts[1]
+    assert "不得删" in prompts[1]
+    assert "模型不认的字段从 setup 删掉" not in prompts[1]
 
 
 def test_render_feedback_lists_only_failures():
@@ -634,6 +636,11 @@ def test_run_sql_count_counts_rows(tmp_path: Path, monkeypatch):
     assert run_sql_count(cfg, "SELECT id FROM projects; -- done") == 7
     assert "count(*)" in seen[-1][-1]
     assert run_sql_count(cfg, "DESC projects") == 2
+    seen.clear()
+    assert run_sql_count(cfg, "SELECT 1 FROM DUAL") == 7
+    wrapped = seen[-1][-1]
+    assert "AS qa_verify" not in wrapped
+    assert " qa_verify" in wrapped
 
 
 def test_verify_only_reports_summary(tmp_path: Path, git_src: Path, monkeypatch):

@@ -478,6 +478,7 @@ export interface QaExecCfg {
     pod_selector: string;
     pod_pattern: string;
     base_url: string;
+    rails: string;
   }[];
 }
 
