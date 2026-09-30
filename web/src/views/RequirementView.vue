@@ -539,10 +539,7 @@
         </v-card-title>
         <v-card-text>
           <p class="text-caption text-medium-emphasis mb-2">
-            写入 <code>.yard-qa/requirements/{{ jira }}/accounts.yaml</code>（不动全局账号）。
-            按 <code>qa/accounts-discover.sql</code> 的
-            <code>username | account_key</code> 发现，用例 frontmatter 用
-            <code>account: &lt;account_key&gt;</code> 引用；权限漂移时重跑即改绑。
+            本需求专用账号，不改全局配置。设计用例完成后可点「发现并填充」自动找账号；权限变了再点一次即可改绑。
           </p>
           <div v-if="reqAccounts?.accounts.length" class="d-flex flex-wrap ga-2">
             <v-chip
@@ -558,7 +555,7 @@
           </div>
           <p v-else class="text-caption text-medium-emphasis">未配置账号，用全局默认。</p>
           <p v-if="reqAccounts && !reqAccounts.discover_sql" class="text-caption text-warning mt-2">
-            缺少 <code>qa/accounts-discover.sql</code>（qa-design 产出），暂无法自动发现。
+            请先完成「设计用例」。设计完成后，「发现并填充」就能自动找出本需求要用的账号。
           </p>
           <p v-if="accountsMsg" class="text-caption text-success mt-2">{{ accountsMsg }}</p>
         </v-card-text>

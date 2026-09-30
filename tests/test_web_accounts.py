@@ -83,6 +83,7 @@ def test_accounts_auto_without_discovery_sql_is_404(tmp_path: Path, git_src: Pat
     paths.qa_accounts_discover_sql(yard, "QA-A1").unlink()
     r = _client(yard).post("/api/requirements/QA-A1/accounts/auto")
     assert r.status_code == 404
+    assert "请先完成设计用例" in r.text
 
 
 def test_accounts_refresh_works_without_discovery_sql(tmp_path: Path, git_src: Path, monkeypatch):

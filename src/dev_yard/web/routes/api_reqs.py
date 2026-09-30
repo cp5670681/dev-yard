@@ -533,7 +533,8 @@ def build(ctx: AppContext) -> APIRouter:
         sql_path = paths.qa_accounts_discover_sql(ctx.root, jira)
         if not sql_path.is_file():
             raise HTTPException(
-                404, f"缺少 {sql_path}（涉及权限时由 qa-design 产出只读查询）"
+                404,
+                "请先完成设计用例。设计完成后即可自动发现本需求要用的账号。",
             )
         try:
             return discover(cfg.env.db_url, sql_path.read_text(encoding="utf-8"))

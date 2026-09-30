@@ -154,7 +154,7 @@ def _resolve_discovery_sql(root: Path, jira: str, sql: str) -> str | None:
     if not sql_path.is_file():
         _die(
             ValueError(
-                f"缺少 {sql_path}（涉及权限时由 qa-design 产出只读查询）；"
+                "请先完成设计用例。设计完成后即可自动发现账号；"
                 "或改用 --sql 直接给查询"
             )
         )
