@@ -735,6 +735,8 @@ def default_execute(root: Path, job: Job) -> None:
         )
         approve = bool(extra.get("approve"))
         feedback = (extra.get("feedback") or "").strip() or None
+        design_notes = (extra.get("design_notes") or "").strip() or None
+        design_refs = extra.get("design_refs")
         if (
             job.action == "qa-review"
             and not approve
@@ -753,6 +755,8 @@ def default_execute(root: Path, job: Job) -> None:
                 redesign=bool(extra.get("redesign")),
                 approve=approve,
                 feedback=feedback,
+                design_notes=design_notes,
+                design_refs=design_refs,
                 ingest=not bool(extra.get("no_ingest")),
                 resume=extra.get("resume"),
                 rerun_cases=extra.get("rerun_cases"),

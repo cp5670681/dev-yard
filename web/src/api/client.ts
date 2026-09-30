@@ -263,6 +263,8 @@ export function runAction(
     approve?: boolean;
     redesign?: boolean;
     feedback?: string;
+    design_notes?: string;
+    design_refs?: string[];
     note?: string;
     repo?: string;
     grill?: boolean;

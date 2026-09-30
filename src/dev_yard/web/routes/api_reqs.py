@@ -485,6 +485,8 @@ def build(ctx: AppContext) -> APIRouter:
             "approve": body.approve,
             "redesign": body.redesign,
             "feedback": body.feedback,
+            "design_notes": body.design_notes,
+            "design_refs": body.design_refs,
             "resolve": body.resolve,
             "note": body.note,
             "repo": body.repo,

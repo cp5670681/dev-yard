@@ -1141,6 +1141,19 @@ def req_test_cmd(
     feedback_file: str = typer.Option(
         "", "--feedback-file", help="从文件读取审核意见（与 --feedback 互斥）"
     ),
+    design_notes: str = typer.Option(
+        "",
+        "--design-notes",
+        help="设计时附带参考文本（既有用例、说明）；与 --design-notes-file 互斥",
+    ),
+    design_notes_file: str = typer.Option(
+        "", "--design-notes-file", help="从文件读取设计参考文本"
+    ),
+    design_ref: list[str] = typer.Option(
+        [],
+        "--design-ref",
+        help="设计时附带参考链接（可重复）；宿主拉取正文写入 qa/design-refs.md",
+    ),
     no_ingest: bool = typer.Option(False, "--no-ingest"),
     resume: bool = typer.Option(
         False, "--resume", help="Continue the latest incomplete run"
@@ -1200,13 +1213,17 @@ def req_test_cmd(
         or approve
         or feedback
         or feedback_file
+        or design_notes
+        or design_notes_file
+        or design_ref
         or verify_only
     ):
         _die(
             ValueError(
                 "--rerun-case cannot be combined with "
                 "--resume/--fresh/--design-only/--run-only/--redesign/--approve"
-                "/--feedback/--verify-only"
+                "/--feedback/--design-notes/--design-notes-file/--design-ref"
+                "/--verify-only"
             )
         )
         return
@@ -1217,6 +1234,16 @@ def req_test_cmd(
     if feedback_file:
         try:
             text = Path(feedback_file).read_text(encoding="utf-8")
+        except OSError as e:
+            _die(e)
+            return
+    if design_notes and design_notes_file:
+        _die(ValueError("--design-notes and --design-notes-file are mutually exclusive"))
+        return
+    notes = design_notes
+    if design_notes_file:
+        try:
+            notes = Path(design_notes_file).read_text(encoding="utf-8")
         except OSError as e:
             _die(e)
             return
@@ -1231,6 +1258,8 @@ def req_test_cmd(
             redesign=redesign,
             approve=approve,
             feedback=text or None,
+            design_notes=notes or None,
+            design_refs=design_ref or None,
             ingest=not no_ingest,
             resume=True if resume else False if (fresh or full) else None,
             rerun_cases=rerun_case or None,

@@ -87,7 +87,7 @@
           variant="tonal"
           :prepend-icon="mdiClipboardCheckOutline"
           :loading="acting === 'design'"
-          @click="designCases"
+          @click="designOpen = true"
         >
           设计用例
         </v-btn>
@@ -608,6 +608,44 @@
       </v-expansion-panels>
     </template>
 
+    <v-dialog v-model="designOpen" max-width="640">
+      <v-card>
+        <v-card-title>设计用例</v-card-title>
+        <v-card-text>
+          <p class="text-body-2 mb-3">
+            会检查环境后设计用例并做数据核实。可附带已有用例或链接作参考，也可以留空直接设计。
+          </p>
+          <v-textarea
+            v-model="designNotes"
+            label="参考文本（可选）"
+            hint="可贴测试给的用例、口径说明。"
+            persistent-hint
+            rows="5"
+            auto-grow
+            variant="outlined"
+            density="compact"
+            class="mb-2"
+          />
+          <v-textarea
+            v-model="designRefs"
+            label="参考链接（可选，一行一个 http(s)）"
+            hint="会拉取正文给设计对照。"
+            persistent-hint
+            rows="2"
+            auto-grow
+            variant="outlined"
+            density="compact"
+          />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="designOpen = false">取消</v-btn>
+          <v-btn color="primary" :loading="acting === 'design'" @click="designCases">
+            开始设计
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
     <CaseDetailDialog
       v-model="caseDialog.open"
       :jira="jira"
@@ -656,6 +694,9 @@ const newFailuresDismissed = ref(false);
 const acting = ref("");
 const readySteps = ref<{ step: string; status: string; detail: string }[]>([]);
 const feedbackText = ref("");
+const designOpen = ref(false);
+const designNotes = ref("");
+const designRefs = ref("");
 const rerunningCase = ref("");
 const caseDialog = reactive({ open: false, caseId: "" });
 const caseFromQuery = ref(false);
@@ -763,7 +804,17 @@ async function designCases() {
   acting.value = "design";
   error.value = "";
   try {
-    await runAction(jira.value, "qa-design", {});
+    const refs = designRefs.value
+      .split(/[\s,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    await runAction(jira.value, "qa-design", {
+      design_notes: designNotes.value.trim() || undefined,
+      design_refs: refs,
+    });
+    designOpen.value = false;
+    designNotes.value = "";
+    designRefs.value = "";
     await load();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);

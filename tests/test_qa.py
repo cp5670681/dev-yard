@@ -62,9 +62,11 @@ class _DesignRunner(Runner):
         self.yard = yard
         self.key = key
         self.extra: list[Path] = []
+        self.prompt = ""
 
     def start(self, prompt, cwd, extra_read_paths, repo=None):
         self.called += 1
+        self.prompt = prompt
         self.extra = list(extra_read_paths)
         qa = self.yard / "reqs" / self.key / "qa" / "cases" / "mod"
         qa.mkdir(parents=True, exist_ok=True)
@@ -152,6 +154,33 @@ def test_design_called_when_no_cases(tmp_path: Path, git_src: Path, monkeypatch)
     )
     assert design.called == 1
     assert result["cases"] == 1
+
+
+def test_design_uses_attached_notes_and_refs(tmp_path: Path, git_src: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-REF")
+    design = _DesignRunner(yard, "QA-REF")
+
+    def fake_fetch(url: str) -> tuple[str, str]:
+        return "200", "外部用例 01 勾选已有联系人"
+
+    monkeypatch.setattr("dev_yard.qa_design_refs.fetch_url", fake_fetch)
+    req_test(
+        yard,
+        "QA-REF",
+        print_mode=True,
+        design_only=True,
+        design_notes="覆盖勾选路径",
+        design_refs=["https://ex.test/sheet"],
+        runner=design,
+    )
+    refs = yard / "reqs" / "QA-REF" / "qa" / "design-refs.md"
+    body = refs.read_text(encoding="utf-8")
+    assert "覆盖勾选路径" in body
+    assert "外部用例 01" in body
+    assert "qa/design-refs.md" in design.prompt
+    assert "人工附带参考" in design.prompt
 
 
 def test_design_attaches_requirement_images(tmp_path: Path, git_src: Path, monkeypatch):

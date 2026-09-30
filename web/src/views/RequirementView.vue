@@ -787,7 +787,7 @@
       </v-card>
     </v-dialog>
 
-    <v-dialog v-model="confirm.open" max-width="420">
+    <v-dialog v-model="confirm.open" :max-width="confirm.action === 'qa-design' ? 640 : 420">
       <v-card>
         <v-card-title>确认操作</v-card-title>
         <v-card-text>
@@ -809,6 +809,29 @@
             density="compact"
             :label="`继续未完成的 run ${incompleteRun.run_id || ''}（剩 ${incompleteRun.pending || 0} 条）`"
           />
+          <template v-if="confirm.action === 'qa-design'">
+            <v-textarea
+              v-model="confirm.designNotes"
+              label="参考文本（可选）"
+              hint="可贴测试给的用例、口径说明。设计时会对照覆盖。"
+              persistent-hint
+              rows="5"
+              auto-grow
+              variant="outlined"
+              density="compact"
+              class="mt-3 mb-2"
+            />
+            <v-textarea
+              v-model="confirm.designRefs"
+              label="参考链接（可选，一行一个 http(s)）"
+              hint="会拉取正文写入 qa/design-refs.md 给设计用。"
+              persistent-hint
+              rows="2"
+              auto-grow
+              variant="outlined"
+              density="compact"
+            />
+          </template>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
@@ -1052,6 +1075,8 @@ const confirm = reactive({
   text: "",
   env: "",
   resume: true,
+  designNotes: "",
+  designRefs: "",
 });
 const qaEnvs = computed(() => detail.value?.qa?.envs ?? []);
 const incompleteRun = computed(() => detail.value?.qa?.incomplete_run || null);
@@ -1517,7 +1542,7 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
       : freeze
       ? `冻结后会创建分支 ${branch} 并切 worktree。确认继续？`
       : designTest
-      ? "将先检查环境、账号和数据库，通过后设计用例并做数据核实。设计完停下等审核，不会建票。确认继续？"
+      ? "将先检查环境、账号和数据库，通过后设计用例并做数据核实。设计完停下等审核，不会建票。可附带已有用例文本或链接作参考。"
       : runTest
       ? "将执行已审核的用例。失败只记结果，不会自动建票；确认是产品问题后再在用例上「下 bug」。确认继续？"
       : resetGrill
@@ -1529,17 +1554,35 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
       confirm.env = envs.includes(preferred) ? preferred : envs[0] || "";
       confirm.resume = Boolean(incompleteRun.value);
     }
+    if (designTest) {
+      confirm.designNotes = "";
+      confirm.designRefs = "";
+    }
     confirm.open = true;
     return;
   }
   void onAction(action, ticketId);
 }
 
+function parseDesignRefs(raw: string): string[] {
+  return raw
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
 function runConfirmed() {
   confirm.open = false;
   const env = confirm.action === "qa-run" ? confirm.env : undefined;
   const resume = confirm.action === "qa-run" ? confirm.resume : undefined;
-  void onAction(confirm.action, confirm.ticketId || undefined, env, resume);
+  const extra =
+    confirm.action === "qa-design"
+      ? {
+          design_notes: confirm.designNotes.trim() || undefined,
+          design_refs: parseDesignRefs(confirm.designRefs),
+        }
+      : undefined;
+  void onAction(confirm.action, confirm.ticketId || undefined, env, resume, extra);
 }
 
 function runChange() {
@@ -1732,6 +1775,8 @@ async function onAction(
     approve?: boolean;
     redesign?: boolean;
     feedback?: string;
+    design_notes?: string;
+    design_refs?: string[];
     note?: string;
     repo?: string;
     grill?: boolean;
@@ -1752,6 +1797,8 @@ async function onAction(
       approve: extra?.approve,
       redesign: extra?.redesign,
       feedback: extra?.feedback,
+      design_notes: extra?.design_notes,
+      design_refs: extra?.design_refs,
       note: extra?.note,
       repo: extra?.repo,
       grill: extra?.grill,

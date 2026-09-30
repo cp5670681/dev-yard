@@ -83,6 +83,8 @@ class ActionIn(BaseModel):
     approve: bool = False
     redesign: bool = False
     feedback: str = ""
+    design_notes: str = ""
+    design_refs: list[str] = Field(default_factory=list)
     resolve: bool | None = None
     note: str = ""
     repo: str = ""

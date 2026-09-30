@@ -17,7 +17,7 @@ from typing import Any
 
 import yaml
 
-from dev_yard import attachments, gitops, paths, qa_run
+from dev_yard import attachments, gitops, paths, qa_design_refs, qa_run
 from dev_yard import qa_state as qa_st
 from dev_yard import status as st
 from dev_yard.config import load_repos, resolve_freeze_branch
@@ -1213,6 +1213,7 @@ def _design_prompt(
             "改 setup 让前置真的就位、把断言对象写进 verify.sql、或按真实数据重写前置。"
             "不要为通过核实而放宽预期、删断言，也不要写空转的 SELECT 1 掩盖真断言。"
         )
+    extra += qa_design_refs.prompt_block(paths.qa_dir(root, jira))
     return session_prompt_for(spec, root, jira, extra=extra)
 
 
@@ -2164,6 +2165,8 @@ def req_test(
     redesign: bool = False,
     approve: bool = False,
     feedback: str | None = None,
+    design_notes: str | None = None,
+    design_refs: list[str] | str | None = None,
     ingest: bool = True,
     resume: bool | None = None,
     rerun_cases: list[str] | None = None,
@@ -2194,6 +2197,8 @@ def req_test(
             redesign=redesign,
             approve=approve,
             feedback=feedback,
+            design_notes=design_notes,
+            design_refs=design_refs,
             ingest=ingest,
             resume=resume,
             rerun_cases=rerun_cases,
@@ -2252,6 +2257,8 @@ def _req_test(
     redesign: bool = False,
     approve: bool = False,
     feedback: str | None = None,
+    design_notes: str | None = None,
+    design_refs: list[str] | str | None = None,
     ingest: bool = True,
     resume: bool | None = None,
     rerun_cases: list[str] | None = None,
@@ -2317,6 +2324,11 @@ def _req_test(
     except OSError:
         qa_yaml_mtime = None
     write_context_md(root, jira, cfg)
+    notes_text = (design_notes or "").strip()
+    try:
+        ref_urls = qa_design_refs.normalize_refs(design_refs)
+    except ValueError as e:
+        raise TestRejected(str(e)) from e
     if run_only and not cases:
         raise TestRejected(f"{jira} has no qa/cases; cannot --run-only")
     feedback_text = feedback.strip() if feedback else ""
@@ -2383,6 +2395,12 @@ def _req_test(
     need_design = (not run_only) and not verify_only and (
         redesign or not cases or design_pending(qa)
     )
+    if notes_text or ref_urls:
+        if run_only or verify_only or approve:
+            raise TestRejected(
+                "--design-notes/--design-ref 只能在设计时使用（--design-only、--redesign，或尚无用例）"
+            )
+        need_design = True
     if feedback_text:
         if run_only:
             raise TestRejected("--feedback cannot be used with --run-only")
@@ -2423,6 +2441,7 @@ def _req_test(
 
     if need_design:
         _raise_if_cancelled(cancel_check, "qa-design")
+        qa_design_refs.materialize(qa, notes=notes_text or None, refs=ref_urls)
         prompt = _design_prompt(
             root,
             jira,

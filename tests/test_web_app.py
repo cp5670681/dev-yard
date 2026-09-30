@@ -574,6 +574,21 @@ def test_assistant_drawer_is_wired():
     assert "v-html" in drawer
 
 
+def test_qa_design_accepts_notes_and_refs():
+    root = Path(__file__).resolve().parents[1]
+    req = (root / "web" / "src" / "views" / "RequirementView.vue").read_text()
+    qa = (root / "web" / "src" / "views" / "QaView.vue").read_text()
+    client = (root / "web" / "src" / "api" / "client.ts").read_text()
+    schema = (root / "src" / "dev_yard" / "web" / "schemas.py").read_text()
+    assert "design_notes" in schema
+    assert "design_refs" in schema
+    assert "design_notes" in client
+    assert "confirm.designNotes" in req
+    assert "designNotes" in qa
+    assert "参考文本" in req
+    assert "参考文本" in qa
+
+
 def test_case_detail_dialog_is_wired():
     """Board and QA page open case details in place, not via page jumps."""
     root = Path(__file__).resolve().parents[1]
