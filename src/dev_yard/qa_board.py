@@ -16,7 +16,7 @@ from dev_yard.qa import (
     split_frontmatter,
 )
 from dev_yard.qa_config import TestRejected, load_qa_config, qa_env_choices
-from dev_yard.qa_review import review_payload
+from dev_yard.qa_review import case_id_fallback, iter_case_markdown, review_payload
 
 _IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _UNREADABLE = "unreadable"
@@ -204,16 +204,14 @@ def list_case_payloads(qa: Path) -> list[dict[str, Any]]:
     if not cases_root.is_dir():
         return []
     out: list[dict[str, Any]] = []
-    for path in sorted(cases_root.rglob("case-*.md")):
-        if not path.is_file():
-            continue
+    for path in iter_case_markdown(cases_root):
         text = path.read_text(encoding="utf-8")
         try:
             meta, body = split_frontmatter(text)
         except Exception:
             out.append(
                 {
-                    "id": path.stem,
+                    "id": case_id_fallback(path),
                     "module": path.parent.name,
                     "path": str(path),
                     "status": _UNREADABLE,
@@ -225,7 +223,7 @@ def list_case_payloads(qa: Path) -> list[dict[str, Any]]:
         covers = as_name_list(meta.get("covers"))
         out.append(
             {
-                "id": str(meta.get("id") or path.stem),
+                "id": str(meta.get("id") or case_id_fallback(path)),
                 "module": path.parent.name,
                 "title": str(meta.get("title") or path.stem),
                 "priority": str(meta.get("priority") or ""),

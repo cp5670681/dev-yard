@@ -46,8 +46,10 @@ from dev_yard.qa_exec import (
 from dev_yard.qa_report import has_design_blocked_skip, map_qa_result, triage_buckets
 from dev_yard.qa_review import (
     approve_cases,
+    case_id_fallback,
     cases_fingerprint,
     clear_stale,
+    iter_case_markdown,
     mark_machine_fixed,
     reject_cases,
     review_gate,
@@ -100,7 +102,6 @@ ProgressFn = Callable[[dict[str, Any]], None]
 CancelCheck = Callable[[], bool]
 SpawnFn = Callable[[subprocess.Popen[str]], None]
 ReapFn = Callable[[subprocess.Popen[str]], None]
-_CASE_NAME = re.compile(r"^case-.+\.md$")
 _CASE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _PNG = re.compile(r"\.png$", re.I)
 
@@ -329,15 +330,13 @@ def discover_cases(qa: Path) -> list[CaseJob]:
         return []
     out: list[CaseJob] = []
     seen: dict[str, Path] = {}
-    for path in sorted(cases_root.rglob("case-*.md")):
-        if not path.is_file() or not _CASE_NAME.match(path.name):
-            continue
+    for path in iter_case_markdown(cases_root):
         text = path.read_text(encoding="utf-8")
         try:
             meta, body = split_frontmatter(text)
         except yaml.YAMLError as e:
             raise TestRejected(f"unreadable case frontmatter in {path}: {e}") from e
-        cid = str(meta.get("id") or path.stem).strip()
+        cid = str(meta.get("id") or case_id_fallback(path)).strip()
         if not _CASE_ID.match(cid):
             raise TestRejected(
                 f"invalid case id {cid!r} in {path}; "

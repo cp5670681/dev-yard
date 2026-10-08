@@ -636,7 +636,9 @@ def req_import(
 
     if force and on_progress:
         cases_root = paths.qa_dir(root, jira) / "cases"
-        if cases_root.is_dir() and any(cases_root.rglob("case-*.md")):
+        from dev_yard.qa_review import iter_case_markdown
+
+        if iter_case_markdown(cases_root):
             on_progress(
                 f"{jira} 已有 QA 用例；--force 重导入不会清用例，"
                 f"若代码已变请跑 `dev-yard req test {jira} --redesign`\n"
@@ -1123,11 +1125,11 @@ def _req_change_apply(root: Path, jira: str, ctx: dict[str, Any], **fields: Any)
 
 
 def _mark_qa_stale(root: Path, jira: str, change_id: str) -> bool:
-    from dev_yard.qa_review import mark_stale
+    from dev_yard.qa_review import iter_case_markdown, mark_stale
 
     qa = paths.qa_dir(root, jira)
     cases = qa / "cases"
-    if not cases.is_dir() or not any(cases.rglob("case-*.md")):
+    if not iter_case_markdown(cases):
         return False
     mark_stale(qa, f"轻量变更 {change_id}")
     return True

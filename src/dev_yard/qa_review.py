@@ -9,6 +9,7 @@ invalidates a previous approval instead of silently carrying it over.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,6 +23,31 @@ STATUS_AWAITING = "awaiting"
 STATUS_REJECTED = "rejected"
 STATUS_PASSED = "passed"
 NO_CASES = "no-cases"
+# `case-01.md`, or `case.md` inside a per-case directory (`cases/case-01/case.md`).
+_CASE_MD_NAME = re.compile(r"^case-.+\.md$")
+
+
+def is_case_markdown(path: Path) -> bool:
+    """True for a case body. Scripts and notes next to it are not."""
+    name = path.name
+    return name == "case.md" or bool(_CASE_MD_NAME.match(name))
+
+
+def case_id_fallback(path: Path) -> str:
+    """Id when frontmatter omits one: directory name for `case.md`, else the stem."""
+    if path.name == "case.md":
+        return path.parent.name
+    return path.stem
+
+
+def iter_case_markdown(cases_root: Path) -> list[Path]:
+    if not cases_root.is_dir():
+        return []
+    return [
+        path
+        for path in sorted(cases_root.rglob("*.md"))
+        if path.is_file() and is_case_markdown(path)
+    ]
 
 
 @dataclass(frozen=True)
@@ -60,7 +86,7 @@ def _case_assets(qa: Path, scope: str = "all") -> list[Path]:
             or path.name.endswith(".replay.sh")
         ):
             continue
-        is_body = path.name.startswith("case-") and path.suffix == ".md"
+        is_body = is_case_markdown(path)
         if scope == "bodies" and not is_body:
             continue
         if scope == "seeds" and is_body:
@@ -138,7 +164,7 @@ def review_payload(qa: Path) -> dict[str, object]:
     matches the current cases, otherwise `awaiting`/`rejected`.
     """
     root = qa / "cases"
-    has_cases = root.is_dir() and any(root.rglob("case-*.md"))
+    has_cases = bool(iter_case_markdown(root))
     current = cases_fingerprint(qa)
     state = load_review(qa)
     stale_reason = state.stale_reason if state else ""

@@ -149,6 +149,8 @@ changes:
 
 ## 用例
 
+路径二选一，文件名必须能被宿主扫到：`qa/cases/<module>/case-<id>.md`，或 `qa/cases/<id>/case.md`（与本条的 `verify.sql` 同目录）。不要写成别的名字（例如 `用例.md`），否则页面会当成还没有用例。
+
 ```markdown
 ---
 id: case-01

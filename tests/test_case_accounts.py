@@ -58,6 +58,18 @@ def test_discover_cases_reads_account_frontmatter(tmp_path: Path):
     assert jobs[0].account == "buyer"
 
 
+def test_discover_cases_reads_case_md_in_case_dir(tmp_path: Path):
+    case = tmp_path / "qa" / "cases" / "case-01" / "case.md"
+    case.parent.mkdir(parents=True)
+    case.write_text(
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    jobs = discover_cases(tmp_path / "qa")
+    assert [j.id for j in jobs] == ["case-01"]
+    assert jobs[0].path == str(case)
+
+
 def test_discover_cases_account_defaults_to_empty(tmp_path: Path):
     case = tmp_path / "qa" / "cases" / "mod" / "case-01.md"
     case.parent.mkdir(parents=True)
