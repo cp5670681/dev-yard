@@ -977,6 +977,7 @@
       :jira="jira"
       :ticket="reviewDialog.ticket"
       @reviewed="onTicketReviewed"
+      @aligned="onDocsAligned"
     />
   </div>
 </template>
@@ -1196,6 +1197,15 @@ watch(
 function openReview(ticket: Ticket) {
   reviewDialog.ticket = ticket;
   reviewDialog.open = true;
+}
+
+async function onDocsAligned() {
+  const ticketId = reviewDialog.ticket?.id;
+  if (!reviewDialog.open || !ticketId) return;
+  await load();
+  if (!reviewDialog.open || reviewDialog.ticket?.id !== ticketId) return;
+  const fresh = detail.value?.tickets.find((item) => item.id === ticketId);
+  if (fresh && reviewDialog.ticket?.id === ticketId) reviewDialog.ticket = fresh;
 }
 
 async function onTicketReviewed(ticketId: string, jobs: JobSnapshot[]) {

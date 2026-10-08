@@ -124,6 +124,17 @@ class TicketReviewIn(BaseModel):
     auto_implement: bool = False
 
 
+class DocAlignIn(BaseModel):
+    summary: str = ""
+    decision: str = ""
+
+
+class DocAlignApplyIn(BaseModel):
+    decision: str = ""
+    base: dict[str, str] = Field(default_factory=dict)
+    files: dict[str, str] = Field(default_factory=dict)
+
+
 class ContractReviewIn(BaseModel):
     verdict: str
     summary: str = ""

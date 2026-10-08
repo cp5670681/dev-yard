@@ -19,6 +19,7 @@ from dev_yard.stages import (
     STRUCTURED_REVIEW_STAGES,
     StageSpec,
     load_registry,
+    resolve_doc_align_extension_path,
     resolve_extension_path,
     resolve_review_extension_path,
     resolve_skill_dir,
@@ -100,6 +101,10 @@ def extension_args(root: Path, bundle: str) -> list[str]:
         review = resolve_review_extension_path(root)
         if review is not None:
             args.extend(["--extension", str(review)])
+    if bundle == "doc-align":
+        align = resolve_doc_align_extension_path(root)
+        if align is not None:
+            args.extend(["--extension", str(align)])
     return args
 
 

@@ -621,7 +621,10 @@ def save_doc(root: Path, jira: str, slug: str, text: str) -> Path:
     if not req.is_dir():
         raise FileNotFoundError(f"missing {req}")
     path = req / DOC_FILES[slug]
-    path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+    # Same lock as doc-align propose/apply, so a manual save cannot land
+    # inside a proposal restore and then be overwritten by the old snapshot.
+    with st.jira_lock(jira):
+        path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
     return path
 
 

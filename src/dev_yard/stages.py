@@ -51,6 +51,8 @@ GUARD_EXTENSION = "yard-guard.ts"
 REVIEW_EXTENSION = "yard-review.ts"
 REVIEW_VERDICT_TOOL = "submit_review"
 STRUCTURED_REVIEW_STAGES = frozenset({"review", "contract"})
+# Loaded only for doc-align. pi's write tool has no path allow-list of its own.
+DOC_ALIGN_EXTENSION = "yard-doc-align.ts"
 
 
 @dataclass(frozen=True)
@@ -419,6 +421,11 @@ def resolve_extension_path(root: Path) -> Path | None:
 def resolve_review_extension_path(root: Path) -> Path | None:
     """Verdict tool extension for the review and contract stages."""
     return _resolve_named_extension(root, REVIEW_EXTENSION)
+
+
+def resolve_doc_align_extension_path(root: Path) -> Path | None:
+    """Write allow-list for the doc-align stage."""
+    return _resolve_named_extension(root, DOC_ALIGN_EXTENSION)
 
 
 def resolve_skill_dir(root: Path, name: str) -> Path | None:
