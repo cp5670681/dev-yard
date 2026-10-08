@@ -19,11 +19,15 @@ RUN_FILE = "run.yaml"
 
 RUNNING = "running"
 PAUSED = "paused"
+# A single-case run finished the cases it was asked for and left the rest
+# parked. The round stays open so the next case joins it; a restart must not
+# treat that as an interrupted full run.
+PARTIAL = "partial"
 CONCLUDED = "concluded"
 
 # A resume continues these; anything else (concluded, and a future `abandoned`)
 # is terminal.
-RESUMABLE = frozenset({RUNNING, PAUSED})
+RESUMABLE = frozenset({RUNNING, PAUSED, PARTIAL})
 
 
 def run_path(run_dir: Path) -> Path:

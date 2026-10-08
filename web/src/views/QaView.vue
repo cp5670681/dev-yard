@@ -383,9 +383,11 @@
       </v-alert>
 
       <!-- Per-case table for selected run -->
-      <v-card v-if="selectedRun" variant="outlined" class="mb-4">
-        <v-card-title class="py-2 px-3">本轮执行（{{ selectedRun.cases.length }} 条）</v-card-title>
-        <v-table v-if="selectedRun.cases.length" density="compact" hover>
+      <v-card v-if="tableCases.length" variant="outlined" class="mb-4">
+        <v-card-title class="py-2 px-3">
+          {{ selectedRun ? "本轮执行" : "待执行" }}（{{ tableCases.length }} 条）
+        </v-card-title>
+        <v-table density="compact" hover>
           <thead>
             <tr>
               <th class="pr-1" style="width: 84px">状态</th>
@@ -393,12 +395,12 @@
               <th style="width: 72px">断言</th>
               <th style="width: 26%">失败原因</th>
               <th style="width: 130px">截图</th>
-              <th style="width: 84px"></th>
+              <th style="width: 132px"></th>
             </tr>
           </thead>
           <tbody>
             <tr
-              v-for="c in selectedRun.cases"
+              v-for="c in tableCases"
               :key="c.case"
               class="cursor-pointer case-row"
               :title="`查看 ${c.case} 详情`"
@@ -413,7 +415,7 @@
                   class="mr-1"
                 />
                 <v-chip size="x-small" :color="statusColor(c.status)" variant="tonal">
-                  {{ c.status || "未跑" }}
+                  {{ statusText(c.status) }}
                 </v-chip>
               </td>
               <td>
@@ -492,12 +494,33 @@
                     下 bug
                   </v-btn>
                   <v-btn
+                    v-if="canExecute(c)"
+                    size="x-small"
+                    variant="tonal"
+                    color="primary"
+                    :loading="rerunningCase === c.case"
+                    :disabled="rerunningCase !== '' || liveActive"
+                    title="只执行这一条，写进当前这一轮"
+                    @click="rerunCase(c.case)"
+                  >
+                    执行
+                  </v-btn>
+                  <v-btn
+                    v-else-if="showWaiting(c)"
+                    size="x-small"
+                    variant="tonal"
+                    disabled
+                    :title="waitingTitle(c)"
+                  >
+                    执行
+                  </v-btn>
+                  <v-btn
                     v-if="canRerun(c)"
                     size="x-small"
                     variant="tonal"
                     color="warning"
                     :loading="rerunningCase === c.case"
-                    :disabled="rerunningCase !== ''"
+                    :disabled="rerunningCase !== '' || liveActive"
                     :title="`重新执行 ${c.case}（不改动本轮其它用例）`"
                     @click="rerunCase(c.case)"
                   >
@@ -508,9 +531,6 @@
             </tr>
           </tbody>
         </v-table>
-        <v-card-text v-else class="text-medium-emphasis text-body-2 py-6 text-center">
-          本轮还没有执行记录。
-        </v-card-text>
       </v-card>
 
       <!-- Collapsed sections: definitions / changes / run history -->
@@ -674,7 +694,8 @@ import {
   findRunWithCases,
   BATCH_RERUN_CASE,
 } from "@/composables/qaRerun";
-import type { DocMeta, QaPage, QaReview, ShotItem } from "@/api/types";
+import type { DocMeta, QaPage, QaReview, QaRunCase, ShotItem } from "@/api/types";
+import { QA_STATE_LABELS } from "@/composables/labels";
 import CaseDetailDialog from "@/components/CaseDetailDialog.vue";
 import ReqDocTabs from "@/components/ReqDocTabs.vue";
 import ScreenshotViewer from "@/components/ScreenshotViewer.vue";
@@ -871,6 +892,24 @@ const selectedRun = computed(() => {
   return list.find((r) => r.run_id === selectedRunId.value) || list[0] || null;
 });
 
+// Before any round exists, the table is the case list itself so each ready
+// case can be started on its own. A parked round already has one row per case.
+const tableCases = computed<QaRunCase[]>(() => {
+  const rows = selectedRun.value?.cases || [];
+  if (rows.length) return rows;
+  return (payload.value?.cases || []).map((c) => ({
+    case: c.id,
+    title: c.title || "",
+    status: (c.depends_on || []).length ? "pending" : "ready",
+    reason: "",
+    repo: c.repo || "",
+    model: "",
+    failure: null,
+    assertions: [],
+    screenshots: [],
+  }));
+});
+
 // One-click batch: everything that did not pass the selected round. Only
 // offered on the newest round, because `req_test` amends the newest run that
 // contains the ids — batching an older round would re-run a different one.
@@ -986,8 +1025,43 @@ function statusColor(status: string) {
   if (status === "passed") return "success";
   if (status === "failed") return "error";
   if (status === "blocked") return "warning";
-  if (status === "skipped") return "grey";
+  if (status === "skipped" || status === "held" || status === "pending") return "grey";
   return "info";
+}
+
+function statusText(status: string) {
+  return QA_STATE_LABELS[status] || status || "未跑";
+}
+
+function caseDeps(id: string): string[] {
+  return payload.value?.cases.find((c) => c.id === id)?.depends_on || [];
+}
+
+function depsMetFor(c: { case: string }) {
+  return caseDeps(c.case).every(
+    (id) => tableCases.value.find((row) => row.case === id)?.status === "passed",
+  );
+}
+
+function canExecute(c: { case: string; status?: string }) {
+  const status = c.status || "";
+  return reviewApproved.value && depsMetFor(c) && (status === "ready" || status === "held");
+}
+
+function showWaiting(c: { case: string; status?: string }) {
+  const status = c.status || "";
+  return (
+    reviewApproved.value &&
+    !canExecute(c) &&
+    !canRerun(c) &&
+    (status === "pending" || status === "skipped" || status === "held")
+  );
+}
+
+function waitingTitle(c: { case: string; status?: string; reason?: string }) {
+  if (c.status === "skipped") return c.reason || "上游未通过，这条已跳过";
+  const deps = caseDeps(c.case).join("、");
+  return deps ? `还在等 ${deps} 通过` : "还不能单独执行";
 }
 
 function canRerun(c: { status?: string }) {

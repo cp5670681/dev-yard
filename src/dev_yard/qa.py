@@ -2055,7 +2055,7 @@ def reconcile_case_verdict(
     reason = str(progress_reason or "")
     fstatus = str(file_status or "")
     freason = str(file_reason or "")
-    if state in {"pending", "ready", "running"}:
+    if state in {"pending", "ready", "running", "held"}:
         return state, reason
     if (
         state in TERMINAL
@@ -2185,7 +2185,15 @@ def _apply_resume(cases: list[CaseJob], run_dir: Path) -> int:
         # A run interrupted mid-retry must not get a fresh retry budget.
         if isinstance(prev.get("attempts"), int):
             job.attempts = prev["attempts"]
+        if state == "held":
+            # Parked by a single-case run. Copy it onto the job so refresh_ready
+            # does not treat the default `pending` as "go run this".
+            job.state = "held"
+            job.reason = str(prev.get("reason") or "")
+            continue
         if prev_by_id and state not in TERMINAL:
+            # pending/ready/running stay at the job default (`pending`) so a
+            # resume dispatches them again. `held` is handled above.
             continue
         if _row_resumable(prev):
             # A cancelled row is not a verdict: re-run it. (pending/ready/running
@@ -2230,6 +2238,77 @@ def _apply_resume(cases: list[CaseJob], run_dir: Path) -> int:
             encoding="utf-8",
         )
     return skipped
+
+
+def _hold_unselected(cases: list[CaseJob], selected: set[str]) -> None:
+    """Park every case the user did not ask to run.
+
+    A selected case whose dependency is not also selected cannot run yet:
+    nothing in this fresh round has passed.
+    """
+    by_id = {c.id: c for c in cases}
+    for cid in sorted(selected):
+        for dep in by_id[cid].depends_on:
+            if dep not in selected:
+                raise TestRejected(f"{cid} 还在等 {dep} 通过")
+    for job in cases:
+        if job.id not in selected:
+            job.state = "held"
+
+
+def _reject_selective(cases: list[CaseJob], selected: set[str], run_dir: Path) -> None:
+    """Refuse a single-case click that cannot make progress.
+
+    Passed, failed, and blocked cases keep the existing re-run path. A skipped
+    case, or a parked case whose dependency has not passed, is rejected so the
+    click does not silently no-op.
+    """
+    doc = _progress_doc(run_dir) or {}
+    states: dict[str, str] = {}
+    reasons: dict[str, str] = {}
+    for item in doc.get("cases") or []:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        cid = str(item["id"])
+        states[cid] = str(item.get("state") or "")
+        reasons[cid] = str(item.get("reason") or "")
+    by_id = {c.id: c for c in cases}
+    for cid in sorted(selected):
+        state = states.get(cid, "")
+        if state == "skipped":
+            raise TestRejected(reasons.get(cid) or f"{cid} 已跳过")
+        if state not in {"held", "pending"}:
+            continue
+        for dep in by_id[cid].depends_on:
+            if dep in selected:
+                continue
+            dep_state = states.get(dep, "")
+            if dep_state == "passed":
+                continue
+            if dep_state == "skipped":
+                raise TestRejected(reasons.get(dep) or f"{cid} 已跳过：{dep} 未通过")
+            raise TestRejected(f"{cid} 还在等 {dep} 通过")
+
+
+def _release_held_cases(run_dir: Path) -> list[str]:
+    """Turn parked cases back into `pending` so a full run schedules them."""
+    doc = _progress_doc(run_dir)
+    if doc is None:
+        return []
+    released: list[str] = []
+    for item in doc.get("cases") or []:
+        if isinstance(item, dict) and str(item.get("state") or "") == "held":
+            item["state"] = "pending"
+            item["reason"] = ""
+            item["ended_at"] = None
+            released.append(str(item.get("id") or ""))
+    if not released:
+        return []
+    (run_dir / "progress.yaml").write_text(
+        yaml.safe_dump(doc, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    return [cid for cid in released if cid]
 
 
 def reset_cases_in_run(
@@ -2428,14 +2507,15 @@ def _req_test(
         raise TestRejected(
             "rerun_cases cannot be combined with design/run-only/redesign/approve/feedback"
         )
-    _gate(root, jira, waive_open_tickets=bool(rerun_ids or redesign))
     qa = paths.qa_dir(root, jira)
     qa.mkdir(parents=True, exist_ok=True)
     cases = discover_cases(qa)
     had_cases = bool(cases)
     # Resolve the run to amend before loading config so the env can default to
-    # the one that run actually used.
+    # the one that run actually used. No run yet means this click opens the
+    # round and runs only the selected cases.
     rerun_run: tuple[str, Path, str] | None = None
+    selective_fresh = False
     if rerun_ids:
         known = {c.id for c in cases}
         unknown = sorted(rerun_ids - known)
@@ -2446,11 +2526,16 @@ def _req_test(
             )
         rerun_run = find_run_for_rerun(qa, rerun_ids)
         if rerun_run is None:
-            raise TestRejected(
-                f"no run contains {', '.join(sorted(rerun_ids))}; run `执行用例` first"
-            )
-        if not env and rerun_run[2]:
+            selective_fresh = True
+        elif not env and rerun_run[2]:
             env = rerun_run[2]
+    # A case that is joining a round already in progress is diagnostic, same
+    # as a re-run. The first case of a new round still waits for open tickets.
+    _gate(
+        root,
+        jira,
+        waive_open_tickets=bool(rerun_run is not None or redesign),
+    )
     cfg = load_qa_config(root, env, jira)
     try:
         qa_yaml_mtime = paths.qa_yaml(root).stat().st_mtime
@@ -2830,13 +2915,21 @@ def _req_test(
             "review": review_payload(qa),
             "verify": verify_info,
         }
-    elif not rerun_ids:
+    elif not rerun_ids or selective_fresh:
         can_run, hold_reason = review_gate(
             qa,
             require_verify=require_verify,
             allow_unverified=allow_unverified,
         )
-        if not can_run and run_only:
+        if not can_run and selective_fresh:
+            if not unsafe_skip_review:
+                raise TestRejected(
+                    f"{hold_reason}；先审核用例，或加 --unsafe-skip-review"
+                )
+            review_bypassed = True
+            if on_log is not None:
+                on_log(f"警告：单独执行绕过用例审核（{hold_reason}）\n")
+        elif not can_run and run_only:
             # `--run-only` is the one path that can run unapproved cases. Make
             # the bypass an explicit, auditable opt-in instead of a silent one.
             if not unsafe_skip_review:
@@ -2880,6 +2973,7 @@ def _req_test(
         and resume is None
         and not redesign
         and not run_only
+        and not rerun_ids
         and cfg.run_incremental
     ):
         prev = _latest_retryable_run(qa, case_ids, cfg.active_env)
@@ -2907,25 +3001,55 @@ def _req_test(
                 )
     if rerun_run is not None:
         run_id, run_dir, _ = rerun_run
+        _reject_selective(cases, rerun_ids, run_dir)
         reset = reset_cases_in_run(run_dir, rerun_ids, case_ids)
-        if not reset:
+        _apply_resume(cases, run_dir)
+        queued = [job.id for job in cases if job.id in rerun_ids and job.state == "held"]
+        for job in cases:
+            if job.id in queued:
+                job.state = "pending"
+                job.reason = ""
+        if not reset and not queued:
             raise TestRejected(
                 f"nothing to re-run in run {run_id} for "
                 f"{', '.join(sorted(rerun_ids))}; already queued or running"
             )
-        if on_log is not None:
+        if on_log is not None and reset:
             on_log(
                 f"reset {', '.join(sorted(reset))} for re-run in run {run_id}"
             )
-        _apply_resume(cases, run_dir)
+        if on_log is not None and queued:
+            on_log(
+                f"排队 {', '.join(sorted(queued))}，补进 run {run_id}\n"
+            )
         resuming = True
-    elif incomplete is not None and (resume is True or (resume is None and not redesign)):
+    elif (
+        incomplete is not None
+        and not selective_fresh
+        and (resume is True or (resume is None and not redesign))
+    ):
+        # A named case that no run contains must not resume a stray evidence
+        # dir (no progress.yaml still counts as running) and schedule every case.
         run_id, run_dir = incomplete
+        if run_only:
+            released = _release_held_cases(run_dir)
+            if released and on_log is not None:
+                on_log(
+                    f"执行用例补跑未排队 {len(released)} 条："
+                    f"{', '.join(released)}\n"
+                )
         if on_log is not None:
             on_log(f"resuming run {run_id}")
         _apply_resume(cases, run_dir)
         resuming = True
     else:
+        if selective_fresh:
+            _hold_unselected(cases, rerun_ids)
+            if on_log is not None:
+                on_log(
+                    "只执行 "
+                    f"{', '.join(sorted(rerun_ids))}，其余留在本轮未排队\n"
+                )
         run_id, run_dir = _claim_run_dir(evidence)
         resuming = False
     aliases = _involved_aliases(root, jira)
@@ -2993,6 +3117,8 @@ def _req_test(
     if auth_failures:
         stamp = now_iso()
         for job in cases:
+            if job.state == "held":
+                continue
             why = _auth_failure_for(root, cfg, job, auth_failures)
             if why is not None:
                 job.state = "blocked"
@@ -3070,6 +3196,8 @@ def _req_test(
         }
         stamp = now_iso()
         for job in cases:
+            if job.state == "held":
+                continue
             fault = site_faults.get(exec_site_for_job(root, cfg, job) or "")
             if fault and case_needs_exec_site(job) and job.state not in TERMINAL:
                 job.state = "blocked"
@@ -3089,6 +3217,8 @@ def _req_test(
         env_fault = {"class": cls, "message": message}
         stamp = now_iso()
         for c in cases:
+            if c.state == "held":
+                continue
             if case_needs_exec_site(c) and c.state not in TERMINAL:
                 c.state = "blocked"
                 c.reason = f"env fault: {message}"
@@ -3418,6 +3548,41 @@ def _req_test(
     extra = sorted(dict.fromkeys(extra))
 
     summary = _summarize(cases)
+    held_left = [c.id for c in cases if c.state == "held"]
+    if held_left:
+        # Keep the round open. result.yaml would mark it concluded, and the
+        # next single-case click would have to start a second round.
+        if extra:
+            qa_run.set_status(run_dir, qa_run.PARTIAL)
+            raise TestRejected(
+                f"worker mutated worktree: {', '.join(extra[:5])}"
+                + (" ..." if len(extra) > 5 else "")
+            )
+        qa_run.set_status(run_dir, qa_run.PARTIAL)
+        qa_st.record(
+            root,
+            jira,
+            phase="approved",
+            last_run_id=run_id,
+            last_verdict="",
+        )
+        ping()
+        if on_log is not None:
+            on_log(
+                f"未排队 {len(held_left)} 条：{', '.join(held_left)}。"
+                "再点「执行」补进本轮，或点「执行用例」把剩下的一起跑完。\n"
+            )
+        return {
+            "jira": jira,
+            "run_id": run_id,
+            "env": cfg.active_env,
+            "summary": summary,
+            "ingested": False,
+            "ingest_skipped": "partial",
+            "cases": len(cases),
+            "partial": True,
+            "held": held_left,
+        }
     run_doc: dict[str, Any] = {
         "run_id": run_id,
         "env": cfg.active_env,

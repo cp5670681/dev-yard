@@ -1789,6 +1789,7 @@ def test_resumable_predicate():
     assert resumable("pending")
     assert resumable("ready")
     assert resumable("running")
+    assert resumable("held")
     assert resumable("blocked", "cancelled", "cancelled: run cancelled")
     assert resumable("blocked", "", "cancelled: qa-run case-01 cancelled")
     assert not resumable("passed")
@@ -2755,14 +2756,281 @@ def test_rerun_case_rejects_unknown_id(tmp_path: Path, git_src: Path, monkeypatc
         req_test(yard, "QA-RR2", print_mode=True, rerun_cases=["case-99"])
 
 
-def test_rerun_case_requires_existing_run(tmp_path: Path, git_src: Path, monkeypatch):
+def _write_two_cases(yard: Path, key: str, *, depends: bool = False) -> None:
+    mod = yard / "reqs" / key / "qa" / "cases" / "mod"
+    mod.mkdir(parents=True, exist_ok=True)
+    dep = "depends_on: [case-01]\n" if depends else ""
+    for cid, title, extra in (
+        ("case-01", "first", ""),
+        ("case-02", "second", dep),
+    ):
+        (mod / f"{cid}.md").write_text(
+            "---\n"
+            f"id: {cid}\ntitle: {title}\npriority: P0\n"
+            f"requirement: {key}\nrepo: backend\ncovers: [D1]\n"
+            f"{extra}"
+            "---\n\n# body\n",
+            encoding="utf-8",
+        )
+
+
+def _progress_states(yard: Path, key: str) -> dict[str, str]:
+    evidence = yard / "reqs" / key / "qa" / "evidence"
+    run_dir = next(p for p in evidence.iterdir() if p.is_dir())
+    doc = yaml.safe_load((run_dir / "progress.yaml").read_text(encoding="utf-8"))
+    return {str(c["id"]): str(c["state"]) for c in doc["cases"]}
+
+
+def test_rerun_case_requires_review_before_the_first_run(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)
     yard = _testing_req(tmp_path, git_src, "QA-RR3")
     design = _DesignRunner(yard, "QA-RR3")
     design.start("", yard, [])  # creates case-01, but no run yet
-    with pytest.raises(TestRejected, match="no run contains"):
+    with pytest.raises(TestRejected, match="先审核用例"):
         req_test(yard, "QA-RR3", print_mode=True, rerun_cases=["case-01"])
+
+
+def test_selective_run_holds_the_rest_and_joins_the_same_round(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-SEL")
+    _write_two_cases(yard, "QA-SEL", depends=True)
+    ran: list[str] = []
+
+    def case_runner(job, pool):
+        ran.append(job.id)
+        return {"status": "passed", "repo": "backend"}
+
+    with pytest.raises(TestRejected, match="还在等 case-01"):
+        req_test(
+            yard,
+            "QA-SEL",
+            print_mode=True,
+            ingest=False,
+            unsafe_skip_review=True,
+            rerun_cases=["case-02"],
+            case_runner=case_runner,
+        )
+    assert ran == []
+
+    first = req_test(
+        yard,
+        "QA-SEL",
+        print_mode=True,
+        ingest=False,
+        unsafe_skip_review=True,
+        rerun_cases=["case-01"],
+        case_runner=case_runner,
+    )
+    assert ran == ["case-01"]
+    assert first["partial"] is True
+    assert first["held"] == ["case-02"]
+    assert _progress_states(yard, "QA-SEL") == {"case-01": "passed", "case-02": "held"}
+    evidence = yard / "reqs" / "QA-SEL" / "qa" / "evidence"
+    from dev_yard.qa_board import list_runs
+
+    # The passed case has its own result file; the parked one must still show.
+    case_dir = evidence / first["run_id"] / "case-01"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    (case_dir / "result.yaml").write_text(
+        "case: case-01\nstatus: passed\n", encoding="utf-8"
+    )
+    listed = {row["case"]: row["status"] for row in list_runs(yard / "reqs" / "QA-SEL" / "qa")[0]["cases"]}
+    assert listed["case-01"] == "passed"
+    assert listed["case-02"] == "held"
+    assert len([p for p in evidence.iterdir() if p.is_dir()]) == 1
+
+    second = req_test(
+        yard,
+        "QA-SEL",
+        print_mode=True,
+        ingest=False,
+        rerun_cases=["case-02"],
+        case_runner=case_runner,
+    )
+    assert ran == ["case-01", "case-02"]
+    assert second["run_id"] == first["run_id"]
+    assert second.get("partial") is not True
+    assert _progress_states(yard, "QA-SEL")["case-02"] == "passed"
+    assert (evidence / first["run_id"] / "result.yaml").is_file()
+
+
+def test_run_only_releases_held_cases_into_the_same_round(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-REL")
+    _write_two_cases(yard, "QA-REL")
+    ran: list[str] = []
+
+    def case_runner(job, pool):
+        ran.append(job.id)
+        return {"status": "passed", "repo": "backend"}
+
+    first = req_test(
+        yard,
+        "QA-REL",
+        print_mode=True,
+        ingest=False,
+        unsafe_skip_review=True,
+        rerun_cases=["case-01"],
+        case_runner=case_runner,
+    )
+    assert ran == ["case-01"]
+    second = req_test(
+        yard,
+        "QA-REL",
+        print_mode=True,
+        ingest=False,
+        run_only=True,
+        unsafe_skip_review=True,
+        case_runner=case_runner,
+    )
+    assert ran == ["case-01", "case-02"]
+    assert second["run_id"] == first["run_id"]
+    assert second.get("partial") is not True
+
+
+def test_selective_click_ignores_an_empty_evidence_dir(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    """A preflight failure leaves a dir with no progress. The next click must not run the suite."""
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-EMPTY")
+    _write_two_cases(yard, "QA-EMPTY")
+    evidence = yard / "reqs" / "QA-EMPTY" / "qa" / "evidence"
+    (evidence / "2020-01-01-000000").mkdir(parents=True)
+    ran: list[str] = []
+
+    def case_runner(job, pool):
+        ran.append(job.id)
+        return {"status": "passed", "repo": "backend"}
+
+    result = req_test(
+        yard,
+        "QA-EMPTY",
+        print_mode=True,
+        ingest=False,
+        unsafe_skip_review=True,
+        rerun_cases=["case-01"],
+        case_runner=case_runner,
+    )
+    assert ran == ["case-01"]
+    assert result["partial"] is True
+    assert result["held"] == ["case-02"]
+    assert result["run_id"] != "2020-01-01-000000"
+    doc = yaml.safe_load(
+        (evidence / result["run_id"] / "progress.yaml").read_text(encoding="utf-8")
+    )
+    assert {str(c["id"]): str(c["state"]) for c in doc["cases"]} == {
+        "case-01": "passed",
+        "case-02": "held",
+    }
+
+
+def test_bare_resume_does_not_release_held_cases(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-HOLD")
+    qa_yaml = yard / "qa.yaml"
+    qa_yaml.write_text(
+        qa_yaml.read_text(encoding="utf-8").replace(
+            "design:\n  probe_attempts: 0\n",
+            "design:\n  probe_attempts: 0\n  verify_required: false\n",
+        ),
+        encoding="utf-8",
+    )
+    _write_two_cases(yard, "QA-HOLD")
+    ran: list[str] = []
+
+    def case_runner(job, pool):
+        ran.append(job.id)
+        return {"status": "passed", "repo": "backend"}
+
+    first = req_test(
+        yard,
+        "QA-HOLD",
+        print_mode=True,
+        ingest=False,
+        unsafe_skip_review=True,
+        rerun_cases=["case-01"],
+        case_runner=case_runner,
+    )
+    assert ran == ["case-01"]
+    evidence = yard / "reqs" / "QA-HOLD" / "qa" / "evidence"
+    run_dir = evidence / first["run_id"]
+    doc = yaml.safe_load((run_dir / "progress.yaml").read_text(encoding="utf-8"))
+    for row in doc["cases"]:
+        if row["id"] == "case-01":
+            row["state"] = "running"
+            row["ended_at"] = None
+    (run_dir / "progress.yaml").write_text(
+        yaml.safe_dump(doc, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    from dev_yard import qa_run
+
+    qa_run.set_status(run_dir, qa_run.RUNNING)
+    req_test(yard, "QA-HOLD", print_mode=True, approve=True, ingest=False)
+    ran.clear()
+    resumed = req_test(
+        yard,
+        "QA-HOLD",
+        print_mode=True,
+        ingest=False,
+        resume=True,
+        run_only=False,
+        case_runner=case_runner,
+    )
+    assert ran == ["case-01"]
+    assert resumed["run_id"] == first["run_id"]
+    assert resumed["partial"] is True
+    assert resumed["held"] == ["case-02"]
+
+
+def test_selective_click_is_not_an_incremental_retry(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-M10")
+    run_dir = _seed_run_with_cases(
+        yard,
+        "QA-M10",
+        case_states={"case-01": "failed", "case-02": "passed"},
+        design=_DesignRunner(yard, "QA-M10"),
+    )
+    (run_dir / "result.yaml").write_text("run_id: 2020-01-01-000000\n", encoding="utf-8")
+    # No evidence run lists the click, but a concluded failure set still exists.
+    monkeypatch.setattr("dev_yard.qa.find_run_for_rerun", lambda qa, ids: None)
+    ran: list[str] = []
+
+    def case_runner(job, pool):
+        ran.append(job.id)
+        return {"status": "passed", "repo": "backend"}
+
+    result = req_test(
+        yard,
+        "QA-M10",
+        print_mode=True,
+        ingest=False,
+        unsafe_skip_review=True,
+        rerun_cases=["case-02"],
+        case_runner=case_runner,
+    )
+    assert ran == ["case-02"]
+    assert result["partial"] is True
+    assert result["held"] == ["case-01"]
+    assert result["run_id"] != "2020-01-01-000000"
 
 
 def test_rerun_case_rejects_conflicting_flags(tmp_path: Path, git_src: Path, monkeypatch):
@@ -3974,6 +4242,7 @@ def test_resume_pending_qa_restores_interrupted_run(
         assert jobs[0].done.wait(timeout=10)
         assert seen and seen[0][0] == "qa-run"
         assert seen[0][1].get("resume") is True
+        assert seen[0][1].get("run_only") is False
     finally:
         for job in list(runner._jobs.values()):
             job.done.wait(timeout=5)

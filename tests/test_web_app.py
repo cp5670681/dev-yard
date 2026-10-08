@@ -638,6 +638,19 @@ def test_rerun_waits_for_the_job_before_claiming_success():
     assert "showRerunBanner" in req
 
 
+def test_each_case_has_its_own_execute_button():
+    root = Path(__file__).resolve().parents[1] / "web" / "src"
+    card = (root / "components" / "QaTestCard.vue").read_text()
+    board = (root / "components" / "TicketBoard.vue").read_text()
+    qa = (root / "views" / "QaView.vue").read_text()
+    assert "canExecute" in card
+    assert "showWaiting" in card
+    assert "deps-met" in board
+    assert "execution-locked" in (root / "views" / "RequirementView.vue").read_text()
+    assert "function canExecute" in qa
+    assert "tableCases" in qa
+
+
 def test_job_panel_can_cancel_running_jobs():
     root = Path(__file__).resolve().parents[1]
     panel = (root / "web" / "src" / "components" / "JobPanel.vue").read_text()

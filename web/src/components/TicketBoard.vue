@@ -158,6 +158,9 @@
           <span v-if="qaStats.ready > 0" class="text-caption text-medium-emphasis">
             · {{ qaStats.ready }} 就绪
           </span>
+          <span v-if="qaStats.held > 0" class="text-caption text-medium-emphasis">
+            · {{ qaStats.held }} 未排队
+          </span>
         </div>
 
         <div class="d-flex align-center ga-2">
@@ -246,8 +249,9 @@
                       :test-case="c"
                       :jira="jira"
                       :review-approved="reviewApproved"
+                      :deps-met="depsMet(c)"
                       :rerunning="rerunningCase === c.id"
-                      :disabled="rerunningCase !== ''"
+                      :disabled="rerunningCase !== '' || executionLocked"
                       @preview-screenshot="$emit('preview-screenshot', $event)"
                       @open-case="$emit('open-case', $event)"
                       @rerun-case="$emit('rerun-case', $event)"
@@ -283,9 +287,10 @@
                 :test-case="c"
                 :jira="jira"
                 :review-approved="reviewApproved"
+                :deps-met="depsMet(c)"
                 show-state
                 :rerunning="rerunningCase === c.id"
-                :disabled="rerunningCase !== ''"
+                :disabled="rerunningCase !== '' || executionLocked"
                 @preview-screenshot="$emit('preview-screenshot', $event)"
                 @open-case="$emit('open-case', $event)"
                 @rerun-case="$emit('rerun-case', $event)"
@@ -473,6 +478,7 @@ const props = withDefaults(
     phase?: string;
     reviewApproved?: boolean;
     rerunningCase?: string;
+    executionLocked?: boolean;
   }>(),
   {
     qaCases: () => [],
@@ -480,6 +486,7 @@ const props = withDefaults(
     phase: "open",
     reviewApproved: false,
     rerunningCase: "",
+    executionLocked: false,
   }
 );
 
@@ -670,8 +677,9 @@ const qaByState = computed(() => {
   for (const c of qaColumns) map[c] = [];
   for (const item of allQaCases.value) {
     const state = item.state || "pending";
-    if (!map[state]) map[state] = [];
-    map[state].push(item);
+    const column = state === "held" ? "pending" : state;
+    if (!map[column]) map[column] = [];
+    map[column].push(item);
   }
   return map;
 });
@@ -683,9 +691,15 @@ const qaStats = computed(() => {
   const blocked = (qaByState.value["blocked"] || []).length;
   const running = (qaByState.value["running"] || []).length;
   const ready = (qaByState.value["ready"] || []).length;
-  const pending = (qaByState.value["pending"] || []).length;
-  return { total, passed, failed, blocked, running, ready, pending };
+  const pending = (qaByState.value["pending"] || []).filter((c) => c.state !== "held").length;
+  const held = allQaCases.value.filter((c) => c.state === "held").length;
+  return { total, passed, failed, blocked, running, ready, pending, held };
 });
+
+function depsMet(testCase: QaCaseItem) {
+  const byId = new Map(allQaCases.value.map((item) => [item.id, item] as const));
+  return (testCase.depends_on || []).every((id) => byId.get(id)?.state === "passed");
+}
 
 const qaFilterOptions = computed(() => {
   return [

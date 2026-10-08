@@ -50,7 +50,7 @@
             {{ testCase.module }}
           </v-chip>
           <v-chip
-            v-if="showState"
+            v-if="showState || testCase.state === 'held'"
             size="x-small"
             :color="statusColor"
             variant="tonal"
@@ -184,6 +184,32 @@
             用例详情
           </v-btn>
           <v-btn
+            v-if="canExecute"
+            size="small"
+            density="compact"
+            variant="outlined"
+            color="primary"
+            class="px-2"
+            :loading="rerunning"
+            :disabled="disabled"
+            title="只执行这一条，写进当前这一轮。本轮有用例在跑时先不可点。"
+            @click.stop="emit('rerun-case', testCase.id)"
+          >
+            <v-icon :icon="mdiPlay" size="16" class="mr-1" />
+            执行
+          </v-btn>
+          <v-btn
+            v-else-if="showWaiting"
+            size="small"
+            density="compact"
+            variant="outlined"
+            class="px-2"
+            disabled
+            :title="waitingTitle"
+          >
+            执行
+          </v-btn>
+          <v-btn
             v-if="canRerun"
             size="small"
             density="compact"
@@ -192,7 +218,7 @@
             class="px-2"
             :loading="rerunning"
             :disabled="disabled"
-            title="重新执行这一条用例（不改动本轮其它用例；有测试在跑时会排队）"
+            title="重新执行这一条用例（不改动本轮其它用例）。本轮有用例在跑时先不可点。"
             @click.stop="emit('rerun-case', testCase.id)"
           >
             <v-icon :icon="mdiRefresh" size="16" class="mr-1" />
@@ -234,6 +260,7 @@ import {
   mdiRobotOutline,
   mdiAlertCircleOutline,
   mdiRefresh,
+  mdiPlay,
   mdiBugOutline,
 } from "@mdi/js";
 import type { QaCaseItem } from "@/api/types";
@@ -246,12 +273,14 @@ const props = withDefaults(
     jira: string;
     showState?: boolean;
     reviewApproved?: boolean;
+    depsMet?: boolean;
     rerunning?: boolean;
     disabled?: boolean;
   }>(),
   {
     showState: false,
     reviewApproved: false,
+    depsMet: true,
     rerunning: false,
     disabled: false,
   }
@@ -272,6 +301,31 @@ const isProductFailure = computed(() => props.testCase.state === "failed");
 const isPassed = computed(() => props.testCase.state === "passed");
 
 const canRerun = computed(() => isFailed.value || props.testCase.state === "passed");
+
+const canExecute = computed(
+  () =>
+    props.reviewApproved &&
+    props.depsMet &&
+    (props.testCase.state === "ready" || props.testCase.state === "held"),
+);
+
+const showWaiting = computed(
+  () =>
+    props.reviewApproved &&
+    !canExecute.value &&
+    !canRerun.value &&
+    (props.testCase.state === "pending" ||
+      props.testCase.state === "skipped" ||
+      props.testCase.state === "held"),
+);
+
+const waitingTitle = computed(() => {
+  if (props.testCase.state === "skipped") {
+    return props.testCase.reason || "上游未通过，这条已跳过";
+  }
+  const deps = (props.testCase.depends_on || []).join("、");
+  return deps ? `还在等 ${deps} 通过` : "还不能单独执行";
+});
 
 const canFileBug = computed(
   () => props.reviewApproved && isProductFailure.value,

@@ -730,9 +730,13 @@ def default_execute(root: Path, job: Job) -> None:
         # existing run, so it must not also force --run-only); 审核用例 → only
         # records the approval, never executes.
         design_only = bool(extra.get("design_only")) or job.action == "qa-design"
-        run_only = bool(extra.get("run_only")) or (
-            job.action == "qa-run" and not rerun_cases
-        )
+        # An explicit false stays false: a restart resume is not 「执行用例」
+        # and must not release cases the user parked. Omitted still means
+        # the top-level run (and a re-run with rerun_cases does not).
+        if "run_only" in extra:
+            run_only = bool(extra.get("run_only"))
+        else:
+            run_only = job.action == "qa-run" and not rerun_cases
         approve = bool(extra.get("approve"))
         feedback = (extra.get("feedback") or "").strip() or None
         design_notes = (extra.get("design_notes") or "").strip() or None
@@ -1097,7 +1101,13 @@ class JobRunner:
                     continue
                 if not load_qa_config(self.root, None, jira).run_resume_on_restart:
                     continue
-                job = self.submit("qa-run", jira, extra={"resume": True})
+                # Not 「执行用例」: continue the interrupted cases only.
+                # run_only false keeps parked cases parked.
+                job = self.submit(
+                    "qa-run",
+                    jira,
+                    extra={"resume": True, "run_only": False},
+                )
             except (ValueError, TestRejected):
                 continue
             restored.append(job)

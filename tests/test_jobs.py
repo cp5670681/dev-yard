@@ -1159,6 +1159,40 @@ def test_default_execute_run_test_passes_cancel_hooks(tmp_path: Path, monkeypatc
     assert seen["on_reap"] == job.untrack_proc
 
 
+def test_qa_run_run_only_honors_explicit_false(tmp_path: Path, monkeypatch):
+    seen: dict = {}
+
+    def fake_req_test(root, jira, **kwargs):
+        seen.update(kwargs)
+        return {"run_id": "r", "summary": {}, "cases": 0}
+
+    monkeypatch.setattr("dev_yard.qa.req_test", fake_req_test)
+    restart = Job(
+        id="abc",
+        jira="AB-1",
+        action="qa-run",
+        extra={"resume": True, "run_only": False},
+    )
+    default_execute(tmp_path, restart)
+    assert seen["resume"] is True
+    assert seen["run_only"] is False
+
+    seen.clear()
+    full = Job(id="abd", jira="AB-1", action="qa-run")
+    default_execute(tmp_path, full)
+    assert seen["run_only"] is True
+
+    seen.clear()
+    one = Job(
+        id="abe",
+        jira="AB-1",
+        action="qa-run",
+        extra={"rerun_cases": ["case-01"]},
+    )
+    default_execute(tmp_path, one)
+    assert seen["run_only"] is False
+
+
 def test_run_test_job_cancel_marks_cancelled(tmp_path: Path, monkeypatch):
     import time
 

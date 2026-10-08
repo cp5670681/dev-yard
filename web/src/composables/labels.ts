@@ -142,6 +142,7 @@ export function docLabel(slug: string, filename?: string) {
 export const QA_STATE_LABELS: Record<string, string> = {
   pending: "待测试",
   ready: "就绪",
+  held: "未排队",
   running: "测试中",
   passed: "通过",
   failed: "失败",
@@ -152,6 +153,7 @@ export const QA_STATE_LABELS: Record<string, string> = {
 export const QA_STATE_COLOR: Record<string, string> = {
   pending: "grey",
   ready: "info",
+  held: "grey",
   running: "primary",
   passed: "success",
   failed: "error",

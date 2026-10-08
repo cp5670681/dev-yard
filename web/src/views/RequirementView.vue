@@ -418,6 +418,7 @@
         :phase="detail.phase"
         :review-approved="Boolean(qaReview?.approved)"
         :rerunning-case="rerunningCase"
+        :execution-locked="acting === 'qa-run' || liveHasActive"
         @implement="(id) => confirmAction('implement', id)"
         @review="(id) => confirmAction('review', id)"
         @diff="(id) => openDiff(id)"
@@ -1839,7 +1840,7 @@ function showRerunBanner(caseIds: string[]): "success" | "error" | "info" {
     const row = cases?.find((c) => c.case === caseIds[0]);
     const status = row?.status || "未知";
     const reason = row?.reason ? `：${row.reason}` : "";
-    runEndBanner.text = `${caseIds[0]} 重测 ${status}${reason}`;
+    runEndBanner.text = `${caseIds[0]} ${status}${reason}`;
     runEndBanner.color =
       status === "passed" ? "success" : status === "failed" ? "error" : "warning";
     runEndBanner.show = true;
@@ -1847,7 +1848,7 @@ function showRerunBanner(caseIds: string[]): "success" | "error" | "info" {
   }
   const tally = tallyStatuses(cases, caseIds);
   const text = [
-    `重测 ${caseIds.length} 条：${tally.passed} 通过 / ${tally.failed} 失败 / ${tally.blocked} 阻塞`,
+    `执行 ${caseIds.length} 条：${tally.passed} 通过 / ${tally.failed} 失败 / ${tally.blocked} 阻塞`,
   ];
   if (tally.other) text.push(`${tally.other} 未出结果`);
   runEndBanner.text = text.join("，");

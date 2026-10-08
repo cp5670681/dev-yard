@@ -196,11 +196,13 @@ def env_block_class(reason: str, blocked_class: str = "") -> str | None:
 def resumable(state: str, blocked_class: str = "", reason: str = "") -> bool:
     """True when a case row has no final verdict and a resume should re-run it.
 
-    `pending`/`ready`/`running` are obviously unfinished. A `blocked` row is
-    re-runnable only when it is a cancellation (a pause / kill), never when it is
-    a real verdict (`case-defect` / `env` / `other`).
+    `pending`/`ready`/`running` are obviously unfinished. `held` is a case a
+    single-case run parked in this same round; it is unfinished, but
+    `refresh_ready` does not promote it. A `blocked` row is re-runnable only
+    when it is a cancellation (a pause / kill), never when it is a real verdict
+    (`case-defect` / `env` / `other`).
     """
-    if str(state or "") in {"pending", "ready", "running"}:
+    if str(state or "") in {"pending", "ready", "running", "held"}:
         return True
     return blocked_kind(reason, blocked_class) == "cancelled"
 
@@ -272,6 +274,11 @@ def pick_case(
 
 
 def refresh_ready(cases: list[CaseJob], when: str | None = None) -> None:
+    """Promote pending cases whose dependencies passed.
+
+    `held` is left untouched: a single-case run parks every case the user did
+    not ask for, and a later click (or 执行用例) is what releases them.
+    """
     by_id = {c.id: c for c in cases}
     stamp = when or now_iso()
     progressed = True

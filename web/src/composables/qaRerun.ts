@@ -104,9 +104,9 @@ export function tallyStatuses(
 
 /** Human summary of a batch re-run; single-case wording stays as the case id. */
 export function tallyMessage(ids: string[], tally: StatusTally): string {
-  if (ids.length === 1) return `${ids[0]} 重测完成`;
+  if (ids.length === 1) return `${ids[0]} 完成`;
   const parts = [
-    `重测 ${ids.length} 条：${tally.passed} 通过 / ${tally.failed} 失败 / ${tally.blocked} 阻塞`,
+    `执行 ${ids.length} 条：${tally.passed} 通过 / ${tally.failed} 失败 / ${tally.blocked} 阻塞`,
   ];
   if (tally.other) parts.push(`${tally.other} 未出结果`);
   return parts.join("，");

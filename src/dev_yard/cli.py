@@ -1167,7 +1167,7 @@ def req_test_cmd(
     rerun_case: list[str] = typer.Option(
         [],
         "--rerun-case",
-        help="Re-run only these case ids (repeatable); amends the run they belong to",
+        help="只跑这些用例（可重复）。已有一轮则补进该轮；还没有则新开一轮，其余用例留着不跑",
     ),
     no_wait: bool = typer.Option(
         False,

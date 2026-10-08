@@ -244,8 +244,13 @@ def derive_phase(root: Path, jira: str) -> str:
     if not cases:
         return "designing"
     ids = {c.id for c in cases}
-    if find_incomplete_run(qa, ids, None) is not None:
-        return "running"
+    found = find_incomplete_run(qa, ids, None)
+    if found is not None:
+        from dev_yard import qa_run
+
+        # A parked single-case round still has held rows, but nobody is running.
+        if qa_run.status(found[1]) != qa_run.PARTIAL:
+            return "running"
     review = review_payload(qa)
     if not review.get("approved"):
         # `no-cases` is impossible here (cases were discovered above).

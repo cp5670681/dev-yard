@@ -50,7 +50,8 @@ def latest_progress(qa: Path) -> dict[str, Any] | None:
             continue
         cases = data.get("cases") or []
         if any(
-            isinstance(c, dict) and str(c.get("state") or "") in {"pending", "ready", "running"}
+            isinstance(c, dict)
+            and str(c.get("state") or "") in {"pending", "ready", "running", "held"}
             for c in cases
         ):
             # The requirement board overlays this document onto every card.
@@ -275,9 +276,37 @@ def list_runs(qa: Path) -> list[dict[str, Any]]:
                 continue
             if (child / "result.yaml").is_file():
                 case_rows.append(_case_run_row(run_dir, child.name, {}))
+        # Cases that never got a result file (a single-case round parks the
+        # rest as `held`) still belong on the run. Passed cases already have
+        # a result file and stay as they are.
+        if isinstance(progress, dict):
+            present = {str(row.get("case") or "") for row in case_rows}
+            for item in progress.get("cases") or []:
+                if not isinstance(item, dict) or not item.get("id"):
+                    continue
+                cid = str(item["id"])
+                if cid in present:
+                    continue
+                present.add(cid)
+                case_rows.append(
+                    _case_run_row(
+                        run_dir,
+                        cid,
+                        {
+                            "status": item.get("state") or "",
+                            "repo": item.get("repo") or "",
+                            "model": item.get("model") or "",
+                            "reason": item.get("reason") or "",
+                        },
+                    )
+                )
         row = {
             "run_id": str(run.get("run_id") or run_dir.name),
-            "env": str(run.get("env") or ""),
+            "env": str(
+                run.get("env")
+                or (progress.get("env") if isinstance(progress, dict) else "")
+                or ""
+            ),
             "summary": run.get("summary") if isinstance(run.get("summary"), dict) else {},
             "workers": run.get("workers") if isinstance(run.get("workers"), list) else [],
             "progress": progress if isinstance(progress, dict) else None,
