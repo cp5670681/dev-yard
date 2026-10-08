@@ -65,12 +65,27 @@ export interface QaProgress {
   cases?: QaProgressCase[];
 }
 
+export interface DocAlignDiff {
+  file: string;
+  diff: string;
+}
+
+export interface DocAlignProposal {
+  ticket_id: string;
+  status: "clarify" | "ready" | "noop";
+  decision: string;
+  diffs: DocAlignDiff[];
+  files: Record<string, string>;
+  base: Record<string, string>;
+}
+
 export interface JobSnapshot extends JobBrief {
   log: string;
   grill: GrillRound | null;
   pi_runs: PiRun[];
   qa_progress?: QaProgress | null;
   env_waiting: boolean;
+  doc_align?: DocAlignProposal | null;
 }
 
 export interface JobsOut {
@@ -100,6 +115,7 @@ export interface Ticket {
   last_summary_html?: string | null;
   source?: string;
   finding?: string;
+  merge_conflict?: string | null;
 }
 
 export interface Action {

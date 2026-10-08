@@ -39,7 +39,7 @@ _SKELETONS = {
 
 _IMPLEMENT_STATES = {"ready", "blocked", "implementing"}
 _REVIEW_STATES = {"implemented", "reviewing", "inconclusive", "blocked"}
-_BEYOND_IMPLEMENT = {"implemented", "reviewing", "inconclusive", "done"}
+_BEYOND_IMPLEMENT = {"implemented", "reviewing", "inconclusive", "approved", "done"}
 
 
 @dataclass
@@ -64,6 +64,7 @@ ACTION_STAGES = {
     "freeze": "freeze",
     "implement": "implement",
     "review": "review",
+    "merge": "review",
     "contract": "review",
     "fix-contract": "review",
     "submit-test": "testing",
@@ -110,6 +111,7 @@ class TicketView:
     worktree: str | None = None
     source: str = ""
     finding: str = ""
+    merge_conflict: str | None = None
 
 
 @dataclass
@@ -245,6 +247,11 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
                 worktree=slot.get("worktree"),
                 source=t.source,
                 finding=t.finding,
+                merge_conflict=(
+                    slot.get("merge_conflict")
+                    if isinstance(slot.get("merge_conflict"), str)
+                    else None
+                ),
             )
         )
     docs = [_doc_view(req, slug, filename, jira) for slug, filename in DOC_FILES.items()]
@@ -480,6 +487,14 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
             "" if any_review else "没有处于可审查状态的票",
         ),
         Action(
+            "merge",
+            ACTION_LABELS["merge"],
+            any(t.state == "approved" for t in detail.tickets),
+            ""
+            if any(t.state == "approved" for t in detail.tickets)
+            else "没有已通过、待合并的票",
+        ),
+        Action(
             "contract",
             ACTION_LABELS["contract"],
             frozen,
@@ -606,7 +621,10 @@ def save_doc(root: Path, jira: str, slug: str, text: str) -> Path:
     if not req.is_dir():
         raise FileNotFoundError(f"missing {req}")
     path = req / DOC_FILES[slug]
-    path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+    # Same lock as doc-align propose/apply, so a manual save cannot land
+    # inside a proposal restore and then be overwritten by the old snapshot.
+    with st.jira_lock(jira):
+        path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
     return path
 
 
@@ -686,6 +704,10 @@ def _next_label(
     by_slug = {d.slug: d for d in docs}
     if st.pipeline_complete({"phase": phase, "test": test}):
         return "done"
+    # An approved ticket lives only on its child branch until merge. QA and
+    # implement shortcuts run against the parent, so they must not hide merge.
+    if any(t.state == "approved" for t in tickets):
+        return "merge"
     ready_bugs = any(
         t.source == "test" and t.state in _IMPLEMENT_STATES for t in tickets
     )

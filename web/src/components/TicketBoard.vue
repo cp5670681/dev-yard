@@ -44,7 +44,7 @@
           <template v-if="devTickets.length">
             <!-- Desktop Kanban -->
             <template v-if="mdAndUp">
-              <div class="ghx-board">
+              <div class="ghx-board" :style="{ '--ghx-cols': columns.length }">
                 <div class="ghx-column-headers">
                   <div v-for="col in columns" :key="col" class="ghx-column-header">
                     <span class="ghx-column-title">{{ stateLabel(col) }}</span>
@@ -61,6 +61,8 @@
                       :jira="jira"
                       @implement="$emit('implement', $event)"
                       @review="$emit('review', $event)"
+                      @merge="$emit('merge', $event)"
+                      @resolve="$emit('resolve', $event)"
                       @diff="$emit('diff', $event)"
                       @feedback="$emit('feedback', $event)"
                       @open-case="$emit('open-case', $event)"
@@ -97,6 +99,8 @@
                 show-state
                 @implement="$emit('implement', $event)"
                 @review="$emit('review', $event)"
+                @merge="$emit('merge', $event)"
+                @resolve="$emit('resolve', $event)"
                 @diff="$emit('diff', $event)"
                 @feedback="$emit('feedback', $event)"
                 @open-case="$emit('open-case', $event)"
@@ -369,7 +373,7 @@
           <template v-if="bugTickets.length">
             <!-- Desktop Bug Kanban -->
             <template v-if="mdAndUp">
-              <div class="ghx-board ghx-board--bug">
+              <div class="ghx-board ghx-board--bug" :style="{ '--ghx-cols': columns.length }">
                 <div class="ghx-column-headers">
                   <div v-for="col in columns" :key="col" class="ghx-column-header">
                     <span class="ghx-column-title">{{ stateLabel(col) }}</span>
@@ -387,6 +391,8 @@
                       :case-info="bugCaseInfo(t)"
                       @implement="$emit('implement', $event)"
                       @review="$emit('review', $event)"
+                      @merge="$emit('merge', $event)"
+                      @resolve="$emit('resolve', $event)"
                       @diff="$emit('diff', $event)"
                       @feedback="$emit('feedback', $event)"
                       @delete="$emit('delete', $event)"
@@ -426,6 +432,8 @@
                 show-state
                 @implement="$emit('implement', $event)"
                 @review="$emit('review', $event)"
+                @merge="$emit('merge', $event)"
+                @resolve="$emit('resolve', $event)"
                 @diff="$emit('diff', $event)"
                 @feedback="$emit('feedback', $event)"
                 @delete="$emit('delete', $event)"
@@ -493,6 +501,8 @@ const props = withDefaults(
 defineEmits<{
   implement: [id: string];
   review: [id: string];
+  merge: [id: string];
+  resolve: [id: string];
   diff: [id: string];
   feedback: [ticket: Ticket];
   delete: [ticket: Ticket];
@@ -558,7 +568,7 @@ watch(
   },
 );
 
-// Standard Ticket Columns (8 columns)
+// Standard Ticket Columns. `approved` is passed and waiting to merge.
 const columns = [
   "pending",
   "ready",
@@ -567,6 +577,7 @@ const columns = [
   "reviewing",
   "inconclusive",
   "blocked",
+  "approved",
   "done",
 ];
 
@@ -872,7 +883,9 @@ function qaStateLabel(col: string) {
 .ghx-column-headers,
 .ghx-columns {
   display: grid;
-  grid-template-columns: repeat(8, minmax(180px, 1fr));
+  /* `--ghx-cols` is bound from columns.length; the fallback must not drift from
+     that array or the last column wraps onto a second row. */
+  grid-template-columns: repeat(var(--ghx-cols, 9), minmax(180px, 1fr));
   column-gap: 10px;
 }
 

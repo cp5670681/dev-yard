@@ -1683,7 +1683,8 @@ def test_ticket_review_api(tmp_path: Path, git_src: Path, monkeypatch):
     )
     assert r2.status_code == 200
     data2 = r2.json()
-    assert data2["ticket"]["state"] == "done"
+    assert data2["ticket"]["state"] == "approved"
+    assert data2["ticket"]["last_verdict"] == "passed"
     assert data2["ticket"]["last_summary"] == "Approved by human reviewer"
 
     # Test error cases
@@ -1822,6 +1823,36 @@ def test_create_app_recovers_stale_reviewing(tmp_path: Path, git_src: Path, monk
     t1 = next(t for t in detail["tickets"] if t["id"] == "T1")
     assert t1["state"] == "implemented"
     assert t1["can_review"] is True
+
+
+def test_recover_failed_merge_stays_approved(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard import status as st
+    from dev_yard.service import req_freeze
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "REC-02", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: add auth\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    req_freeze(yard, "REC-02")
+    data = st.load(yard, "REC-02")
+    data["tickets"]["T1"]["state"] = "reviewing"
+    data["tickets"]["T1"]["last_summary"] = (
+        "通过，只改文案\n\nmerge conflict into /tmp/wt: CONFLICT"
+    )
+    data["tickets"]["T1"]["last_verdict"] = "failed"
+    st.save(yard, "REC-02", data)
+
+    client = TestClient(create_app(yard, job_runner=JobRunner(yard, sync=False)))
+    detail = client.get("/api/requirements/REC-02").json()
+    t1 = next(t for t in detail["tickets"] if t["id"] == "T1")
+    assert t1["state"] == "approved"
+    assert t1["merge_conflict"]
+    assert st.load(yard, "REC-02")["tickets"]["T1"]["last_verdict"] == "passed"
 
 
 

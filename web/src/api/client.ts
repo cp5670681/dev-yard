@@ -450,6 +450,34 @@ export function getRequirementDiff(jira: string) {
   return api<ReqDiff>(`/api/requirements/${encodeURIComponent(jira)}/diff`);
 }
 
+export function startDocAlign(
+  jira: string,
+  ticketId: string,
+  payload: { summary: string; decision?: string },
+) {
+  return api<{ jobs: JobSnapshot[] }>(
+    `/api/requirements/${encodeURIComponent(jira)}/tickets/${encodeURIComponent(ticketId)}/doc-align`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function applyDocAlign(
+  jira: string,
+  ticketId: string,
+  payload: { decision: string; base: Record<string, string>; files: Record<string, string> },
+) {
+  return api<{ changed: string[]; qa_stale: boolean; decision: string }>(
+    `/api/requirements/${encodeURIComponent(jira)}/tickets/${encodeURIComponent(ticketId)}/doc-align/apply`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
 export function submitTicketReview(
   jira: string,
   ticketId: string,

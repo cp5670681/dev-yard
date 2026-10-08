@@ -23,6 +23,8 @@ from dev_yard.web.schemas import (
     OpenIn,
     QaRerunIn,
     TestReportIn,
+    DocAlignApplyIn,
+    DocAlignIn,
     TicketReviewIn,
 )
 
@@ -242,6 +244,53 @@ def build(ctx: AppContext) -> APIRouter:
             raise HTTPException(404, f"no requirement {jira}")
         try:
             return yard_service.ticket_diff(ctx.root, jira, ticket_id)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @router.post("/api/requirements/{jira}/tickets/{ticket_id}/doc-align")
+    def api_ticket_doc_align(jira: str, ticket_id: str, payload: DocAlignIn):
+        if paths.is_reserved_req_name(jira):
+            raise HTTPException(404, f"no requirement {jira}")
+        from dev_yard import doc_align
+
+        try:
+            doc_align.check_request(ctx.root, jira, ticket_id, payload.summary)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        try:
+            submitted = ctx.jobs.submit(
+                "doc-align",
+                jira,
+                [ticket_id],
+                extra={
+                    "summary": payload.summary,
+                    "decision": payload.decision,
+                    "label": "按审查意见改文档",
+                },
+            )
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from e
+        return ctx.jobs_out([submitted])
+
+    @router.post("/api/requirements/{jira}/tickets/{ticket_id}/doc-align/apply")
+    def api_ticket_doc_align_apply(jira: str, ticket_id: str, payload: DocAlignApplyIn):
+        if paths.is_reserved_req_name(jira):
+            raise HTTPException(404, f"no requirement {jira}")
+        from dev_yard import doc_align
+
+        try:
+            return doc_align.apply(
+                ctx.root,
+                jira,
+                ticket_id,
+                decision=payload.decision,
+                base=payload.base,
+                files=payload.files,
+            )
         except FileNotFoundError as e:
             raise HTTPException(404, str(e)) from e
         except ValueError as e:

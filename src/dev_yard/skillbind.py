@@ -67,12 +67,12 @@ def session_prompt_for(
                 "Call submit_review with verdict passed unless production behavior is wrong. "
                 "Judge production behavior only."
             )
-        elif spec.name == "resolve-merge":
+        elif spec.name in {"resolve-merge", "resolve-ticket"}:
             tdd_extra = (
                 "TDD mode is OFF (dev.tdd=false). After resolving conflicts, do NOT add test files and do "
                 "NOT run test suites; only do a static check (syntax / obvious broken references) and stop."
             )
-    elif spec.name == "resolve-merge":
+    elif spec.name in {"resolve-merge", "resolve-ticket"}:
         tdd_extra = (
             "TDD mode is ON (dev.tdd=true). After resolving conflicts, run the affected test suites using "
             "the repo's existing conventions and keep them green before you finish."
@@ -101,6 +101,13 @@ def session_prompt_for(
             f"Read {req / 'REQUIREMENT.md'} (product source of truth), "
             f"{req / 'SPEC.md'} (implementation contract), and {req / 'TICKETS.md'} as needed. "
             f"Shared glossary: `{ctx}`. ADRs: `{adr}`."
+        )
+    elif spec.name == "resolve-ticket":
+        start = (
+            f"Resolve the git merge conflict in the current ticket worktree only. "
+            f"The ticket already passed review. Read {req / 'TICKETS.md'} for this ticket's "
+            f"scope. Do not treat SPEC.md as a reason to change behavior while resolving. "
+            f"Shared glossary: `{ctx}`."
         )
     elif spec.name in {"review", "tickets"}:
         start_file = req / "SPEC.md"

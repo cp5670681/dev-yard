@@ -95,6 +95,8 @@ class Job:
     grill: dict | None = None
     pi_runs: list[dict[str, Any]] = field(default_factory=list)
     qa_progress: dict[str, Any] | None = None
+    # Proposal from「按审查意见改文档」. Empty until that job finishes.
+    doc_align: dict[str, Any] | None = None
     # True while a qa run waits for another requirement to release the shared
     # env lock (M8); the board renders a "waiting for env" badge.
     env_waiting: bool = False
@@ -135,6 +137,7 @@ class Job:
             "pi_runs": list(self.pi_runs),
             "qa_progress": self.qa_progress,
             "env_waiting": self.env_waiting,
+            "doc_align": self.doc_align,
         }
 
     def append(self, text: str) -> None:
@@ -214,6 +217,11 @@ class Job:
             self.pi_runs.append(run)
             self._bump()
             return dict(run)
+
+    def set_doc_align(self, payload: dict[str, Any] | None) -> None:
+        with self._cv:
+            self.doc_align = payload
+            self._bump()
 
     def set_qa_progress(self, payload: dict[str, Any] | None) -> None:
         with self._cv:
@@ -490,6 +498,25 @@ def _parse_repos_filter(extra: dict[str, Any]) -> list[str] | None:
 
 def default_execute(root: Path, job: Job) -> None:
     extra = job.extra or {}
+    if job.action == "doc-align":
+        from dev_yard import doc_align
+
+        ticket_ids = job.ticket_ids or []
+        if len(ticket_ids) != 1:
+            raise ValueError("按审查意见改文档需要一张票")
+        proposal = doc_align.propose(
+            root,
+            job.jira,
+            ticket_ids[0],
+            str(extra.get("summary") or ""),
+            str(extra.get("decision") or ""),
+            runner=JobLogRunner(job, root, "doc-align", spec=doc_align.DOC_ALIGN_SPEC),
+        )
+        job.set_doc_align(proposal)
+        job.append(
+            f"{ticket_ids[0]} 文档提案：{proposal.get('status')} {proposal.get('decision')}"
+        )
+        return
     if job.action == "repo_add":
         repo = service.repo_add(
             root,
@@ -826,6 +853,35 @@ def default_execute(root: Path, job: Job) -> None:
         return
     from dev_yard.stages import load_registry
 
+    if job.action == "merge":
+        from dev_yard import status as st
+
+        ids = list(job.ticket_ids or [])
+        if not ids:
+            data = st.load(root, job.jira)
+            ids = [
+                tid
+                for tid, slot in (data.get("tickets") or {}).items()
+                if isinstance(slot, dict) and slot.get("state") == "approved"
+            ]
+        if not ids:
+            raise ValueError("没有已通过、待合并的票")
+        for tid in ids:
+            service.ticket_merge(root, job.jira, tid)
+            job.append(f"{tid} 已合并")
+        return
+    if job.action == "resolve-conflict":
+        ids = list(job.ticket_ids or [])
+        if len(ids) != 1:
+            raise ValueError("解决冲突一次只处理一张票")
+        runner = JobLogRunner(
+            job, root, "resolve-ticket", spec=service._TICKET_CONFLICT_SPEC
+        )
+        service.resolve_ticket_conflict(
+            root, job.jira, ids[0], print_mode=True, runner=runner
+        )
+        job.append(f"{ids[0]} 冲突已解决，可以合并")
+        return
     spec = load_registry(root).get(job.action)
     if spec is not None and job.action not in _HOST_JOB_ACTIONS:
         runner = JobLogRunner(job, root, spec.name)

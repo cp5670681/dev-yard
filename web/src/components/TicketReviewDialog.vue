@@ -1,7 +1,7 @@
 <template>
   <v-dialog
     :model-value="modelValue"
-    max-width="760"
+    max-width="920"
     scrollable
     @update:model-value="$emit('update:modelValue', $event)"
   >
@@ -90,7 +90,7 @@
           density="compact"
           class="mb-3 text-caption"
         >
-          确认代码符合要求。若该票有独立 Worktree 子分支，将自动合并并转为 done 状态。
+          只记下通过，不会合进冻结分支。回到卡片后点「合并」。冲突时点「解决冲突」，不用再审一次。
         </v-alert>
 
         <div class="d-flex justify-end mb-2">
@@ -143,6 +143,88 @@
             hide-details
           />
         </div>
+
+        <div class="mt-4">
+          <v-btn
+            variant="tonal"
+            color="primary"
+            :prepend-icon="mdiTextBoxEditOutline"
+            :loading="alignBusy"
+            :disabled="!summary.trim() || loading || applyBusy"
+            @click="alignDocs()"
+          >
+            按审查意见改文档
+          </v-btn>
+          <div class="text-caption text-medium-emphasis mt-1">
+            只改和这条意见冲突的文档句子。不改代码，也不改这张票的状态。
+          </div>
+        </div>
+
+        <v-alert
+          v-if="alignError"
+          type="error"
+          variant="tonal"
+          class="mt-3"
+          closable
+          @click:close="alignError = ''"
+        >
+          {{ alignError }}
+        </v-alert>
+
+        <div v-if="align" class="mt-3">
+          <v-alert
+            v-if="align.status === 'clarify'"
+            type="warning"
+            variant="tonal"
+            class="mb-3"
+          >
+            这条意见还能有别的改法。下面这句话是将要采用的做法，确认后才会生成文档修改。
+          </v-alert>
+          <v-alert
+            v-else-if="align.status === 'noop'"
+            type="info"
+            variant="tonal"
+          >
+            四份文档里没有和这条意见冲突的句子。
+          </v-alert>
+          <template v-else>
+            <v-alert type="info" variant="tonal" class="mb-3">
+              {{ align.decision }}
+              确认后写入文档，不改代码，也不改票的状态。
+            </v-alert>
+            <div v-for="item in align.diffs" :key="item.file" class="mb-3">
+              <div class="text-caption font-weight-bold mb-1">{{ item.file }}</div>
+              <pre class="doc-diff">{{ item.diff }}</pre>
+            </div>
+            <v-btn
+              color="primary"
+              :loading="applyBusy"
+              :disabled="alignBusy"
+              @click="applyAlign"
+            >
+              写入文档
+            </v-btn>
+          </template>
+          <div v-if="align.status === 'clarify'" class="mt-2">
+            <v-textarea
+              v-model="clarifyText"
+              label="准备按这句话改"
+              rows="2"
+              auto-grow
+              hide-details="auto"
+            />
+            <v-btn
+              class="mt-2"
+              color="primary"
+              variant="tonal"
+              :loading="alignBusy"
+              :disabled="!clarifyText.trim() || applyBusy"
+              @click="alignDocs(clarifyText.trim())"
+            >
+              按这个理解生成修改
+            </v-btn>
+          </div>
+        </div>
       </v-card-text>
 
       <v-divider />
@@ -183,9 +265,11 @@ import {
   mdiClose,
   mdiEyeOutline,
   mdiPencilOutline,
+  mdiTextBoxEditOutline,
 } from "@mdi/js";
-import { submitTicketReview } from "../api/client";
-import type { JobSnapshot, Ticket } from "../api/types";
+import { applyDocAlign, startDocAlign, submitTicketReview } from "../api/client";
+import type { DocAlignProposal, JobSnapshot, Ticket } from "../api/types";
+import { jobTail, settleJob } from "../composables/qaRerun";
 import { phaseColor } from "../composables/labels";
 import { useSnack } from "../composables/snack";
 
@@ -198,6 +282,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "update:modelValue", value: boolean): void;
   (e: "reviewed", ticketId: string, jobs: JobSnapshot[]): void;
+  (e: "aligned"): void;
 }>();
 const snack = useSnack();
 
@@ -207,6 +292,11 @@ const autoImplement = ref(true);
 const loading = ref(false);
 const error = ref("");
 const mode = ref<"preview" | "edit">("preview");
+const alignBusy = ref(false);
+const applyBusy = ref(false);
+const alignError = ref("");
+const align = ref<DocAlignProposal | null>(null);
+const clarifyText = ref("");
 const previewHtml = computed(() => {
   if (summary.value === (props.ticket?.last_summary || "") && props.ticket?.last_summary_html) {
     return props.ticket.last_summary_html;
@@ -220,14 +310,16 @@ const stateColor = computed(() => {
 });
 
 watch(
-  () => [props.modelValue, props.ticket],
-  ([open]) => {
+  () => [props.modelValue, props.ticket?.id] as const,
+  ([open, id], prev) => {
+    // A same-ticket reload must not wipe the note still sitting in the box.
+    if (prev && prev[0] === true && prev[1] === id && open) return;
     if (open && props.ticket) {
       summary.value = props.ticket.last_summary || "";
       if (props.ticket.state === "blocked") {
         verdict.value = "failed";
         autoImplement.value = true;
-      } else if (props.ticket.state === "done") {
+      } else if (props.ticket.state === "done" || props.ticket.state === "approved") {
         verdict.value = "passed";
         autoImplement.value = false;
       } else if (props.ticket.state === "inconclusive") {
@@ -238,6 +330,9 @@ watch(
         autoImplement.value = true;
       }
       error.value = "";
+      alignError.value = "";
+      align.value = null;
+      clarifyText.value = "";
       mode.value = props.ticket.last_summary ? "preview" : "edit";
     }
   },
@@ -249,6 +344,58 @@ watch(verdict, (value) => {
     autoImplement.value = true;
   }
 });
+
+async function alignDocs(decision = "") {
+  if (!props.ticket || !summary.value.trim()) return;
+  alignBusy.value = true;
+  alignError.value = "";
+  align.value = null;
+  try {
+    const res = await startDocAlign(props.jira, props.ticket.id, {
+      summary: summary.value,
+      decision,
+    });
+    const jobId = res.jobs?.[0]?.id;
+    if (!jobId) {
+      alignError.value = "没有开始对照文档";
+      return;
+    }
+    const job = await settleJob(jobId);
+    if (job.state !== "ok" || !job.doc_align) {
+      alignError.value = jobTail(job.log) || "没有生成文档修改";
+      return;
+    }
+    align.value = job.doc_align;
+    if (job.doc_align.status === "clarify") {
+      clarifyText.value = job.doc_align.decision;
+    }
+  } catch (e) {
+    alignError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    alignBusy.value = false;
+  }
+}
+
+async function applyAlign() {
+  if (!props.ticket || !align.value || align.value.status !== "ready") return;
+  applyBusy.value = true;
+  alignError.value = "";
+  try {
+    const res = await applyDocAlign(props.jira, props.ticket.id, {
+      decision: align.value.decision,
+      base: align.value.base,
+      files: align.value.files,
+    });
+    const stale = res.qa_stale ? "用例已标为待复核。" : "";
+    snack.notify(`文档已按审查意见改好。可以重新审查。${stale}`, "success");
+    align.value = null;
+    emit("aligned");
+  } catch (e) {
+    alignError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    applyBusy.value = false;
+  }
+}
 
 async function submit() {
   if (!props.ticket || !verdict.value) return;
@@ -277,6 +424,17 @@ async function submit() {
 }
 .font-mono {
   font-family: var(--font-mono, monospace);
+}
+.doc-diff {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  border-radius: 8px;
 }
 .preview-container {
   min-height: 120px;
