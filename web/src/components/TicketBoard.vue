@@ -44,7 +44,7 @@
           <template v-if="devTickets.length">
             <!-- Desktop Kanban -->
             <template v-if="mdAndUp">
-              <div class="ghx-board">
+              <div class="ghx-board" :style="{ '--ghx-cols': columns.length }">
                 <div class="ghx-column-headers">
                   <div v-for="col in columns" :key="col" class="ghx-column-header">
                     <span class="ghx-column-title">{{ stateLabel(col) }}</span>
@@ -368,7 +368,7 @@
           <template v-if="bugTickets.length">
             <!-- Desktop Bug Kanban -->
             <template v-if="mdAndUp">
-              <div class="ghx-board ghx-board--bug">
+              <div class="ghx-board ghx-board--bug" :style="{ '--ghx-cols': columns.length }">
                 <div class="ghx-column-headers">
                   <div v-for="col in columns" :key="col" class="ghx-column-header">
                     <span class="ghx-column-title">{{ stateLabel(col) }}</span>
@@ -869,7 +869,9 @@ function qaStateLabel(col: string) {
 .ghx-column-headers,
 .ghx-columns {
   display: grid;
-  grid-template-columns: repeat(8, minmax(180px, 1fr));
+  /* `--ghx-cols` is bound from columns.length; the fallback must not drift from
+     that array or the last column wraps onto a second row. */
+  grid-template-columns: repeat(var(--ghx-cols, 9), minmax(180px, 1fr));
   column-gap: 10px;
 }
 
