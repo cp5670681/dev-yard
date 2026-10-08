@@ -3,8 +3,10 @@ from __future__ import annotations
 import codecs
 import os
 import re
+import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -79,9 +81,17 @@ def drain_git_output(buf: bytes, on_progress: Progress) -> bytes:
             on_progress(line)
 
 
-def run(args: list[str], cwd: Path | None = None) -> str:
-    env = os.environ.copy()
-    env["GIT_TERMINAL_PROMPT"] = "0"
+def run(
+    args: list[str],
+    cwd: Path | None = None,
+    *,
+    env: dict[str, str] | None = None,
+) -> str:
+    base = os.environ.copy()
+    base["GIT_TERMINAL_PROMPT"] = "0"
+    if env:
+        base.update(env)
+    env = base
     try:
         r = subprocess.run(
             args, cwd=cwd, capture_output=True, text=True, env=env, timeout=_timeout()
@@ -287,6 +297,318 @@ def merge_base(worktree: Path, ref: str) -> str | None:
         return run(["git", "merge-base", "HEAD", ref], cwd=worktree)
     except GitError:
         return None
+
+
+def _subjects(repo: Path, tip: str, *log_args: str) -> list[tuple[str, str, str]]:
+    """`(sha, parents, subject)` rows from `git log tip` plus extra log args."""
+    try:
+        text = run(
+            ["git", "log", *log_args, "--format=%H%x1f%P%x1f%s", tip],
+            cwd=repo,
+        )
+    except GitError:
+        return []
+    rows: list[tuple[str, str, str]] = []
+    for line in text.splitlines():
+        sha, parents, subject = (line.split("\x1f", 2) + ["", ""])[:3]
+        if sha:
+            rows.append((sha, parents, subject))
+    return rows
+
+
+def _own_merges(repo: Path, tip: str, ticket_branch: str) -> list[tuple[str, str]]:
+    """Merges of `ticket_branch` that are in `tip`'s history.
+
+    Each row is `(merge_sha, first_parent)`. A merge *into* the ticket branch
+    (`Merge branch 'freeze' into <ticket>`) is not one of these.
+    """
+    needle = f"Merge branch '{ticket_branch}'"
+    rows = _subjects(
+        repo,
+        tip,
+        "-F",
+        "--merges",
+        "--grep",
+        needle,
+    )
+    found: list[tuple[str, str]] = []
+    for sha, parents, subject in rows:
+        if subject != needle and not subject.startswith(needle + " "):
+            continue
+        parent_shas = parents.split()
+        if len(parent_shas) < 2:
+            continue
+        found.append((sha, parent_shas[0]))
+    return found
+
+
+def _own_direct_commits(repo: Path, tip: str, ticket_id: str) -> list[tuple[str, str]]:
+    """Commits landed on the parent itself as `feat/fix(<id>)` or `merge: <id>`."""
+    tid = re.escape(ticket_id)
+    pattern = rf"^(feat|fix)\({tid}\): |^merge: {tid}$"
+    subject_re = re.compile(rf"^(?:feat|fix)\({tid}\): |^merge: {tid}$")
+    rows = _subjects(repo, tip, "-E", "--grep", pattern)
+    found: list[tuple[str, str]] = []
+    for sha, parents, subject in rows:
+        if not subject_re.match(subject):
+            continue
+        parent_shas = parents.split()
+        if parent_shas:
+            found.append((sha, parent_shas[0]))
+    return found
+
+
+def _oldest_ancestor(repo: Path, candidates: list[str]) -> str | None:
+    """The candidate that is an ancestor of every other, if they are linear."""
+    origin: str | None = None
+    for sha in candidates:
+        if origin is None:
+            origin = sha
+            continue
+        if is_ancestor(repo, sha, origin):
+            origin = sha
+        elif not is_ancestor(repo, origin, sha):
+            return None
+    return origin
+
+
+def _patch_paths(diff: bytes) -> list[str]:
+    paths: list[str] = []
+    for raw in diff.splitlines():
+        line = raw.decode("utf-8", "replace")
+        if not line.startswith("diff --git "):
+            continue
+        marker = " b/"
+        if marker not in line:
+            continue
+        path = line.split(marker, 1)[1]
+        if path and path != "dev/null":
+            paths.append(path)
+    return paths
+
+
+def _apply_commit(repo: Path, parent: str, commit: str, env: dict[str, str]) -> None:
+    """Apply `commit`'s patch onto the index in `env`. Raises GitError."""
+    diff = subprocess.run(
+        ["git", "diff-tree", "-p", "--binary", "-M", parent, commit],
+        cwd=repo,
+        capture_output=True,
+        env=env,
+        timeout=_timeout(),
+        check=False,
+    )
+    if diff.returncode != 0:
+        raise GitError(redact(diff.stderr.decode("utf-8", "replace").strip() or "diff-tree"))
+    if not diff.stdout.strip():
+        return
+    cached = subprocess.run(
+        ["git", "apply", "--cached", "--whitespace=nowarn"],
+        cwd=repo,
+        input=diff.stdout,
+        capture_output=True,
+        env=env,
+        timeout=_timeout(),
+        check=False,
+    )
+    if cached.returncode == 0:
+        return
+    paths = _patch_paths(diff.stdout)
+    if paths:
+        checkout = subprocess.run(
+            ["git", "checkout-index", "-f", "--", *paths],
+            cwd=repo,
+            capture_output=True,
+            env=env,
+            timeout=_timeout(),
+            check=False,
+        )
+        if checkout.returncode != 0:
+            raise GitError(
+                redact(checkout.stderr.decode("utf-8", "replace").strip() or "checkout-index")
+            )
+    three = subprocess.run(
+        ["git", "apply", "--3way", "--whitespace=nowarn"],
+        cwd=repo,
+        input=diff.stdout,
+        capture_output=True,
+        env=env,
+        timeout=_timeout(),
+        check=False,
+    )
+    if three.returncode != 0:
+        detail = three.stderr.decode("utf-8", "replace").strip()
+        raise GitError(redact(detail or "apply --3way"))
+    add = subprocess.run(
+        ["git", "add", "-A", "--", *paths] if paths else ["git", "add", "-A"],
+        cwd=repo,
+        capture_output=True,
+        env=env,
+        timeout=_timeout(),
+        check=False,
+    )
+    if add.returncode != 0:
+        raise GitError(redact(add.stderr.decode("utf-8", "replace").strip() or "git add"))
+
+
+def _in_requirement(repo: Path, sha: str, not_before: str | None) -> bool:
+    """True when `sha` landed after the requirement's recorded freeze."""
+    if not not_before or not rev_parse(repo, not_before):
+        return True
+    if sha == not_before:
+        return False
+    return not is_ancestor(repo, sha, not_before)
+
+
+def baseline_without_ticket(
+    repo: Path,
+    tip: str,
+    ticket_branch: str,
+    ticket_id: str,
+    not_before: str | None = None,
+) -> str | None:
+    """Tree of `tip` with this ticket's already-merged work removed.
+
+    Re-implementing a ticket resets its branch onto the freeze tip, which
+    already contains earlier merges of the same ticket. Diffing against that
+    tip hides those merges and makes a later attempt look like it only
+    changed the last commit. Sibling commits that landed in between stay.
+
+    `not_before` is the requirement's freeze sha. Older `feat(<id>)` commits
+    from another effort on the same repo are left in the tree.
+
+    Returns a commit sha (cached under `refs/dev-yard/baseline/`) or None when
+    `tip` does not contain this ticket. The sha is not an ancestor of `tip`.
+    """
+    if not tip or not ticket_branch or not ticket_id:
+        return None
+    scope = not_before or "none"
+    ref = f"refs/dev-yard/baseline/{ticket_branch}/{scope}/{tip}"
+    cached = rev_parse(repo, ref)
+    if cached:
+        return cached
+    merges = [
+        row
+        for row in _own_merges(repo, tip, ticket_branch)
+        if _in_requirement(repo, row[0], not_before)
+    ]
+    directs = [
+        row
+        for row in _own_direct_commits(repo, tip, ticket_id)
+        if _in_requirement(repo, row[0], not_before)
+    ]
+    if not merges and not directs:
+        return None
+    excluded: set[str] = {sha for sha, _parent in directs}
+    for merge_sha, first in merges:
+        excluded.add(merge_sha)
+        try:
+            introduced = run(["git", "rev-list", f"{first}..{merge_sha}"], cwd=repo)
+        except GitError:
+            return None
+        excluded.update(introduced.split())
+    origin = _oldest_ancestor(
+        repo, [parent for _sha, parent in (*merges, *directs)]
+    )
+    if not origin or not is_ancestor(repo, origin, tip):
+        return None
+    try:
+        replay = run(["git", "rev-list", "--reverse", f"{origin}..{tip}"], cwd=repo)
+    except GitError:
+        return None
+    index_path: str | None = None
+    work_path: str | None = None
+    try:
+        index_file = tempfile.NamedTemporaryFile(prefix="yard-baseline-", delete=False)
+        index_file.close()
+        index_path = index_file.name
+        work_path = tempfile.mkdtemp(prefix="yard-baseline-")
+        env = os.environ.copy()
+        env["GIT_INDEX_FILE"] = index_path
+        env["GIT_WORK_TREE"] = work_path
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        run(["git", "read-tree", origin], cwd=repo, env=env)
+        for sha in replay.split():
+            if not sha or sha in excluded:
+                continue
+            try:
+                parents = run(["git", "rev-list", "-1", "--parents", sha], cwd=repo).split()
+            except GitError:
+                return None
+            parent_shas = parents[1:]
+            if len(parent_shas) != 1:
+                # Sibling merge commits carry no unique patch once their
+                # branch commits are replayed. Conflict-only merge resolutions
+                # are not reconstructed.
+                continue
+            _apply_commit(repo, parent_shas[0], sha, env)
+        tree = run(["git", "write-tree"], cwd=repo, env=env)
+        message = f"dev-yard baseline without {ticket_branch} at {tip}"
+        sha = run(
+            ["git", "commit-tree", tree, "-p", origin, "-m", message],
+            cwd=repo,
+            env=_commit_env(),
+        )
+    except GitError:
+        return None
+    finally:
+        if index_path:
+            try:
+                os.unlink(index_path)
+            except OSError:
+                pass
+        if work_path:
+            shutil.rmtree(work_path, ignore_errors=True)
+    try:
+        run(["git", "update-ref", ref, sha], cwd=repo)
+    except GitError:
+        return sha
+    return sha
+
+
+def own_work_log(
+    repo: Path,
+    endpoint: str,
+    ticket_branch: str,
+    ticket_id: str,
+    not_before: str | None = None,
+) -> str:
+    """Oneline log of this ticket's commits reachable from `endpoint`.
+
+    Used when the diff base is a synthetic tree and `base..HEAD` would list
+    every sibling commit since the ticket first branched.
+    """
+    if not endpoint or not ticket_branch or not ticket_id:
+        return ""
+    shas: set[str] = set()
+    for merge_sha, first in _own_merges(repo, endpoint, ticket_branch):
+        if not _in_requirement(repo, merge_sha, not_before):
+            continue
+        shas.add(merge_sha)
+        try:
+            introduced = run(["git", "rev-list", f"{first}..{merge_sha}"], cwd=repo)
+        except GitError:
+            continue
+        shas.update(introduced.split())
+    for sha, _parent in _own_direct_commits(repo, endpoint, ticket_id):
+        if _in_requirement(repo, sha, not_before):
+            shas.add(sha)
+    freeze = ticket_branch[: -(len(ticket_id) + 1)]
+    if freeze and rev_parse(repo, freeze):
+        try:
+            ahead = run(["git", "rev-list", endpoint, "--not", freeze], cwd=repo)
+        except GitError:
+            ahead = ""
+        shas.update(ahead.split())
+    shas.discard("")
+    if not shas:
+        return ""
+    try:
+        return run(
+            ["git", "log", "--oneline", "--no-walk", "--date-order", *sorted(shas)],
+            cwd=repo,
+        )
+    except GitError:
+        return ""
 
 
 def is_ancestor(worktree: Path, ancestor: str, descendant: str) -> bool:
@@ -611,13 +933,26 @@ def _untracked_diff(worktree: Path) -> str:
 
 
 def diff_against(worktree: Path, base: str) -> str:
-    log = run(["git", "log", "--oneline", f"{base}..HEAD"], cwd=worktree)
     # Working tree vs base: committed since base plus unstaged files.
+    # A folded baseline is a side commit, not an ancestor. `base..HEAD` would
+    # then list every commit on HEAD that the side commit does not contain.
+    linear = is_ancestor(worktree, base, "HEAD")
+    log = ""
+    if linear:
+        log = run(["git", "log", "--oneline", f"{base}..HEAD"], cwd=worktree)
     diff = run(["git", "diff", base], cwd=worktree)
     untracked = _untracked_diff(worktree)
-    if not log.strip() and not diff.strip() and not untracked.strip():
+    if linear and not log.strip() and not diff.strip() and not untracked.strip():
         return f"(no changes vs {base})"
-    parts = [f"git log {base}..HEAD:\n{log or '(no commits)'}"]
+    if not linear and not diff.strip() and not untracked.strip():
+        return f"(no changes vs {base})"
+    if linear:
+        parts = [f"git log {base}..HEAD:\n{log or '(no commits)'}"]
+    else:
+        parts = [
+            "git log: (baseline folds this ticket's earlier merges; "
+            "the diff below is the net change)"
+        ]
     if diff.strip():
         parts.append(f"git diff {base}:\n{diff}")
     if untracked.strip():

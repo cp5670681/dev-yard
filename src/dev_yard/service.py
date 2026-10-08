@@ -1584,6 +1584,48 @@ def _previous_head_sha(data: dict, parsed: list, tid: str, repo: str) -> str | N
     return prev
 
 
+def _ticket_branch(data: dict, tid: str, slot: dict) -> str | None:
+    """Freeze child branch name, e.g. `tom/PG-1-T3`. None when unknown."""
+    freeze = data.get("branch")
+    if not isinstance(freeze, str) or not freeze.strip():
+        parent = slot.get("worktree")
+        if parent:
+            freeze = gitops.checked_out_branch(Path(parent))
+    if not isinstance(freeze, str) or not freeze.strip():
+        return None
+    try:
+        return ticket_branch_name(freeze.strip(), tid)
+    except ValueError:
+        return None
+
+
+def _fold_own_merges(
+    data: dict,
+    slot: dict,
+    cwd: Path,
+    base: str | None,
+    branch: str | None,
+    tid: str,
+    repo: str,
+) -> str | None:
+    """Drop this ticket's merged commits out of `base`, keeping sibling work.
+
+    `ticket_start` cuts the next attempt from the current freeze tip. After a
+    previous pass of the same ticket has merged, that tip already contains it,
+    so a plain merge-base diff only shows the latest commit. None means `base`
+    does not contain this ticket (or the fold could not be built).
+    """
+    if not base or not branch:
+        return None
+    # Only fold a base the worktree actually contains. A child that forked
+    # before this ticket merged still diffs against that fork point.
+    if not gitops.is_ancestor(cwd, base, "HEAD") and slot.get("state") != "done":
+        return None
+    return gitops.baseline_without_ticket(
+        cwd, base, branch, tid, not_before=_saved_bases(data).get(repo)
+    )
+
+
 def _ticket_base_sha(
     data: dict, parsed: list, tid: str, repo: str, slot: dict, cwd: Path
 ) -> str | None:
@@ -1596,7 +1638,12 @@ def _ticket_base_sha(
     instead, which is exactly where the child branched off. A finished ticket's
     branch is gone; its merge landed on top of the then-current parent, i.e. the
     first parent of `head_sha`.
+
+    When that point already contains an earlier merge of *this* ticket,
+    fold those merges out so a re-implement still diffs against the code from
+    before the ticket first landed. Sibling commits stay in the baseline.
     """
+    branch = _ticket_branch(data, tid, slot)
     child = slot.get("child_worktree")
     parent = slot.get("worktree")
     if child and parent:
@@ -1607,12 +1654,12 @@ def _ticket_base_sha(
             except gitops.GitError:
                 base = None
             if base:
-                return base
+                return _fold_own_merges(data, slot, cwd, base, branch, tid, repo) or base
     head = slot.get("head_sha")
     if slot.get("state") == "done" and isinstance(head, str) and head:
         base = gitops.first_parent(cwd, head)
         if base:
-            return base
+            return _fold_own_merges(data, slot, cwd, base, branch, tid, repo) or base
     return _previous_head_sha(data, parsed, tid, repo)
 
 
@@ -2645,10 +2692,23 @@ def ticket_diff(root: Path, jira: str, ticket_id: str) -> dict[str, Any]:
     head_sha = slot.get("head_sha")
 
     diff_target = f"{base}..{head_sha}" if (state == "done" and head_sha) else base
-    log_target = f"{base}..{head_sha}" if (state == "done" and head_sha) else f"{base}..HEAD"
-
+    log_endpoint = head_sha if (state == "done" and head_sha) else "HEAD"
+    branch = _ticket_branch(data, ticket_id, slot)
     try:
-        log = gitops.run(["git", "log", "--oneline", log_target], cwd=cwd)
+        if gitops.is_ancestor(cwd, base, log_endpoint):
+            log = gitops.run(
+                ["git", "log", "--oneline", f"{base}..{log_endpoint}"], cwd=cwd
+            )
+        elif branch:
+            log = gitops.own_work_log(
+                cwd,
+                log_endpoint,
+                branch,
+                ticket_id,
+                not_before=_saved_bases(data).get(repo_alias),
+            )
+        else:
+            log = ""
     except gitops.GitError:
         log = ""
 

@@ -770,6 +770,61 @@ def test_sequential_tickets_auto_commit_and_diff_isolation(
     assert not any(f["path"] == "file1.txt" for f in t2_diff["files"])
 
 
+def test_reimplement_diff_keeps_pre_ticket_baseline(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    """A later pass must still diff against the tree from before this ticket.
+
+    ticket_start resets the branch onto the freeze tip, which already contains
+    the previous merge. The diff folds that merge out and still hides siblings.
+    """
+    from dev_yard.service import ticket_diff
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    repo_add(yard, "backend", str(git_src), "main", "be", str(git_src))
+    d, _ = req_open(yard, "AB-101", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: first\n- repo: backend\n- depends_on:\n- parallel: false\n\n"
+        "## T2: second\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    req_freeze(yard, "AB-101")
+
+    class Write:
+        def __init__(self, name: str, body: str) -> None:
+            self.name = name
+            self.body = body
+
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            (cwd / self.name).write_text(self.body)
+            return RunResult(ok=True, summary=self.body)
+
+    implement(yard, "AB-101", ["T1"], runner=Write("file1.txt", "v1\n"))
+    review(yard, "AB-101", ["T1"], runner=DryRunRunner())
+    assert st.load(yard, "AB-101")["tickets"]["T1"]["state"] == "done"
+
+    implement(yard, "AB-101", ["T2"], runner=Write("file2.txt", "from-t2\n"))
+    review(yard, "AB-101", ["T2"], runner=DryRunRunner())
+    assert st.load(yard, "AB-101")["tickets"]["T2"]["state"] == "done"
+
+    implement(yard, "AB-101", ["T1"], force=True, runner=Write("file1.txt", "v2\n"))
+    diff = ticket_diff(yard, "AB-101", "T1")
+    files = {item["path"]: item["status"] for item in diff["files"]}
+    assert files.get("file1.txt") == "A"
+    assert "file2.txt" not in files
+    assert "+v2" in diff["diff"]
+    assert "-v1" not in diff["diff"]
+    assert "from-t2" not in diff["diff"]
+
+    cap = _Capture()
+    review(yard, "AB-101", ["T1"], runner=cap)
+    assert "+v2" in cap.prompts[0]
+    assert "-v1" not in cap.prompts[0]
+    assert "from-t2" not in cap.prompts[0]
+
+
 def test_first_ticket_gets_own_child_worktree(tmp_path: Path, git_src: Path, monkeypatch):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)
