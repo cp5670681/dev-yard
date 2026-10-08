@@ -661,6 +661,7 @@ def verify_case(
     fingerprint: str = "",
     on_log: Callable[[str], None] | None = None,
     executor: Any | None = None,
+    siblings: list[CaseJob] | None = None,
 ) -> VerifyResult:
     """Prove one case's prerequisites: run setup, run `verify.sql`, then cleanup.
 
@@ -729,6 +730,18 @@ def verify_case(
         return finish()
 
     query = text
+    from dev_yard.qa_seeds import (
+        apply_seed_placeholders,
+        has_seed_placeholders,
+        parse_qa_seeds,
+        seed_action_text,
+        seeds_from_deps,
+        write_case_seeds,
+    )
+
+    qa = paths.qa_dir(root, jira)
+    siblings = siblings if siblings is not None else [job]
+    seeds = seeds_from_deps(qa, job, siblings)
     if job.setup:
         try:
             raw_stdout = run_case_script(
@@ -747,13 +760,13 @@ def verify_case(
             result.setup_ok = False
             result.error = f"setup error: {e}"
             return finish()
-        from dev_yard.qa_seeds import apply_seed_placeholders, parse_qa_seeds, write_case_seeds
-
-        seeds = parse_qa_seeds(raw_stdout or "")
+        own = parse_qa_seeds(raw_stdout or "")
         try:
-            write_case_seeds(paths.qa_dir(root, jira), job.id, seeds)
+            write_case_seeds(qa, job.id, own)
         except OSError:
             pass
+        seeds.update(own)
+    if has_seed_placeholders(text):
         query, missing = apply_seed_placeholders(text, seeds)
         if missing:
             result.status = "failed"
@@ -764,15 +777,20 @@ def verify_case(
             )
             _cleanup(root, jira, cfg, job, result, on_log, executor)
             return finish()
+    body = ""
+    if job.path:
+        try:
+            body = Path(job.path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            body = job.body or ""
     else:
-        from dev_yard.qa_seeds import has_seed_placeholders
-
-        if has_seed_placeholders(text):
-            result.status = "failed"
-            result.error = (
-                "verify.sql 使用了 :seed. 占位符，但用例没有 setup 产出 QA_SEED"
-            )
-            return finish()
+        body = job.body or ""
+    _, missing_steps = apply_seed_placeholders(seed_action_text(body), seeds)
+    if missing_steps:
+        result.status = "failed"
+        result.error = "页面步骤缺 QA_SEED " + ", ".join(missing_steps)
+        _cleanup(root, jira, cfg, job, result, on_log, executor)
+        return finish()
 
     # A restricted read-only role (catalog.verify_url / db.verify_url) is used
     # for the verify query so design does not need the write DSN.
@@ -984,6 +1002,30 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _cases_in_dep_order(cases: list[CaseJob]) -> list[CaseJob]:
+    """Ancestors first, stable among unrelated cases. Cycles keep the leftover order."""
+    by_id = {c.id: c for c in cases}
+    waiting = {c.id: [d for d in c.depends_on if d in by_id] for c in cases}
+    ready = [c.id for c in cases if not waiting[c.id]]
+    out: list[CaseJob] = []
+    seen: set[str] = set()
+    while ready:
+        cid = ready.pop(0)
+        if cid in seen:
+            continue
+        seen.add(cid)
+        out.append(by_id[cid])
+        for other in cases:
+            if cid in waiting[other.id]:
+                waiting[other.id].remove(cid)
+                if not waiting[other.id] and other.id not in seen:
+                    ready.append(other.id)
+    for case in cases:
+        if case.id not in seen:
+            out.append(case)
+    return out
+
+
 def verify_cases(
     root: Path,
     jira: str,
@@ -1003,9 +1045,10 @@ def verify_cases(
 
     results: dict[str, VerifyResult] = {}
     executor = None
+    ordered = _cases_in_dep_order(cases)
     with env_lock(root, cfg.active_env):
         try:
-            for job in cases:
+            for job in ordered:
                 if cancel_check is not None and cancel_check():
                     break
                 if job.setup and not job.setup.lower().endswith(".sql") and executor is None:
@@ -1027,6 +1070,7 @@ def verify_cases(
                     fingerprint=fingerprint,
                     on_log=on_log,
                     executor=executor,
+                    siblings=ordered,
                 )
         finally:
             if executor is not None:

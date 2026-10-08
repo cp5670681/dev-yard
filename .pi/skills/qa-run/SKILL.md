@@ -18,7 +18,9 @@ description: >
 
 页面 URL = `context.md` 的 `base_url` + 已知路由。不要猜 host。hash 路由必须带 `#/`（如 `http://host/#/works/...`）。
 
-造数 / 清理由**宿主**按本次 env 的 exec 配方执行。不要再跑 `data.setup` / `data.cleanup`，不要自己 ssh/kubectl，不要对 freeze worktree 跑 `bin/rails runner`。5xx 诊断走宿主只读命令 `dev-yard qa logs <JIRA> --request-id <id>`（见「四态」§7）。
+造数 / 清理由**宿主**按本次 env 的 exec 配方执行。不要再跑 `data.setup` / `data.cleanup`，不要自己 ssh/kubectl，不要对 freeze worktree 跑 `bin/rails runner`。用例正文里的 `<seed.name>` 已经换成 setup 打出的数字，按这个 id 打开页面。5xx 诊断走宿主只读命令 `dev-yard qa logs <JIRA> --request-id <id>`（见「四态」§7）。
+
+`driver: host` 的用例不会派给你。你只跑会开页面的那一条。
 
 若 `context.md` 的 `exec.site` 是 remote：浏览器和脚本都打**已部署**现场，不是 freeze worktree。DB 断言以部署版模型为准。
 

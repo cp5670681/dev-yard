@@ -63,7 +63,7 @@ description: >
 4. 覆盖：每个 D 至少 1 条 + 1 条正常流 + UI **可达**的后端错误分支（无权限/重复/超限）。**每条 `meta.yaml` 的 `changes[].id` 都必须被至少一条 case 的 `covers` 引用**（宿主会把未覆盖的 D 单独提示，不能漏）。控件 `disabled`/`maxlength`/无清空导致点不到的拦截，不要写成用例。**每条含 UI 预期的步骤还必须过「预期可达性审查」（见下节）**。
 5. 步骤用业务语言，不要写 selector、不要写 `bin/rails runner` / usql。按钮/文案必须来自 worktree 代码，不来自想象。
 6. 预期写需求口径。实现与 SPEC 不符时仍写需求值，并备注「需求偏差」。
-7. 跨仓改动拆成多条 case，或 `covers` 只含一个主仓。每条 frontmatter 必有 `repo:`（yard alias）。
+7. 跨仓、跨地址拆成多条 case，每条一个 `repo:`（yard alias），从而一个 origin、一个库。跨地址的业务流程用 `depends_on` 串起来，不要在一条用例里换 host。没有页面、只证库或脚本结果的用例写 `driver: host`（宿主跑 setup、`verify.sql`、cleanup，不开浏览器）。要开页面的用例省略 `driver`（默认 `browser`）。
 8. `depends_on` 仅当共享可变数据或业务先后时写；无依赖省略，以便并发领取。
 9. 需要非默认账号的用例，在 frontmatter 写 `account: <account_key>`；名字必须来自 `context.md` 的 Accounts 列表（宿主跑前校验，未配置会直接报错让你先跑 `dev-yard req accounts <JIRA> --auto`）。不写就用 `account.default`。若需新增账号，按「权限账号与账号发现」写 `qa/accounts-discover.sql`（只读单条 `SELECT`，`username | account_key` 两列）并在 OPEN-QUESTIONS 注明。
 10. 造数优先 `.sql`（host usql 打用例 `data.db` 对应的 catalog，缺省为 `qa.yaml` 该 env 的 `db.default`）。非 SQL 脚本由宿主按本次 env 的 `exec` 配方执行（local = freeze worktree + stdin；remote = 已部署现场 + stdin）。脚本契约：
@@ -72,7 +72,10 @@ description: >
     - 业务参数只读 `ENV['QA_ENV']` / `QA_JIRA` / `QA_CASE_ID` / `QA_SCRIPT_KIND`，**不要读 ARGV**（stdin 模式下 ARGV 是空的）。
     - stdout 是唯一回传通道（seed id 用 `puts`/`print`）。运行时才有的主键打一行
       `QA_SEED key=<name> id=<n>`（可选 `table=<t>`）；宿主写入 `qa/design-verify/seeds.yaml`，
-      `verify.sql` 用 `:seed.<name>`。**不要**在业务库 `CREATE TABLE _qa_exec_seeds`。
+      `verify.sql` 用 `:seed.<name>`，页面的「步骤 / 预期」用 `<seed.name>`（宿主在开浏览器前换成数字）。
+      `depends_on` 的上游已经打出的 key 可以直接用，不必再 setup 一次。备注里引用这个写法不会被当成缺种子。
+      **不要**在业务库 `CREATE TABLE _qa_exec_seeds`。
+    - 路径必须落在 `qa/cases/` 内。多条用例可以共用一个工厂，写相对路径 `../setup.rb`；禁止绝对路径，也禁止爬出 `qa/cases/`。
     - 有稳定业务键（task_name / 标记字符串）时，verify 按该键查即可，不必登记。
     - 幂等，且不假设两次执行落在同一副本。
     - **seed 自证**：见「预期可达性审查 §4」，缺口要在造数阶段暴露，不留到 run。
@@ -156,6 +159,7 @@ repo: <alias>
 covers: [D1]
 depends_on: []
 account: <可选；context.md Accounts 里的账号名，缺省=default>
+driver: browser   # 省略=browser；无页面写 host
 data: { db: research, setup: setup.sql, cleanup: cleanup.sql, verify: verify.sql }
 ---
 
@@ -172,6 +176,6 @@ data: { db: research, setup: setup.sql, cleanup: cleanup.sql, verify: verify.sql
 - DB: <预期含 DB 时>
 ```
 
-无 DB 则去掉 `data` 与 DB 预期。造数脚本与 case 同目录，幂等。**setup 必须覆盖该 case 每条 UI 预期引用的实体，含关联行/展开行/子表格里的独立实体与编辑/保存路径的必填字段；cleanup 对称恢复；seed 要自证（见 §4）。** 有 `setup`/`cleanup` 或 `- DB:` 预期的用例必须有 `data.verify`（见 §2）。不要在步骤里写执行器命令。
+无 DB 则去掉 `data` 与 DB 预期。造数脚本在 `qa/cases/` 内（与 case 同目录，或 `../setup.rb` 这种共用工厂），幂等。**setup 必须覆盖该 case 每条 UI 预期引用的实体，含关联行/展开行/子表格里的独立实体与编辑/保存路径的必填字段；cleanup 对称恢复；seed 要自证（见 §4）。** 有 `setup`/`cleanup` 或 `- DB:` 预期的用例必须有 `data.verify`（见 §2）。页面步骤里运行时主键写 `<seed.name>`，不要写死数字。不要在步骤里写执行器命令。
 
 写完后停。不要跑浏览器、不要改 STATUS.yaml。

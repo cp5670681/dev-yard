@@ -175,6 +175,137 @@ def test_parse_and_apply_qa_seeds():
     )
     assert "id = 42" in sql
     assert missing == ["missing"]
+    page, missing_page = apply_seed_placeholders(
+        "open /items/<seed.task_A>",
+        {"task_a": {"id": "99"}},
+    )
+    assert page == "open /items/99"
+    assert missing_page == []
+
+
+def test_host_case_verdict_substitutes_seed(tmp_path: Path, monkeypatch):
+    from dev_yard.qa_exec import host_case_verdict
+
+    job = _case_job(
+        tmp_path,
+        verify_sql="SELECT id FROM projects WHERE id = :seed.task",
+        body="## 预期\n- DB: projects.id\n",
+    )
+    job.driver = "host"
+    seen: list[str] = []
+
+    def fake_count(cfg, sql, on_log=None, **k):
+        seen.append(sql)
+        return 1
+
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_count", fake_count)
+    got = host_case_verdict(_cfg(tmp_path), job, {"task": {"id": "7"}})
+    assert got["status"] == "passed"
+    assert seen and "7" in seen[0] and ":seed.task" not in seen[0]
+
+
+def test_host_case_verdict_zero_rows_fails(tmp_path: Path, monkeypatch):
+    from dev_yard.qa_exec import host_case_verdict
+
+    job = _case_job(
+        tmp_path,
+        verify_sql="SELECT id FROM projects WHERE id = 1",
+        body="## 预期\n- DB: projects.id\n",
+    )
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_count", lambda *a, **k: 0)
+    got = host_case_verdict(_cfg(tmp_path), job, {})
+    assert got["status"] == "failed"
+    assert got["reason"] == "0 rows"
+
+
+def test_ping_case_sites_faults_only_the_down_site(tmp_path: Path, monkeypatch):
+    from dev_yard.qa_exec import ping_case_sites
+    from dev_yard.script_exec import ExecErrorClass, ExecUnreachable
+
+    cfg = _cfg(tmp_path)
+    left = CaseJob(id="a", title="t", repo="left", setup="setup.rb")
+    right = CaseJob(id="b", title="t", repo="right", setup="setup.rb")
+
+    closed: list[str] = []
+
+    class Ok:
+        use = "local"
+        cross_site_warning = ""
+        name = "ok"
+
+        def ping(self, timeout=None):
+            return None
+
+        def close(self):
+            closed.append(self.name)
+
+    class Bad(Ok):
+        name = "bad"
+
+        def ping(self, timeout=None):
+            raise ExecUnreachable("down", ExecErrorClass.UNREACHABLE)
+
+    monkeypatch.setattr(
+        "dev_yard.script_exec.resolve_executor",
+        lambda env, **kw: Bad() if kw.get("site") == "left" else Ok(),
+    )
+    monkeypatch.setattr(
+        "dev_yard.qa_exec.exec_site_for_job",
+        lambda root, cfg, job: job.repo,
+    )
+    template, faults = ping_case_sites(tmp_path, JIRA, cfg, [left, right])
+    assert set(faults) == {"left"}
+    assert "down" in faults["left"]["message"]
+    assert template is not None and template.name == "ok"
+    assert closed == ["bad"]
+
+
+def test_step_placeholder_uses_dependency_seed(tmp_path: Path, monkeypatch):
+    from dev_yard.qa_seeds import write_case_seeds
+
+    job = _case_job(
+        tmp_path,
+        verify_sql="SELECT id FROM projects WHERE id = :seed.task",
+        body=(
+            "## 前置\n写法示例 `<seed.name>`。\n\n"
+            "## 步骤\n打开 /items/<seed.task>\n\n"
+            "## 预期\n- DB: projects.id\n"
+        ),
+    )
+    job.depends_on = ["case-00"]
+    parent = CaseJob(id="case-00", title="p", repo="backend")
+    write_case_seeds(
+        paths.qa_dir(tmp_path, JIRA), "case-00", {"task": {"id": "15"}}
+    )
+    seen: list[str] = []
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.run_sql_count",
+        lambda cfg, sql, on_log=None, **k: seen.append(sql) or 1,
+    )
+    result = verify_case(
+        tmp_path, JIRA, _cfg(tmp_path), job, siblings=[parent, job]
+    )
+    assert result.status == "passed", result.error
+    assert seen and "15" in seen[0] and ":seed.task" not in seen[0]
+
+
+def test_host_driver_runs_without_a_model_pool():
+    from dev_yard.qa_schedule import run_schedule
+
+    host = CaseJob(id="h", title="t", repo="be", driver="host")
+    browser = CaseJob(id="b", title="t", repo="be")
+    seen: list[tuple[str, str]] = []
+
+    def run(job, slot):
+        seen.append((job.id, slot.id))
+        return {"status": "passed"}
+
+    run_schedule([host, browser], [], run)
+    assert seen == [("h", "")]
+    assert host.state == "passed"
+    assert host.model is None
+    assert browser.state == "blocked"
+    assert browser.reason == "no healthy model pool"
 
 
 def test_verify_case_substitutes_seed_placeholder(tmp_path: Path, monkeypatch):

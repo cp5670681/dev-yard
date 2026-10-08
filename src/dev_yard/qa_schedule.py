@@ -92,6 +92,8 @@ class CaseJob:
     identity: str = ""
     db: str = ""
     defect_class: str = ""
+    # `browser` opens the case origin. `host` runs setup/verify/cleanup only.
+    driver: str = "browser"
     # How many times an environment-class block has been requeued in this run
     # (M2). Bounded by `retry_attempts`; never written to result.yaml.
     attempts: int = 0
@@ -250,12 +252,19 @@ def pick_pool(
     return min(free, key=lambda p: (p.priority, p.id))
 
 
-def pick_case(cases: list[CaseJob], busy_accounts: set[str] | None = None) -> CaseJob | None:
+def pick_case(
+    cases: list[CaseJob],
+    busy_accounts: set[str] | None = None,
+    *,
+    drivers: set[str] | None = None,
+) -> CaseJob | None:
     busy = busy_accounts or set()
     ready = [
         c
         for c in cases
-        if c.state == "ready" and not (busy and c.account and c.account in busy)
+        if c.state == "ready"
+        and (drivers is None or (c.driver or "browser") in drivers)
+        and not (busy and c.account and c.account in busy)
     ]
     if not ready:
         return None
@@ -386,6 +395,54 @@ def run_schedule(
     def pools_open() -> bool:
         return any(p.id not in tripped for p in pools)
 
+    def settle(job: CaseJob, slot: PoolSlot | None, result: dict[str, Any]) -> None:
+        status = normalize_status(result.get("status"))
+        job.state = status
+        job.reason = str(result.get("reason") or "")
+        job.blocked_class = str(result.get("blocked_class") or "")
+        job.defect_class = str(result.get("defect_class") or "")
+        job.failure = (
+            result.get("failure") if isinstance(result.get("failure"), dict) else None
+        )
+        if isinstance(result.get("assertions"), list):
+            job.assertions = result["assertions"]
+        if result.get("model"):
+            job.model = str(result.get("model"))
+        if result.get("provider"):
+            job.provider = str(result.get("provider"))
+        job.ended_at = now_iso()
+        if slot is None:
+            return
+        pid = slot.id
+        if status == "blocked" and _retryable_block(job, retry_attempts):
+            # Environment-class failure on a case the host owns end to
+            # end: requeue it instead of recording a terminal block, so
+            # a transient model/env fault does not end the run (M2).
+            job.attempts += 1
+            job.state = "ready"
+            job.pool = None
+            job.model = None
+            job.provider = None
+            job.reason = ""
+            job.blocked_class = ""
+            job.ended_at = None
+            # Do not count a requeued failure toward the pool breaker.
+            if retry_backoff > 0:
+                time.sleep(retry_backoff)
+        elif status == "blocked":
+            klass = env_block_class(job.reason, job.blocked_class)
+            if klass is None:
+                last_block_class[pid] = None
+            elif last_block_class.get(pid) == klass:
+                tripped[pid] = job.reason or "environment blocked"
+                if on_pool_trip is not None:
+                    on_pool_trip(pid, tripped[pid])
+            else:
+                last_block_class[pid] = klass
+        else:
+            last_block_class[pid] = None
+
+    host_slot = PoolSlot(id="", provider="", model="", concurrency=1, priority=0)
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         inflight: dict[Any, tuple[CaseJob, PoolSlot]] = {}
         inflight_accounts: set[str] = set()
@@ -396,6 +453,34 @@ def run_schedule(
                 # so draining can still take as long as that script.
                 cancelled = True
             refresh_ready(cases)
+            if not cancelled:
+                # Host cases do not take a model slot, and a tripped pool must
+                # not leave their verify.sql unrun.
+                while True:
+                    job = pick_case(
+                        cases,
+                        inflight_accounts if serialize_accounts else None,
+                        drivers={"host"},
+                    )
+                    if job is None:
+                        break
+                    if cancel_check is not None and cancel_check():
+                        cancelled = True
+                        break
+                    job.state = "running"
+                    job.pool = None
+                    job.model = None
+                    job.provider = None
+                    job.started_at = now_iso()
+                    if serialize_accounts and job.account:
+                        inflight_accounts.add(job.account)
+                    ping()
+                    result = _safe_run(run_case, job, host_slot)
+                    if serialize_accounts and job.account:
+                        inflight_accounts.discard(job.account)
+                    settle(job, None, result)
+                    ping()
+                    refresh_ready(cases)
             if pools_open() and not cancelled:
                 while True:
                     if cancel_check is not None and cancel_check():
@@ -403,7 +488,9 @@ def run_schedule(
                         break
                     slot = pick_pool(pools, set(tripped))
                     job = pick_case(
-                        cases, inflight_accounts if serialize_accounts else None
+                        cases,
+                        inflight_accounts if serialize_accounts else None,
+                        drivers={"browser"},
                     )
                     if slot is None or job is None:
                         break
@@ -427,62 +514,32 @@ def run_schedule(
                 slot.inflight = max(0, slot.inflight - 1)
                 if serialize_accounts and job.account:
                     inflight_accounts.discard(job.account)
-                result = fut.result()
-                status = normalize_status(result.get("status"))
-                job.state = status
-                job.reason = str(result.get("reason") or "")
-                job.blocked_class = str(result.get("blocked_class") or "")
-                job.defect_class = str(result.get("defect_class") or "")
-                job.failure = (
-                    result.get("failure")
-                    if isinstance(result.get("failure"), dict)
-                    else None
-                )
-                if isinstance(result.get("assertions"), list):
-                    job.assertions = result["assertions"]
-                if result.get("model"):
-                    job.model = str(result.get("model"))
-                if result.get("provider"):
-                    job.provider = str(result.get("provider"))
-                job.ended_at = now_iso()
-                pid = slot.id
-                if status == "blocked" and _retryable_block(job, retry_attempts):
-                    # Environment-class failure on a case the host owns end to
-                    # end: requeue it instead of recording a terminal block, so
-                    # a transient model/env fault does not end the run (M2).
-                    job.attempts += 1
-                    job.state = "ready"
-                    job.pool = None
-                    job.model = None
-                    job.provider = None
-                    job.reason = ""
-                    job.blocked_class = ""
-                    job.ended_at = None
-                    # Do not count a requeued failure toward the pool breaker.
-                    if retry_backoff > 0:
-                        time.sleep(retry_backoff)
-                elif status == "blocked":
-                    klass = env_block_class(job.reason, job.blocked_class)
-                    if klass is None:
-                        last_block_class[pid] = None
-                    elif last_block_class.get(pid) == klass:
-                        tripped[pid] = job.reason or "environment blocked"
-                        if on_pool_trip is not None:
-                            on_pool_trip(pid, tripped[pid])
-                    else:
-                        last_block_class[pid] = klass
-                else:
-                    last_block_class[pid] = None
+                settle(job, slot, fut.result())
                 ping()
         if not pools_open() and tripped:
             stamp = now_iso()
             breaker_reason = next(iter(tripped.values()))
             for job in cases:
+                if (job.driver or "browser") == "host":
+                    continue
                 if job.state in {"pending", "ready"}:
                     job.state = "blocked"
                     job.reason = breaker_reason
                     job.blocked_class = "env"
                     job.ended_at = stamp
+            refresh_ready(cases)
+            ping()
+        elif not pools and not cancelled:
+            stamp = now_iso()
+            for job in cases:
+                if (job.driver or "browser") == "host":
+                    continue
+                if job.state in {"pending", "ready"}:
+                    job.state = "blocked"
+                    job.reason = "no healthy model pool"
+                    job.blocked_class = "env"
+                    job.ended_at = stamp
+            refresh_ready(cases)
             ping()
         elif cancelled:
             # Pause, not a verdict: leave not-yet-started cases as pending/ready

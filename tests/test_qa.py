@@ -2090,13 +2090,20 @@ def test_req_test_ping_failure_blocks_setup_only(
         "QA-EF",
         "case-01.md",
         "---\nid: case-01\ntitle: t\nrepo: backend\n"
-        "data: { setup: setup.sql }\n---\n\nbody\n",
+        "data: { setup: setup.rb }\n---\n\nbody\n",
     )
     _write_case(
         yard,
         "QA-EF",
         "case-02.md",
         "---\nid: case-02\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+    _write_case(
+        yard,
+        "QA-EF",
+        "case-03.md",
+        "---\nid: case-03\ntitle: t\nrepo: backend\n"
+        "data: { setup: setup.sql }\n---\n\nbody\n",
     )
 
     class Boom:
@@ -2130,9 +2137,9 @@ def test_req_test_ping_failure_blocks_setup_only(
         ingest=False,
         case_runner=run,
     )
-    assert seen == ["case-02"]
+    assert seen == ["case-02", "case-03"]
     assert result["summary"]["blocked"] == 1
-    assert result["summary"]["passed"] == 1
+    assert result["summary"]["passed"] == 2
     evidence = yard / "reqs" / "QA-EF" / "qa" / "evidence"
     run_dir = next(p for p in evidence.iterdir() if p.is_dir())
     doc = yaml.safe_load((run_dir / "result.yaml").read_text(encoding="utf-8"))
@@ -4600,6 +4607,39 @@ def test_pool_preflight_drops_bad_pool(tmp_path: Path, git_src: Path, monkeypatc
     assert result["summary"]["passed"] == 1
     assert used == ["a"]
     assert qa_st.load(yard, "QA-PP")["pools"]["b"]["state"] == "quarantined"
+
+
+def test_host_case_runs_when_every_pool_fails(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-PPH")
+    _write_case(
+        yard,
+        "QA-PPH",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\ndriver: host\n---\n\nbody\n",
+    )
+    used: list[str] = []
+
+    def case_runner(job, pool):
+        used.append(pool.id)
+        return {"status": "passed", "repo": "backend"}
+
+    result = req_test(
+        yard,
+        "QA-PPH",
+        print_mode=True,
+        run_only=True,
+        unsafe_skip_review=True,
+        ingest=False,
+        case_runner=case_runner,
+        pool_probe=lambda p: (False, "nope"),
+    )
+    assert result["summary"]["passed"] == 1
+    assert used == [""]
+    assert result["summary"].get("failed", 0) == 0
 
 
 def test_pool_preflight_all_failed_rejects(tmp_path: Path, git_src: Path, monkeypatch):

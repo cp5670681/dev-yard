@@ -248,27 +248,214 @@ def replay_path(job: CaseJob) -> Path | None:
     return path if path.is_file() else None
 
 
-def case_script_path(job: CaseJob, name: str, kind: str) -> Path:
-    """Resolve a case's setup/cleanup/verify file to a path inside its case dir.
+def cases_root_for(case_file: Path) -> Path:
+    """Sandbox for setup/cleanup/verify: the nearest `cases` directory.
 
-    Frontmatter is AI-authored; a bare filename only, and it must resolve inside
-    the case dir (no absolute path, no `../` escape).
+    A shared factory lives next to the case dirs (`qa/cases/setup.rb`) and is
+    referenced as `../setup.rb`. Paths that climb out of `cases/` are rejected.
+    A case file that is not under a `cases` directory is sandboxed to its own dir.
+    """
+    cur = case_file.parent
+    for parent in (cur, *cur.parents):
+        if parent.name == "cases":
+            return parent
+    return cur
+
+
+def case_script_path(job: CaseJob, name: str, kind: str) -> Path:
+    """Resolve a case's setup/cleanup/verify file inside the cases directory.
+
+    Frontmatter is AI-authored. Absolute paths and anything that resolves
+    outside `qa/cases/` are rejected. A relative path such as `../setup.rb`
+    is allowed when it stays inside that directory, so several cases can share
+    one factory.
     """
     if not job.path:
         raise TestRejected(f"{job.id} has {kind} {name!r} but no case path")
-    if Path(name).name != name or name in {".", ".."}:
+    raw = Path(name)
+    if raw.is_absolute() or name in {".", ".."}:
         raise TestRejected(
-            f"{job.id} {kind} {name!r} must be a bare filename inside the case dir"
+            f"{job.id} {kind} {name!r} must be a relative path inside the cases directory"
         )
-    case_dir = Path(job.path).parent
-    script = case_dir / name
+    case_file = Path(job.path)
+    root = cases_root_for(case_file)
+    script = (case_file.parent / raw).resolve()
     try:
-        script.resolve().relative_to(case_dir.resolve())
+        script.relative_to(root.resolve())
     except ValueError as e:
-        raise TestRejected(f"{job.id} {kind} escapes the case dir: {name!r}") from e
+        raise TestRejected(
+            f"{job.id} {kind} {name!r} must stay inside the cases directory"
+        ) from e
     if not script.is_file():
         raise TestRejected(f"{job.id} {kind} file missing: {script}")
     return script
+
+
+def host_case_verdict(
+    cfg: QaConfig,
+    job: CaseJob,
+    seeds: dict[str, dict[str, str]],
+    *,
+    on_log: Any | None = None,
+) -> dict[str, Any]:
+    """Prove a `driver: host` case with verify.sql. No browser.
+
+    The same contract as design-time verify: one read-only query, at least one
+    row passes. Seed placeholders are substituted from this case's setup stdout.
+    """
+    from dev_yard.qa_seeds import apply_seed_placeholders
+
+    if not job.verify:
+        return {
+            "status": "failed",
+            "reason": "driver host 需要 data.verify",
+            "defect_class": "case",
+            "repo": job.repo,
+            "assertions": [],
+        }
+    try:
+        script = case_script_path(job, job.verify, "verify")
+        text = script.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError, TestRejected) as e:
+        return {
+            "status": "blocked",
+            "blocked_class": "case-defect",
+            "reason": f"case-defect: {e}",
+            "repo": job.repo,
+            "assertions": [],
+        }
+    if script.suffix.lower() != ".sql":
+        return {
+            "status": "failed",
+            "reason": "driver host 的 data.verify 必须是 .sql",
+            "defect_class": "case",
+            "repo": job.repo,
+            "assertions": [],
+        }
+    query, missing = apply_seed_placeholders(text, seeds)
+    if missing:
+        return {
+            "status": "blocked",
+            "blocked_class": "case-defect",
+            "reason": "case-defect: verify.sql 缺 QA_SEED " + ", ".join(missing),
+            "repo": job.repo,
+            "assertions": [],
+        }
+    try:
+        assert_readonly_sql(query)
+        rows = run_sql_count(
+            cfg, query, on_log=on_log, catalog=job.db or None, verify=True
+        )
+    except TestRejected as e:
+        from dev_yard.qa_verify import verify_env_error
+
+        if verify_env_error(e):
+            return {
+                "status": "blocked",
+                "blocked_class": "env",
+                "reason": f"env fault: {e}",
+                "repo": job.repo,
+                "assertions": [],
+            }
+        return {
+            "status": "failed",
+            "reason": f"verify query failed: {e}",
+            "defect_class": "case",
+            "repo": job.repo,
+            "assertions": [],
+        }
+    status = "passed" if rows >= 1 else "failed"
+    return {
+        "status": status,
+        "reason": "" if status == "passed" else "0 rows",
+        "repo": job.repo,
+        "assertions": [
+            {
+                "type": "db",
+                "expected": ">=1",
+                "actual": str(rows),
+                "status": status,
+                "sql": query.strip(),
+            }
+        ],
+    }
+
+
+def ping_case_sites(
+    root: Path,
+    jira: str,
+    cfg: QaConfig,
+    cases: list[CaseJob],
+) -> tuple[Any, dict[str, dict[str, str]]]:
+    """Ping every exec site this run's cases use.
+
+    Returns `(template_executor, faults_by_site)`. The template stays open so
+    later setup calls can rebind it per case. Other site executors are closed
+    after the ping. A fault is keyed by the site name (empty string = default).
+    """
+    from dev_yard.exec_cfg import origin_for_site
+    from dev_yard.script_exec import ExecUnreachable, resolve_executor
+
+    ordered: list[str] = []
+    for job in cases:
+        site = exec_site_for_job(root, cfg, job) or ""
+        if site not in ordered:
+            ordered.append(site)
+    if not ordered:
+        ordered.append("")
+    template = None
+    faults: dict[str, dict[str, str]] = {}
+    for site in ordered:
+        origin = origin_for_site(cfg.env, site or None) or cfg.env.base_url
+        wt = None
+        for job in cases:
+            if (exec_site_for_job(root, cfg, job) or "") != site or not job.repo:
+                continue
+            cand = paths.req_worktree(root, jira, job.repo)
+            if cand.is_dir():
+                wt = cand
+                break
+        try:
+            ex = resolve_executor(
+                cfg.env,
+                base_url=origin,
+                worktree=wt,
+                root=root,
+                site=site or None,
+            )
+        except (ExecUnreachable, TestRejected) as e:
+            faults[site] = {
+                "class": getattr(e, "error_class", None) or "unreachable",
+                "message": str(e),
+            }
+            continue
+        try:
+            ex.ping()
+        except (ExecUnreachable, TestRejected) as e:
+            faults[site] = {
+                "class": getattr(e, "error_class", None) or "unreachable",
+                "message": str(e),
+            }
+            ex.close()
+            continue
+        # Only a site that answered ping may be copied onto later cases.
+        # A failed socket must not become the shared template.
+        if template is None:
+            template = ex
+        else:
+            ex.close()
+    return template, faults
+
+
+def case_needs_exec_site(job: CaseJob) -> bool:
+    """True when setup or cleanup is a script the exec site must run.
+
+    `.sql` always runs on the host via usql, so a dead runner does not block it.
+    """
+    for name in (job.setup, job.cleanup):
+        if name and Path(name).suffix.lower() != ".sql":
+            return True
+    return False
 
 
 def exec_site_for_job(root: Path, cfg: QaConfig, job: CaseJob) -> str | None:
@@ -534,13 +721,17 @@ def recheck_db_assertions(
     job: CaseJob,
     result: dict[str, Any],
     on_log: Any | None = None,
+    seeds: dict[str, dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Re-run the `db` assertions that carry a `sql` field; report mismatches.
 
     A worker self-attests `passed`; this is the host's independent check. Only
     assertions that declare a machine-runnable read-only `sql` can be re-checked
     — ones without it are left to the human and recorded as unverified.
+    `:seed.key` / `<seed.key>` left in the worker SQL are filled from setup stdout.
     """
+    from dev_yard.qa_seeds import apply_seed_placeholders
+
     problems: list[dict[str, Any]] = []
     for item in result.get("assertions") or []:
         if not isinstance(item, dict) or str(item.get("type")) != "db":
@@ -548,6 +739,20 @@ def recheck_db_assertions(
         sql = str(item.get("sql") or "").strip()
         if not sql:
             continue
+        if seeds:
+            sql, missing = apply_seed_placeholders(sql, seeds)
+            if missing:
+                problems.append(
+                    {
+                        "case": job.id,
+                        "expected": item.get("expected"),
+                        "actual": "recheck error: missing QA_SEED " + ", ".join(missing),
+                        "sql": sql,
+                        "kind": "error",
+                    }
+                )
+                continue
+            item["sql"] = sql
         expected = item.get("expected")
         try:
             got = run_sql_value(cfg, sql, on_log=on_log, catalog=job.db or None)

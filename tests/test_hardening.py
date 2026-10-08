@@ -65,7 +65,7 @@ def test_run_case_script_rejects_traversal(tmp_path: Path):
         setup="../evil.sh",
         path=str(case_dir / "case-c1.md"),
     )
-    with pytest.raises(TestRejected, match="bare filename"):
+    with pytest.raises(TestRejected, match="cases directory"):
         run_case_script(tmp_path, "AB-1", None, job, "setup")
 
 
@@ -83,8 +83,43 @@ def test_run_case_script_rejects_absolute_path(tmp_path: Path):
         setup=str(evil),
         path=str(case_dir / "case-c1.md"),
     )
-    with pytest.raises(TestRejected, match="bare filename"):
+    with pytest.raises(TestRejected, match="cases directory"):
         run_case_script(tmp_path, "AB-1", None, job, "setup")
+
+
+def test_discover_driver_host(tmp_path: Path):
+    from dev_yard.qa import discover_cases
+
+    qa = tmp_path / "qa"
+    case_dir = qa / "cases" / "case-01"
+    case_dir.mkdir(parents=True)
+    (case_dir / "case-01.md").write_text(
+        "---\nid: case-01\ntitle: t\nrepo: be\ndriver: host\n"
+        "data: { verify: verify.sql }\n---\n\n",
+        encoding="utf-8",
+    )
+    jobs = discover_cases(qa)
+    assert jobs[0].driver == "host"
+    assert jobs[0].verify == "verify.sql"
+
+
+def test_shared_setup_stays_inside_cases_dir(tmp_path: Path):
+    from dev_yard.qa_exec import case_script_path
+
+    cases = tmp_path / "qa" / "cases"
+    case_dir = cases / "case-01"
+    case_dir.mkdir(parents=True)
+    shared = cases / "setup.rb"
+    shared.write_text("puts 1\n", encoding="utf-8")
+    (case_dir / "case.md").write_text("---\nid: case-01\n---\n", encoding="utf-8")
+    job = CaseJob(
+        id="case-01",
+        title="t",
+        repo="be",
+        setup="../setup.rb",
+        path=str(case_dir / "case.md"),
+    )
+    assert case_script_path(job, job.setup, "setup") == shared.resolve()
 
 
 def test_sql_script_always_runs_on_host(tmp_path: Path, monkeypatch):

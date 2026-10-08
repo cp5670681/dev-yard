@@ -32,9 +32,12 @@ from dev_yard.qa_exec import (
     case_script_path,
     diagnose_pi_exit,
     ensure_auth,
+    case_needs_exec_site,
     exec_site_for_job,
+    host_case_verdict,
     normalize_case_result,
     origin_for_job,
+    ping_case_sites,
     recheck_db_assertions,
     replay_path,
     run_case_script,
@@ -167,6 +170,11 @@ def write_context_md(root: Path, jira: str, cfg: QaConfig) -> Path:
         "This run uses the env above. Each case opens **that case's site origin** "
         "(repo → repos.yaml exec → exec.sites.base_url); do not paste another "
         "site's path onto the env default host.",
+        "One case, one origin. A flow that crosses origins is several cases with "
+        "`depends_on`. `driver: host` does not open a browser: the host runs "
+        "setup, verify.sql, and cleanup on that case's catalog and exec site. "
+        "Setup paths stay inside `qa/cases/` and may be shared (`../setup.rb`). "
+        "Page steps write `<seed.name>`; verify.sql writes `:seed.<name>`.",
     ]
     site = getattr(env.exec_cfg, "site", None) or "local"
     if site == "remote":
@@ -352,6 +360,15 @@ def discover_cases(qa: Path) -> list[CaseJob]:
             )
         writes_raw = data.get("writes") or []
         writes = [str(w).strip() for w in writes_raw if str(w).strip()]
+        raw_driver = str(meta.get("driver") or data.get("driver") or "browser").strip().lower()
+        if raw_driver in {"", "browser"}:
+            driver = "browser"
+        elif raw_driver == "host":
+            driver = "host"
+        else:
+            raise TestRejected(
+                f"case {cid} driver {raw_driver!r} must be browser or host"
+            )
         out.append(
             CaseJob(
                 id=cid,
@@ -370,6 +387,7 @@ def discover_cases(qa: Path) -> list[CaseJob]:
                 writes=writes,
                 identity=str(data.get("identity") or "").strip(),
                 db=str(data.get("db") or "").strip(),
+                driver=driver,
             )
         )
     return out
@@ -1121,7 +1139,12 @@ def _duties(kind: str, jira: str) -> str:
             "treat app constants as table fields. Do not invent primary keys in "
             "verify.sql without a setup that inserts those rows. "
             "Generated ids: setup prints `QA_SEED key=<name> id=<n>`; "
-            "host writes qa/design-verify/seeds.yaml; verify.sql uses `:seed.<name>`. "
+            "host writes qa/design-verify/seeds.yaml; verify.sql uses `:seed.<name>`; "
+            "page steps use `<seed.name>` and the host substitutes before the browser. "
+            "A setup path may be relative inside qa/cases/ (for example `../setup.rb`) "
+            "so several cases share one factory. "
+            "A case with no page sets `driver: host`: the host runs setup, verify.sql, "
+            "and cleanup and does not open a browser. "
             "Do not CREATE TABLE _qa_* in the business catalog.\n"
             "seed must hard self-prove: every entity/field/link a case asserts must "
             "be created by setup (or verified read-only), and setup must exit(1) "
@@ -1147,6 +1170,9 @@ def _duties(kind: str, jira: str) -> str:
         "inspect the page dynamically with snapshot, fill credentials, submit, and save state.\n"
         "Host already ran data.setup if the case has one; do not re-run it. "
         "Host will run cleanup after you finish.\n"
+        "Generated ids in the case text are already numbers. "
+        "`<seed.name>` was replaced before this prompt; open those concrete ids.\n"
+        "Cases with `driver: host` are not sent to you.\n"
         "Blocked reasons must be classified: data gap -> `case-defect:`; a 5xx must be "
         "checked via `dev-yard qa logs <JIRA> --request-id <id>` (host read-only log "
         "lookup; do not ssh/kubectl yourself) before deciding env vs product; "
@@ -1294,7 +1320,15 @@ def _design_prompt(
     return session_prompt_for(spec, root, jira, extra=extra)
 
 
-def _run_prompt(root: Path, jira: str, cfg: QaConfig, job: CaseJob, run_id: str) -> str:
+def _run_prompt(
+    root: Path,
+    jira: str,
+    cfg: QaConfig,
+    job: CaseJob,
+    run_id: str,
+    *,
+    case_text: str | None = None,
+) -> str:
     spec = load_registry(root)["qa-run"]
     qa = paths.qa_dir(root, jira)
     evidence = qa / "evidence" / run_id / job.id
@@ -1365,7 +1399,11 @@ def _run_prompt(root: Path, jira: str, cfg: QaConfig, job: CaseJob, run_id: str)
         "this case blocked (unreadable case result.yaml).\n"
         + "This invocation runs only the case below.\n\n"
         + f"# Case {job.id}\n\n"
-        + (Path(job.path).read_text(encoding="utf-8") if job.path else job.body)
+        + (
+            case_text
+            if case_text is not None
+            else (Path(job.path).read_text(encoding="utf-8") if job.path else job.body)
+        )
     )
     return session_prompt_for(spec, root, jira, extra=extra)
 
@@ -2983,8 +3021,17 @@ def _req_test(
                 if on_log is not None:
                     on_log(f"模型池预检失败，隔离 {p.id}：{reason}\n")
         if not kept:
-            raise TestRejected("所有模型池预检失败；修好 provider/额度后重跑")
-        pools = kept
+            host_left = any(
+                (c.driver or "browser") == "host" and c.state not in TERMINAL
+                for c in cases
+            )
+            if not host_left:
+                raise TestRejected("所有模型池预检失败；修好 provider/额度后重跑")
+            pools = []
+            if on_log is not None:
+                on_log("模型池预检全部失败，本轮只执行 driver: host\n")
+        else:
+            pools = kept
     qa_st.record_pools(root, jira, {p.id: "healthy" for p in pools})
     if on_log is not None:
         on_log("本轮使用启动时的 worker 配置\n")
@@ -2993,40 +3040,13 @@ def _req_test(
     env_fault: dict[str, Any] | None = None
     fuse_class: str | None = None
     fuse_streak = 0
-    from dev_yard.script_exec import (
-        FUSE_CLASSES,
-        ExecUnreachable,
-        resolve_executor,
-    )
+    from dev_yard.script_exec import FUSE_CLASSES
 
-    first_wt = None
-    for job in cases:
-        if job.repo:
-            cand = paths.req_worktree(root, jira, job.repo)
-            if cand.is_dir():
-                first_wt = cand
-                break
-    first_origin = (
-        origin_for_job(root, cfg, next((c for c in cases if c.repo), cases[0]))
-        if cases
-        else cfg.env.base_url
-    )
-    first_site = (
-        exec_site_for_job(root, cfg, next((c for c in cases if c.repo), cases[0]))
-        if cases
-        else None
-    )
-    executor = resolve_executor(
-        cfg.env,
-        base_url=first_origin or cfg.env.base_url,
-        worktree=first_wt,
-        root=root,
-        site=first_site,
-    )
-    if executor.cross_site_warning and on_log is not None:
+    executor, site_faults = ping_case_sites(root, jira, cfg, cases)
+    if executor is not None and executor.cross_site_warning and on_log is not None:
         on_log(executor.cross_site_warning + "\n")
     serial = not bool(getattr(cfg.env.exec_cfg, "parallel", False))
-    hold_setup = serial or executor.use == "jms-k8s"
+    hold_setup = serial or (executor is not None and executor.use == "jms-k8s")
 
     def ping() -> None:
         _write_progress(
@@ -3040,31 +3060,37 @@ def _req_test(
             env_fault=env_fault,
         )
 
-    try:
-        executor.ping()
-    except (ExecUnreachable, TestRejected) as e:
+    if site_faults:
+        first_fault = next(iter(site_faults.values()))
         env_fault = {
-            "class": getattr(e, "error_class", None) or "unreachable",
-            "message": str(e),
+            "class": first_fault.get("class") or "unreachable",
+            "message": "; ".join(
+                f"{site or '(default)'}: {fault.get('message')}"
+                for site, fault in site_faults.items()
+            ),
         }
         stamp = now_iso()
         for job in cases:
-            if job.setup and job.state not in TERMINAL:
+            fault = site_faults.get(exec_site_for_job(root, cfg, job) or "")
+            if fault and case_needs_exec_site(job) and job.state not in TERMINAL:
                 job.state = "blocked"
-                job.reason = f"env fault: {e}"
+                job.reason = f"env fault: {fault.get('message')}"
                 job.blocked_class = "env"
                 job.ended_at = stamp
         if on_log is not None:
-            on_log(f"env fault: {e}\n")
+            on_log(f"env fault: {env_fault['message']}\n")
 
     ping()
 
+    run_wide_fault = False
+
     def _mark_env_fault(message: str, cls: str) -> None:
-        nonlocal env_fault
+        nonlocal env_fault, run_wide_fault
+        run_wide_fault = True
         env_fault = {"class": cls, "message": message}
         stamp = now_iso()
         for c in cases:
-            if c.setup and c.state not in TERMINAL:
+            if case_needs_exec_site(c) and c.state not in TERMINAL:
                 c.state = "blocked"
                 c.reason = f"env fault: {message}"
                 c.blocked_class = "env"
@@ -3072,18 +3098,15 @@ def _req_test(
 
     def default_case_runner(job: CaseJob, slot: PoolSlot) -> dict[str, Any]:
         nonlocal fuse_streak, fuse_class
-        spec = load_registry(root)["qa-run"]
-        prompt = _run_prompt(root, jira, cfg, job, run_id)
-        argv = pi_argv(
-            root=root,
-            bundle="qa-run",
-            prompt=None,
-            print_mode=True,
-            spec=spec,
-            provider=slot.provider,
-            model=slot.model,
-            attach=attachments.list_images(root, jira),
+        from dev_yard.qa_seeds import (
+            apply_seed_placeholders,
+            parse_qa_seeds,
+            seed_action_text,
+            seeds_from_deps,
+            write_case_seeds,
         )
+
+        spec = load_registry(root)["qa-run"]
         case_dir = run_dir / job.id
         case_dir.mkdir(parents=True, exist_ok=True)
         (case_dir / "screenshots").mkdir(exist_ok=True)
@@ -3094,11 +3117,22 @@ def _req_test(
                 on_log(line if line.endswith("\n") else line + "\n")
 
         setup_failed: str | None = None
+        seeds: dict[str, dict[str, str]] = {}
         if job.setup:
             ctx = script_lock if hold_setup else _nullcontext()
             with ctx:
-                if env_fault is not None:
-                    setup_failed = f"env fault: {env_fault.get('message')}"
+                own_site = exec_site_for_job(root, cfg, job) or ""
+                site_down = case_needs_exec_site(job) and (
+                    (run_wide_fault and env_fault is not None)
+                    or own_site in site_faults
+                )
+                if site_down:
+                    message = (
+                        env_fault.get("message")
+                        if run_wide_fault and env_fault is not None
+                        else site_faults.get(own_site, {}).get("message")
+                    )
+                    setup_failed = f"env fault: {message}"
                 else:
                     try:
                         out = run_case_script(
@@ -3110,6 +3144,15 @@ def _req_test(
                             on_log=on_log,
                             executor=executor,
                         )
+                        own_seeds = parse_qa_seeds(out or "")
+                        try:
+                            write_case_seeds(
+                                paths.qa_dir(root, jira), job.id, own_seeds
+                            )
+                        except OSError:
+                            pass
+                        seeds = seeds_from_deps(paths.qa_dir(root, jira), job, cases)
+                        seeds.update(own_seeds)
                         if out and on_log is not None:
                             on_log(out[-500:])
                         fuse_streak = 0
@@ -3117,7 +3160,7 @@ def _req_test(
                     except TestRejected as e:
                         setup_failed = f"setup failed: {e}"
                         cls = str(getattr(e, "error_class", None) or "")
-                        if cls == "auth" and executor.use == "jms-k8s":
+                        if cls == "auth" and executor is not None and executor.use == "jms-k8s":
                             _mark_env_fault(str(e), cls)
                         elif cls in FUSE_CLASSES:
                             if cls == fuse_class:
@@ -3137,88 +3180,142 @@ def _req_test(
                 "model": slot.model,
                 "provider": slot.provider,
             }
+        elif (job.driver or "browser") == "host":
+            if not seeds:
+                seeds = seeds_from_deps(paths.qa_dir(root, jira), job, cases)
+            result_path.unlink(missing_ok=True)
+            got = host_case_verdict(cfg, job, seeds, on_log=on_log)
+            result_path.write_text(
+                yaml.safe_dump(
+                    {"case": job.id, "title": job.title, **got},
+                    sort_keys=False,
+                    allow_unicode=True,
+                ),
+                encoding="utf-8",
+            )
         else:
             # A resumed case dir may hold the interrupted attempt's result;
             # never let a stale file stand in for this run's outcome.
             result_path.unlink(missing_ok=True)
-            _raise_if_cancelled(cancel_check, f"qa-run {job.id}")
-            auth_env = _case_auth_env(root, cfg, job)
-            code, raw = run_pi_print_tracked(
-                argv,
-                root,
-                prompt,
-                on_line=_echo,
-                on_spawn=on_spawn,
-                on_reap=on_reap,
-                **({"env": auth_env} if auth_env else {}),
+            if not seeds:
+                seeds = seeds_from_deps(paths.qa_dir(root, jira), job, cases)
+            raw_case = (
+                Path(job.path).read_text(encoding="utf-8") if job.path else job.body
             )
-            _raise_if_cancelled(cancel_check, f"qa-run {job.id}")
-            if code != 0 and not result_path.is_file():
-                reason, detail = diagnose_pi_exit(code, raw)
-                if detail and on_log is not None:
-                    on_log(f"pi exit {code} ({job.id}): {detail}\n")
+            rendered, _known = apply_seed_placeholders(raw_case, seeds)
+            _scoped, missing_seeds = apply_seed_placeholders(
+                seed_action_text(raw_case), seeds
+            )
+            if missing_seeds:
                 got = {
                     "status": "blocked",
-                    "reason": reason,
-                    "blocked_class": "env",
+                    "reason": "case-defect: 页面步骤缺 QA_SEED "
+                    + ", ".join(missing_seeds),
+                    "blocked_class": "case-defect",
                     "repo": job.repo,
                     "model": slot.model,
                     "provider": slot.provider,
                 }
+                result_path.write_text(
+                    yaml.safe_dump(
+                        {"case": job.id, "title": job.title, **got},
+                        sort_keys=False,
+                        allow_unicode=True,
+                    ),
+                    encoding="utf-8",
+                )
             else:
-                got = _read_case_result(result_path, job, slot)
-                if not got.get("model"):
-                    got["model"] = slot.model
-                if not got.get("provider"):
-                    got["provider"] = slot.provider
-                if normalize_status(got.get("status")) == "passed":
-                    problems = recheck_db_assertions(cfg, job, got, on_log=on_log)
-                    mismatches = [p for p in problems if p.get("kind") == "mismatch"]
-                    unverified = [p for p in problems if p.get("kind") == "unverified"]
-                    if mismatches:
-                        detail = "; ".join(
-                            f"expected={p.get('expected')!r} actual={p.get('actual')!r}"
-                            for p in mismatches
+                prompt = _run_prompt(root, jira, cfg, job, run_id, case_text=rendered)
+                argv = pi_argv(
+                    root=root,
+                    bundle="qa-run",
+                    prompt=None,
+                    print_mode=True,
+                    spec=spec,
+                    provider=slot.provider,
+                    model=slot.model,
+                    attach=attachments.list_images(root, jira),
+                )
+                _raise_if_cancelled(cancel_check, f"qa-run {job.id}")
+                auth_env = _case_auth_env(root, cfg, job)
+                code, raw = run_pi_print_tracked(
+                    argv,
+                    root,
+                    prompt,
+                    on_line=_echo,
+                    on_spawn=on_spawn,
+                    on_reap=on_reap,
+                    **({"env": auth_env} if auth_env else {}),
+                )
+                _raise_if_cancelled(cancel_check, f"qa-run {job.id}")
+                if code != 0 and not result_path.is_file():
+                    reason, detail = diagnose_pi_exit(code, raw)
+                    if detail and on_log is not None:
+                        on_log(f"pi exit {code} ({job.id}): {detail}\n")
+                    got = {
+                        "status": "blocked",
+                        "reason": reason,
+                        "blocked_class": "env",
+                        "repo": job.repo,
+                        "model": slot.model,
+                        "provider": slot.provider,
+                    }
+                else:
+                    got = _read_case_result(result_path, job, slot)
+                    if not got.get("model"):
+                        got["model"] = slot.model
+                    if not got.get("provider"):
+                        got["provider"] = slot.provider
+                    if normalize_status(got.get("status")) == "passed":
+                        problems = recheck_db_assertions(
+                            cfg, job, got, on_log=on_log, seeds=seeds
                         )
-                        got["status"] = "failed"
-                        got["reason"] = f"host-recheck-mismatch: {detail}"
-                        if not got.get("defect_class"):
-                            got["defect_class"] = "unclassified"
-                        bad_sql = {
-                            str(p.get("sql") or "").strip()
-                            for p in mismatches
-                            if str(p.get("sql") or "").strip()
-                        }
-                        for item in got.get("assertions") or []:
-                            if (
-                                isinstance(item, dict)
-                                and str(item.get("sql") or "").strip() in bad_sql
-                            ):
-                                item["status"] = "failed"
-                    if unverified:
-                        soft_sql = {
-                            str(p.get("sql") or "").strip()
-                            for p in unverified
-                            if str(p.get("sql") or "").strip()
-                        }
-                        for item in got.get("assertions") or []:
-                            if (
-                                isinstance(item, dict)
-                                and str(item.get("sql") or "").strip() in soft_sql
-                            ):
-                                item["host_recheck"] = "unverified"
-                        if on_log is not None:
-                            on_log(
-                                f"db 断言未复核（{job.id}）：expected 与 worker actual "
-                                "都是句子，保留 worker 结论\n"
+                        mismatches = [p for p in problems if p.get("kind") == "mismatch"]
+                        unverified = [p for p in problems if p.get("kind") == "unverified"]
+                        if mismatches:
+                            detail = "; ".join(
+                                f"expected={p.get('expected')!r} actual={p.get('actual')!r}"
+                                for p in mismatches
                             )
-                    for p in problems:
-                        if p.get("kind") == "error" and on_log is not None:
-                            on_log(
-                                f"db 断言复核未执行（{job.id}）：{p.get('actual')}\n"
-                            )
-                if raw and on_log is not None and code != 0:
-                    on_log(raw[-500:])
+                            got["status"] = "failed"
+                            got["reason"] = f"host-recheck-mismatch: {detail}"
+                            if not got.get("defect_class"):
+                                got["defect_class"] = "unclassified"
+                            bad_sql = {
+                                str(p.get("sql") or "").strip()
+                                for p in mismatches
+                                if str(p.get("sql") or "").strip()
+                            }
+                            for item in got.get("assertions") or []:
+                                if (
+                                    isinstance(item, dict)
+                                    and str(item.get("sql") or "").strip() in bad_sql
+                                ):
+                                    item["status"] = "failed"
+                        if unverified:
+                            soft_sql = {
+                                str(p.get("sql") or "").strip()
+                                for p in unverified
+                                if str(p.get("sql") or "").strip()
+                            }
+                            for item in got.get("assertions") or []:
+                                if (
+                                    isinstance(item, dict)
+                                    and str(item.get("sql") or "").strip() in soft_sql
+                                ):
+                                    item["host_recheck"] = "unverified"
+                            if on_log is not None:
+                                on_log(
+                                    f"db 断言未复核（{job.id}）：expected 与 worker actual "
+                                    "都是句子，保留 worker 结论\n"
+                                )
+                        for p in problems:
+                            if p.get("kind") == "error" and on_log is not None:
+                                on_log(
+                                    f"db 断言复核未执行（{job.id}）：{p.get('actual')}\n"
+                                )
+                    if raw and on_log is not None and code != 0:
+                        on_log(raw[-500:])
         if job.cleanup:
             try:
                 ctx = script_lock if serial else _nullcontext()
@@ -3276,7 +3373,8 @@ def _req_test(
                 ),
             )
     finally:
-        executor.close()
+        if executor is not None:
+            executor.close()
 
     # Paused mid-run: record the lifecycle status, then bail before writing
     # result.yaml / ingesting, so the partial run is left resumable instead of
