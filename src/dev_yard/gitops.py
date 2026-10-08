@@ -372,28 +372,16 @@ def _oldest_ancestor(repo: Path, candidates: list[str]) -> str | None:
     return origin
 
 
-def _patch_paths(diff: bytes) -> list[str]:
-    paths: list[str] = []
-    for raw in diff.splitlines():
-        line = raw.decode("utf-8", "replace")
-        if not line.startswith("diff --git "):
-            continue
-        marker = " b/"
-        if marker not in line:
-            continue
-        path = line.split(marker, 1)[1]
-        if path and path != "dev/null":
-            paths.append(path)
-    return paths
+def _apply_commit(worktree: Path, parent: str, commit: str) -> None:
+    """Apply `commit`'s patch to `worktree`, index and files both. Raises GitError.
 
-
-def _apply_commit(repo: Path, parent: str, commit: str, env: dict[str, str]) -> None:
-    """Apply `commit`'s patch onto the index in `env`. Raises GitError."""
+    Must run in a real worktree: `git apply --3way` needs one to fall back on,
+    a bare temp index only yields "does not match index".
+    """
     diff = subprocess.run(
         ["git", "diff-tree", "-p", "--binary", "-M", parent, commit],
-        cwd=repo,
+        cwd=worktree,
         capture_output=True,
-        env=env,
         timeout=_timeout(),
         check=False,
     )
@@ -401,53 +389,27 @@ def _apply_commit(repo: Path, parent: str, commit: str, env: dict[str, str]) -> 
         raise GitError(redact(diff.stderr.decode("utf-8", "replace").strip() or "diff-tree"))
     if not diff.stdout.strip():
         return
-    cached = subprocess.run(
-        ["git", "apply", "--cached", "--whitespace=nowarn"],
-        cwd=repo,
+    applied = subprocess.run(
+        ["git", "apply", "--index", "--whitespace=nowarn"],
+        cwd=worktree,
         input=diff.stdout,
         capture_output=True,
-        env=env,
         timeout=_timeout(),
         check=False,
     )
-    if cached.returncode == 0:
+    if applied.returncode == 0:
         return
-    paths = _patch_paths(diff.stdout)
-    if paths:
-        checkout = subprocess.run(
-            ["git", "checkout-index", "-f", "--", *paths],
-            cwd=repo,
-            capture_output=True,
-            env=env,
-            timeout=_timeout(),
-            check=False,
-        )
-        if checkout.returncode != 0:
-            raise GitError(
-                redact(checkout.stderr.decode("utf-8", "replace").strip() or "checkout-index")
-            )
     three = subprocess.run(
-        ["git", "apply", "--3way", "--whitespace=nowarn"],
-        cwd=repo,
+        ["git", "apply", "--index", "--3way", "--whitespace=nowarn"],
+        cwd=worktree,
         input=diff.stdout,
         capture_output=True,
-        env=env,
         timeout=_timeout(),
         check=False,
     )
     if three.returncode != 0:
         detail = three.stderr.decode("utf-8", "replace").strip()
         raise GitError(redact(detail or "apply --3way"))
-    add = subprocess.run(
-        ["git", "add", "-A", "--", *paths] if paths else ["git", "add", "-A"],
-        cwd=repo,
-        capture_output=True,
-        env=env,
-        timeout=_timeout(),
-        check=False,
-    )
-    if add.returncode != 0:
-        raise GitError(redact(add.stderr.decode("utf-8", "replace").strip() or "git add"))
 
 
 def _in_requirement(repo: Path, sha: str, not_before: str | None) -> bool:
@@ -515,18 +477,13 @@ def baseline_without_ticket(
         replay = run(["git", "rev-list", "--reverse", f"{origin}..{tip}"], cwd=repo)
     except GitError:
         return None
-    index_path: str | None = None
-    work_path: str | None = None
+    work_path = Path(tempfile.mkdtemp(prefix="yard-baseline-"))
     try:
-        index_file = tempfile.NamedTemporaryFile(prefix="yard-baseline-", delete=False)
-        index_file.close()
-        index_path = index_file.name
-        work_path = tempfile.mkdtemp(prefix="yard-baseline-")
-        env = os.environ.copy()
-        env["GIT_INDEX_FILE"] = index_path
-        env["GIT_WORK_TREE"] = work_path
-        env["GIT_TERMINAL_PROMPT"] = "0"
-        run(["git", "read-tree", origin], cwd=repo, env=env)
+        # A throwaway worktree, not a bare index: replaying a sibling whose
+        # context still carries this ticket's lines needs `git apply --3way` to
+        # engage, and that fallback does not work without a worktree behind the
+        # index. It dies with "does not match index" instead of merging.
+        detached_worktree(repo, work_path, origin)
         for sha in replay.split():
             if not sha or sha in excluded:
                 continue
@@ -540,8 +497,8 @@ def baseline_without_ticket(
                 # branch commits are replayed. Conflict-only merge resolutions
                 # are not reconstructed.
                 continue
-            _apply_commit(repo, parent_shas[0], sha, env)
-        tree = run(["git", "write-tree"], cwd=repo, env=env)
+            _apply_commit(work_path, parent_shas[0], sha)
+        tree = run(["git", "write-tree"], cwd=work_path)
         message = f"dev-yard baseline without {ticket_branch} at {tip}"
         sha = run(
             ["git", "commit-tree", tree, "-p", origin, "-m", message],
@@ -551,13 +508,8 @@ def baseline_without_ticket(
     except GitError:
         return None
     finally:
-        if index_path:
-            try:
-                os.unlink(index_path)
-            except OSError:
-                pass
-        if work_path:
-            shutil.rmtree(work_path, ignore_errors=True)
+        worktree_remove(repo, work_path)
+        shutil.rmtree(work_path, ignore_errors=True)
     try:
         run(["git", "update-ref", ref, sha], cwd=repo)
     except GitError:
