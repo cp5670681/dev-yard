@@ -61,6 +61,8 @@
                       :jira="jira"
                       @implement="$emit('implement', $event)"
                       @review="$emit('review', $event)"
+                      @merge="$emit('merge', $event)"
+                      @resolve="$emit('resolve', $event)"
                       @diff="$emit('diff', $event)"
                       @feedback="$emit('feedback', $event)"
                       @open-case="$emit('open-case', $event)"
@@ -97,6 +99,8 @@
                 show-state
                 @implement="$emit('implement', $event)"
                 @review="$emit('review', $event)"
+                @merge="$emit('merge', $event)"
+                @resolve="$emit('resolve', $event)"
                 @diff="$emit('diff', $event)"
                 @feedback="$emit('feedback', $event)"
                 @open-case="$emit('open-case', $event)"
@@ -382,6 +386,8 @@
                       :case-info="bugCaseInfo(t)"
                       @implement="$emit('implement', $event)"
                       @review="$emit('review', $event)"
+                      @merge="$emit('merge', $event)"
+                      @resolve="$emit('resolve', $event)"
                       @diff="$emit('diff', $event)"
                       @feedback="$emit('feedback', $event)"
                       @delete="$emit('delete', $event)"
@@ -421,6 +427,8 @@
                 show-state
                 @implement="$emit('implement', $event)"
                 @review="$emit('review', $event)"
+                @merge="$emit('merge', $event)"
+                @resolve="$emit('resolve', $event)"
                 @diff="$emit('diff', $event)"
                 @feedback="$emit('feedback', $event)"
                 @delete="$emit('delete', $event)"
@@ -486,6 +494,8 @@ const props = withDefaults(
 defineEmits<{
   implement: [id: string];
   review: [id: string];
+  merge: [id: string];
+  resolve: [id: string];
   diff: [id: string];
   feedback: [ticket: Ticket];
   delete: [ticket: Ticket];
@@ -551,7 +561,7 @@ watch(
   },
 );
 
-// Standard Ticket Columns (8 columns)
+// Standard Ticket Columns. `approved` is passed and waiting to merge.
 const columns = [
   "pending",
   "ready",
@@ -560,6 +570,7 @@ const columns = [
   "reviewing",
   "inconclusive",
   "blocked",
+  "approved",
   "done",
 ];
 

@@ -1258,6 +1258,166 @@ def ticket_start(root: Path, jira: str, ticket_id: str) -> Path:
     return child
 
 
+_TICKET_CONFLICT_SPEC = StageSpec(
+    name="resolve-ticket",
+    skill="resolve-ticket",
+    bundles=("resolve-ticket",),
+    tools=("read", "bash", "grep", "find", "ls", "edit", "write"),
+    guidance=(
+        "This ticket is already reviewed and passed. Resolve the git merge "
+        "conflict in the current worktree only. Keep both this ticket's changes "
+        "and the sibling changes already on the parent. Do not re-implement, "
+        "do not close Spec gaps, and do not edit files under reqs/."
+    ),
+)
+
+
+def _conflict_markers(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return "<<<<<<<" in text and ">>>>>>>" in text
+
+
+def ticket_merge(root: Path, jira: str, ticket_id: str) -> dict[str, Any]:
+    """Merge an already-passed ticket into the freeze branch.
+
+    A conflict aborts the parent merge, leaves the ticket approved, and records
+    `merge_conflict` so the review does not have to be repeated.
+    """
+    req = paths.req_dir(root, jira)
+    if ticket_id not in {t.id for t in load_tickets(req)}:
+        raise ValueError(f"unknown ticket {ticket_id}")
+    with st.jira_lock(jira):
+        data = st.load(root, jira)
+        slot = (data.get("tickets") or {}).get(ticket_id)
+        if not slot:
+            raise ValueError(f"ticket {ticket_id} not found in STATUS.yaml")
+        if slot.get("state") != "approved":
+            raise ValueError(f"{ticket_id} 还没通过审查，不能合并")
+        parent = slot.get("worktree")
+        summary = slot.get("last_summary") if isinstance(slot.get("last_summary"), str) else None
+        child = slot.get("child_worktree")
+        if child:
+            marked = gitops.conflict_marker_paths(Path(child))
+            if marked:
+                raise ValueError(
+                    f"{ticket_id} 子分支还有冲突标记：{', '.join(marked)}"
+                )
+        try:
+            _ticket_done_locked(
+                root, jira, ticket_id, summary=summary, verdict="passed"
+            )
+        except gitops.GitError as e:
+            if not _parent_content_conflict(parent):
+                raise
+            data = st.load(root, jira)
+            slot = data["tickets"][ticket_id]
+            note = (
+                f"合并进冻结分支时冲突：{e}\n"
+                "点「解决冲突」在这张票的工作区里消掉冲突，然后再点「合并」。不用重新审查。"
+            )
+            slot["state"] = "approved"
+            slot["last_verdict"] = "passed"
+            if summary is not None:
+                slot["last_summary"] = summary
+            slot["merge_conflict"] = note
+            st.save(root, jira, data)
+            raise ValueError(note) from e
+        data = st.load(root, jira)
+        slot = data["tickets"][ticket_id]
+        slot.pop("merge_conflict", None)
+        st.save(root, jira, data)
+        return dict(slot)
+
+
+def resolve_ticket_conflict(
+    root: Path,
+    jira: str,
+    ticket_id: str,
+    *,
+    print_mode: bool = False,
+    runner: Runner | None = None,
+) -> dict[str, Any]:
+    """Merge the parent into an approved ticket's child and resolve conflicts.
+
+    Does not merge back into the parent and does not change the pass verdict.
+    """
+    req = paths.req_dir(root, jira)
+    if ticket_id not in {t.id for t in load_tickets(req)}:
+        raise ValueError(f"unknown ticket {ticket_id}")
+    with st.jira_lock(jira):
+        data = st.load(root, jira)
+        slot = (data.get("tickets") or {}).get(ticket_id) or {}
+        if slot.get("state") != "approved":
+            raise ValueError(f"{ticket_id} 还没通过审查，不能解决合并冲突")
+        child = slot.get("child_worktree")
+        if not child:
+            raise ValueError(f"{ticket_id} 没有独立工作区，直接点合并")
+        held = dict(slot)
+    child_path = Path(str(child))
+    conflict = _sync_child_with_parent(
+        root, jira, held, leave_conflict=True, instruct=False
+    )
+    if conflict:
+        files = gitops.unmerged_files(child_path)
+        listed = "\n".join(f"- {name}" for name in files) or "- (git 未报告冲突文件)"
+        prompt = session_prompt_for(
+            _TICKET_CONFLICT_SPEC,
+            root,
+            jira,
+            extra=(
+                f"Ticket {ticket_id} is already passed. Do not review it again.\n"
+                "The worktree is in the middle of merging the parent freeze branch "
+                "into this ticket. <<<<<<< HEAD is this ticket (ours); "
+                ">>>>>>> is the parent freeze branch (theirs).\n"
+                f"Conflict files:\n{listed}\n"
+                "Keep this ticket's behavior and the sibling changes from the parent. "
+                "Do not change behavior to match SPEC.md where it disagrees with the "
+                "passed ticket. Delete every conflict marker, then git add the files. "
+                "Do not commit; the host commits the merge.\n"
+                f"{conflict}"
+            ),
+        )
+        active = runner or get_runner(
+            root,
+            "resolve-ticket",
+            print_mode=print_mode,
+            spec=_TICKET_CONFLICT_SPEC,
+        )
+        result = active.start(prompt, child_path, [req / "TICKETS.md"])
+        if not result.ok:
+            raise RuntimeError(result.summary or f"{ticket_id} 解决冲突失败")
+        pending = gitops.unmerged_files(child_path)
+        marked = [name for name in (pending or files) if _conflict_markers(child_path / name)]
+        if pending or marked:
+            _rewind_marked_merge(child_path)
+            raise RuntimeError(
+                f"{ticket_id} 冲突还在：" + ", ".join(pending or marked)
+            )
+    with st.jira_lock(jira):
+        data = st.load(root, jira)
+        slot = data["tickets"][ticket_id]
+        if slot.get("state") != "approved":
+            gitops.merge_abort(child_path)
+            raise ValueError(
+                f"{ticket_id} 已不是通过状态，已中止合并，审查结论保持不变"
+            )
+        if gitops.has_merge_head(child_path):
+            gitops.commit_merge(child_path, f"merge({ticket_id}): 同步父分支")
+        reason = _rewind_marked_merge(child_path) or _child_merge_block(
+            root, jira, slot, child_path
+        )
+        if reason:
+            raise RuntimeError(f"{ticket_id} 冲突还没解决：{reason}")
+        slot["state"] = "approved"
+        slot["last_verdict"] = "passed"
+        slot.pop("merge_conflict", None)
+        st.save(root, jira, data)
+        return dict(slot)
+
+
 def ticket_done(root: Path, jira: str, ticket_id: str) -> None:
     with st.jira_lock(jira):
         data = st.load(root, jira)
@@ -1343,8 +1503,55 @@ def _cwd_for_ticket(root: Path, jira: str, ticket: Ticket, slot: dict) -> Path:
     return Path(parent)
 
 
+def _parent_content_conflict(parent: str | None) -> bool:
+    """Abort a parent merge. True only when it left unmerged paths."""
+    if not parent:
+        return False
+    path = Path(parent)
+    unmerged = gitops.unmerged_files(path)
+    gitops.merge_abort(path)
+    return bool(unmerged)
+
+
+def _rewind_marked_merge(child: Path) -> str | None:
+    """Drop a merge commit that still contains conflict markers.
+
+    Returns a reason when markers were present. The merge commit is rewound
+    first so the next resolve starts from the pre-merge ticket, not from a
+    commit that already contains the markers.
+    """
+    marked = gitops.conflict_marker_paths(child)
+    if not marked:
+        return None
+    if gitops.rev_parse(child, "HEAD^2") is not None:
+        gitops.run(["git", "reset", "--hard", "HEAD^"], cwd=child)
+    return "还有冲突标记：" + ", ".join(marked)
+
+
+def _child_merge_block(root: Path, jira: str, slot: dict, child: Path) -> str | None:
+    """Why this child is not ready to clear `merge_conflict`. None when it is."""
+    if not (child / ".git").exists():
+        return "子工作区不是 git 仓库"
+    if gitops.has_merge_head(child):
+        return "合并提交没有完成"
+    pending = gitops.unmerged_files(child)
+    if pending:
+        return "还有未合并路径：" + ", ".join(pending)
+    marked = gitops.conflict_marker_paths(child)
+    if marked:
+        return "还有冲突标记：" + ", ".join(marked)
+    parent = slot.get("worktree")
+    if not parent or not Path(parent).exists():
+        return "没有父工作区"
+    data = st.load(root, jira)
+    freeze = resolve_freeze_branch(root, jira, data, Path(parent))
+    if not gitops.is_ancestor(child, freeze, "HEAD"):
+        return f"父分支 {freeze} 还不在这张票上"
+    return None
+
+
 def _sync_child_with_parent(
-    root: Path, jira: str, slot: dict, *, leave_conflict: bool
+    root: Path, jira: str, slot: dict, *, leave_conflict: bool, instruct: bool = True
 ) -> str | None:
     """Bring a ticket's child worktree up to date with the parent branch.
 
@@ -1367,11 +1574,16 @@ def _sync_child_with_parent(
 
     def report(files: list[str], detail: str) -> str:
         listed = "\n".join(f"- {f}" for f in files) or "(git 未报告冲突文件)"
-        return (
-            f"SYNC_CONFLICT: 与父分支 `{freeze}` 合并存在冲突，需先解决再审查。\n"
-            f"冲突文件：\n{listed}\n{detail}\n"
-            "在子 worktree 内解决冲突（保留兄弟票已合并的改动），`git add` 提交后再走实现/审查。"
+        body = (
+            f"SYNC_CONFLICT: 与父分支 `{freeze}` 合并存在冲突。\n"
+            f"冲突文件：\n{listed}\n{detail}"
         )
+        if instruct:
+            body += (
+                "\n在子 worktree 内解决冲突（保留兄弟票已合并的改动），"
+                "`git add` 提交后再走实现/审查。"
+            )
+        return body
 
     # A prior run may have died mid-merge; never commit those markers blindly.
     pending = gitops.unmerged_files(child_path)
@@ -2251,8 +2463,9 @@ def recover_stale_tickets(root: Path) -> list[str]:
     A killed process never reaches the in-process abort reset, so its
     `implementing`/`reviewing` slots would otherwise make the board show a
     perpetual spinner with no way to re-trigger. Called at web startup, when no
-    job from this process can yet be running. `reviewing` keeps its
-    `last_summary` (merge-conflict guidance) but becomes re-reviewable.
+    job from this process can yet be running. A review that already passed and
+    then failed to merge stays approved, so it is not sent back for review.
+    Any other `reviewing` slot becomes re-reviewable and keeps `last_summary`.
     """
     touched: list[str] = []
     for req in paths.iter_req_dirs(root):
@@ -2265,7 +2478,20 @@ def recover_stale_tickets(root: Path) -> list[str]:
             for slot in (data.get("tickets") or {}).values():
                 state = slot.get("state")
                 if state == "reviewing":
-                    slot["state"] = "implemented"
+                    summary = slot.get("last_summary") or ""
+                    failed_merge = isinstance(summary, str) and (
+                        "merge conflict into " in summary
+                        or "合并进冻结分支时冲突" in summary
+                    )
+                    if failed_merge:
+                        slot["state"] = "approved"
+                        slot["last_verdict"] = "passed"
+                        slot.setdefault(
+                            "merge_conflict",
+                            "上次合并冻结分支时冲突。点「解决冲突」，然后再点「合并」。不用重新审查。",
+                        )
+                    else:
+                        slot["state"] = "implemented"
                     changed = True
                 elif state == "implementing":
                     slot["state"] = "ready"
@@ -2466,16 +2692,32 @@ def review(
                             root, jira, tid, summary=result.summary, verdict="passed"
                         )
                     except gitops.GitError as e:
-                        if parent:
-                            gitops.merge_abort(Path(parent))
+                        if not _parent_content_conflict(parent):
+                            # Not a conflict the operator can resolve in the
+                            # child (dirty parent, missing branch, ...). The
+                            # review still passed, so record it and move on:
+                            # aborting here would drop the rest of the batch.
+                            slot = data["tickets"][tid]
+                            slot["state"] = "approved"
+                            slot["last_verdict"] = "passed"
+                            slot["last_summary"] = (
+                                ((result.summary or "").rstrip() + f"\n\n{e}").strip()
+                            )
+                            slot.pop("merge_conflict", None)
+                            st.save(root, jira, data)
+                            ran.append(tid)
+                            continue
                         slot = data["tickets"][tid]
-                        slot["state"] = "reviewing"
-                        slot["last_summary"] = (
-                            (result.summary or "").rstrip()
-                            + f"\n\nmerge conflict into {parent}: {e}\n"
-                            "Resolve the conflict in the parent worktree "
-                            "(`git merge --abort` to start over), then re-review."
+                        note = (
+                            f"合并进冻结分支时冲突：{e}\n"
+                            "审查结论保留。点「解决冲突」，然后再点「合并」。不用重新审查。"
                         )
+                        slot["state"] = "approved"
+                        slot["last_verdict"] = "passed"
+                        slot["last_summary"] = (
+                            (result.summary or "").rstrip() + "\n\n" + note
+                        ).strip()
+                        slot["merge_conflict"] = note
                         st.save(root, jira, data)
                         ran.append(tid)
                         continue
@@ -2535,25 +2777,15 @@ def ticket_review_override(
         slot = t_slots[ticket_id]
 
         if norm_verdict == "passed":
-            parent = slot.get("worktree")
-            try:
-                _ticket_done_locked(
-                    root, jira, ticket_id, summary=summary, verdict="passed"
-                )
-            except gitops.GitError as e:
-                if parent:
-                    gitops.merge_abort(Path(parent))
-                data = st.load(root, jira)
-                slot = data["tickets"][ticket_id]
-                slot["state"] = "reviewing"
-                slot["last_summary"] = (
-                    ((summary if summary is not None else slot.get("last_summary")) or "").rstrip()
-                    + f"\n\nmerge conflict into {parent}: {e}\n"
-                    "Resolve the conflict in the parent worktree "
-                    "(`git merge --abort` to start over), then re-review."
-                )
-                st.save(root, jira, data)
-                raise ValueError(f"merge conflict into {parent}: {e}") from e
+            # Pass records the verdict only. Merging into the freeze branch is a
+            # separate step so a conflict does not throw away the review.
+            if summary is not None:
+                slot["last_summary"] = summary
+            slot["last_verdict"] = "passed"
+            slot["state"] = "approved"
+            slot.pop("merge_conflict", None)
+            st.refresh_ready(data)
+            st.save(root, jira, data)
         else:
             text = (summary or "").strip() or "Rejected by reviewer."
             slot["last_summary"] = text

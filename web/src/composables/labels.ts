@@ -18,6 +18,7 @@ export const TICKET_COLOR: Record<string, string> = {
   implemented: "secondary",
   reviewing: "secondary",
   inconclusive: "warning",
+  approved: "success",
   blocked: "error",
   done: "success",
 };
@@ -59,6 +60,7 @@ export const TICKET_STATE_LABELS: Record<string, string> = {
   implemented: "已实现",
   reviewing: "审查中",
   inconclusive: "评审无结论",
+  approved: "待合并",
   blocked: "阻塞",
   done: "完成",
 };
@@ -71,6 +73,8 @@ export const STEP_LABELS: Record<string, string> = {
   freeze: "冻结",
   implement: "实现",
   review: "审查",
+  merge: "合并",
+  "resolve-conflict": "解决冲突",
   contract: "契约审查",
   testing: "提测",
   done: "完成",

@@ -20,6 +20,56 @@ def _yard(tmp_path: Path) -> Path:
     return yard
 
 
+def test_next_label_prefers_merge_while_a_ticket_is_approved():
+    from dev_yard.reqboard import TicketView, _next_label
+
+    approved = TicketView(
+        "B1",
+        "bug",
+        "backend",
+        "approved",
+        [],
+        False,
+        None,
+        None,
+        False,
+        False,
+        source="test",
+    )
+    done = TicketView(
+        "T1",
+        "done",
+        "backend",
+        "done",
+        [],
+        False,
+        None,
+        None,
+        False,
+        False,
+        source="test",
+    )
+    assert _next_label("testing", [], [approved], has_cases=True, has_qa_run=True) == "merge"
+    assert _next_label("frozen", [], [approved]) == "merge"
+    assert (
+        _next_label("testing", [], [done], has_cases=True, has_qa_run=False) == "qa-run"
+    )
+
+
+def test_resolve_conflict_job_takes_the_whole_requirement():
+    from dev_yard.web.jobs import Job, _jobs_conflict
+
+    review = Job(id="1", jira="AB-1", action="review", state="running", ticket_ids=["T1"])
+    assert _jobs_conflict(review, "AB-1", "resolve-conflict", ["T2"]) is True
+    assert _jobs_conflict(review, "AB-1", "implement", ["T2"]) is False
+    resolve = Job(
+        id="2", jira="AB-1", action="resolve-conflict", state="running", ticket_ids=["T2"]
+    )
+    assert _jobs_conflict(resolve, "AB-1", "review", ["T1"]) is True
+    assert _jobs_conflict(resolve, "AB-1", "merge", None) is True
+    assert _jobs_conflict(resolve, "AB-2", "review", ["T1"]) is False
+
+
 def test_list_empty(tmp_path: Path):
     yard = _yard(tmp_path)
     assert list_requirements(yard) == []

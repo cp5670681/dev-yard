@@ -6,6 +6,7 @@ import pytest
 from dev_yard.gitops import (
     GitError,
     branch_delete,
+    conflict_marker_paths,
     drain_git_output,
     ensure_clone,
     git_failure_message,
@@ -15,6 +16,20 @@ from dev_yard.gitops import (
     worktree_add,
     worktree_remove,
 )
+
+
+def test_conflict_marker_paths_needs_both_markers(git_src: Path):
+    (git_src / "quote.md").write_text("a diff quoted in prose:\n<<<<<<< HEAD\n")
+    subprocess.check_call(["git", "add", "."], cwd=git_src)
+    subprocess.check_call(["git", "commit", "-m", "quote"], cwd=git_src)
+    assert conflict_marker_paths(git_src) == []
+
+    (git_src / "real.txt").write_text(
+        "<<<<<<< HEAD\na\n=======\nb\n>>>>>>> other\n"
+    )
+    subprocess.check_call(["git", "add", "."], cwd=git_src)
+    subprocess.check_call(["git", "commit", "-m", "conflict"], cwd=git_src)
+    assert conflict_marker_paths(git_src) == ["real.txt"]
 
 
 def test_worktree_add_clears_empty_leftover(git_src: Path, tmp_path: Path):

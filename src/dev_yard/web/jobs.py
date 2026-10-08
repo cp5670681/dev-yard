@@ -822,6 +822,35 @@ def default_execute(root: Path, job: Job) -> None:
         return
     from dev_yard.stages import load_registry
 
+    if job.action == "merge":
+        from dev_yard import status as st
+
+        ids = list(job.ticket_ids or [])
+        if not ids:
+            data = st.load(root, job.jira)
+            ids = [
+                tid
+                for tid, slot in (data.get("tickets") or {}).items()
+                if isinstance(slot, dict) and slot.get("state") == "approved"
+            ]
+        if not ids:
+            raise ValueError("没有已通过、待合并的票")
+        for tid in ids:
+            service.ticket_merge(root, job.jira, tid)
+            job.append(f"{tid} 已合并")
+        return
+    if job.action == "resolve-conflict":
+        ids = list(job.ticket_ids or [])
+        if len(ids) != 1:
+            raise ValueError("解决冲突一次只处理一张票")
+        runner = JobLogRunner(
+            job, root, "resolve-ticket", spec=service._TICKET_CONFLICT_SPEC
+        )
+        service.resolve_ticket_conflict(
+            root, job.jira, ids[0], print_mode=True, runner=runner
+        )
+        job.append(f"{ids[0]} 冲突已解决，可以合并")
+        return
     spec = load_registry(root).get(job.action)
     if spec is not None and job.action not in _HOST_JOB_ACTIONS:
         runner = JobLogRunner(job, root, spec.name)

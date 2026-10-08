@@ -836,6 +836,73 @@ def has_merge_head(worktree: Path) -> bool:
     return rev_parse(worktree, "MERGE_HEAD") is not None
 
 
+def commit_merge(worktree: Path, message: str) -> str:
+    """Finish an in-progress merge, even when the resolution matches HEAD.
+
+    `commit_all` treats an empty porcelain as "nothing to do" and returns the
+    current HEAD. Keeping the ticket side of a conflict is that case: the index
+    matches HEAD while `MERGE_HEAD` is still set, and skipping the commit leaves
+    the merge open.
+    """
+    if not (worktree / ".git").exists():
+        raise GitError(f"{worktree} is not a git worktree")
+    if not has_merge_head(worktree):
+        raise GitError(f"{worktree} has no merge in progress")
+    pending = unmerged_files(worktree)
+    if pending:
+        raise GitError("unmerged paths: " + ", ".join(pending))
+    proc = subprocess.run(
+        ["git", "commit", "-m", message],
+        cwd=worktree,
+        capture_output=True,
+        text=True,
+        env=_commit_env(),
+        timeout=_timeout(),
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise GitError(detail or "git commit failed")
+    if has_merge_head(worktree):
+        raise GitError("merge is still in progress after commit")
+    return head_sha(worktree)
+
+
+def conflict_marker_paths(worktree: Path) -> list[str]:
+    """Tracked paths that still contain a whole conflict-marker block.
+
+    Both markers must sit in the same file. A lone `<<<<<<< ` line (a diff
+    quoted in docs, a test fixture, a changelog) is not a conflict, and callers
+    rewind a merge commit when this reports anything, so a false positive would
+    drop a real resolution.
+    """
+    if not (worktree / ".git").exists():
+        return []
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "grep",
+                "-l",
+                "--all-match",
+                "-e",
+                "^<<<<<<< ",
+                "-e",
+                "^>>>>>>> ",
+                "--",
+                ".",
+            ],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            timeout=_timeout(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode not in (0, 1):
+        return []
+    return [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()]
+
+
 # `<<<<<<<` / `>>>>>>>` are unambiguous; `=======` alone is a setext underline.
 _MARKER_BEGIN_RE = re.compile(r"^(?:<{7}|>{7})(?:\s|$)")
 _MARKER_MID_PREFIX = "======="

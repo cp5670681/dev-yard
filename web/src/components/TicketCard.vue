@@ -231,6 +231,7 @@
           <!-- reviewing -->
           <div v-else-if="ticket.state === 'reviewing'" class="d-flex ga-1.5 w-100">
             <v-btn
+              v-if="isRunning"
               size="small"
               density="compact"
               variant="tonal"
@@ -241,6 +242,29 @@
             >
               审查中
             </v-btn>
+            <template v-else>
+              <v-btn
+                size="small"
+                density="compact"
+                variant="tonal"
+                color="secondary"
+                class="flex-grow-1"
+                title="记下通过或打回。通过不会合并"
+                @click="$emit('feedback', ticket)"
+              >
+                复核
+              </v-btn>
+              <v-btn
+                size="small"
+                density="compact"
+                variant="outlined"
+                class="px-2"
+                title="重新触发 AI 审查"
+                @click="$emit('review', ticket.id)"
+              >
+                审查
+              </v-btn>
+            </template>
             <v-btn
               size="small"
               density="compact"
@@ -251,6 +275,64 @@
             >
               改动
             </v-btn>
+          </div>
+
+          <!-- approved: passed, not merged -->
+          <div v-else-if="ticket.state === 'approved'" class="d-flex flex-column ga-1.5 w-100">
+            <div v-if="ticket.merge_conflict" class="text-caption text-error">
+              合并冲突。先解决冲突，再合并。不用重新审查。
+            </div>
+            <div class="d-flex ga-1.5 w-100">
+              <v-btn
+                v-if="ticket.merge_conflict"
+                size="small"
+                density="compact"
+                color="warning"
+                class="flex-grow-1"
+                title="在这张票的工作区里消掉和父分支的冲突"
+                :disabled="isRunning"
+                :loading="isRunning"
+                @click="$emit('resolve', ticket.id)"
+              >
+                解决冲突
+              </v-btn>
+              <v-btn
+                size="small"
+                density="compact"
+                color="primary"
+                class="flex-grow-1"
+                title="合进冻结分支"
+                :disabled="isRunning"
+                :loading="isRunning && !ticket.merge_conflict"
+                @click="$emit('merge', ticket.id)"
+              >
+                合并
+              </v-btn>
+            </div>
+            <div class="d-flex ga-1.5 w-100">
+              <v-btn
+                size="small"
+                density="compact"
+                variant="outlined"
+                class="flex-grow-1"
+                title="查看代码改动"
+                @click="$emit('diff', ticket.id)"
+              >
+                改动
+              </v-btn>
+              <v-btn
+                size="small"
+                density="compact"
+                variant="tonal"
+                color="secondary"
+                class="px-2"
+                title="改结论"
+                :disabled="isRunning"
+                @click="$emit('feedback', ticket)"
+              >
+                复核
+              </v-btn>
+            </div>
           </div>
 
           <!-- inconclusive (review produced no verdict) -->
@@ -408,6 +490,8 @@ const caseId = computed(() => {
 defineEmits<{
   implement: [id: string];
   review: [id: string];
+  merge: [id: string];
+  resolve: [id: string];
   diff: [id: string];
   feedback: [ticket: Ticket];
   delete: [ticket: Ticket];
@@ -430,7 +514,7 @@ const bugShotUrl = computed(() => {
 const dotColor = computed(() => ticketColor(props.ticket.state));
 
 const isRunning = computed(() => {
-  if (props.ticket.state === "implementing" || props.ticket.state === "reviewing") {
+  if (props.ticket.state === "implementing") {
     return true;
   }
   const curJira = currentJira.value;

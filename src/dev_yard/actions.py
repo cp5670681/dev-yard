@@ -30,6 +30,7 @@ BOARD_ACTIONS: tuple[ActionSpec, ...] = (
     ActionSpec("freeze", "冻结 worktree"),
     ActionSpec("implement", "实现 ready 票"),
     ActionSpec("review", "审查"),
+    ActionSpec("merge", "合并"),
     ActionSpec("contract", "契约审查"),
     ActionSpec("fix-contract", "按契约修"),
     ActionSpec("submit-test", "提测"),
@@ -48,13 +49,21 @@ BOARD_ACTION_IDS: frozenset[str] = frozenset(a.id for a in BOARD_ACTIONS)
 ACTION_LABELS: dict[str, str] = {a.id: a.label for a in BOARD_ACTIONS}
 
 # Actions that can be dispatched as a background Job. `fill-test-report` is a
-# UI flow, not a job.
-JOB_ACTIONS: frozenset[str] = BOARD_ACTION_IDS - {"fill-test-report"}
+# UI flow, not a job. `resolve-conflict` is per-ticket only (no board button):
+# it resolves a merge after the ticket has already passed.
+JOB_ACTIONS: frozenset[str] = (BOARD_ACTION_IDS - {"fill-test-report"}) | {
+    "resolve-conflict"
+}
+ACTION_LABELS["resolve-conflict"] = "解决冲突"
 
 # Job actions with a dedicated branch in `jobs.default_execute`.
 HOST_JOB_ACTIONS: frozenset[str] = JOB_ACTIONS
 
 # Job actions that operate on a subset of tickets.
+# `merge` and `resolve-conflict` are absent on purpose. Both move the shared
+# freeze ref (merge writes the parent worktree; resolve merges that ref into
+# a child). Either one beside `review` can lock the ref and get recorded as a
+# content conflict on the other ticket.
 TICKET_ACTIONS: frozenset[str] = frozenset(
     {"implement", "review", "fix-contract", "fix-test"}
 )

@@ -100,6 +100,7 @@ export interface Ticket {
   last_summary_html?: string | null;
   source?: string;
   finding?: string;
+  merge_conflict?: string | null;
 }
 
 export interface Action {

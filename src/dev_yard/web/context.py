@@ -294,6 +294,7 @@ class AppContext:
                     ),
                     "source": t.source,
                     "finding": t.finding,
+                    "merge_conflict": t.merge_conflict,
                 }
                 for t in detail.tickets
             ],

@@ -90,7 +90,7 @@
           density="compact"
           class="mb-3 text-caption"
         >
-          确认代码符合要求。若该票有独立 Worktree 子分支，将自动合并并转为 done 状态。
+          只记下通过，不会合进冻结分支。回到卡片后点「合并」。冲突时点「解决冲突」，不用再审一次。
         </v-alert>
 
         <div class="d-flex justify-end mb-2">
@@ -227,7 +227,7 @@ watch(
       if (props.ticket.state === "blocked") {
         verdict.value = "failed";
         autoImplement.value = true;
-      } else if (props.ticket.state === "done") {
+      } else if (props.ticket.state === "done" || props.ticket.state === "approved") {
         verdict.value = "passed";
         autoImplement.value = false;
       } else if (props.ticket.state === "inconclusive") {

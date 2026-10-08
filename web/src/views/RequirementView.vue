@@ -420,6 +420,8 @@
         :rerunning-case="rerunningCase"
         @implement="(id) => confirmAction('implement', id)"
         @review="(id) => confirmAction('review', id)"
+        @merge="(id) => confirmAction('merge', id)"
+        @resolve="(id) => onAction('resolve-conflict', id)"
         @diff="(id) => openDiff(id)"
         @feedback="(ticket) => openReview(ticket)"
         @delete="(ticket) => confirmDeleteTicket(ticket)"
