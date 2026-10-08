@@ -675,6 +675,52 @@ def porcelain_paths(worktree: Path) -> set[str]:
     return out
 
 
+def _git_config_global(key: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "config", "--global", "--get", key],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return (result.stdout or "").strip()
+
+
+def global_git_identity() -> tuple[str, str] | None:
+    """Operator name and email from `git config --global`, if both are set."""
+    name = _git_config_global("user.name")
+    email = _git_config_global("user.email")
+    if name and email:
+        return name, email
+    return None
+
+
+def _commit_env() -> dict[str, str]:
+    """Identity for requirement commits.
+
+    An explicit ``GIT_AUTHOR_*`` / ``GIT_COMMITTER_*`` pair wins (tests and CI).
+    Otherwise use the operator's global git account. ``dev-yard`` is only the
+    last resort so a machine with no identity can still commit.
+    """
+    env = os.environ.copy()
+    author_ready = bool(env.get("GIT_AUTHOR_NAME") and env.get("GIT_AUTHOR_EMAIL"))
+    committer_ready = bool(env.get("GIT_COMMITTER_NAME") and env.get("GIT_COMMITTER_EMAIL"))
+    if author_ready and committer_ready:
+        return env
+    found = global_git_identity()
+    name, email = found if found else ("dev-yard", "dev-yard@local")
+    env.setdefault("GIT_AUTHOR_NAME", name)
+    env.setdefault("GIT_AUTHOR_EMAIL", email)
+    env.setdefault("GIT_COMMITTER_NAME", name)
+    env.setdefault("GIT_COMMITTER_EMAIL", email)
+    return env
+
+
 def commit_all(worktree: Path, message: str) -> str | None:
     """Stage all changes and commit if working tree is dirty. Returns HEAD SHA."""
     try:
@@ -686,11 +732,7 @@ def commit_all(worktree: Path, message: str) -> str | None:
         staged = run(["git", "diff", "--cached", "--name-only"], cwd=worktree)
         if not staged.strip():
             return run(["git", "rev-parse", "HEAD"], cwd=worktree)
-        env = os.environ.copy()
-        env.setdefault("GIT_AUTHOR_NAME", "dev-yard")
-        env.setdefault("GIT_AUTHOR_EMAIL", "dev-yard@local")
-        env.setdefault("GIT_COMMITTER_NAME", "dev-yard")
-        env.setdefault("GIT_COMMITTER_EMAIL", "dev-yard@local")
+        env = _commit_env()
         subprocess.run(
             ["git", "commit", "-m", message],
             cwd=worktree,

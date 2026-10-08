@@ -192,6 +192,55 @@ def test_merge_abort_clears_conflicted_state(git_src: Path, tmp_path: Path):
     assert b"UU" not in out
 
 
+def _clear_commit_identity(monkeypatch) -> None:
+    for key in (
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_commit_all_uses_global_git_identity(git_src: Path, tmp_path: Path, monkeypatch):
+    from dev_yard.gitops import commit_all, worktree_add
+
+    _clear_commit_identity(monkeypatch)
+    monkeypatch.setattr(
+        "dev_yard.gitops.global_git_identity",
+        lambda: ("Ada Operator", "ada@example.com"),
+    )
+    wt = tmp_path / "wt-ident"
+    worktree_add(git_src, wt, "req/COMMIT-IDENT", "main")
+    (wt / "new_file.txt").write_text("hello")
+    assert commit_all(wt, "feat: identity")
+    author = subprocess.check_output(
+        ["git", "log", "-1", "--format=%an <%ae>"], cwd=wt, text=True
+    ).strip()
+    committer = subprocess.check_output(
+        ["git", "log", "-1", "--format=%cn <%ce>"], cwd=wt, text=True
+    ).strip()
+    assert author == "Ada Operator <ada@example.com>"
+    assert committer == "Ada Operator <ada@example.com>"
+
+
+def test_commit_all_falls_back_when_global_identity_missing(
+    git_src: Path, tmp_path: Path, monkeypatch
+):
+    from dev_yard.gitops import commit_all, worktree_add
+
+    _clear_commit_identity(monkeypatch)
+    monkeypatch.setattr("dev_yard.gitops.global_git_identity", lambda: None)
+    wt = tmp_path / "wt-fallback"
+    worktree_add(git_src, wt, "req/COMMIT-FALLBACK", "main")
+    (wt / "new_file.txt").write_text("hello")
+    assert commit_all(wt, "feat: fallback")
+    author = subprocess.check_output(
+        ["git", "log", "-1", "--format=%an <%ae>"], cwd=wt, text=True
+    ).strip()
+    assert author == "dev-yard <dev-yard@local>"
+
+
 def test_commit_all_and_has_changes(git_src: Path, tmp_path: Path):
     from dev_yard.gitops import commit_all, has_changes, worktree_add
 
