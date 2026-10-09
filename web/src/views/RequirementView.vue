@@ -417,8 +417,7 @@
         :jira="jira"
         :phase="detail.phase"
         :review-approved="Boolean(qaReview?.approved)"
-        :rerunning-case="rerunningCase"
-        :execution-locked="acting === 'qa-run' || liveHasActive"
+        :rerunning-ids="rerunningIds"
         @implement="(id) => confirmAction('implement', id)"
         @review="(id) => confirmAction('review', id)"
         @merge="(id) => confirmAction('merge', id)"
@@ -1050,7 +1049,15 @@ import {
   STEP_LABELS,
 } from "@/composables/labels";
 import { isQaJobActive, QA_GATE_ACTIONS, useQaActive } from "@/composables/qa";
-import { jobTail, submitRerun, tallyStatuses, tallyKind, BATCH_RERUN_CASE } from "@/composables/qaRerun";
+import {
+  jobTail,
+  submitRerun,
+  tallyStatuses,
+  tallyKind,
+  rerunMarks,
+  withRerunMarks,
+  splitBusyIds,
+} from "@/composables/qaRerun";
 import { useSnack } from "@/composables/snack";
 
 const { mdAndUp } = useDisplay();
@@ -1111,7 +1118,7 @@ const frozenRepos = computed(() =>
     .filter(Boolean)
     .sort(),
 );
-const rerunningCase = ref("");
+const rerunningIds = ref<string[]>([]);
 const deleteOpen = ref(false);
 const exportForm = reactive({
   open: false,
@@ -1365,8 +1372,8 @@ function onJobUpdate(job: JobSnapshot) {
 // While a run is in flight, poll so CLI-started runs (no web job) still update
 // the board; when it settles, surface the run-end banner once.
 let boardPoll: ReturnType<typeof setInterval> | undefined;
-// Held only for the rerun that is on screen. A later run, or another
-// requirement, must not keep painting that case.
+// Set when a rerun on this page finishes, not when it is clicked. A second
+// click must not replace it before the first job has a verdict.
 let rerunBannerCases: string[] = [];
 let suppressRunBanner = false;
 let lastBannerRunId = "";
@@ -1379,7 +1386,7 @@ watch(
       boardPoll = undefined;
     }
     if (now) {
-      if (!rerunningCase.value) {
+      if (!rerunningIds.value.length) {
         rerunBannerCases = [];
         suppressRunBanner = false;
       }
@@ -1632,14 +1639,25 @@ async function rerunCase(caseId: string) {
   await rerunCases([caseId]);
 }
 
+function busyIds(): string[] {
+  const ids = [...rerunningIds.value];
+  for (const row of liveProgress.value?.cases || []) {
+    if (row.state === "running" && row.id) ids.push(row.id);
+  }
+  return ids;
+}
+
 async function rerunCases(caseIds: string[]) {
-  const ids = caseIds.map((c) => c.trim()).filter(Boolean);
-  if (!ids.length || rerunningCase.value) return;
+  const { fresh, skipped } = splitBusyIds(caseIds, busyIds());
+  if (!fresh.length) {
+    if (skipped.length) snack.notify("这些用例已在执行", "info");
+    return;
+  }
   error.value = "";
-  rerunningCase.value = ids.length === 1 ? ids[0] : BATCH_RERUN_CASE;
-  rerunBannerCases = ids;
+  const marks = rerunMarks(fresh);
+  rerunningIds.value = withRerunMarks(rerunningIds.value, marks, true);
   try {
-    const { ids: done, label, job } = await submitRerun(jira.value, ids, (jobId) =>
+    const { ids: done, label, job } = await submitRerun(jira.value, fresh, (jobId) =>
       router.replace({ query: { ...route.query, job: jobId } }),
     );
     await load();
@@ -1654,6 +1672,7 @@ async function rerunCases(caseIds: string[]) {
       snack.notify(msg, "error");
       return;
     }
+    rerunBannerCases = done;
     snack.notify(runEndBanner.text, showRerunBanner(done));
   } catch (e) {
     rerunBannerCases = [];
@@ -1661,7 +1680,7 @@ async function rerunCases(caseIds: string[]) {
     error.value = e instanceof Error ? e.message : String(e);
     snack.notify(error.value, "error");
   } finally {
-    rerunningCase.value = "";
+    rerunningIds.value = withRerunMarks(rerunningIds.value, marks, false);
   }
 }
 
@@ -1872,6 +1891,9 @@ function showRerunBanner(caseIds: string[]): "success" | "error" | "info" {
 
 function showRunEndBanner() {
   if (suppressRunBanner) return;
+  // A follow-up click is still queued on the run lock and has not written
+  // progress. Leave the banner from the job that just finished.
+  if (rerunningIds.value.length) return;
   if (rerunBannerCases.length) {
     showRerunBanner(rerunBannerCases);
     return;

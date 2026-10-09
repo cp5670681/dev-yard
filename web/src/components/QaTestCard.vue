@@ -192,7 +192,7 @@
             class="px-2"
             :loading="rerunning"
             :disabled="disabled"
-            title="只执行这一条，写进当前这一轮。本轮有用例在跑时先不可点。"
+            title="只执行这一条，写进当前这一轮。正在跑的那条先不可点。"
             @click.stop="emit('rerun-case', testCase.id)"
           >
             <v-icon :icon="mdiPlay" size="16" class="mr-1" />
@@ -218,7 +218,7 @@
             class="px-2"
             :loading="rerunning"
             :disabled="disabled"
-            title="重新执行这一条用例（不改动本轮其它用例）。本轮有用例在跑时先不可点。"
+            title="重新执行这一条用例（不改动本轮其它用例）。这条正在跑时先不可点。"
             @click.stop="emit('rerun-case', testCase.id)"
           >
             <v-icon :icon="mdiRefresh" size="16" class="mr-1" />

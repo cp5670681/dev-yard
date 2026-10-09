@@ -5,11 +5,45 @@ import type { SnackKind } from "@/composables/snack";
 const TERMINAL = new Set<JobState>(["ok", "error", "cancelled"]);
 
 /**
- * Sentinel stored in the `rerunningCase` ref while a batch re-run is in flight.
- * It never matches a real case id, so per-card spinners stay off while the
- * global "busy" lock (`rerunningCase !== ""`) still holds.
+ * Sentinel stored alongside case ids while a batch re-run is in flight.
+ * It never matches a real case id. Only those ids (and this sentinel) are
+ * busy; other cases stay clickable.
  */
 export const BATCH_RERUN_CASE = "__batch__";
+
+/** Ids to mark busy for one submit. A batch also marks the menu sentinel. */
+export function rerunMarks(ids: string[]): string[] {
+  return ids.length > 1 ? [BATCH_RERUN_CASE, ...ids] : [...ids];
+}
+
+/** Add or drop busy ids without touching the rest of the set. */
+export function withRerunMarks(current: string[], ids: string[], on: boolean): string[] {
+  const next = new Set(current);
+  for (const id of ids) {
+    if (on) next.add(id);
+    else next.delete(id);
+  }
+  return [...next];
+}
+
+/** Keep ids that are not already running. Duplicates are dropped. */
+export function splitBusyIds(
+  requested: string[],
+  busy: Iterable<string>,
+): { fresh: string[]; skipped: string[] } {
+  const busySet = new Set(busy);
+  const fresh: string[] = [];
+  const skipped: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of requested) {
+    const id = raw.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    if (busySet.has(id)) skipped.push(id);
+    else fresh.push(id);
+  }
+  return { fresh, skipped };
+}
 
 export function jobTail(log: string | undefined): string {
   const lines = (log || "")

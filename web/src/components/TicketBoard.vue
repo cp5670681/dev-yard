@@ -177,8 +177,8 @@
                 color="warning"
                 :prepend-icon="mdiRefresh"
                 :append-icon="mdiMenuDown"
-                :loading="rerunningCase === BATCH_RERUN_CASE"
-                :disabled="rerunningCase !== ''"
+                :loading="batchBusy"
+                :disabled="batchBusy || listBusy(rerunnableCases)"
                 class="text-caption font-weight-medium"
                 title="按池并发重测本轮用例"
                 @click.stop
@@ -189,20 +189,20 @@
             <v-list density="compact" min-width="200">
               <v-list-item
                 v-if="blockedCases.length"
-                :disabled="rerunningCase !== ''"
+                :disabled="batchBusy || listBusy(blockedCases)"
                 @click="$emit('rerun-cases', blockedCases.map((c) => c.id))"
               >
                 <v-list-item-title>仅重测阻塞 ({{ blockedCases.length }})</v-list-item-title>
               </v-list-item>
               <v-list-item
                 v-if="failedCases.length"
-                :disabled="rerunningCase !== ''"
+                :disabled="batchBusy || listBusy(failedCases)"
                 @click="$emit('rerun-cases', failedCases.map((c) => c.id))"
               >
                 <v-list-item-title>仅重测失败 ({{ failedCases.length }})</v-list-item-title>
               </v-list-item>
               <v-list-item
-                :disabled="rerunningCase !== ''"
+                :disabled="batchBusy || listBusy(rerunnableCases)"
                 @click="$emit('rerun-cases', rerunnableCases.map((c) => c.id))"
               >
                 <v-list-item-title>失败 + 阻塞 ({{ rerunnableCases.length }})</v-list-item-title>
@@ -254,8 +254,8 @@
                       :jira="jira"
                       :review-approved="reviewApproved"
                       :deps-met="depsMet(c)"
-                      :rerunning="rerunningCase === c.id"
-                      :disabled="rerunningCase !== '' || executionLocked"
+                      :rerunning="isRerunning(c.id)"
+                      :disabled="caseLocked(c)"
                       @preview-screenshot="$emit('preview-screenshot', $event)"
                       @open-case="$emit('open-case', $event)"
                       @rerun-case="$emit('rerun-case', $event)"
@@ -293,8 +293,8 @@
                 :review-approved="reviewApproved"
                 :deps-met="depsMet(c)"
                 show-state
-                :rerunning="rerunningCase === c.id"
-                :disabled="rerunningCase !== '' || executionLocked"
+                :rerunning="isRerunning(c.id)"
+                :disabled="caseLocked(c)"
                 @preview-screenshot="$emit('preview-screenshot', $event)"
                 @open-case="$emit('open-case', $event)"
                 @rerun-case="$emit('rerun-case', $event)"
@@ -485,16 +485,15 @@ const props = withDefaults(
     jira: string;
     phase?: string;
     reviewApproved?: boolean;
-    rerunningCase?: string;
-    executionLocked?: boolean;
+    /** Case ids with a submit in flight. Only these cards lock. */
+    rerunningIds?: string[];
   }>(),
   {
     qaCases: () => [],
     qaProgress: null,
     phase: "open",
     reviewApproved: false,
-    rerunningCase: "",
-    executionLocked: false,
+    rerunningIds: () => [],
   }
 );
 
@@ -710,6 +709,21 @@ const qaStats = computed(() => {
 function depsMet(testCase: QaCaseItem) {
   const byId = new Map(allQaCases.value.map((item) => [item.id, item] as const));
   return (testCase.depends_on || []).every((id) => byId.get(id)?.state === "passed");
+}
+
+const batchBusy = computed(() => props.rerunningIds.includes(BATCH_RERUN_CASE));
+
+function isRerunning(id: string) {
+  return props.rerunningIds.includes(id);
+}
+
+/** Lock the case that is running or whose own submit is in flight. */
+function caseLocked(testCase: QaCaseItem) {
+  return testCase.state === "running" || isRerunning(testCase.id);
+}
+
+function listBusy(cases: QaCaseItem[]) {
+  return cases.length > 0 && cases.every((c) => caseLocked(c));
 }
 
 const qaFilterOptions = computed(() => {

@@ -286,8 +286,8 @@
               color="warning"
               :prepend-icon="mdiRefresh"
               :append-icon="mdiMenuDown"
-              :loading="rerunningCase === BATCH_RERUN_CASE"
-              :disabled="rerunningCase !== ''"
+              :loading="batchBusy"
+              :disabled="batchBusy || listBusy(rerunnableCases)"
               title="按池并发重测本轮用例"
             >
               重测 ({{ rerunnableCases.length }})
@@ -296,20 +296,20 @@
           <v-list density="compact" min-width="200">
             <v-list-item
               v-if="blockedCases.length"
-              :disabled="rerunningCase !== ''"
+              :disabled="batchBusy || listBusy(blockedCases)"
               @click="rerunCases(blockedCases.map((c) => c.case))"
             >
               <v-list-item-title>仅重测阻塞 ({{ blockedCases.length }})</v-list-item-title>
             </v-list-item>
             <v-list-item
               v-if="failedCases.length"
-              :disabled="rerunningCase !== ''"
+              :disabled="batchBusy || listBusy(failedCases)"
               @click="rerunCases(failedCases.map((c) => c.case))"
             >
               <v-list-item-title>仅重测失败 ({{ failedCases.length }})</v-list-item-title>
             </v-list-item>
             <v-list-item
-              :disabled="rerunningCase !== ''"
+              :disabled="batchBusy || listBusy(rerunnableCases)"
               @click="rerunCases(rerunnableCases.map((c) => c.case))"
             >
               <v-list-item-title>失败 + 阻塞 ({{ rerunnableCases.length }})</v-list-item-title>
@@ -498,9 +498,9 @@
                     size="x-small"
                     variant="tonal"
                     color="primary"
-                    :loading="rerunningCase === c.case"
-                    :disabled="rerunningCase !== '' || liveActive"
-                    title="只执行这一条，写进当前这一轮"
+                    :loading="isRerunning(c.case)"
+                    :disabled="caseLocked(c)"
+                    title="只执行这一条，写进当前这一轮。正在跑的那条先不可点。"
                     @click="rerunCase(c.case)"
                   >
                     执行
@@ -519,9 +519,9 @@
                     size="x-small"
                     variant="tonal"
                     color="warning"
-                    :loading="rerunningCase === c.case"
-                    :disabled="rerunningCase !== '' || liveActive"
-                    :title="`重新执行 ${c.case}（不改动本轮其它用例）`"
+                    :loading="isRerunning(c.case)"
+                    :disabled="caseLocked(c)"
+                    :title="`重新执行 ${c.case}（不改动本轮其它用例）。这条正在跑时先不可点。`"
                     @click="rerunCase(c.case)"
                   >
                     重测
@@ -693,6 +693,9 @@ import {
   tallyKind,
   findRunWithCases,
   BATCH_RERUN_CASE,
+  rerunMarks,
+  withRerunMarks,
+  splitBusyIds,
 } from "@/composables/qaRerun";
 import type { DocMeta, QaPage, QaReview, QaRunCase, ShotItem } from "@/api/types";
 import { QA_STATE_LABELS } from "@/composables/labels";
@@ -718,7 +721,7 @@ const feedbackText = ref("");
 const designOpen = ref(false);
 const designNotes = ref("");
 const designRefs = ref("");
-const rerunningCase = ref("");
+const rerunningIds = ref<string[]>([]);
 const caseDialog = reactive({ open: false, caseId: "" });
 const caseFromQuery = ref(false);
 const viewer = reactive({ open: false, index: 0, images: [] as ShotItem[] });
@@ -917,10 +920,14 @@ const isNewestRun = computed(
   () => Boolean(selectedRun.value) && selectedRun.value === runs.value[0],
 );
 const failedCases = computed(() =>
-  isNewestRun.value ? (selectedRun.value?.cases || []).filter((c) => c.status === "failed") : [],
+  isNewestRun.value
+    ? (selectedRun.value?.cases || []).filter((c) => c.status === "failed" && !isRunningCase(c))
+    : [],
 );
 const blockedCases = computed(() =>
-  isNewestRun.value ? (selectedRun.value?.cases || []).filter((c) => c.status === "blocked") : [],
+  isNewestRun.value
+    ? (selectedRun.value?.cases || []).filter((c) => c.status === "blocked" && !isRunningCase(c))
+    : [],
 );
 const rerunnableCases = computed(() => [...failedCases.value, ...blockedCases.value]);
 
@@ -983,7 +990,7 @@ const hasActiveRun = computed(() =>
   ),
 );
 
-function isRunningCase(c: QaPage["runs"][number]["cases"][number]) {
+function isRunningCase(c: { case: string }) {
   const live = liveProgress.value?.cases?.find((x) => x.id === c.case);
   return live?.state === "running";
 }
@@ -1068,6 +1075,28 @@ function canRerun(c: { status?: string }) {
   return c.status === "failed" || c.status === "blocked" || c.status === "passed";
 }
 
+const batchBusy = computed(() => rerunningIds.value.includes(BATCH_RERUN_CASE));
+
+function isRerunning(id: string) {
+  return rerunningIds.value.includes(id);
+}
+
+function caseLocked(c: { case: string }) {
+  return isRunningCase(c) || isRerunning(c.case);
+}
+
+function listBusy(cases: { case: string }[]) {
+  return cases.length > 0 && cases.every((c) => rerunningIds.value.includes(c.case) || isRunningCase(c));
+}
+
+function busyIds(): string[] {
+  const ids = [...rerunningIds.value];
+  for (const row of liveProgress.value?.cases || []) {
+    if (row.state === "running" && row.id) ids.push(row.id);
+  }
+  return ids;
+}
+
 function canFileBug(c: { status?: string }) {
   // 下 bug 只对已审核、且这一轮结果是 failed 的用例出现。
   return reviewApproved.value && isNewestRun.value && c.status === "failed";
@@ -1120,12 +1149,16 @@ async function rerunCase(caseId: string) {
 }
 
 async function rerunCases(caseIds: string[]) {
-  const ids = caseIds.map((c) => c.trim()).filter(Boolean);
-  if (!ids.length || rerunningCase.value) return;
+  const { fresh, skipped } = splitBusyIds(caseIds, busyIds());
+  if (!fresh.length) {
+    if (skipped.length) snack.notify("这些用例已在执行", "info");
+    return;
+  }
   error.value = "";
-  rerunningCase.value = ids.length === 1 ? ids[0] : BATCH_RERUN_CASE;
+  const marks = rerunMarks(fresh);
+  rerunningIds.value = withRerunMarks(rerunningIds.value, marks, true);
   try {
-    const { ids: done, label, job } = await submitRerun(jira.value, ids);
+    const { ids: done, label, job } = await submitRerun(jira.value, fresh);
     await load();
     if (job.state === "error" || job.state === "cancelled") {
       const msg =
@@ -1142,7 +1175,7 @@ async function rerunCases(caseIds: string[]) {
     error.value = e instanceof Error ? e.message : String(e);
     snack.notify(error.value, "error");
   } finally {
-    rerunningCase.value = "";
+    rerunningIds.value = withRerunMarks(rerunningIds.value, marks, false);
   }
 }
 

@@ -646,7 +646,21 @@ def test_each_case_has_its_own_execute_button():
     assert "canExecute" in card
     assert "showWaiting" in card
     assert "deps-met" in board
-    assert "execution-locked" in (root / "views" / "RequirementView.vue").read_text()
+    assert "function caseLocked" in board
+    req = (root / "views" / "RequirementView.vue").read_text()
+    assert "execution-locked" not in req
+    assert "rerunningIds" in req
+    assert ':disabled="caseLocked(c)"' in qa
+    assert "|| liveActive" not in qa
+    assert "return isRunningCase(c) || isRerunning(c.case)" in qa
+    assert "splitBusyIds" in qa
+    assert "splitBusyIds" in req
+    assert "这些用例已在执行" in qa
+    assert "这些用例已在执行" in req
+    banner = req.split("function showRunEndBanner", 1)[1].split("function ", 1)[0]
+    assert banner.find("rerunningIds.value.length") < banner.find("rerunBannerCases")
+    assert "rerunBannerCases = ids" not in req
+    assert "rerunBannerCases = done" in req
     assert "function canExecute" in qa
     assert "tableCases" in qa
 
