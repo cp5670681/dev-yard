@@ -1326,6 +1326,13 @@ def req_test_cmd(
         _echo_verify_hint(result.get("verify"))
         _echo_uncovered_hint(result)
         _echo_account_hint(root, jira)
+        if result.get("design_blocked"):
+            failed = (result.get("verify") or {}).get("failed") or []
+            typer.echo(
+                f"{jira} 设计未完成：{len(failed)} 条用例数据核实未通过，"
+                "见 qa/design-verify/BLOCKED.md"
+            )
+            raise typer.Exit(1)
         return
     summary = result.get("summary") or {}
     extra = ""

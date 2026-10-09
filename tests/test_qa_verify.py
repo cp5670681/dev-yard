@@ -876,6 +876,39 @@ def test_design_loop_repairs_data_gap(tmp_path: Path, git_src: Path, monkeypatch
     assert "核实" in result["review"]["feedback"]
 
 
+def test_repair_that_rewrites_case_body_is_rolled_back(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None, **k: 0
+    )
+    yard = _testing_req(tmp_path, git_src, "QA-V7")
+
+    class _Rewriting(_CaseWriter):
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            result = super().start(prompt, cwd, extra_read_paths, repo=repo)
+            if self.called > 1:
+                path = (
+                    self.yard / "reqs" / self.key / "qa" / "cases" / "mod" / "case-01.md"
+                )
+                text = path.read_text(encoding="utf-8").replace(
+                    "打开项目", "打开任意页面"
+                )
+                path.write_text(text, encoding="utf-8")
+            return result
+
+    writer = _Rewriting(yard, "QA-V7")
+    result = req_test(yard, "QA-V7", print_mode=True, design_only=True, runner=writer)
+    body = (
+        yard / "reqs" / "QA-V7" / "qa" / "cases" / "mod" / "case-01.md"
+    ).read_text(encoding="utf-8")
+    assert "打开项目" in body
+    assert "打开任意页面" not in body
+    assert result["design_blocked"] is True
+    assert writer.called == 2
+    assert not (yard / "reqs" / "QA-V7" / "qa" / ".design.pending").exists()
+
+
 def test_exhausted_verify_loop_records_final_failures(
     tmp_path: Path, git_src: Path, monkeypatch
 ):

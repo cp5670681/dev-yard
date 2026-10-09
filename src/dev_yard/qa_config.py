@@ -184,7 +184,7 @@ class QaConfig:
     design_verify_retry_attempts: int = 1
     design_verify_retry_backoff: float = 0.0
     # Bounded host-mediated probe round before the first design pass (0 = skip).
-    design_probe_attempts: int = 1
+    design_probe_attempts: int = 0
     # Run-level resilience (M2/M8/M9). `retry_attempts` bounds in-run requeues
     # of environment-blocked cases; `retry_backoff` is the seconds slept before
     # a requeued case is dispatched again.
@@ -490,7 +490,7 @@ def _parse_design_verify(raw: Any) -> tuple[int, bool, int, float, int]:
     immediately stop the design pass.
     """
     if raw is None:
-        return 3, True, 1, 0.0, 1
+        return 3, True, 1, 0.0, 0
     if not isinstance(raw, dict):
         raise TestRejected("qa.yaml design must be a mapping")
     attempts = _int(raw.get("verify_attempts"), "design.verify_attempts", 3)
@@ -502,7 +502,7 @@ def _parse_design_verify(raw: Any) -> tuple[int, bool, int, float, int]:
     backoff = _float(raw.get("verify_retry_backoff"), "design.verify_retry_backoff", 0.0)
     if backoff < 0:
         raise TestRejected("qa.yaml design.verify_retry_backoff must be >= 0")
-    probes = _int(raw.get("probe_attempts"), "design.probe_attempts", 1)
+    probes = _int(raw.get("probe_attempts"), "design.probe_attempts", 0)
     if probes < 0:
         raise TestRejected("qa.yaml design.probe_attempts must be >= 0")
     return attempts, _as_bool(raw.get("verify_required"), True), retry, backoff, probes

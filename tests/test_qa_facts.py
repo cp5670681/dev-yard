@@ -23,6 +23,82 @@ def test_scan_constants_reads_class_and_literal(tmp_path: Path, monkeypatch):
     assert "Widget::ACTIVE" in names
 
 
+def test_scan_department_constants_keeps_integer_ids(tmp_path: Path, monkeypatch):
+    from dev_yard import paths
+    from dev_yard.qa_facts import scan_department_constants
+
+    jira = "J-1"
+    alias = "legacy"
+    wt = tmp_path / "reqs" / jira / "worktrees" / alias / "app" / "models"
+    wt.mkdir(parents=True)
+    (wt / "dept.rb").write_text(
+        "class PointSalesSetting\n"
+        "  CLIENT_DEPARTMENT_ID = 22\n"
+        "  LABEL = 'x'\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(paths, "req_worktree", lambda *_a, **_k: wt.parents[1])
+    rows = scan_department_constants(tmp_path, jira, alias)
+    assert rows == [{"name": "PointSalesSetting::CLIENT_DEPARTMENT_ID", "value": 22}]
+
+
+def test_probe_department_ids_marks_missing(monkeypatch):
+    from dev_yard.qa_facts import probe_department_ids
+
+    monkeypatch.setattr(
+        "dev_yard.qa_facts.run_sql_lines",
+        lambda cfg, sql, catalog=None: ["3", "4"],
+    )
+    rows = probe_department_ids(
+        None,
+        "reach",
+        [
+            {"name": "Department::SALES", "value": 3},
+            {"name": "PointSalesSetting::CLIENT_DEPARTMENT_ID", "value": 22},
+        ],
+    )
+    by_name = {row["name"]: row["exists"] for row in rows}
+    assert by_name["Department::SALES"] is True
+    assert by_name["PointSalesSetting::CLIENT_DEPARTMENT_ID"] is False
+
+
+def test_department_lookups_land_on_the_repo_catalog(tmp_path: Path, monkeypatch):
+    from dev_yard.config import Repo
+    from dev_yard.qa_facts import _attach_department_lookups
+
+    seen: list[str | None] = []
+
+    def fake_probe(cfg, catalog, constants):
+        seen.append(catalog)
+        return [
+            {"name": row["name"], "value": row["value"], "table": "departments", "exists": False}
+            for row in constants
+        ]
+
+    monkeypatch.setattr("dev_yard.qa_facts.probe_department_ids", fake_probe)
+    monkeypatch.setattr(
+        "dev_yard.qa_facts.scan_department_constants",
+        lambda root, jira, alias: [{"name": "Department::SALES", "value": 3}]
+        if alias == "reach"
+        else [],
+    )
+
+    class Env:
+        db_catalogs = (object(),)
+        db_default = "main"
+
+    class Cfg:
+        env = Env()
+
+    catalogs = {"reach": {"dialect": "oracle"}, "main": {"dialect": "postgres"}}
+    repos = {"reach": Repo(alias="reach", url="x", databases=("reach",))}
+    _attach_department_lookups(tmp_path, "J-1", Cfg(), ["reach", "web"], repos, catalogs)
+    assert seen == ["reach"]
+    assert catalogs["reach"]["id_lookups"][0]["exists"] is False
+    assert "id_lookups" not in catalogs["main"]
+
+
 def test_facts_prompt_block_inlines_yaml(tmp_path: Path):
     from dev_yard.qa_facts import facts_prompt_block
 

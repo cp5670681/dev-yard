@@ -823,6 +823,12 @@ def default_execute(root: Path, job: Job) -> None:
                 f"{job.jira} design-only cases={result.get('cases')} "
                 f"review={review.get('status') or '?'}" + _questions_suffix(result)
             )
+            if result.get("design_blocked"):
+                failed = (result.get("verify") or {}).get("failed") or []
+                raise RuntimeError(
+                    f"{job.jira} 设计未完成：{len(failed)} 条用例数据核实未通过，"
+                    "见 qa/design-verify/BLOCKED.md"
+                )
             return
         if result.get("approved"):
             review = result.get("review") or {}

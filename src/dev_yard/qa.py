@@ -1494,6 +1494,8 @@ def _verify_loop(
                 verify_feedback=render_feedback(results),
                 repair_only=True,
             )
+            bodies_before = cases_fingerprint(qa, scope="bodies")
+            body_snap = _snapshot_case_bodies(qa)
             _mark_design_pending(qa)
             result = design_runner().start(
                 prompt,
@@ -1505,6 +1507,16 @@ def _verify_loop(
                 raise TestRejected(
                     f"qa-design 数据核实回流失败: {result.summary or result.exit_code}"
                 )
+            if cases_fingerprint(qa, scope="bodies") != bodies_before:
+                _restore_case_bodies(qa, body_snap)
+                _finish_design(qa)
+                reject_cases(qa, render_feedback(results))
+                if on_log is not None:
+                    on_log(
+                        "数据核实修补改了用例正文或预期，已回滚，交人工；"
+                        "只允许改 setup / cleanup / verify.sql\n"
+                    )
+                break
             cases = discover_cases(qa)
             _finish_design(qa)
             # Record the host's findings as the review state's feedback, so a
@@ -1529,6 +1541,24 @@ def _verify_loop(
         if cfg.design_verify_retry_backoff > 0:
             time.sleep(cfg.design_verify_retry_backoff)
     return results
+
+
+def _snapshot_case_bodies(qa: Path) -> dict[str, bytes]:
+    from dev_yard.qa_review import _case_assets
+
+    return {str(path): path.read_bytes() for path in _case_assets(qa, "bodies")}
+
+
+def _restore_case_bodies(qa: Path, snap: dict[str, bytes]) -> None:
+    from dev_yard.qa_review import _case_assets
+
+    for path, data in snap.items():
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    for path in _case_assets(qa, "bodies"):
+        if str(path) not in snap:
+            path.unlink(missing_ok=True)
 
 
 def _mark_design_blocked(cases: list[CaseJob], qa: Path, fingerprint: str) -> None:
@@ -2850,9 +2880,11 @@ def _req_test(
         on_log("用例契约检查：" + "；".join(lint_problems) + "\n")
 
     if design_only:
+        failed_ids = list((verify_info or {}).get("failed") or [])
         return {
             "jira": jira,
             "design_only": True,
+            "design_blocked": bool(failed_ids),
             "cases": len(cases),
             "questions": _count_open_questions(qa),
             "open_questions": open_questions_payload(qa),

@@ -17,6 +17,9 @@ from dev_yard.qa_verify import dump_live_column_types
 
 _CLASS = re.compile(r"^\s*(?:class|module)\s+([A-Za-z0-9_:]+)", re.M)
 _CONST = re.compile(r"^\s*([A-Z][A-Z0-9_]*)\s*=", re.M)
+_CONST_INT = re.compile(r"^\s*([A-Z][A-Z0-9_]*)\s*=\s*(-?\d+)\b", re.M)
+_DEPT_NAME = re.compile(r"DEPARTMENT")
+_MAX_ID_LOOKUPS = 40
 _NESTED = re.compile(r"\b([A-Z]\w*)::([A-Z][A-Z0-9_]*)\b")
 _MUTATE = re.compile(
     r"\b([A-Z]\w*)\.(?:new|create|create!|save|save!|update|update!|delete_all|destroy|destroy_all)\b"
@@ -43,6 +46,73 @@ def scan_constants(root: Path, jira: str, alias: str) -> list[str]:
             if prefix:
                 names.add(f"{prefix}::{m.group(1)}")
     return sorted(names)
+
+
+def scan_department_constants(root: Path, jira: str, alias: str) -> list[dict[str, Any]]:
+    """Integer constants whose name says DEPARTMENT, with the literal value."""
+    wt = paths.req_worktree(root, jira, alias)
+    models = wt / "app" / "models"
+    if not models.is_dir():
+        return []
+    found: dict[str, int] = {}
+    for path in models.rglob("*.rb"):
+        text = _read_worktree_text(path)
+        if not text:
+            continue
+        cls = _CLASS.search(text)
+        prefix = cls.group(1) if cls else ""
+        for m in _CONST_INT.finditer(text):
+            if not _DEPT_NAME.search(m.group(1)):
+                continue
+            name = f"{prefix}::{m.group(1)}" if prefix else m.group(1)
+            found[name] = int(m.group(2))
+    return [{"name": name, "value": found[name]} for name in sorted(found)]
+
+
+def probe_department_ids(
+    cfg: QaConfig, catalog: str | None, constants: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Ask the live DB which department-id constants actually have a row.
+
+    A missing fact returns [] so lint does not invent a failure. Existence is
+    not a people-count; the prompt only forbids using values that are absent.
+    """
+    values = []
+    for item in constants[:_MAX_ID_LOOKUPS]:
+        try:
+            values.append(int(item["value"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    uniq = sorted(set(values))
+    if not uniq:
+        return []
+    sql = "SELECT id FROM departments WHERE id IN (" + ",".join(str(v) for v in uniq) + ")"
+    try:
+        rows = run_sql_lines(cfg, sql, catalog=catalog)
+    except (TestRejected, TypeError, ValueError):
+        return []
+    present: set[int] = set()
+    for row in rows:
+        token = str(row).strip().split()[0] if str(row).strip() else ""
+        try:
+            present.add(int(token))
+        except ValueError:
+            continue
+    out: list[dict[str, Any]] = []
+    for item in constants[:_MAX_ID_LOOKUPS]:
+        try:
+            value = int(item["value"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        out.append(
+            {
+                "name": item.get("name"),
+                "value": value,
+                "table": "departments",
+                "exists": value in present,
+            }
+        )
+    return out
 
 
 def probe_dialect(cfg: QaConfig, catalog: str | None) -> tuple[str, str]:
@@ -81,6 +151,48 @@ def probe_dialect(cfg: QaConfig, catalog: str | None) -> tuple[str, str]:
     return "", ""
 
 
+def _catalog_for_alias(repos: dict, cfg: QaConfig, alias: str) -> str | None:
+    """The one catalog a repo's department ids are checked against."""
+    repo = repos.get(alias)
+    names = list(getattr(repo, "databases", ()) or ())
+    if names:
+        return str(names[0])
+    default = getattr(cfg.env, "db_default", "") or ""
+    return default or None
+
+
+def _attach_department_lookups(
+    root: Path,
+    jira: str,
+    cfg: QaConfig,
+    aliases: list[str],
+    repos: dict,
+    catalogs: dict[str, Any],
+) -> None:
+    """Probe department-id constants once per declared catalog and store them there."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for alias in aliases:
+        catalog = _catalog_for_alias(repos, cfg, alias)
+        if not catalog or catalog not in catalogs:
+            continue
+        rows = scan_department_constants(root, jira, alias)
+        if rows:
+            grouped.setdefault(catalog, []).extend(rows)
+    single = not list(getattr(cfg.env, "db_catalogs", ()) or ())
+    for catalog, rows in grouped.items():
+        seen: set[tuple[str, int]] = set()
+        unique: list[dict[str, Any]] = []
+        for row in rows:
+            key = (str(row.get("name")), int(row["value"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(row)
+        lookups = probe_department_ids(cfg, None if single else catalog, unique)
+        if lookups:
+            catalogs[catalog]["id_lookups"] = lookups
+
+
 def build_facts(root: Path, jira: str, cfg: QaConfig, aliases: list[str]) -> dict[str, Any]:
     repos = load_repos(root)
     catalogs: dict[str, Any] = {}
@@ -114,6 +226,7 @@ def build_facts(root: Path, jira: str, cfg: QaConfig, aliases: list[str]) -> dic
             if tables:
                 entry["tables"] = tables
             catalogs[cat.name] = entry
+    _attach_department_lookups(root, jira, cfg, aliases, repos, catalogs)
     worktrees: dict[str, Any] = {}
     for alias in aliases:
         consts = scan_constants(root, jira, alias)
@@ -165,6 +278,8 @@ def facts_prompt_block(qa: Path, *, limit: int = 8000) -> str:
     return (
         "\n\n# qa/facts.yaml（宿主生成的现场事实；写 setup/verify 前必读）\n\n"
         "常量存在 ≠ 语义正确（数字 ID 可能不是部门 id）。"
+        "id_lookups 里 exists=false 的值禁止当作该表的 id；"
+        "部门过滤只用 exists=true 的部门常量。"
         "freeze_models 写入必须 skip_freeze。"
         "dialect/version 决定 SQL：oracle 11 用 ROWNUM，不要 FETCH FIRST；"
         "AR 2.x 用 find(:all, :conditions => …)，不要 Model.where。\n\n"
