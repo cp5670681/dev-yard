@@ -175,6 +175,12 @@ def test_parse_and_apply_qa_seeds():
     )
     assert "id = 42" in sql
     assert missing == ["missing"]
+    quoted, _ = apply_seed_placeholders(
+        "SELECT title FROM projects WHERE title = :seed.title",
+        {"title": {"id": "O'Brien"}},
+        sql_literals=True,
+    )
+    assert quoted.endswith("title = 'O''Brien'") or "title = 'O''Brien'" in quoted
     page, missing_page = apply_seed_placeholders(
         "open /items/<seed.task_A>",
         {"task_a": {"id": "99"}},
@@ -423,6 +429,91 @@ def test_verify_case_passes_with_rows(tmp_path: Path, monkeypatch):
         "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None, **k: 1
     )
     assert verify_case(tmp_path, JIRA, _cfg(tmp_path), job).status == "passed"
+
+
+def test_verify_case_existing_row_fills_seed_aliases(tmp_path: Path, monkeypatch):
+    job = _case_job(
+        tmp_path,
+        verify_sql=(
+            "SELECT t.id AS task_id, p.title AS title "
+            "FROM land_follow_up_tasks t "
+            "JOIN project_news p ON p.id = t.project_news_id "
+            "WHERE t.state = 1"
+        ),
+        body=(
+            "## 步骤\n1. 搜索 <seed.title>\n"
+            "## 预期\n- DB: land_follow_up_tasks.id=<seed.task_id> "
+            "project_news.title\n"
+        ),
+    )
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None, **k: 1
+    )
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.run_sql_first_row",
+        lambda cfg, sql, on_log=None, **k: {"task_id": 42, "title": "深圳湾"},
+    )
+    result = verify_case(tmp_path, JIRA, _cfg(tmp_path), job)
+    assert result.status == "passed", result.error
+    data = yaml.safe_load(
+        (paths.qa_dir(tmp_path, JIRA) / "design-verify" / "seeds.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert data["case-01"]["task_id"]["id"] == "42"
+    assert data["case-01"]["title"]["id"] == "深圳湾"
+
+
+def test_verify_case_blank_alias_is_not_a_missing_column(tmp_path: Path, monkeypatch):
+    job = _case_job(
+        tmp_path,
+        verify_sql=(
+            "SELECT p.title AS title FROM project_news p WHERE p.id = 1"
+        ),
+        body="## 步骤\n1. 搜索 <seed.title>\n## 预期\n- DB: project_news.title\n",
+    )
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None, **k: 1
+    )
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.run_sql_first_row",
+        lambda cfg, sql, on_log=None, **k: {"title": None},
+    )
+    result = verify_case(tmp_path, JIRA, _cfg(tmp_path), job)
+    assert result.status == "failed"
+    assert "空值" in result.error
+    assert "查询没有列" not in result.error
+    assert not (paths.qa_dir(tmp_path, JIRA) / "design-verify" / "seeds.yaml").is_file()
+
+
+def test_read_existing_seeds_quotes_sql_and_keeps_page_text(tmp_path: Path, monkeypatch):
+    from dev_yard.qa_seeds import apply_seed_placeholders
+    from dev_yard.qa_verify import read_existing_seeds
+
+    job = _case_job(
+        tmp_path,
+        verify_sql="SELECT p.title AS title FROM project_news p",
+        body="## 步骤\n1. 搜索 <seed.title>\n## 预期\n- DB: project_news.title\n",
+    )
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.run_sql_first_row",
+        lambda cfg, sql, on_log=None, **k: {"title": "湾 一期"},
+    )
+    seeds: dict = {}
+    err, kind, _blank = read_existing_seeds(_cfg(tmp_path), job, seeds)
+    assert err is None and kind == ""
+    page, missing = apply_seed_placeholders(
+        "## 步骤\n1. 搜索 <seed.title>\n", seeds
+    )
+    assert missing == []
+    assert page.endswith("搜索 湾 一期\n") or "搜索 湾 一期" in page
+    sql, missing_sql = apply_seed_placeholders(
+        "SELECT title FROM project_news WHERE title = :seed.title",
+        seeds,
+        sql_literals=True,
+    )
+    assert missing_sql == []
+    assert "title = '湾 一期'" in sql
 
 
 def test_verify_case_exempt_marks_skipped(tmp_path: Path):
@@ -1133,6 +1224,14 @@ def test_verify_env_block_is_retried(tmp_path: Path, git_src: Path, monkeypatch)
     assert result["verify"]["summary"]["blocked"] == 1
 
 
+def test_parse_usql_json_row_takes_first_object():
+    from dev_yard.qa_exec import parse_usql_json_row
+
+    row = parse_usql_json_row('noise\n[{"task_id": 7, "title": "湾"}]')
+    assert row["task_id"] == 7
+    assert parse_usql_json_row("") == {}
+
+
 def test_render_feedback_clusters_same_root_cause():
     text = render_feedback(
         {
@@ -1157,6 +1256,64 @@ def test_render_feedback_clusters_same_root_cause():
     assert "这 2 条同一根因" in text
     assert "case-a" in text and "case-b" in text
     assert "case-c" in text
+
+
+def test_render_feedback_clusters_shared_validation():
+    err = (
+        "setup failed: jms-k8s setup.rb failed: "
+        "raise_validation_error': 验证失败: Project stage不能为空 "
+        "(ActiveRecord::RecordInvalid)"
+    )
+    text = render_feedback(
+        {
+            "case-01": VerifyResult(
+                case="case-01", status="failed", error=err, verify_sql="SELECT a.id FROM t_a a"
+            ),
+            "case-02": VerifyResult(
+                case="case-02",
+                status="failed",
+                error=err,
+                verify_sql="SELECT b.id FROM t_b b",
+            ),
+        }
+    )
+    assert "这 2 条同一根因（validation:" in text
+    assert "Project stage不能为空" in text
+
+
+def test_render_feedback_clusters_validation_line_without_error_word():
+    err = "\n".join(
+        [
+            "setup failed: jms-k8s setup.rb failed:",
+            "ActiveRecord::RecordInvalid: 验证失败: Project stage不能为空",
+            "ERROR -- : connection reset",
+        ]
+    )
+    other = err.replace("Project stage不能为空", "Country不能为空")
+    text = render_feedback(
+        {
+            "case-01": VerifyResult(
+                case="case-01",
+                status="failed",
+                error=err,
+                verify_sql="SELECT a.id FROM t_a a",
+            ),
+            "case-02": VerifyResult(
+                case="case-02",
+                status="failed",
+                error=err,
+                verify_sql="SELECT b.id FROM t_b b",
+            ),
+            "case-03": VerifyResult(
+                case="case-03",
+                status="failed",
+                error=other,
+                verify_sql="SELECT c.id FROM t_c c",
+            ),
+        }
+    )
+    assert "这 2 条同一根因（validation:Project stage不能为空）" in text
+    assert "同一根因（validation:Country不能为空）" not in text
 
 
 def test_zero_gain_stops_identical_failure_set(

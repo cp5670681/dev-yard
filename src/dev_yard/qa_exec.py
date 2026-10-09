@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import re
 import shutil
@@ -332,7 +333,7 @@ def host_case_verdict(
             "repo": job.repo,
             "assertions": [],
         }
-    query, missing = apply_seed_placeholders(text, seeds)
+    query, missing = apply_seed_placeholders(text, seeds, sql_literals=True)
     if missing:
         return {
             "status": "blocked",
@@ -740,7 +741,7 @@ def recheck_db_assertions(
         if not sql:
             continue
         if seeds:
-            sql, missing = apply_seed_placeholders(sql, seeds)
+            sql, missing = apply_seed_placeholders(sql, seeds, sql_literals=True)
             if missing:
                 problems.append(
                     {
@@ -903,6 +904,73 @@ def run_sql_lines(
         err = redact_qa_yaml((r.stderr or r.stdout or "").strip()) or str(r.returncode)
         raise TestRejected(f"schema query failed: {err}")
     return [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
+
+
+def parse_usql_json_row(stdout: str) -> dict[str, Any]:
+    """First object from `usql -J` output. Empty output is an empty row."""
+    text = (stdout or "").strip()
+    if not text:
+        return {}
+    start = min((i for i in (text.find("["), text.find("{")) if i >= 0), default=-1)
+    if start > 0:
+        text = text[start:]
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        line = next((ln for ln in text.splitlines() if ln.strip()[:1] in "[{"), "")
+        if not line:
+            raise TestRejected(f"verify row was not JSON: {text[:200]!r}") from e
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError as inner:
+            raise TestRejected(f"verify row was not JSON: {text[:200]!r}") from inner
+    if isinstance(data, list):
+        if not data:
+            return {}
+        data = data[0]
+    if not isinstance(data, dict):
+        raise TestRejected(f"verify row was not an object: {text[:200]!r}")
+    return data
+
+
+def run_sql_first_row(
+    cfg: QaConfig,
+    sql: str,
+    on_log: Any | None = None,
+    catalog: str | None = None,
+    *,
+    verify: bool = False,
+) -> dict[str, Any]:
+    """First row of a read-only verify statement, keyed by column alias.
+
+    Used when a case has no setup and names page values as `<seed.alias>`.
+    Oracle gets `ROWNUM = 1`; other catalogs get `LIMIT 1`.
+    """
+    body = assert_readonly_sql(sql)
+    try:
+        url = connect_url(cfg, catalog, verify=verify)
+    except TestRejected as e:
+        raise TestRejected("qa.yaml has no db.url; cannot read an existing row") from e
+    binary = shutil.which("usql")
+    if not binary:
+        raise TestRejected("usql not found; cannot read an existing row")
+    scheme = url.split(":", 1)[0].lower()
+    if scheme in {"oracle", "godror"}:
+        wrapped = f"SELECT * FROM ({body}) qa_verify WHERE ROWNUM = 1"
+    else:
+        wrapped = f"SELECT * FROM ({body}) qa_verify LIMIT 1"
+    if on_log is not None:
+        label = catalog or cfg.env.db_default or "db.url"
+        on_log(f"$ usql <{label}> -J -c {wrapped[:200]}")
+    r = _run(
+        [binary, url, "-J", "-q", "-c", wrapped],
+        timeout=120,
+        label="usql verify row",
+    )
+    if r.returncode != 0:
+        err = redact_qa_yaml((r.stderr or r.stdout or "").strip()) or str(r.returncode)
+        raise TestRejected(f"verify row failed: {err}")
+    return parse_usql_json_row(r.stdout or "")
 
 
 def run_sql_count(

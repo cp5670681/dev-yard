@@ -1137,6 +1137,15 @@ def _duties(kind: str, jira: str) -> str:
             "One case, one origin; cross-app flows use depends_on. Never invent columns or "
             "treat app constants as table fields. Do not invent primary keys in "
             "verify.sql without a setup that inserts those rows. "
+            "Prefer a row that already exists. verify.sql selects it by the business "
+            "condition the case needs (LIMIT 1, or ROWNUM = 1 on Oracle) and aliases "
+            "every column the page types or asserts. Steps use `<seed.alias>` for "
+            "those columns; the host stores the first row and substitutes before the "
+            "browser. Do not invent a marker string that forces an INSERT. "
+            "Write setup only when that state cannot already exist. Then read every "
+            "belongs_to without `optional: true` and every presence validation on "
+            "that model, set them all in one script, and write a matching cleanup. "
+            "Do not learn required fields one RecordInvalid at a time. "
             "Generated ids: setup prints `QA_SEED key=<name> id=<n>`; "
             "host writes qa/design-verify/seeds.yaml; verify.sql uses `:seed.<name>`; "
             "page steps use `<seed.name>` and the host substitutes before the browser. "
@@ -1290,6 +1299,11 @@ def _design_prompt(
             "只改失败清单里的用例文件（setup、cleanup、verify.sql、该用例的前置）。\n"
             "不要改其它用例，不要 diff，不要读 dev-yard 的 src/。\n"
             "错误里的异常行是结论；忽略 Rails 启动警告。\n"
+            "优先用库里已有的行：删掉 setup，verify.sql 按业务条件选出一行，"
+            "SELECT 的列别名就是步骤里的 `<seed.别名>`。\n"
+            "只有这种状态不可能已存在时才造数。造数被「验证失败」拦住时，"
+            "读该模型全部未写 optional: true 的 belongs_to 和 presence 校验，一次填齐，"
+            "并写对称 cleanup。不要按这一次报错补一个字段再重跑。\n"
             "列名以 context.md Database columns 为准（含「需求新增·现场未部署」子节）；"
             "该子节的列不得删，保留断言并在用例备注标注待部署。\n"
             "缺账号保持未覆盖，不要为账号重写用例。\n\n"
@@ -3278,6 +3292,9 @@ def _req_test(
                 on_log(line if line.endswith("\n") else line + "\n")
 
         setup_failed: str | None = None
+        seed_gap: str | None = None
+        seed_gap_kind = "case"
+        blank_aliases: list[str] = []
         seeds: dict[str, dict[str, str]] = {}
         if job.setup:
             ctx = script_lock if hold_setup else _nullcontext()
@@ -3332,7 +3349,29 @@ def _req_test(
                             if fuse_streak >= 2:
                                 _mark_env_fault(str(e), cls)
 
-        if setup_failed is not None:
+        if setup_failed is None and not job.setup:
+            if not seeds:
+                seeds = seeds_from_deps(paths.qa_dir(root, jira), job, cases)
+            from dev_yard.qa_verify import read_existing_seeds
+
+            seed_gap, seed_gap_kind, blank_aliases = read_existing_seeds(
+                cfg, job, seeds, on_log=on_log
+            )
+
+        if seed_gap:
+            got = {
+                "status": "blocked",
+                "reason": (
+                    f"env fault: {seed_gap}"
+                    if seed_gap_kind == "env"
+                    else f"case-defect: {seed_gap}"
+                ),
+                "blocked_class": "env" if seed_gap_kind == "env" else "case-defect",
+                "repo": job.repo,
+                "model": slot.model,
+                "provider": slot.provider,
+            }
+        elif setup_failed is not None:
             got = {
                 "status": "blocked",
                 "reason": setup_failed,
@@ -3368,10 +3407,12 @@ def _req_test(
                 seed_action_text(raw_case), seeds
             )
             if missing_seeds:
+                from dev_yard.qa_seeds import explain_missing_seeds
+
                 got = {
                     "status": "blocked",
-                    "reason": "case-defect: 页面步骤缺 QA_SEED "
-                    + ", ".join(missing_seeds),
+                    "reason": "case-defect: 页面步骤"
+                    + explain_missing_seeds(missing_seeds, blank_aliases, qa_seed=True),
                     "blocked_class": "case-defect",
                     "repo": job.repo,
                     "model": slot.model,

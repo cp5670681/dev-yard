@@ -21,7 +21,7 @@ description: >
 
 不要调 MCP、不要重拉 Jira、不要交互式访谈。缺细节时：能按 SPEC + 常规默认决定的，写进用例并标注假设；**真正有歧义、答错会让用例判错的，逐条写进 `qa/OPEN-QUESTIONS.md`（见下节），不要卡住、也不要默认成常规值糊过去**。
 
-提示词含「数据核实修补」时，忽略下面的全量设计步骤。只改清单点名的用例文件（setup、cleanup、verify.sql、该用例前置）。不要 diff，不要读 `src/dev_yard`。缺账号保持未覆盖。
+提示词含「数据核实修补」时，忽略下面的全量设计步骤。只改清单点名的用例文件（setup、cleanup、verify.sql、该用例前置）。不要 diff，不要读 `src/dev_yard`。缺账号保持未覆盖。核实失败时优先改成查已有行并去掉 setup：`verify.sql` 按业务条件 `SELECT` 一行，列别名对应步骤里的 `<seed.别名>`。只有该状态不可能已存在才造数。造数报「验证失败」时，一次补齐该模型全部未写 `optional: true` 的 `belongs_to` 和 `presence` 校验，并写 cleanup；不要按这一次报错补一个字段再重跑。
 
 `context.md` 的 `## Notes` 是本次环境的注意事项，**必读且逐条遵守**（见「Notes」节）。
 
@@ -66,7 +66,7 @@ description: >
 7. 跨仓、跨地址拆成多条 case，每条一个 `repo:`（yard alias），从而一个 origin、一个库。跨地址的业务流程用 `depends_on` 串起来，不要在一条用例里换 host。没有页面、只证库或脚本结果的用例写 `driver: host`（宿主跑 setup、`verify.sql`、cleanup，不开浏览器）。要开页面的用例省略 `driver`（默认 `browser`）。
 8. `depends_on` 仅当共享可变数据或业务先后时写；无依赖省略，以便并发领取。
 9. 需要非默认账号的用例，在 frontmatter 写 `account: <account_key>`；名字必须来自 `context.md` 的 Accounts 列表（宿主跑前校验，未配置会直接报错让你先跑 `dev-yard req accounts <JIRA> --auto`）。不写就用 `account.default`。若需新增账号，按「权限账号与账号发现」写 `qa/accounts-discover.sql`（只读单条 `SELECT`，`username | account_key` 两列）并在 OPEN-QUESTIONS 注明。
-10. 造数优先 `.sql`（host usql 打用例 `data.db` 对应的 catalog，缺省为 `qa.yaml` 该 env 的 `db.default`）。非 SQL 脚本由宿主按本次 env 的 `exec` 配方执行（local = freeze worktree + stdin；remote = 已部署现场 + stdin）。脚本契约：
+10. **优先用已有数据，实在没有才造数。** `verify.sql` 按这条用例要的业务条件选出库里已有的一行（`LIMIT 1`；Oracle 11 用 `ROWNUM = 1`）。`SELECT` 的列别名就是页面要用的值：步骤和预期写 `<seed.别名>`（如 `title AS title` → `<seed.title>`），宿主把第一行记进 `seeds.yaml`，开浏览器前替换。不要编一个库里没有的标记字符串再为此 `INSERT`。只有该状态不可能已存在（例如要测「没有关联项目」，而库里每条都有）才写 setup。造数优先 `.sql`（host usql 打用例 `data.db` 对应的 catalog，缺省为 `qa.yaml` 该 env 的 `db.default`）。非 SQL 脚本由宿主按本次 env 的 `exec` 配方执行（local = freeze worktree + stdin；remote = 已部署现场 + stdin）。造数前先读模型：所有没写 `optional: true` 的 `belongs_to`，以及 `validates ..., presence:`，一次填齐；同时写对称 cleanup。不要等 `create!` 报「验证失败」再补一个字段。脚本契约：
     - **单文件**，不要 `require` 邻居（多文件才用 payload bundle）。
     - 状态落 **DB**，禁止把 setup→cleanup 约定写到执行现场本地文件（pod 会换副本）。
     - 业务参数只读 `ENV['QA_ENV']` / `QA_JIRA` / `QA_CASE_ID` / `QA_SCRIPT_KIND`，**不要读 ARGV**（stdin 模式下 ARGV 是空的）。
@@ -82,7 +82,7 @@ description: >
 
 ## 预期可达性审查（强制）
 
-UI 预期只有在「该区域的数据确实会被 setup 造出（或已被核实存在）」时才可判定。每条含 UI 预期的用例都要过下面三段。
+UI 预期只有在「该区域的数据已被核实存在，或确实无法复用、只能由 setup 造出」时才可判定。每条含 UI 预期的用例都要过下面三段。默认走已有行。
 
 ### 1. 控件可达
 
@@ -90,14 +90,14 @@ UI 预期只有在「该区域的数据确实会被 setup 造出（或已被核�
 
 ### 2. 数据可达
 
-写用例时逐条自查：这个元素在哪个区域、由什么数据驱动、setup 是否覆盖那笔数据。**关联行 / 展开行 / 子表格往往是独立实体，不会从主记录继承字段**：
+写用例时逐条自查：这个元素在哪个区域、由什么数据驱动、库里是否已有这样一行。已有就用 `verify.sql` 把它选出来，步骤用 `<seed.别名>` 指代，不要再造。只有选不出来才写 setup。**关联行 / 展开行 / 子表格往往是独立实体，不会从主记录继承字段**：
 
 - 公司/项目的「联系人列表」与「联系人-项目表格」数据源不同：后者只列**参与过项目**的联系人。期望某联系人出现在该表，setup 必须建好 项目↔联系人 关联（如 `pj_contacts`/`firmtender`），只 `INSERT contacts` 不够。
 - 查重页/重复电话子表格里的「重复联系人」是**同号码的其它 contacts 记录**（各自的字段独立）。期望子行展示某字段，setup 必须逐条设置这些子记录，不能只改主联系人并指望继承。
 - **编辑/保存路径的必填字段**：种子记录必须带上保存时前端/后端会校验的字段（yard 实例：`l_salutation/province_id/city_id/l_address`），否则「更新」被校验拦住，断言根本执行不到。
-- 每个断言对象都要能追到 setup：前置里逐条列出 setup 会创建/修改的实体及关联、键值。
+- 每个断言对象都要能追到 `verify.sql` 选出的已有行，或（只在无法复用时）setup 造出的行。前置里写明用的是哪一种。
 
-**表/列名不要猜**：宿主在 `qa/context.md` 的 **Database columns** 按 catalog 写入了 `information_schema`（表: 列, …）。verify.sql / setup 只能用对应 catalog 下的列，或 worktree 里的 `db/schema.rb` / `db/structure.sql` / `prisma/schema.prisma`。`### 需求新增·现场未部署（断言不得删除）` 子节里的列**必须写进断言**，现场没这列也不许删；在用例备注标注待部署。`## 现场脚本契约` 列出各 exec site 的 Rails 版本与被 freeze 的模型，setup/cleanup 必须遵守（旧 AR 不用 `.where`，freeze 模型不用 `delete_all`）。一仓多库时 frontmatter 写 `data.db: <catalog>`（名字来自 context 的 db catalogs / 该仓 `databases`）。Ruby 常量、yml 配置数组、前端字段名不是 PG 列。不许自己连库或跑 usql（DSN 在 qa.yaml）；需要真实取值或方言确认时，写 `qa/probes/<name>.sql`（单条只读 SELECT/WITH，首行可选 `-- probe: <catalog>`）交给宿主跑，读 `qa/probe-results.md`。不要编造 `id=1001`：要么 setup INSERT 这批种子，要么按业务条件（last/version/名称）SELECT 库里已有行。
+**表/列名不要猜**：宿主在 `qa/context.md` 的 **Database columns** 按 catalog 写入了 `information_schema`（表: 列, …）。verify.sql / setup 只能用对应 catalog 下的列，或 worktree 里的 `db/schema.rb` / `db/structure.sql` / `prisma/schema.prisma`。`### 需求新增·现场未部署（断言不得删除）` 子节里的列**必须写进断言**，现场没这列也不许删；在用例备注标注待部署。`## 现场脚本契约` 列出各 exec site 的 Rails 版本与被 freeze 的模型，setup/cleanup 必须遵守（旧 AR 不用 `.where`，freeze 模型不用 `delete_all`）。一仓多库时 frontmatter 写 `data.db: <catalog>`（名字来自 context 的 db catalogs / 该仓 `databases`）。Ruby 常量、yml 配置数组、前端字段名不是 PG 列。不许自己连库或跑 usql（DSN 在 qa.yaml）；需要真实取值或方言确认时，写 `qa/probes/<name>.sql`（单条只读 SELECT/WITH，首行可选 `-- probe: <catalog>`）交给宿主跑，读 `qa/probe-results.md`。不要编造 `id=1001`。先按业务条件（last/version/名称）`SELECT` 库里已有行；只有这种行不可能存在时才 setup INSERT。
 
 **只读自检 → 写成可执行的 `verify.sql`（强制）**：依赖「线上已有数据」或自带种子的用例，都要在 frontmatter 声明 `data.verify: verify.sql`（非默认库再加 `data.db`），内容是**单条只读查询**（`SELECT`/`SHOW`/`DESC`/`EXPLAIN`，连接串取该 catalog 的 `url`，配了只读 `verify_url` 则用它），语义为**返回 ≥1 行即通过**（写成 `SELECT ... WHERE <前置条件>`，0 行即失败）。宿主在设计期真跑它，失败会带着结果回灌给你重做。
 
@@ -105,7 +105,7 @@ UI 预期只有在「该区域的数据确实会被 setup 造出（或已被核�
 - `verify.sql` 可以有 `--` / `/* */` 注释（含表头注释）；宿主剥掉注释和字符串字面量后再看语句，第一条有效 token 必须是 `SELECT`/`SHOW`/`DESC`/`DESCRIBE`/`EXPLAIN`/`WITH`/`TABLE`，整条只读、单语句。注释或字符串里出现 delete/update 等词不算写操作。只查 `_qa_*` 内部表（不 JOIN 任何业务表）会被标为「空转豁免」供人抽查，断言对象要落到业务表。
 - 含 `setup`/`cleanup` 或 `## 预期` 里有 `- DB:` 的用例**必须**有 `data.verify`，否则判失败。
 - 纯 UI 用例无数据可断言时写 `SELECT 1`，会被标为「空转豁免」供人抽查；不要用它掩盖真断言。
-- 依赖线上既有数据的步骤（如"某项目已有重复电话数据"）不要只写"假设"：要么用 `verify.sql` 核实，要么改成自带 setup 造数。查不了（无 usql/无权限）就在前置里显式标注「未验证假设」。
+- 依赖线上既有数据的步骤（如"某项目已有重复电话数据"）不要只写"假设"：用 `verify.sql` 按业务条件把那一行选出来。0 行时先放宽条件，不要先造数。查不了（无 usql/无权限）就在前置里显式标注「未验证假设」。
 
 ### 2b. 必填字段反查（保存路径）
 
@@ -118,7 +118,7 @@ UI 预期只有在「该区域的数据确实会被 setup 造出（或已被核�
 
 ### 4. seed 自证（硬护栏）
 
-只"逐条列必填字段"仍会漏。三条硬要求：
+没有 setup 的用例不走本节，已有行由 `verify.sql` 证明。有 setup 时才要求下面几条。只"逐条列必填字段"仍会漏。三条硬要求：
 
 **现场是脏库**：setup 自证只断言**本 case 种子行**（按 task_name / 业务键），不要把全年/全部门计数写成「恰好 1 / 恰好基线+1」。计数差来自现场已有行时，先探针读基线，或只检查种子是否被模型方法计入/排除。
 
@@ -162,12 +162,14 @@ covers: [D1]
 depends_on: []
 account: <可选；context.md Accounts 里的账号名，缺省=default>
 driver: browser   # 省略=browser；无页面写 host
-data: { db: research, setup: setup.sql, cleanup: cleanup.sql, verify: verify.sql }
+data: { db: research, verify: verify.sql }
+# 无法复用已有行时才加 setup / cleanup：
+# data: { db: research, setup: setup.sql, cleanup: cleanup.sql, verify: verify.sql }
 ---
 
 ## 前置
 - 已登录
-- <业务前置；逐条列出 setup 会创建/修改的实体及关联与键值，以及本 case 依赖的既有数据（由 verify.sql 核实，或标注「未验证假设」）>
+- <业务前置。默认：verify.sql 按业务条件选出的已有行，步骤用 `<seed.列别名>`。只有无法复用时才列出 setup 创建的实体>
 
 ## 步骤
 1. <可在 UI 上执行的业务步骤>
@@ -178,6 +180,6 @@ data: { db: research, setup: setup.sql, cleanup: cleanup.sql, verify: verify.sql
 - DB: <预期含 DB 时>
 ```
 
-无 DB 则去掉 `data` 与 DB 预期。造数脚本在 `qa/cases/` 内（与 case 同目录，或 `../setup.rb` 这种共用工厂），幂等。**setup 必须覆盖该 case 每条 UI 预期引用的实体，含关联行/展开行/子表格里的独立实体与编辑/保存路径的必填字段；cleanup 对称恢复；seed 要自证（见 §4）。** 有 `setup`/`cleanup` 或 `- DB:` 预期的用例必须有 `data.verify`（见 §2）。页面步骤里运行时主键写 `<seed.name>`，不要写死数字。不要在步骤里写执行器命令。
+无 DB 则去掉 `data` 与 DB 预期。**默认不写 setup**：`verify.sql` 选出已有行，页面步骤里的运行时值写 `<seed.列别名>`，不要写死数字，也不要编一个标记字符串逼自己造数。只有该状态不可能已存在才在 `qa/cases/` 内写造数脚本（与 case 同目录，或 `../setup.rb` 这种共用工厂），幂等，并写对称 cleanup。这时 setup 必须覆盖该 case 每条 UI 预期引用的实体，含关联行/展开行/子表格里的独立实体与编辑/保存路径的必填字段，并一次填齐模型必填关联（见 §4）。有 `setup`/`cleanup` 或 `- DB:` 预期的用例必须有 `data.verify`（见 §2）。不要在步骤里写执行器命令。
 
 写完后停。不要跑浏览器、不要改 STATUS.yaml。

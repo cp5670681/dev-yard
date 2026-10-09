@@ -29,6 +29,7 @@ from dev_yard.qa_exec import (
     case_script_path,
     run_case_script,
     run_sql_count,
+    run_sql_first_row,
     run_sql_lines,
     run_sql_value,
 )
@@ -114,7 +115,12 @@ def salient_error(text: str, limit: int = _MAX_ATTEMPTS_REASON) -> str:
     hit = [
         s
         for s in kept
-        if "error" in s.lower() or "exception" in s.lower() or "不存在" in s
+        if "error" in s.lower()
+        or "exception" in s.lower()
+        or "不存在" in s
+        or "验证失败" in s
+        or "recordinvalid" in s.lower()
+        or "validation failed" in s.lower()
     ]
     chosen = hit[-3:] if hit else kept[-6:]
     out = "\n".join(chosen).strip()
@@ -567,13 +573,21 @@ def enrich_verify_hint(
             )
         else:
             parts.append(
-                "查询 0 行：前置条件在当前库不成立。放宽到真实存在的行，"
-                "或补 setup 造出 verify 所断言的数据。"
+                "查询 0 行：先放宽条件，改选库里已有的行，不要先造数。"
+                "只有这种业务状态不可能已存在时才写 setup，并同时写 cleanup。"
             )
         for table in tables[:2]:
             sample = _sample_ids(cfg, table, job.db or None)
             if sample:
                 parts.append(f"表 {table} 样例 id: {sample}")
+    if "验证失败" in err or "RecordInvalid" in err:
+        parts.append(
+            "造数被模型校验拦住。优先删掉 setup，verify.sql 按业务条件选出一条已有行，"
+            "SELECT 列别名对应步骤里的 `<seed.别名>`。"
+            "只有该状态不可能已存在时才保留造数：读模型里所有未写 optional: true 的 "
+            "belongs_to 和 presence 校验，一次填齐，并写 cleanup。"
+            "不要按这一次报错补一个字段再重跑。"
+        )
     hint = " ".join(parts).strip()
     result.hint = hint
     return hint
@@ -650,6 +664,68 @@ def _write_result(qa: Path, result: VerifyResult) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def read_existing_seeds(
+    cfg: QaConfig,
+    job: CaseJob,
+    seeds: dict[str, dict[str, str]],
+    *,
+    on_log: Callable[[str], None] | None = None,
+) -> tuple[str | None, str, list[str]]:
+    """Fill `seeds` from one live row when this case has no setup.
+
+    Returns `(error, kind, blank_aliases)`. `kind` is `env` or `case`.
+    This queries the database now. It does not read design-verify/seeds.yaml,
+    which would be stale by the time the browser opens.
+    A placeholder the verify.sql itself still needs is left for the caller:
+    that query cannot be executed to discover its own bind values.
+    """
+    if job.setup:
+        return None, "", []
+    if job.path:
+        try:
+            body = Path(job.path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            body = job.body or ""
+    else:
+        body = job.body or ""
+    verify_sql = ""
+    if job.verify:
+        try:
+            verify_sql = case_script_path(job, job.verify, "verify").read_text(
+                encoding="utf-8"
+            )
+        except (OSError, UnicodeDecodeError, TestRejected) as e:
+            return f"verify.sql 不可读：{e}", "case", []
+    from dev_yard.qa_seeds import (
+        apply_seed_placeholders,
+        has_seed_placeholders,
+        seed_action_text,
+        seeds_from_columns,
+    )
+
+    if not has_seed_placeholders(body) and not has_seed_placeholders(verify_sql):
+        return None, "", []
+    _, missing_body = apply_seed_placeholders(seed_action_text(body), seeds)
+    if not missing_body:
+        return None, "", []
+    if not verify_sql.strip():
+        return "页面步骤有 <seed.> 但没有 data.verify，无法从已有行取值", "case", []
+    query, missing = apply_seed_placeholders(verify_sql, seeds, sql_literals=True)
+    if missing:
+        return None, "", []
+    try:
+        row = run_sql_first_row(
+            cfg, query, on_log=on_log, catalog=job.db or None, verify=True
+        )
+    except TestRejected as e:
+        if verify_env_error(e):
+            return str(e), "env", []
+        return f"已有行读不出种子列: {e}", "case", []
+    captured, blank = seeds_from_columns(row)
+    seeds.update(captured)
+    return None, "", blank
 
 
 def verify_case(
@@ -767,7 +843,7 @@ def verify_case(
             pass
         seeds.update(own)
     if has_seed_placeholders(text):
-        query, missing = apply_seed_placeholders(text, seeds)
+        query, missing = apply_seed_placeholders(text, seeds, sql_literals=True)
         if missing:
             result.status = "failed"
             result.error = (
@@ -785,12 +861,15 @@ def verify_case(
             body = job.body or ""
     else:
         body = job.body or ""
-    _, missing_steps = apply_seed_placeholders(seed_action_text(body), seeds)
-    if missing_steps:
-        result.status = "failed"
-        result.error = "页面步骤缺 QA_SEED " + ", ".join(missing_steps)
-        _cleanup(root, jira, cfg, job, result, on_log, executor)
-        return finish()
+    # Setup owns its seeds, so a missing `<seed.>` is already a defect.
+    # A case with no setup fills those placeholders from the verify row below.
+    if job.setup:
+        _, missing_steps = apply_seed_placeholders(seed_action_text(body), seeds)
+        if missing_steps:
+            result.status = "failed"
+            result.error = "页面步骤缺 QA_SEED " + ", ".join(missing_steps)
+            _cleanup(root, jira, cfg, job, result, on_log, executor)
+            return finish()
 
     # A restricted read-only role (catalog.verify_url / db.verify_url) is used
     # for the verify query so design does not need the write DSN.
@@ -816,9 +895,39 @@ def verify_case(
         if attr:
             result.error = f"0 rows；{attr}"
     else:
+        _, missing_before = apply_seed_placeholders(seed_action_text(body), seeds)
+        if not job.setup and missing_before:
+            try:
+                row = run_sql_first_row(
+                    cfg, query, on_log=on_log, catalog=job.db or None, verify=True
+                )
+            except TestRejected as e:
+                result.status = "failed"
+                result.error = f"已有行读不出种子列: {e}"
+                _cleanup(root, jira, cfg, job, result, on_log, executor)
+                return finish()
+            from dev_yard.qa_seeds import explain_missing_seeds, seeds_from_columns
+
+            captured, blank = seeds_from_columns(row)
+            seeds.update(captured)
+            _, missing_steps = apply_seed_placeholders(seed_action_text(body), seeds)
+            if missing_steps:
+                result.status = "failed"
+                result.error = (
+                    "已有行："
+                    + explain_missing_seeds(missing_steps, blank)
+                    + "。verify.sql 的 SELECT 别名要和 `<seed.别名>` 一致，不要为此造数"
+                )
+                _cleanup(root, jira, cfg, job, result, on_log, executor)
+                return finish()
+            if captured:
+                try:
+                    write_case_seeds(qa, job.id, captured)
+                except OSError:
+                    pass
         result.status = "passed"
         result.reason = "数据前置已核实"
-        _bind_identity(cfg, job, result, on_log)
+        _bind_identity(cfg, job, result, on_log, seeds)
 
     _cleanup(root, jira, cfg, job, result, on_log, executor)
     return finish()
@@ -829,6 +938,7 @@ def _bind_identity(
     job: CaseJob,
     result: VerifyResult,
     on_log: Callable[[str], None] | None,
+    seeds: dict[str, dict[str, str]] | None = None,
 ) -> None:
     """Record the row a mutating case bound, before cleanup releases it."""
     if result.status != "passed" or not job.writes:
@@ -839,10 +949,18 @@ def _bind_identity(
             "data.writes 需要配套的 data.identity（只读 SQL，返回这一行的 id）",
         )
         return
+    from dev_yard.qa_seeds import apply_seed_placeholders
+
+    identity, missing = apply_seed_placeholders(
+        job.identity, seeds or {}, sql_literals=True
+    )
+    if missing:
+        _fail_bind(result, "data.identity 缺 QA_SEED " + ", ".join(missing))
+        return
     try:
-        assert_readonly_sql(job.identity)
+        assert_readonly_sql(identity)
         cell = run_sql_value(
-            cfg, job.identity, on_log=on_log, catalog=job.db or None, verify=True
+            cfg, identity, on_log=on_log, catalog=job.db or None, verify=True
         ).strip()
     except TestRejected as e:
         _fail_bind(result, f"identity query failed: {e}")
@@ -1287,11 +1405,28 @@ def _failed_detail(cid: str, item: Any) -> dict[str, Any]:
     }
 
 
+_VALIDATION = re.compile(r"(?:验证失败|Validation failed)\s*:\s*(.+)", re.I)
+
+
 def _failure_signature(r: VerifyResult) -> str:
-    err = salient_error(r.error or "", 200)
+    # The raw error, not salient_error: a 验证失败 line often has neither
+    # "error" nor "exception", and the filter would drop it.
+    raw = (r.error or "").replace("\\n", "\n").replace("\\t", " ")
+    validation = _VALIDATION.search(raw)
+    if validation:
+        msg = validation.group(1).split("\n", 1)[0]
+        msg = re.sub(r"\s*\(ActiveRecord::.*", "", " ".join(msg.split()))
+        return "validation:" + msg[:160]
+    err = salient_error(raw, 400)
     m = re.search(r"(setup_[\w.-]+)", err)
     if m:
         return f"setup:{m.group(1)}"
+    # A shared setup filename is not a root cause. Use it only when the
+    # failure text itself is empty, so unrelated errors in one script stay apart.
+    if not err:
+        script = re.search(r"([\w./-]*setup[\w.-]*\.(?:rb|sql|py))", raw, re.I)
+        if script:
+            return "setup:" + script.group(1)
     if r.hint:
         return "hint:" + " ".join(r.hint.split())[:120]
     sql = " ".join((r.verify_sql or "").split())[:120]

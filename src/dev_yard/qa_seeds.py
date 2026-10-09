@@ -21,6 +21,56 @@ _PLACEHOLDER = re.compile(
 )
 
 
+_SEED_KEY = re.compile(r"^[A-Za-z_][\w]*$")
+
+
+def seeds_from_columns(row: dict[str, Any]) -> tuple[dict[str, dict[str, str]], list[str]]:
+    """Map a verify.sql result row onto the seed registry.
+
+    Returns `(seeds, blank_aliases)`. Column aliases are the `<seed.alias>`
+    keys. A null or blank cell is listed in `blank_aliases` and is not a seed,
+    so the caller can tell an empty value from a missing column.
+    """
+    out: dict[str, dict[str, str]] = {}
+    blank: list[str] = []
+    for key, val in row.items():
+        name = str(key).strip().lower()
+        if not _SEED_KEY.match(name):
+            continue
+        if val is None:
+            blank.append(name)
+            continue
+        text = str(val).strip()
+        if not text:
+            blank.append(name)
+            continue
+        out[name] = {"id": text}
+    return out, blank
+
+
+def sql_literal(value: str) -> str:
+    """Quote a seed cell for splicing into SQL text. Standard '' escaping."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def explain_missing_seeds(
+    missing: list[str], blank: list[str], *, qa_seed: bool = False
+) -> str:
+    """Why a placeholder did not resolve. Blank cells are not missing columns."""
+    blank_l = {name.lower() for name in blank}
+    empty = [key for key in missing if key.lower() in blank_l]
+    absent = [key for key in missing if key.lower() not in blank_l]
+    parts: list[str] = []
+    if absent:
+        label = "缺 QA_SEED " if qa_seed else "查询没有列 "
+        parts.append(label + ", ".join(absent))
+    if empty:
+        parts.append(
+            "列 " + ", ".join(empty) + " 查到了但是空值，换一行或换条件，不要改别名"
+        )
+    return "；".join(parts)
+
+
 def parse_qa_seeds(stdout: str) -> dict[str, dict[str, str]]:
     """`{key: {id, table?}}` from `QA_SEED key=task id=123 table=firm_tasks` lines."""
     out: dict[str, dict[str, str]] = {}
@@ -63,11 +113,17 @@ def write_case_seeds(qa: Path, case_id: str, seeds: dict[str, dict[str, str]]) -
     return path
 
 
-def apply_seed_placeholders(sql: str, seeds: dict[str, dict[str, str]]) -> tuple[str, list[str]]:
+def apply_seed_placeholders(
+    sql: str,
+    seeds: dict[str, dict[str, str]],
+    *,
+    sql_literals: bool = False,
+) -> tuple[str, list[str]]:
     """Replace `:seed.key` and `<seed.key>` with the recorded id.
 
-    Returns `(text, missing keys)`. Both forms are the same registry: verify.sql
-    uses the colon form, and the case body the browser reads uses the bracket form.
+    Returns `(text, missing keys)`. `sql_literals=False` is the case markdown
+    the browser reads: the cell is inserted raw. `sql_literals=True` is
+    verify.sql, identity SQL, and db-assertion SQL: the cell is a quoted literal.
     """
     missing: list[str] = []
     lower_seeds = {k.lower(): v for k, v in seeds.items()}
@@ -78,6 +134,8 @@ def apply_seed_placeholders(sql: str, seeds: dict[str, dict[str, str]]) -> tuple
         if not rec or not rec.get("id"):
             missing.append(key)
             return m.group(0)
+        if sql_literals:
+            return sql_literal(rec["id"])
         return rec["id"]
 
     replaced = _PLACEHOLDER.sub(repl, sql)
