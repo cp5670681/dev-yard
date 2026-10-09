@@ -1137,15 +1137,21 @@ def _duties(kind: str, jira: str) -> str:
             "One case, one origin; cross-app flows use depends_on. Never invent columns or "
             "treat app constants as table fields. Do not invent primary keys in "
             "verify.sql without a setup that inserts those rows. "
-            "Prefer a row that already exists. verify.sql selects it by the business "
-            "condition the case needs (LIMIT 1, or ROWNUM = 1 on Oracle) and aliases "
-            "every column the page types or asserts. Steps use `<seed.alias>` for "
-            "those columns; the host stores the first row and substitutes before the "
-            "browser. Do not invent a marker string that forces an INSERT. "
-            "Write setup only when that state cannot already exist. Then read every "
-            "belongs_to without `optional: true` and every presence validation on "
-            "that model, set them all in one script, and write a matching cleanup. "
-            "Do not learn required fields one RecordInvalid at a time. "
+            "Prefer a row that already exists. The first draft has no setup and no "
+            "`:seed` key that only a setup would print. verify.sql selects the row "
+            "by the business condition the case needs (LIMIT 1, or ROWNUM = 1 on "
+            "Oracle) and aliases every column the page types or asserts. Steps use "
+            "`<seed.alias>` for those columns; the host stores the first row and "
+            "substitutes before the browser. Do not invent a marker string that "
+            "forces an INSERT. The host runs verify.sql before any setup. If that "
+            "query already returns a row, delete setup. Add setup only after the "
+            "host reports 0 rows for that predicate. A save crash (NoMethodError, "
+            "or nil inside before_save) means delete setup and select an existing "
+            "row; do not invent the foreign key the callback dereferenced. When "
+            "setup is allowed, read every belongs_to without `optional: true` and "
+            "every presence validation on that model, set them all in one script, "
+            "and write a matching cleanup. Do not learn required fields one "
+            "exception at a time. "
             "Generated ids: setup prints `QA_SEED key=<name> id=<n>`; "
             "host writes qa/design-verify/seeds.yaml; verify.sql uses `:seed.<name>`; "
             "page steps use `<seed.name>` and the host substitutes before the browser. "
@@ -1154,9 +1160,8 @@ def _duties(kind: str, jira: str) -> str:
             "A case with no page sets `driver: host`: the host runs setup, verify.sql, "
             "and cleanup and does not open a browser. "
             "Do not CREATE TABLE _qa_* in the business catalog.\n"
-            "seed must hard self-prove: every entity/field/link a case asserts must "
-            "be created by setup (or verified read-only), and setup must exit(1) "
-            "when its own assertion fails — not just print.\n"
+            "A case with no setup is proved by verify.sql. When setup exists, it "
+            "must exit(1) when its own seed assertion fails — not just print.\n"
             "When setup mutates a shared row, declare `data.writes` "
             "(list of `table.column`) and `data.identity` (one read-only SELECT "
             "returning that row's id). Two cases must not write the same column "
@@ -1301,6 +1306,13 @@ def _design_prompt(
             "错误里的异常行是结论；忽略 Rails 启动警告。\n"
             "优先用库里已有的行：删掉 setup，verify.sql 按业务条件选出一行，"
             "SELECT 的列别名就是步骤里的 `<seed.别名>`。\n"
+            "宿主会先按 verify.sql 查已有行，即使声明了 setup 也先查。"
+            "查得到就删掉 data.setup 和 data.cleanup，前置改成这些已有行。\n"
+            "保存崩溃（NoMethodError、回调里对 nil 调方法）同样删掉 setup，不要补那个外键。\n"
+            "删掉 setup 时一并删掉 data.writes 和 data.identity，不要改成别的目标。\n"
+            "可以改 data.setup、data.cleanup 和「前置」。不要改「步骤」和「预期」。\n"
+            "根因聚类标成同一个异常或同一个 setup 脚本时，只改那一处共用造数，"
+            "不要按用例分别改 verify.sql。其它失败按各条 verify.sql 分别改。\n"
             "只有这种状态不可能已存在时才造数。造数被「验证失败」拦住时，"
             "读该模型全部未写 optional: true 的 belongs_to 和 presence 校验，一次填齐，"
             "并写对称 cleanup。不要按这一次报错补一个字段再重跑。\n"
@@ -1508,7 +1520,6 @@ def _verify_loop(
                 verify_feedback=render_feedback(results),
                 repair_only=True,
             )
-            bodies_before = cases_fingerprint(qa, scope="bodies")
             body_snap = _snapshot_case_bodies(qa)
             _mark_design_pending(qa)
             result = design_runner().start(
@@ -1521,14 +1532,14 @@ def _verify_loop(
                 raise TestRejected(
                     f"qa-design 数据核实回流失败: {result.summary or result.exit_code}"
                 )
-            if cases_fingerprint(qa, scope="bodies") != bodies_before:
+            if not _repair_keeps_assertions(qa, body_snap):
                 _restore_case_bodies(qa, body_snap)
                 _finish_design(qa)
                 reject_cases(qa, render_feedback(results))
                 if on_log is not None:
                     on_log(
-                        "数据核实修补改了用例正文或预期，已回滚，交人工；"
-                        "只允许改 setup / cleanup / verify.sql\n"
+                        "数据核实修补改了步骤或预期，已回滚，交人工；"
+                        "只允许改 setup / cleanup / verify.sql，以及前置和 data.setup\n"
                     )
                 break
             cases = discover_cases(qa)
@@ -1555,6 +1566,92 @@ def _verify_loop(
         if cfg.design_verify_retry_backoff > 0:
             time.sleep(cfg.design_verify_retry_backoff)
     return results
+
+
+_REPAIRABLE_SECTION = "前置"
+
+
+def _assertion_sections(body: str) -> list[tuple[str, str]]:
+    """Locked sections in order. A repeated heading stays, so it cannot hide an edit."""
+    parts = re.split(r"(?m)^(##\s+.+)$", body)
+    locked: list[tuple[str, str]] = []
+    if parts[0].strip():
+        locked.append(("__preamble__", parts[0]))
+    index = 1
+    while index < len(parts):
+        heading = parts[index].strip()
+        content = parts[index + 1] if index + 1 < len(parts) else ""
+        title = re.sub(r"^##\s+", "", heading).strip()
+        if title != _REPAIRABLE_SECTION:
+            locked.append((title, content))
+        index += 2
+    return locked
+
+
+def _data_map(meta: dict[str, Any]) -> dict[str, Any]:
+    data = meta.get("data")
+    return dict(data) if isinstance(data, dict) else {}
+
+
+def _meta_without_scripts(
+    meta: dict[str, Any], data: dict[str, Any]
+) -> dict[str, Any]:
+    out = dict(meta)
+    kept = {key: value for key, value in data.items() if key not in {"setup", "cleanup"}}
+    if kept:
+        out["data"] = kept
+    else:
+        out.pop("data", None)
+    return out
+
+
+def repair_keeps_assertions(before: str, after: str) -> bool:
+    """True when a repair only drops setup/cleanup or rewrites 前置.
+
+    Dropping setup may also drop data.writes and data.identity. Those keys
+    may not be pointed at a different row.
+    """
+    try:
+        meta_before, body_before = split_frontmatter(before)
+        meta_after, body_after = split_frontmatter(after)
+    except yaml.YAMLError:
+        return False
+    before_data = _data_map(meta_before)
+    after_data = _data_map(meta_after)
+    dropped_scripts = bool(
+        before_data.get("setup") or before_data.get("cleanup")
+    ) and not (after_data.get("setup") or after_data.get("cleanup"))
+    if dropped_scripts:
+        for key in ("writes", "identity"):
+            if key not in after_data:
+                before_data.pop(key, None)
+            elif before_data.get(key) != after_data.get(key):
+                return False
+    if _meta_without_scripts(meta_before, before_data) != _meta_without_scripts(
+        meta_after, after_data
+    ):
+        return False
+    return _assertion_sections(body_before) == _assertion_sections(body_after)
+
+
+def _repair_keeps_assertions(qa: Path, snap: dict[str, bytes]) -> bool:
+    from dev_yard.qa_review import _case_assets
+
+    current = {str(path): path.read_bytes() for path in _case_assets(qa, "bodies")}
+    if set(current) != set(snap):
+        return False
+    for path, old in snap.items():
+        new = current[path]
+        if old == new:
+            continue
+        try:
+            before = old.decode("utf-8")
+            after = new.decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+        if not repair_keeps_assertions(before, after):
+            return False
+    return True
 
 
 def _snapshot_case_bodies(qa: Path) -> dict[str, bytes]:

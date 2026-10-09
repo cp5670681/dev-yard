@@ -1232,6 +1232,347 @@ def test_parse_usql_json_row_takes_first_object():
     assert parse_usql_json_row("") == {}
 
 
+def test_render_feedback_clusters_same_exception_not_each_sql():
+    err = (
+        "setup failed: jms-k8s setup.rb failed: "
+        "from stdin:65:in `safe_create_additional_news'\n"
+        "/var/www/research/app/models/additional_news.rb:202:in `sync_gov_code': "
+        "undefined method `merge_project_codes' for nil:NilClass (NoMethodError)"
+    )
+    text = render_feedback(
+        {
+            "case-01": VerifyResult(
+                case="case-01",
+                status="failed",
+                error=err,
+                rows=0,
+                verify_sql="SELECT id FROM additional_news WHERE id IN (:seed.an1_id)",
+            ),
+            "case-02": VerifyResult(
+                case="case-02",
+                status="failed",
+                error=err.replace("stdin:65", "stdin:212"),
+                rows=0,
+                verify_sql="SELECT t.id FROM land_follow_up_tasks t",
+            ),
+        }
+    )
+    assert "这 2 条同一根因（exception:NoMethodError:sync_gov_code:" in text
+    assert "不要按用例分别改 verify.sql" in text
+    assert "未查询（造数未完成）" in text
+    assert "实际行数: 0" not in text
+    assert "```" in text
+    assert "merge_project_codes" in text
+
+
+def test_exception_backticks_stay_intact_in_feedback_html():
+    from dev_yard.web.context import render_markdown
+
+    err = (
+        "additional_news.rb:202:in `sync_gov_code': "
+        "undefined method `merge_project_codes' for nil:NilClass (NoMethodError)"
+    )
+    text = render_feedback(
+        {
+            "case-01": VerifyResult(
+                case="case-01", status="failed", error=err, verify_sql="SELECT 1"
+            )
+        }
+    )
+    html = render_markdown(text, "PG-13336")
+    assert "merge_project_codes" in html
+    assert "undefined method</code>merge_project_codes" not in html
+
+
+def test_enrich_hint_for_callback_nil_says_drop_setup():
+    from dev_yard.qa_verify import enrich_verify_hint
+
+    job = CaseJob(id="case-01", title="t", repo="backend", body="", setup="setup.rb")
+    result = VerifyResult(
+        case="case-01",
+        status="failed",
+        rows=0,
+        error=(
+            "setup failed: in `sync_gov_code': "
+            "undefined method `merge_project_codes' for nil:NilClass (NoMethodError)"
+        ),
+    )
+
+    class _Cfg:
+        env = type("E", (), {"db_url": ""})()
+
+    hint = enrich_verify_hint(_Cfg(), job, result)  # type: ignore[arg-type]
+    assert "删掉 setup" in hint
+    assert "外键" in hint
+
+
+def test_validation_failure_is_not_a_nil_callback_hint():
+    from dev_yard.qa_verify import enrich_verify_hint
+
+    job = CaseJob(id="case-01", title="t", repo="backend", body="", setup="setup.rb")
+
+    class _Cfg:
+        env = type("E", (), {"db_url": ""})()
+
+    invalid = VerifyResult(
+        case="case-01",
+        status="failed",
+        rows=0,
+        error=(
+            "setup failed: jms-k8s setup.rb failed: "
+            "验证失败: Project stage不能为空 (ActiveRecord::RecordInvalid)"
+        ),
+    )
+    hint = enrich_verify_hint(_Cfg(), job, invalid)  # type: ignore[arg-type]
+    assert "belongs_to" in hint
+    assert "外键" not in hint
+
+    timed_out = VerifyResult(
+        case="case-01",
+        status="failed",
+        rows=0,
+        error="setup failed: command timed out",
+    )
+    timeout_hint = enrich_verify_hint(_Cfg(), job, timed_out)  # type: ignore[arg-type]
+    assert "外键" not in timeout_hint
+    assert "造数在保存时崩溃" not in timeout_hint
+
+
+def test_verify_case_skips_setup_when_existing_row_matches(tmp_path: Path, monkeypatch):
+    job = _case_job(
+        tmp_path,
+        verify_sql="SELECT id FROM projects WHERE last = 1",
+        setup="setup.rb",
+        body="## 预期\n- DB: projects.id\n",
+    )
+    called: list[str] = []
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.run_case_script",
+        lambda *_a, **_k: called.append("setup") or "",
+    )
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None, **k: 2
+    )
+    result = verify_case(tmp_path, JIRA, _cfg(tmp_path), job)
+    assert result.status == "failed"
+    assert "已有行满足" in result.error
+    assert called == []
+
+
+def test_existing_row_is_counted_only_after_cleanup(tmp_path: Path, monkeypatch):
+    job = _case_job(
+        tmp_path,
+        verify_sql="SELECT id FROM projects WHERE last = 1",
+        setup="setup.rb",
+        body="## 预期\n- DB: projects.id\n",
+    )
+    job.cleanup = "cleanup.rb"
+    kinds: list[str] = []
+
+    def script(*_a, **_k):
+        kinds.append(_a[4])
+        return ""
+
+    monkeypatch.setattr("dev_yard.qa_verify.run_case_script", script)
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None, **k: 1
+    )
+    result = verify_case(tmp_path, JIRA, _cfg(tmp_path), job)
+    assert kinds == ["cleanup"]
+    assert result.status == "failed"
+    assert "已有行满足" in result.error
+
+
+def test_setup_failure_runs_cleanup(tmp_path: Path, monkeypatch):
+    job = _case_job(
+        tmp_path,
+        verify_sql="SELECT id FROM projects WHERE last = 1",
+        setup="setup.rb",
+        body="## 预期\n- DB: projects.id\n",
+    )
+    job.cleanup = "cleanup.rb"
+    kinds: list[str] = []
+
+    def script(*_a, **_k):
+        kind = _a[4]
+        kinds.append(kind)
+        if kind == "setup":
+            raise TestRejected("boom")
+        return ""
+
+    monkeypatch.setattr("dev_yard.qa_verify.run_case_script", script)
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None, **k: 0
+    )
+    result = verify_case(tmp_path, JIRA, _cfg(tmp_path), job)
+    assert kinds == ["cleanup", "setup", "cleanup"]
+    assert result.status == "failed"
+    assert "setup failed" in result.error
+
+
+def test_existing_row_failures_cluster_by_sql_not_shared_hint():
+    hint = "删掉 data.setup、data.cleanup，前置改成这些已有行。"
+    err = (
+        "已有行满足 verify.sql，但用例仍声明了 setup。"
+        "删掉 data.setup 和 data.cleanup。"
+    )
+    text = render_feedback(
+        {
+            "case-01": VerifyResult(
+                case="case-01",
+                status="failed",
+                error=err,
+                hint=hint,
+                rows=2,
+                verify_sql="SELECT id FROM projects WHERE last = 1",
+            ),
+            "case-02": VerifyResult(
+                case="case-02",
+                status="failed",
+                error=err,
+                hint=hint,
+                rows=3,
+                verify_sql="SELECT id FROM employees WHERE active = 1",
+            ),
+        }
+    )
+    assert "同一根因" not in text
+    assert "不要按用例分别改 verify.sql" not in text
+    assert "和「前置」" in text
+    assert "projects" in text and "employees" in text
+
+
+def test_verify_case_runs_setup_only_after_existing_query_is_empty(
+    tmp_path: Path, monkeypatch
+):
+    job = _case_job(
+        tmp_path,
+        verify_sql="SELECT id FROM projects WHERE last = 1",
+        setup="setup.rb",
+        body="## 预期\n- DB: projects.id\n",
+    )
+    (Path(job.path).parent / "setup.rb").write_text("puts 'ok'\n", encoding="utf-8")
+    calls = {"n": 0}
+
+    def rows(cfg, sql, on_log=None, **k):
+        calls["n"] += 1
+        return 0 if calls["n"] == 1 else 1
+
+    monkeypatch.setattr("dev_yard.qa_verify.run_sql_count", rows)
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.run_case_script",
+        lambda *_a, **_k: "QA_SEED key=row id=9\n",
+    )
+    result = verify_case(tmp_path, JIRA, _cfg(tmp_path), job)
+    assert result.status == "passed", result.error
+    assert calls["n"] == 2
+
+
+def test_repair_may_drop_setup_and_rewrite_precondition(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.run_sql_count", lambda cfg, sql, on_log=None, **k: 1
+    )
+    yard = _testing_req(tmp_path, git_src, "QA-V8")
+
+    class _DropSetup(_CaseWriter):
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            self.called += 1
+            path = self.yard / "reqs" / self.key / "qa" / "cases" / "mod" / "case-01.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if self.called == 1:
+                path.write_text(
+                    "---\n"
+                    "id: case-01\n"
+                    "title: t\n"
+                    "priority: P0\n"
+                    "requirement: QA-V8\n"
+                    "repo: backend\n"
+                    "covers: [D1]\n"
+                    "data: { verify: verify.sql, setup: setup.rb }\n"
+                    "---\n\n"
+                    "## 前置\n"
+                    "- 由 setup 准备\n\n"
+                    "## 步骤\n"
+                    "1. 打开项目\n\n"
+                    "## 预期\n"
+                    "- DB: projects.id 的记录存在\n",
+                    encoding="utf-8",
+                )
+                (path.parent / "verify.sql").write_text(
+                    "SELECT id FROM projects WHERE last = 1\n", encoding="utf-8"
+                )
+                (path.parent / "setup.rb").write_text("raise 'nope'\n", encoding="utf-8")
+            else:
+                text = path.read_text(encoding="utf-8")
+                text = text.replace(", setup: setup.rb", "")
+                text = text.replace("- 由 setup 准备", "- 已有行 last=1")
+                path.write_text(text, encoding="utf-8")
+            return RunResult(ok=True, summary="designed")
+
+    writer = _DropSetup(yard, "QA-V8")
+    result = req_test(yard, "QA-V8", print_mode=True, design_only=True, runner=writer)
+    body = (
+        yard / "reqs" / "QA-V8" / "qa" / "cases" / "mod" / "case-01.md"
+    ).read_text(encoding="utf-8")
+    assert "已有行 last=1" in body
+    assert "setup:" not in body
+    assert "打开项目" in body
+    assert result["verify"]["summary"]["passed"] == 1
+    assert writer.called == 2
+
+
+def test_repair_keeps_assertions_rejects_step_edits():
+    from dev_yard.qa import repair_keeps_assertions
+
+    before = (
+        "---\nid: case-01\ndata: { verify: verify.sql, setup: setup.rb }\n---\n\n"
+        "## 前置\n- 由 setup 准备\n\n## 步骤\n1. 打开项目\n\n## 预期\n- DB: 存在\n"
+    )
+    dropped = before.replace(", setup: setup.rb", "").replace(
+        "- 由 setup 准备", "- 已有行"
+    )
+    assert repair_keeps_assertions(before, dropped)
+    stepped = dropped.replace("打开项目", "打开任意页面")
+    assert not repair_keeps_assertions(before, stepped)
+
+    seeded = (
+        "---\n"
+        "id: case-01\n"
+        "data:\n"
+        "  verify: verify.sql\n"
+        "  setup: setup.rb\n"
+        "  writes: [projects.ownerid]\n"
+        "  identity: SELECT id FROM projects WHERE id = :seed.row\n"
+        "---\n\n"
+        "## 前置\n- 由 setup 准备\n\n## 步骤\n1. 打开项目\n\n## 预期\n- DB: 存在\n"
+    )
+    cleared = (
+        "---\n"
+        "id: case-01\n"
+        "data:\n"
+        "  verify: verify.sql\n"
+        "---\n\n"
+        "## 前置\n- 已有行\n\n## 步骤\n1. 打开项目\n\n## 预期\n- DB: 存在\n"
+    )
+    assert repair_keeps_assertions(seeded, cleared)
+    retargeted = cleared.replace(
+        "  verify: verify.sql\n",
+        "  verify: verify.sql\n  writes: [projects.other]\n"
+        "  identity: SELECT id FROM projects WHERE id = 1\n",
+    )
+    assert not repair_keeps_assertions(seeded, retargeted)
+    hidden = (
+        "---\nid: case-01\ndata: { verify: verify.sql }\n---\n\n"
+        "## 前置\n- 已有行\n\n"
+        "## 步骤\n1. 打开任意页面\n\n"
+        "## 步骤\n1. 打开项目\n\n"
+        "## 预期\n- DB: 存在\n"
+    )
+    assert not repair_keeps_assertions(before, hidden)
+
+
 def test_render_feedback_clusters_same_root_cause():
     text = render_feedback(
         {

@@ -580,13 +580,28 @@ def enrich_verify_hint(
             sample = _sample_ids(cfg, table, job.db or None)
             if sample:
                 parts.append(f"表 {table} 样例 id: {sample}")
-    if "验证失败" in err or "RecordInvalid" in err:
+    if "已有行满足 verify.sql" in err:
+        parts.append(
+            "删掉 data.setup、data.cleanup、data.writes 和 data.identity，"
+            "前置改成 verify.sql 选出的已有行。步骤和预期不要改。"
+        )
+    elif "验证失败" in err or "RecordInvalid" in err:
         parts.append(
             "造数被模型校验拦住。优先删掉 setup，verify.sql 按业务条件选出一条已有行，"
             "SELECT 列别名对应步骤里的 `<seed.别名>`。"
             "只有该状态不可能已存在时才保留造数：读模型里所有未写 optional: true 的 "
             "belongs_to 和 presence 校验，一次填齐，并写 cleanup。"
             "不要按这一次报错补一个字段再重跑。"
+        )
+    elif _SETUP_CRASH.search(err):
+        parts.append(
+            "造数在保存时崩溃。删掉 setup，以及 data.writes 和 data.identity。"
+            "verify.sql 按业务条件选出已有行，"
+            "SELECT 列别名对应步骤里的 `<seed.别名>`。"
+            "回调里对 nil 调方法（写了尚无对应行的外键，例如 projectid）时，"
+            "不要编这个外键。"
+            "只有这种状态不可能已存在时才保留造数，并一次填齐未写 optional: true 的 "
+            "belongs_to 和 presence 校验。不要按这一次堆栈补一个字段再重跑。"
         )
     hint = " ".join(parts).strip()
     result.hint = hint
@@ -818,6 +833,45 @@ def verify_case(
     qa = paths.qa_dir(root, jira)
     siblings = siblings if siblings is not None else [job]
     seeds = seeds_from_deps(qa, job, siblings)
+    # A declared setup is not run until verify.sql has been tried against rows
+    # already in the database. A query that already matches must drop setup.
+    # `:seed` keys only a setup would print cannot be probed; those still run
+    # setup, then the query.
+    probe_sql = text
+    missing_probe: list[str] = []
+    if has_seed_placeholders(text):
+        probe_sql, missing_probe = apply_seed_placeholders(
+            text, seeds, sql_literals=True
+        )
+    if job.setup and not missing_probe:
+        # A previous setup may have committed and then raised. Clear that seed
+        # before treating a hit as a row that was already in the database.
+        _cleanup(root, jira, cfg, job, result, on_log, executor)
+        if result.status == "failed":
+            return finish()
+        try:
+            existing_rows = run_sql_count(
+                cfg, probe_sql, on_log=on_log, catalog=job.db or None, verify=True
+            )
+        except TestRejected as e:
+            if verify_env_error(e):
+                result.status = "blocked"
+                result.blocked_class = "env"
+            else:
+                result.status = "failed"
+            result.error = f"verify query failed: {e}"
+            return finish()
+        except JobCancelled:
+            raise
+        if existing_rows >= 1:
+            result.status = "failed"
+            result.rows = existing_rows
+            result.error = (
+                "已有行满足 verify.sql，但用例仍声明了 setup。"
+                "删掉 data.setup 和 data.cleanup，把前置改成这些已有行。"
+                "不要再造数。"
+            )
+            return finish()
     if job.setup:
         try:
             raw_stdout = run_case_script(
@@ -828,6 +882,7 @@ def verify_case(
             result.status = "failed"
             result.setup_ok = False
             result.error = f"setup failed: {e}"
+            _cleanup(root, jira, cfg, job, result, on_log, executor)
             return finish()
         except JobCancelled:
             raise
@@ -835,6 +890,7 @@ def verify_case(
             result.status = "failed"
             result.setup_ok = False
             result.error = f"setup error: {e}"
+            _cleanup(root, jira, cfg, job, result, on_log, executor)
             return finish()
         own = parse_qa_seeds(raw_stdout or "")
         try:
@@ -1406,6 +1462,52 @@ def _failed_detail(cid: str, item: Any) -> dict[str, Any]:
 
 
 _VALIDATION = re.compile(r"(?:验证失败|Validation failed)\s*:\s*(.+)", re.I)
+# Ruby prints `in `method': message (ErrorClass)`. The closing mark is a
+# single quote, not a second backtick.
+_RUBY_EXC = re.compile(
+    r"in `([^`']+)'?:?\s*(.+?)\s*\(([A-Za-z:]*(?:Error|Exception))\)\s*$"
+)
+_NAMED_EXC = re.compile(
+    r"\b([A-Za-z_][\w:]*(?:Error|Exception)):\s*(.+)$"
+)
+# A nil receiver inside a callback. A bare "setup failed:" is a timeout,
+# a missing file, or a validation error, and must not take this hint.
+_SETUP_CRASH = re.compile(
+    r"NoMethodError|undefined method|for nil:NilClass",
+    re.I,
+)
+
+
+def _exception_signature(raw: str) -> str:
+    """Stable id for one raised exception, ignoring SQL and stack frames."""
+    text = (raw or "").replace("\\n", "\n").replace("\\t", " ")
+    found: list[str] = []
+    for line in text.splitlines():
+        s = " ".join(line.strip().split())
+        if not s:
+            continue
+        ruby = _RUBY_EXC.search(s)
+        if ruby:
+            method, msg, cls = ruby.group(1), ruby.group(2), ruby.group(3)
+            msg = msg.replace("`", "").replace("'", "")
+            cls = cls.split("::")[-1]
+            found.append(f"exception:{cls}:{method}:{msg}"[:220])
+            continue
+        named = _NAMED_EXC.search(s)
+        if named and named.group(1).lower() != "error":
+            cls = named.group(1).split("::")[-1]
+            msg = named.group(2).replace("`", "").replace("'", "")
+            found.append(f"exception:{cls}:{msg}"[:220])
+    return found[-1] if found else ""
+
+
+def _md_fence(text: str) -> str:
+    """Fence text so backticks in a Ruby exception are not inline code."""
+    body = (text or "").replace("\r\n", "\n").strip()
+    fence = "```"
+    while fence in body:
+        fence += "`"
+    return f"\n\n{fence}\n{body}\n{fence}\n"
 
 
 def _failure_signature(r: VerifyResult) -> str:
@@ -1417,6 +1519,14 @@ def _failure_signature(r: VerifyResult) -> str:
         msg = validation.group(1).split("\n", 1)[0]
         msg = re.sub(r"\s*\(ActiveRecord::.*", "", " ".join(msg.split()))
         return "validation:" + msg[:160]
+    # The same save! crash must not become one signature per verify.sql.
+    exc = _exception_signature(raw)
+    if exc:
+        return exc
+    # The drop-setup hint is the same for every case. Cluster on the query.
+    if "已有行满足 verify.sql" in raw:
+        sql = " ".join((r.verify_sql or "").split())[:120]
+        return "sql:" + sql if sql else "err:" + r.case
     err = salient_error(raw, 400)
     m = re.search(r"(setup_[\w.-]+)", err)
     if m:
@@ -1440,8 +1550,10 @@ def render_feedback(
 ) -> str:
     """Structured failure list fed back into the design agent."""
     lines = [
-        "数据核实未通过。只改下列用例的 setup / cleanup / verify.sql。",
-        "不要改其它用例，不要放宽预期，不要用 SELECT 1 掩盖真断言。",
+        "数据核实未通过。只改下列用例的 setup / cleanup / verify.sql 和「前置」。",
+        "删掉 setup 时可以一并删掉 data.writes 和 data.identity，不要改成别的目标。",
+        "不要改其它用例，不要改「步骤」和「预期」，不要放宽预期，"
+        "不要用 SELECT 1 掩盖真断言。",
         "0 行且 SQL 含 id=<数字>：禁止再换假主键；写 setup 造数或按业务条件查已有行。",
         "列不存在：用提示里的真实列名；应用常量不是表字段。"
         "属「需求新增·现场未部署」子节的列必须保留断言，并在用例备注标注待部署。",
@@ -1462,6 +1574,12 @@ def render_feedback(
             ids = ", ".join(r.case for r in items)
             lines.append(f"这 {len(items)} 条同一根因（{sig}）：{ids}")
         lines.append("")
+    if any(sig.startswith(("exception:", "setup:")) for sig in multi):
+        lines.append(
+            "同一处造数崩溃只改一次：删掉 setup 改查已有行，或只改共用的 setup。"
+            "不要按用例分别改 verify.sql。"
+        )
+        lines.append("")
     for r in failed:
         cid = r.case
         lines.append(f"## {cid}")
@@ -1469,9 +1587,12 @@ def render_feedback(
         if len(sql) > 240:
             sql = sql[:240] + "…"
         lines.append(f"- verify.sql: `{sql or '(缺失)'}`")
-        lines.append(f"- 实际行数: {r.rows}")
+        if (r.error or "").startswith(("setup failed:", "setup error:")):
+            lines.append("- 实际行数: 未查询（造数未完成）")
+        else:
+            lines.append(f"- 实际行数: {r.rows}")
         if r.error:
-            lines.append(f"- 错误: {salient_error(r.error, limit)}")
+            lines.append("- 错误:" + _md_fence(salient_error(r.error, limit)))
         if r.hint:
             lines.append(f"- 怎么改: {r.hint}")
         if r.setup_stdout:

@@ -21,7 +21,7 @@ description: >
 
 不要调 MCP、不要重拉 Jira、不要交互式访谈。缺细节时：能按 SPEC + 常规默认决定的，写进用例并标注假设；**真正有歧义、答错会让用例判错的，逐条写进 `qa/OPEN-QUESTIONS.md`（见下节），不要卡住、也不要默认成常规值糊过去**。
 
-提示词含「数据核实修补」时，忽略下面的全量设计步骤。只改清单点名的用例文件（setup、cleanup、verify.sql、该用例前置）。不要 diff，不要读 `src/dev_yard`。缺账号保持未覆盖。核实失败时优先改成查已有行并去掉 setup：`verify.sql` 按业务条件 `SELECT` 一行，列别名对应步骤里的 `<seed.别名>`。只有该状态不可能已存在才造数。造数报「验证失败」时，一次补齐该模型全部未写 `optional: true` 的 `belongs_to` 和 `presence` 校验，并写 cleanup；不要按这一次报错补一个字段再重跑。
+提示词含「数据核实修补」时，忽略下面的全量设计步骤。只改清单点名的用例文件（setup、cleanup、verify.sql、该用例前置）。不要 diff，不要读 `src/dev_yard`。缺账号保持未覆盖。核实失败时优先改成查已有行并去掉 setup：`verify.sql` 按业务条件 `SELECT` 一行，列别名对应步骤里的 `<seed.别名>`。宿主先跑这条查询，声明了 setup 也先查；查得到就删掉 `data.setup` / `data.cleanup`。保存崩溃（`NoMethodError`、回调里对 nil 调方法）同样删掉 setup，不要补那个外键。可以改 `data.setup`、`data.cleanup` 和「前置」；删掉 setup 时一并删掉 `data.writes` 和 `data.identity`，不要改成别的目标。不要改「步骤」和「预期」。根因聚类标成同一个异常或同一个 setup 脚本时，只改那一处共用造数；其它失败按各条 verify.sql 分别改。只有该状态不可能已存在才造数。造数报「验证失败」时，一次补齐该模型全部未写 `optional: true` 的 `belongs_to` 和 `presence` 校验，并写 cleanup；不要按这一次报错补一个字段再重跑。
 
 `context.md` 的 `## Notes` 是本次环境的注意事项，**必读且逐条遵守**（见「Notes」节）。
 
@@ -66,7 +66,7 @@ description: >
 7. 跨仓、跨地址拆成多条 case，每条一个 `repo:`（yard alias），从而一个 origin、一个库。跨地址的业务流程用 `depends_on` 串起来，不要在一条用例里换 host。没有页面、只证库或脚本结果的用例写 `driver: host`（宿主跑 setup、`verify.sql`、cleanup，不开浏览器）。要开页面的用例省略 `driver`（默认 `browser`）。
 8. `depends_on` 仅当共享可变数据或业务先后时写；无依赖省略，以便并发领取。
 9. 需要非默认账号的用例，在 frontmatter 写 `account: <account_key>`；名字必须来自 `context.md` 的 Accounts 列表（宿主跑前校验，未配置会直接报错让你先跑 `dev-yard req accounts <JIRA> --auto`）。不写就用 `account.default`。若需新增账号，按「权限账号与账号发现」写 `qa/accounts-discover.sql`（只读单条 `SELECT`，`username | account_key` 两列）并在 OPEN-QUESTIONS 注明。
-10. **优先用已有数据，实在没有才造数。** `verify.sql` 按这条用例要的业务条件选出库里已有的一行（`LIMIT 1`；Oracle 11 用 `ROWNUM = 1`）。`SELECT` 的列别名就是页面要用的值：步骤和预期写 `<seed.别名>`（如 `title AS title` → `<seed.title>`），宿主把第一行记进 `seeds.yaml`，开浏览器前替换。不要编一个库里没有的标记字符串再为此 `INSERT`。只有该状态不可能已存在（例如要测「没有关联项目」，而库里每条都有）才写 setup。造数优先 `.sql`（host usql 打用例 `data.db` 对应的 catalog，缺省为 `qa.yaml` 该 env 的 `db.default`）。非 SQL 脚本由宿主按本次 env 的 `exec` 配方执行（local = freeze worktree + stdin；remote = 已部署现场 + stdin）。造数前先读模型：所有没写 `optional: true` 的 `belongs_to`，以及 `validates ..., presence:`，一次填齐；同时写对称 cleanup。不要等 `create!` 报「验证失败」再补一个字段。脚本契约：
+10. **优先用已有数据，实在没有才造数。** 第一稿不要写 setup，也不要在 `verify.sql` 里用只有 setup 才会打出的 `:seed`。宿主先按业务条件查已有行；查得到就不许再造。只有宿主报 0 行才补 setup。`verify.sql` 按这条用例要的业务条件选出库里已有的一行（`LIMIT 1`；Oracle 11 用 `ROWNUM = 1`）。`SELECT` 的列别名就是页面要用的值：步骤和预期写 `<seed.别名>`（如 `title AS title` → `<seed.title>`），宿主把第一行记进 `seeds.yaml`，开浏览器前替换。不要编一个库里没有的标记字符串再为此 `INSERT`。只有该状态不可能已存在（例如要测「没有关联项目」，而库里每条都有）才写 setup。造数优先 `.sql`（host usql 打用例 `data.db` 对应的 catalog，缺省为 `qa.yaml` 该 env 的 `db.default`）。非 SQL 脚本由宿主按本次 env 的 `exec` 配方执行（local = freeze worktree + stdin；remote = 已部署现场 + stdin）。造数前先读模型：所有没写 `optional: true` 的 `belongs_to`，以及 `validates ..., presence:`，一次填齐；同时写对称 cleanup。不要等 `create!` 报「验证失败」再补一个字段。脚本契约：
     - **单文件**，不要 `require` 邻居（多文件才用 payload bundle）。
     - 状态落 **DB**，禁止把 setup→cleanup 约定写到执行现场本地文件（pod 会换副本）。
     - 业务参数只读 `ENV['QA_ENV']` / `QA_JIRA` / `QA_CASE_ID` / `QA_SCRIPT_KIND`，**不要读 ARGV**（stdin 模式下 ARGV 是空的）。
