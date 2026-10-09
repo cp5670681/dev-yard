@@ -252,6 +252,24 @@ SELECT username, 'readonly' AS account_key FROM perm;
     assert assert_readonly_sql(sql).startswith("-- header")
 
 
+def test_assert_readonly_sql_allows_parenthesized_union():
+    from dev_yard.qa_accounts import assert_readonly_sql
+
+    sql = """\
+-- header
+(
+  SELECT username, 'default' AS account_key FROM users LIMIT 1
+)
+UNION ALL
+(
+  SELECT username, 'other' AS account_key FROM users LIMIT 1
+);
+"""
+    assert assert_readonly_sql(sql).startswith("-- header")
+    with pytest.raises(ValueError, match="read-only"):
+        assert_readonly_sql("(delete from users)")
+
+
 def test_assert_readonly_sql_rejects_comment_only():
     from dev_yard.qa_accounts import assert_readonly_sql
 

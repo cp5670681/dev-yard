@@ -52,6 +52,22 @@ def _sql_body(sql: str) -> str:
     return text.strip()
 
 
+def _leading_keyword(body: str) -> str:
+    """First keyword, after comments are gone and opening parentheses are skipped.
+
+    A parenthesized ``(SELECT …) UNION ALL (SELECT …)`` is still one read-only
+    statement. ``lstrip('(')`` on the first whitespace-delimited token turns a
+    lone ``(`` into an empty word and rejects that shape.
+    """
+    i = 0
+    while i < len(body) and body[i] in " \t\r\n(":
+        i += 1
+    rest = body[i:]
+    if not rest:
+        return ""
+    return rest.split(None, 1)[0].lower()
+
+
 def assert_readonly_sql(sql: str) -> str:
     """Reject empty, multi-statement, or write-looking discovery SQL.
 
@@ -66,7 +82,7 @@ def assert_readonly_sql(sql: str) -> str:
         raise ValueError("--sql must not be empty")
     if ";" in body.rstrip(";"):
         raise ValueError("--sql must be a single statement (no `;`)")
-    head = body.split(None, 1)[0].lstrip("(").lower()
+    head = _leading_keyword(body)
     if head not in _READONLY_SQL:
         raise ValueError(
             "--sql must be read-only (select/with/show/desc/explain/table)"
