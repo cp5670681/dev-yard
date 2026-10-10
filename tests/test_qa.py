@@ -528,9 +528,9 @@ def test_context_md_freeze_models_follow_repo_exec(tmp_path: Path, monkeypatch):
         return {"FirmTask"} if alias == "backend" else set()
 
     monkeypatch.setattr("dev_yard.qa_deploy.frozen_models", fake_frozen)
-    monkeypatch.setattr("dev_yard.qa._involved_aliases", lambda *_a, **_k: ["backend"])
+    monkeypatch.setattr("dev_yard.qa_design._involved_aliases", lambda *_a, **_k: ["backend"])
     monkeypatch.setattr(
-        "dev_yard.qa.load_repos",
+        "dev_yard.qa_design.load_repos",
         lambda *_a, **_k: {
             "backend": Repo(alias="backend", url=".", exec="reach"),
         },
@@ -2024,6 +2024,7 @@ def test_req_test_blocks_named_site_auth_failure(
         return "reach" if job.id == "case-02" else "research"
 
     monkeypatch.setattr("dev_yard.qa.exec_site_for_job", fake_site)
+    monkeypatch.setattr("dev_yard.qa_runloop.exec_site_for_job", fake_site)
     monkeypatch.setattr(
         "dev_yard.qa._preload_auth",
         lambda *a, **k: {"buyer/reach": "login failed"},
@@ -4512,7 +4513,7 @@ def test_lint_cases_flags_legacy_where(tmp_path: Path, git_src: Path, monkeypatc
 
     repos = load_repos(yard)
     repos["backend"] = replace(repos["backend"], exec="reach")
-    monkeypatch.setattr("dev_yard.qa.load_repos", lambda *_a, **_k: repos)
+    monkeypatch.setattr("dev_yard.qa_design.load_repos", lambda *_a, **_k: repos)
     qa = yard / "reqs" / "QA-AR" / "qa" / "cases" / "mod"
     qa.mkdir(parents=True)
     (qa / "setup.rb").write_text("FirmTask.where(:name => 'x')\n", encoding="utf-8")
