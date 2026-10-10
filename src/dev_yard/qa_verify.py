@@ -580,6 +580,18 @@ def enrich_verify_hint(
             sample = _sample_ids(cfg, table, job.db or None)
             if sample:
                 parts.append(f"表 {table} 样例 id: {sample}")
+    if re.search(r"\b(?:\w+\.)?id\s*(?:[<>=!]+)\s*20\d{4,6}\b", sql, re.I):
+        parts.append(
+            "verify.sql 疑似将自增主键 id 与业务编码/年份（如 202681）比较；"
+            "若为分期等业务编码，请使用实际业务列（如 year/month/segment）或计算表达式。"
+        )
+    if re.search(r"\bfrom\s+cutoffs\b|\bjoin\s+cutoffs\b", sql, re.I) and re.search(
+        r"\b(?:\w+\.)?id\s+as\s+cutoff_id\b", sql, re.I
+    ):
+        parts.append(
+            "cutoffs 表的自增主键 id 不是业务分期编码 cutoff_id；"
+            "请使用业务分期表达式（如 (year::text || month::text || segment::text)::int AS cutoff_id）。"
+        )
     if "已有行满足 verify.sql" in err:
         parts.append(
             "删掉 data.setup、data.cleanup、data.writes 和 data.identity，"

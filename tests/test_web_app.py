@@ -708,7 +708,7 @@ def test_inconclusive_review_is_not_presented_as_failed():
     req = (web / "views" / "RequirementView.vue").read_text()
     dash = (web / "views" / "DashboardView.vue").read_text()
     labels = (web / "composables" / "labels.ts").read_text()
-    assert "repeat(8, minmax(180px, 1fr))" in board
+    assert "repeat(var(--ghx-cols" in board
     assert 'ticket.state === "inconclusive"' in ticket_dialog
     assert "verdict.value = null" in ticket_dialog
     assert 'props.contract === "inconclusive"' in contract_dialog

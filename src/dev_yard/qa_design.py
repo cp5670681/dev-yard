@@ -408,6 +408,7 @@ def lint_cases(root: Path, jira: str, cfg: QaConfig, cases: list[CaseJob]) -> li
             )
         problems.extend(_lint_script_facts(root, jira, cfg, job, repos_map))
         problems.extend(_lint_verify_sql_syntax(cfg, job))
+        problems.extend(_lint_verify_sql_antipatterns(job))
     for cid in uncovered_changes(paths.qa_dir(root, jira), cases):
         problems.append(f"改动点 {cid} 未被任何用例 covers")
     return problems
@@ -553,6 +554,51 @@ def _lint_verify_sql_syntax(cfg: QaConfig, job: CaseJob) -> list[str]:
     return []
 
 
+_PK_COMPARED_TO_YEAR_CODE = re.compile(
+    r"\b(?:\w+\.)?id\s*(?:[<>=!]+)\s*20\d{4,6}\b", re.I
+)
+
+_CUTOFFS_PK_AS_CUTOFF_ID = re.compile(
+    r"\b(?:\w+\.)?id\s+as\s+cutoff_id\b", re.I
+)
+
+_FROM_CUTOFFS = re.compile(r"\bfrom\s+cutoffs\b|\bjoin\s+cutoffs\b", re.I)
+
+
+def _lint_verify_sql_antipatterns(job: CaseJob) -> list[str]:
+    """Flag common antipatterns in verify.sql before review/execution."""
+    if not job.verify or not job.path:
+        return []
+    try:
+        path = case_script_path(job, job.verify, "verify")
+        sql = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError, TestRejected):
+        return []
+    out: list[str] = []
+    # 1. Comparing surrogate PK (id) with year/period code literal like 202681
+    if _PK_COMPARED_TO_YEAR_CODE.search(sql):
+        out.append(
+            f"{job.id}: verify.sql 疑似将自增主键 id 与业务编码/年份（如 202681）比较；"
+            "若为分期等业务编码，请使用实际业务列（如 year/month/segment）或计算表达式"
+        )
+    # 2. cutoffs table surrogate id aliased as cutoff_id
+    if _FROM_CUTOFFS.search(sql) and _CUTOFFS_PK_AS_CUTOFF_ID.search(sql):
+        out.append(
+            f"{job.id}: cutoffs 表的自增主键 id 不是业务分期编码 cutoff_id；"
+            "请使用业务分期表达式（如 (year::text || month::text || segment::text)::int AS cutoff_id）"
+        )
+    # 3. Role-specific case sampling generic employees without filtering
+    case_context = f"{job.title or ''} {job.body or ''}"
+    if "闪讯" in case_context or re.search(r"\bflash\b", case_context, re.I):
+        if re.search(r"\bemployees\b", sql, re.I):
+            if not re.search(r"闪讯|flash|point_report_teams|responsible_area|group_type", sql, re.I):
+                out.append(
+                    f"{job.id}: 用例限定闪讯角色，但 verify.sql 仅查询普通员工表（未关联闪讯团队或角色过滤）；"
+                    "会选出非闪讯人员导致功能无法渲染，请关联 point_report_teams 或过滤闪讯成员"
+                )
+    return out
+
+
 def _duties(kind: str, jira: str) -> str:
     # Hard constraints only; the detailed playbook lives in the SKILL.md next to
     # this text. Keep the two in sync (a test asserts the key phrases).
@@ -600,6 +646,18 @@ def _duties(kind: str, jira: str) -> str:
             "One case, one origin; cross-app flows use depends_on. Never invent columns or "
             "treat app constants as table fields. Do not invent primary keys in "
             "verify.sql without a setup that inserts those rows. "
+            "Never confuse a database surrogate primary key (auto-increment `id`) "
+            "with a business cycle code or formatted identifier (such as `cutoff_id` "
+            "YYYYMS, order number, or task code). If a table's `id` is a serial sequence, "
+            "do NOT alias `c.id AS <business_code>` and do NOT compare `id < 202681`; "
+            "select or construct the actual business column or expression. "
+            "When a feature or UI element is scoped to a specific role, department, "
+            "or team (such as 闪讯/flash, audit, or sales), verify.sql MUST include "
+            "the prerequisite role, team, or permission filter (e.g. join "
+            "point_report_teams WHERE name LIKE '%闪讯%'); never query employees "
+            "with an unrestricted WHERE e.active = 1 or fall back to default user w.deng. "
+            "UI radio options, tabs, and buttons MUST be verified against component "
+            "templates; never invent conceptual labels like '合计'/'审核'. "
             "Prefer a row that already exists. The first draft has no setup and no "
             "`:seed` key that only a setup would print. verify.sql selects the row "
             "by the business condition the case needs (LIMIT 1, or ROWNUM = 1 on "

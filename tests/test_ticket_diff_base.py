@@ -14,7 +14,7 @@ from pathlib import Path
 
 from dev_yard import gitops, service
 from dev_yard import status as st
-from dev_yard.service import init_yard, repo_add, req_open, req_freeze
+from dev_yard.service import init_yard, repo_add, req_freeze, req_open
 
 FILE = "app/list.rb"
 SEED = "1\n2\n3\nb\n5\n6\n7\n8\n9\n10\n"

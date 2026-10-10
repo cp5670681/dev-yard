@@ -1156,6 +1156,7 @@ def test_qa_duties_and_skills_stay_in_sync():
     assert "accounts-discover.sql" in design_duties
     assert "information_schema" in design_duties
     assert "schema.rb" in design_duties
+    assert "surrogate primary key" in design_duties
     assert "case-defect" in run_duties
     assert "cancelled:" in run_duties
     assert "qa logs" in run_duties
@@ -1170,6 +1171,8 @@ def test_qa_duties_and_skills_stay_in_sync():
     assert "Database columns" in design_text
     assert "information_schema" in design_text
     assert "Do not interview." not in design_text
+    assert "区分物理自增主键与业务编码标识" in design_text
+    assert "受众角色与团队前置约束" in design_text
     assert "case-defect" in run_text
     assert "cancelled:" in run_text
     # qa-powers traps that used to be missing.

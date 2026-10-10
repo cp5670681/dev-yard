@@ -1695,3 +1695,40 @@ def test_attribute_zero_rows_names_conjunct(monkeypatch):
     msg = attribute_zero_rows(None, sql, None)  # type: ignore[arg-type]
     assert "e.id = ft.created_by" in msg
     assert "1 行" in msg
+
+
+def test_lint_verify_sql_antipatterns(tmp_path: Path):
+    from dev_yard.qa_design import _lint_verify_sql_antipatterns
+    from dev_yard.qa_exec import CaseJob
+
+    case_dir = tmp_path / "case-01"
+    case_dir.mkdir(parents=True)
+    v_sql = case_dir / "verify.sql"
+
+    # 1. Primary key compared with year/period code literal
+    v_sql.write_text("SELECT c.id FROM cutoffs c WHERE c.id < 202681;", encoding="utf-8")
+    job = CaseJob(id="case-01", repo="repo", verify="verify.sql", path=str(case_dir / "case.md"), title="测试", body="正文")
+    (case_dir / "case.md").write_text("正文", encoding="utf-8")
+    errs = _lint_verify_sql_antipatterns(job)
+    assert any("自增主键 id 与业务编码/年份" in e for e in errs)
+
+    # 2. cutoffs.id aliased as cutoff_id
+    v_sql.write_text("SELECT c.id AS cutoff_id FROM cutoffs c LIMIT 1;", encoding="utf-8")
+    errs = _lint_verify_sql_antipatterns(job)
+    assert any("cutoffs 表的自增主键 id 不是业务分期编码" in e for e in errs)
+
+    # 3. Flash-specific case querying generic employees without role filter
+    v_sql.write_text("SELECT e.id FROM employees e WHERE e.active = 1;", encoding="utf-8")
+    job_flash = CaseJob(id="case-01", repo="repo", verify="verify.sql", path=str(case_dir / "case.md"), title="闪讯个人卡片展示", body="正文")
+    errs = _lint_verify_sql_antipatterns(job_flash)
+    assert any("用例限定闪讯角色" in e for e in errs)
+
+    # 4. Clean query with proper role filter and period expression
+    v_sql.write_text(
+        "SELECT (c.year::text || c.month::text || c.segment::text)::int AS cutoff_id, e.id "
+        "FROM cutoffs c CROSS JOIN employees e JOIN point_report_teams t ON t.cutoff_id = '2026-10-1' "
+        "WHERE t.name LIKE '%闪讯%' AND e.active = 1 LIMIT 1;",
+        encoding="utf-8"
+    )
+    errs = _lint_verify_sql_antipatterns(job_flash)
+    assert errs == []

@@ -96,6 +96,12 @@ UI 预期只有在「该区域的数据已被核实存在，或确实无法复�
 - 查重页/重复电话子表格里的「重复联系人」是**同号码的其它 contacts 记录**（各自的字段独立）。期望子行展示某字段，setup 必须逐条设置这些子记录，不能只改主联系人并指望继承。
 - **编辑/保存路径的必填字段**：种子记录必须带上保存时前端/后端会校验的字段（yard 实例：`l_salutation/province_id/city_id/l_address`），否则「更新」被校验拦住，断言根本执行不到。
 - 每个断言对象都要能追到 `verify.sql` 选出的已有行，或（只在无法复用时）setup 造出的行。前置里写明用的是哪一种。
+- **区分物理自增主键与业务编码标识**：
+  数据库物理自增主键（如 `cutoffs.id`，值为自增整数如 `19371`）≠ 业务编码（如分期编码 `cutoff_id` = `2026101` / `202681`，格式为年+月+段）。
+  禁止盲目 `SELECT c.id AS <business_code>`；严禁对物理主键进行形如 `c.id < 202681` 的业务范围比较。必须使用实际业务列（如 `year`/`month`/`segment`）或业务合成表达式（如 `(c.year::text || c.month::text || c.segment::text)::int AS cutoff_id`）。
+- **受众角色与团队前置约束（严禁无条件全体人员采样）**：
+  当需求/功能仅面向特定角色、团队或部门（如闪讯人员 `is_flash`、审核员、特定业务组），`verify.sql` 必须带上角色/团队/权限的前置过滤条件（例如关联团队表 `point_report_teams WHERE name LIKE '%闪讯%'`，或关联权限/角色字段）。
+  绝对不能在 `verify.sql` 中仅写 `CROSS JOIN employees e WHERE e.active = 1`，更不能用 `ORDER BY (e.username = 'w.deng') DESC` 盲目绑定默认登录人，导致选出非受众人员使功能组件无法渲染。
 
 **表/列名不要猜**：宿主在 `qa/context.md` 的 **Database columns** 按 catalog 写入了 `information_schema`（表: 列, …）。verify.sql / setup 只能用对应 catalog 下的列，或 worktree 里的 `db/schema.rb` / `db/structure.sql` / `prisma/schema.prisma`。`### 需求新增·现场未部署（断言不得删除）` 子节里的列**必须写进断言**，现场没这列也不许删；在用例备注标注待部署。`## 现场脚本契约` 列出各 exec site 的 Rails 版本与被 freeze 的模型，setup/cleanup 必须遵守（旧 AR 不用 `.where`，freeze 模型不用 `delete_all`）。一仓多库时 frontmatter 写 `data.db: <catalog>`（名字来自 context 的 db catalogs / 该仓 `databases`）。Ruby 常量、yml 配置数组、前端字段名不是 PG 列。不许自己连库或跑 usql（DSN 在 qa.yaml）；需要真实取值或方言确认时，写 `qa/probes/<name>.sql`（单条只读 SELECT/WITH，首行可选 `-- probe: <catalog>`）交给宿主跑，读 `qa/probe-results.md`。不要编造 `id=1001`。先按业务条件（last/version/名称）`SELECT` 库里已有行；只有这种行不可能存在时才 setup INSERT。
 
@@ -113,7 +119,7 @@ UI 预期只有在「该区域的数据已被核实存在，或确实无法复�
 
 ### 3. 文案溯源 + 量化口径
 
-- 按钮/提示语取自 worktree diff 原文，不来自需求文档想象。
+- 按钮/提示语/单选框（Radio）/标签页（Tab）文案必须直接从 worktree 组件源码中反查真实渲染文案（如 `staging_report.vue` 中的真实单选文案 `仅显示『已发布』数据`），严禁凭需求概括词编写测试步骤（如将单选步骤概括写成“切换『合计』与『审核』”）。
 - 排序/Top-N/计数先写判定口径（按什么字段、什么顺序、取前几条），真值由 run 查库比对，不在设计期硬编码。
 
 ### 4. seed 自证（硬护栏）
