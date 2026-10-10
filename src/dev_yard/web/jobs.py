@@ -125,7 +125,7 @@ class Job:
             cb()
 
     def _public(self) -> dict:
-        return {
+        data = {
             "id": self.id,
             "jira": self.jira,
             "action": self.action,
@@ -139,6 +139,13 @@ class Job:
             "env_waiting": self.env_waiting,
             "doc_align": self.doc_align,
         }
+        if self.action == "qa-run":
+            # Empty means a full 「执行用例」. A re-run lists its case ids so the
+            # board can lock the whole suite only for the full run.
+            data["qa_cases"] = [
+                c for c in ((self.extra or {}).get("rerun_cases") or []) if c
+            ]
+        return data
 
     def append(self, text: str) -> None:
         if not text:
@@ -154,7 +161,10 @@ class Job:
     def brief(self) -> dict:
         with self._cv:
             data = self._public()
-            return {k: data[k] for k in ("id", "jira", "action", "state", "ticket_ids", "label")}
+            keys = ("id", "jira", "action", "state", "ticket_ids", "label")
+            if self.action == "qa-run":
+                keys = (*keys, "qa_cases")
+            return {k: data[k] for k in keys}
 
     def capture(self) -> tuple[dict, int]:
         with self._cv:

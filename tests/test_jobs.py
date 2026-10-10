@@ -27,6 +27,15 @@ def _parse_sse(body: str) -> list[tuple[str, object]]:
     return events
 
 
+def test_qa_run_brief_marks_full_suite_and_rerun():
+    full = Job(id="a", jira="AB-1", action="qa-run")
+    assert full.brief()["qa_cases"] == []
+    rerun = Job(id="b", jira="AB-1", action="qa-run", extra={"rerun_cases": ["case-01"]})
+    assert rerun.brief()["qa_cases"] == ["case-01"]
+    other = Job(id="c", jira="AB-1", action="implement")
+    assert "qa_cases" not in other.brief()
+
+
 def test_wait_seq_unblocks_on_append():
     job = Job(id="abc", jira="AB-1", action="open")
     seq = job.current_seq()

@@ -219,7 +219,8 @@
           <v-btn
             color="success"
             variant="flat"
-            :loading="acting === 'run'"
+            :loading="acting === 'run' || suiteLocked"
+            :disabled="suiteLocked"
             @click="executeCases"
           >
             执行用例
@@ -287,7 +288,7 @@
               :prepend-icon="mdiRefresh"
               :append-icon="mdiMenuDown"
               :loading="batchBusy"
-              :disabled="batchBusy || listBusy(rerunnableCases)"
+              :disabled="suiteLocked || batchBusy || listBusy(rerunnableCases)"
               title="按池并发重测本轮用例"
             >
               重测 ({{ rerunnableCases.length }})
@@ -296,20 +297,20 @@
           <v-list density="compact" min-width="200">
             <v-list-item
               v-if="blockedCases.length"
-              :disabled="batchBusy || listBusy(blockedCases)"
+              :disabled="suiteLocked || batchBusy || listBusy(blockedCases)"
               @click="rerunCases(blockedCases.map((c) => c.case))"
             >
               <v-list-item-title>仅重测阻塞 ({{ blockedCases.length }})</v-list-item-title>
             </v-list-item>
             <v-list-item
               v-if="failedCases.length"
-              :disabled="batchBusy || listBusy(failedCases)"
+              :disabled="suiteLocked || batchBusy || listBusy(failedCases)"
               @click="rerunCases(failedCases.map((c) => c.case))"
             >
               <v-list-item-title>仅重测失败 ({{ failedCases.length }})</v-list-item-title>
             </v-list-item>
             <v-list-item
-              :disabled="batchBusy || listBusy(rerunnableCases)"
+              :disabled="suiteLocked || batchBusy || listBusy(rerunnableCases)"
               @click="rerunCases(rerunnableCases.map((c) => c.case))"
             >
               <v-list-item-title>失败 + 阻塞 ({{ rerunnableCases.length }})</v-list-item-title>
@@ -414,8 +415,8 @@
                   width="2"
                   class="mr-1"
                 />
-                <v-chip size="x-small" :color="statusColor(c.status)" variant="tonal">
-                  {{ statusText(c.status) }}
+                <v-chip size="x-small" :color="statusColor(rowState(c))" variant="tonal">
+                  {{ statusText(rowState(c)) }}
                 </v-chip>
               </td>
               <td>
@@ -487,7 +488,7 @@
                     variant="tonal"
                     color="error"
                     :loading="acting === `file-bug-${c.case}`"
-                    :disabled="acting !== ''"
+                    :disabled="acting !== '' || suiteLocked"
                     :title="`把 ${c.case} 下成 bug 票`"
                     @click="fileBug(c.case)"
                   >
@@ -702,7 +703,14 @@ import { QA_STATE_LABELS } from "@/composables/labels";
 import CaseDetailDialog from "@/components/CaseDetailDialog.vue";
 import ReqDocTabs from "@/components/ReqDocTabs.vue";
 import ScreenshotViewer from "@/components/ScreenshotViewer.vue";
-import { assertionPassCount, caseShotItems, isQaJobActive, useQaActive } from "@/composables/qa";
+import {
+  assertionPassCount,
+  caseShotItems,
+  isFullSuiteRun,
+  isQaJobActive,
+  useQaActive,
+  useSuiteRun,
+} from "@/composables/qa";
 import { useSnack } from "@/composables/snack";
 import { runningJobs, watchJobs } from "@/state/jobs";
 
@@ -722,6 +730,8 @@ const designOpen = ref(false);
 const designNotes = ref("");
 const designRefs = ref("");
 const rerunningIds = ref<string[]>([]);
+const { suiteLocked, armSuite, disarmSuite, noteProgress, finishSuite, overlayProgress } =
+  useSuiteRun(jira);
 const caseDialog = reactive({ open: false, caseId: "" });
 const caseFromQuery = ref(false);
 const viewer = reactive({ open: false, index: 0, images: [] as ShotItem[] });
@@ -848,12 +858,17 @@ async function designCases() {
 }
 
 async function executeCases() {
+  if (!armSuite(runs.value[0]?.progress ?? null)) {
+    snack.notify("执行用例已在进行", "info");
+    return;
+  }
   acting.value = "run";
   error.value = "";
   try {
     await runAction(jira.value, "qa-run", {});
     await load();
   } catch (e) {
+    disarmSuite();
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
     acting.value = "";
@@ -921,19 +936,27 @@ const isNewestRun = computed(
 );
 const failedCases = computed(() =>
   isNewestRun.value
-    ? (selectedRun.value?.cases || []).filter((c) => c.status === "failed" && !isRunningCase(c))
+    ? (selectedRun.value?.cases || []).filter((c) => rowState(c) === "failed" && !isRunningCase(c))
     : [],
 );
 const blockedCases = computed(() =>
   isNewestRun.value
-    ? (selectedRun.value?.cases || []).filter((c) => c.status === "blocked" && !isRunningCase(c))
+    ? (selectedRun.value?.cases || []).filter((c) => rowState(c) === "blocked" && !isRunningCase(c))
     : [],
 );
 const rerunnableCases = computed(() => [...failedCases.value, ...blockedCases.value]);
 
 const summary = computed(() => selectedRun.value?.summary || {});
 
-const liveProgress = computed(() => selectedRun.value?.progress || null);
+watch(
+  () => runs.value[0]?.progress || null,
+  (progress) => noteProgress(progress),
+);
+const liveProgress = computed(() => {
+  const stored = selectedRun.value?.progress || null;
+  if (selectedRun.value && selectedRun.value !== runs.value[0]) return stored;
+  return overlayProgress(stored, payload.value?.cases || []) ?? stored;
+});
 
 const envFault = computed(
   () => selectedRun.value?.env_fault || liveProgress.value?.env_fault || null,
@@ -990,9 +1013,16 @@ const hasActiveRun = computed(() =>
   ),
 );
 
-function isRunningCase(c: { case: string }) {
-  const live = liveProgress.value?.cases?.find((x) => x.id === c.case);
-  return live?.state === "running";
+function rowState(c: { case: string; status?: string }) {
+  if (!selectedRun.value || selectedRun.value === runs.value[0]) {
+    const live = liveProgress.value?.cases?.find((x) => x.id === c.case);
+    if (live?.state) return live.state;
+  }
+  return c.status || "";
+}
+
+function isRunningCase(c: { case: string; status?: string }) {
+  return rowState(c) === "running";
 }
 
 function casePass(c: QaPage["runs"][number]["cases"][number]) {
@@ -1051,12 +1081,12 @@ function depsMetFor(c: { case: string }) {
 }
 
 function canExecute(c: { case: string; status?: string }) {
-  const status = c.status || "";
+  const status = rowState(c);
   return reviewApproved.value && depsMetFor(c) && (status === "ready" || status === "held");
 }
 
 function showWaiting(c: { case: string; status?: string }) {
-  const status = c.status || "";
+  const status = rowState(c);
   return (
     reviewApproved.value &&
     !canExecute(c) &&
@@ -1071,8 +1101,9 @@ function waitingTitle(c: { case: string; status?: string; reason?: string }) {
   return deps ? `还在等 ${deps} 通过` : "还不能单独执行";
 }
 
-function canRerun(c: { status?: string }) {
-  return c.status === "failed" || c.status === "blocked" || c.status === "passed";
+function canRerun(c: { case: string; status?: string }) {
+  const status = rowState(c);
+  return status === "failed" || status === "blocked" || status === "passed";
 }
 
 const batchBusy = computed(() => rerunningIds.value.includes(BATCH_RERUN_CASE));
@@ -1081,7 +1112,8 @@ function isRerunning(id: string) {
   return rerunningIds.value.includes(id);
 }
 
-function caseLocked(c: { case: string }) {
+function caseLocked(c: { case: string; status?: string }) {
+  if (suiteLocked.value) return true;
   return isRunningCase(c) || isRerunning(c.case);
 }
 
@@ -1097,13 +1129,14 @@ function busyIds(): string[] {
   return ids;
 }
 
-function canFileBug(c: { status?: string }) {
-  // 下 bug 只对已审核、且这一轮结果是 failed 的用例出现。
-  return reviewApproved.value && isNewestRun.value && c.status === "failed";
+function canFileBug(c: { case: string; status?: string }) {
+  // 下 bug 只对已审核、且这一轮结果是 failed 的用例出现。整轮执行中的
+  // pending 覆盖不算失败。
+  return reviewApproved.value && isNewestRun.value && rowState(c) === "failed";
 }
 
 async function fileBug(caseId: string) {
-  if (!caseId || acting.value) return;
+  if (!caseId || acting.value || suiteLocked.value) return;
   error.value = "";
   acting.value = `file-bug-${caseId}`;
   try {
@@ -1149,6 +1182,10 @@ async function rerunCase(caseId: string) {
 }
 
 async function rerunCases(caseIds: string[]) {
+  if (suiteLocked.value) {
+    snack.notify("执行用例已在进行", "info");
+    return;
+  }
   const { fresh, skipped } = splitBusyIds(caseIds, busyIds());
   if (!fresh.length) {
     if (skipped.length) snack.notify("这些用例已在执行", "info");
@@ -1234,17 +1271,20 @@ let pollTimer: ReturnType<typeof setInterval> | undefined;
 watch(runningJobs, (jobs, prev) => {
   const had = isQaJobActive(prev || [], jira.value);
   const has = isQaJobActive(jobs, jira.value);
+  const hadFull = (prev || []).some((j) => j.jira === jira.value && isFullSuiteRun(j));
+  const hasFull = jobs.some((j) => j.jira === jira.value && isFullSuiteRun(j));
+  if (hadFull && !hasFull) finishSuite();
   if (has !== had) void load();
 });
 
 watch(
-  hasActiveRun,
-  (active) => {
+  [hasActiveRun, suiteLocked],
+  ([active, locked]) => {
     if (pollTimer) {
       clearInterval(pollTimer);
       pollTimer = undefined;
     }
-    if (active) pollTimer = setInterval(() => void load(), 5000);
+    if (active || locked) pollTimer = setInterval(() => void load(), 5000);
   },
   { immediate: true },
 );

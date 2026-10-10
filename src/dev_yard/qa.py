@@ -156,6 +156,25 @@ SpawnFn = Callable[[subprocess.Popen[str]], None]
 ReapFn = Callable[[subprocess.Popen[str]], None]
 
 
+def _drop_unstarted_progress(run_dir: Path, *, resuming: bool, prior: bytes | None) -> None:
+    """Remove a queue snapshot that never reached the first real ping().
+
+    A fresh dir with ``progress.yaml`` and no ``result.yaml`` looks like a live
+    run (``qa_run.status`` defaults to running). Delete that dir. An amend or
+    resume puts the previous ``progress.yaml`` back so the last real round stays.
+    """
+    import shutil
+
+    if not resuming:
+        shutil.rmtree(run_dir)
+        return
+    path = run_dir / "progress.yaml"
+    if prior is None:
+        path.unlink(missing_ok=True)
+        return
+    path.write_bytes(prior)
+
+
 def req_test(
     root: Path,
     jira: str,
@@ -798,153 +817,177 @@ def _req_test(
                 on_log(f"只执行 {', '.join(sorted(rerun_ids))}，其余留在本轮未排队\n")
         run_id, run_dir = _claim_run_dir(evidence)
         resuming = False
-    aliases = _involved_aliases(root, jira)
-    # An amendment (`rerun_run`) re-runs cases after a fix landed, so HEAD has
-    # legitimately moved: rebaseline here. An interrupted-resume keeps the run's
-    # original baseline so a mutation the crashed attempt left behind is caught.
-    amending = rerun_run is not None
-    tree_before: dict[str, dict[str, str]] = {}
-    heads_before: dict[str, str] = {}
-    baseline_dir = run_dir / "repo-baseline"
-    baseline_dir.mkdir(parents=True, exist_ok=True)
-    for alias in aliases:
-        wt = paths.req_worktree(root, jira, alias)
-        snap = _tree_state(wt)
-        if snap is None:
-            raise TestRejected(f"cannot read `git status` in {wt}; aborting before the run")
-        baseline_json = baseline_dir / f"{alias}.json"
-        baseline_txt = baseline_dir / f"{alias}.txt"
-        # On an interrupted resume, compare against the run's *original* baseline
-        # so a mutation left behind by the crashed attempt is still caught. A
-        # fresh run — or an amendment after a fix — records a new baseline.
-        if resuming and not amending and baseline_json.is_file():
-            try:
-                loaded = json.loads(baseline_json.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                loaded = None
-            if isinstance(loaded, dict):
-                tree_before[alias] = {str(k): str(v) for k, v in loaded.items()}
-            else:
-                tree_before[alias] = snap
-        else:
-            tree_before[alias] = snap
-            baseline_json.write_text(
-                json.dumps(snap, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-        if amending or not baseline_txt.is_file():
-            text = _porcelain(wt)
-            baseline_txt.write_text(text + ("\n" if text else ""), encoding="utf-8")
-        # A commit leaves `git status` clean, so the porcelain diff alone cannot
-        # see it; pin HEAD as a second baseline.
-        head_path = baseline_dir / f"{alias}.head"
-        if resuming and not amending and head_path.is_file():
-            heads_before[alias] = head_path.read_text(encoding="utf-8").strip()
-        else:
-            sha = _head_sha(wt) or ""
-            heads_before[alias] = sha
-            head_path.write_text(sha, encoding="utf-8")
-    root_png_before = _root_png_names(root)
-    _check_case_accounts(cfg, cases, jira)
-    # Resolve the default account so context/login use a real name. Concurrent
-    # cases may share it unless qa.yaml serialize_accounts is true.
-    for job in cases:
-        resolved = _case_account(cfg, job)
-        if resolved in cfg.env.accounts:
-            job.account = resolved
-    auth_failures = _preload_auth(root, cfg, _used_accounts(cfg, cases), on_log, cases=cases)
-    if auth_failures:
-        stamp = now_iso()
-        for job in cases:
-            if job.state == "held":
-                continue
-            why = _auth_failure_for(root, cfg, job, auth_failures)
-            if why is not None:
-                job.state = "blocked"
-                job.reason = f"auth failed: {why}"
-                job.blocked_class = "auth"
-                job.ended_at = stamp
-
-    pools = [PoolSlot.from_worker(w) for w in cfg.workers]
-    # M3: optionally probe each pool and drop the ones that cannot run.
-    if cfg.run_pool_preflight or pool_probe is not None:
-        probe = pool_probe or (
-            lambda p: _real_pool_probe(root, p, on_spawn=on_spawn, on_reap=on_reap)
-        )
-        kept: list[PoolSlot] = []
-        for p in pools:
-            try:
-                res = probe(p)
-            except Exception as e:  # noqa: BLE001 — a probe failure is just a drop
-                res = (False, str(e))
-            ok, reason = res if isinstance(res, tuple) else (bool(res), "")
-            if ok:
-                kept.append(p)
-            else:
-                qa_st.record_pools(root, jira, {p.id: "quarantined"})
-                if on_log is not None:
-                    on_log(f"模型池预检失败，隔离 {p.id}：{reason}\n")
-        if not kept:
-            host_left = any(
-                (c.driver or "browser") == "host" and c.state not in TERMINAL for c in cases
-            )
-            if not host_left:
-                raise TestRejected("所有模型池预检失败；修好 provider/额度后重跑")
-            pools = []
-            if on_log is not None:
-                on_log("模型池预检全部失败，本轮只执行 driver: host\n")
-        else:
-            pools = kept
-    qa_st.record_pools(root, jira, {p.id: "healthy" for p in pools})
-    if on_log is not None:
-        on_log("本轮使用启动时的 worker 配置\n")
     progress_path = run_dir / "progress.yaml"
-    script_lock = Lock()
-    env_fault: dict[str, Any] | None = None
-    fuse_class: str | None = None
-    fuse_streak = 0
-    from dev_yard.script_exec import FUSE_CLASSES
-
-    executor, site_faults = ping_case_sites(root, jira, cfg, cases)
-    if executor is not None and executor.cross_site_warning and on_log is not None:
-        on_log(executor.cross_site_warning + "\n")
-    serial = not bool(getattr(cfg.env.exec_cfg, "parallel", False))
-    hold_setup = serial or (executor is not None and executor.use == "jms-k8s")
-
-    def ping() -> None:
+    prior_progress = progress_path.read_bytes() if progress_path.is_file() else None
+    try:
+        # Publish the queue before login, model-pool probe, and site ping. Those
+        # steps can sit for tens of seconds (or behind another requirement's env
+        # lock) and the board otherwise keeps the previous verdicts, so 执行 stays
+        # clickable. A later ping() replaces this snapshot.
+        if on_log is not None:
+            on_log("执行已提交，正在准备登录、模型池和执行环境\n")
         _write_progress(
-            progress_path,
+            run_dir / "progress.yaml",
             run_id,
             cfg.active_env,
-            pools,
+            [],
             cases,
             on_progress,
-            on_log,
-            env_fault=env_fault,
+            None,
         )
-
-    if site_faults:
-        first_fault = next(iter(site_faults.values()))
-        env_fault = {
-            "class": first_fault.get("class") or "unreachable",
-            "message": "; ".join(
-                f"{site or '(default)'}: {fault.get('message')}"
-                for site, fault in site_faults.items()
-            ),
-        }
-        stamp = now_iso()
+        aliases = _involved_aliases(root, jira)
+        # An amendment (`rerun_run`) re-runs cases after a fix landed, so HEAD has
+        # legitimately moved: rebaseline here. An interrupted-resume keeps the run's
+        # original baseline so a mutation the crashed attempt left behind is caught.
+        amending = rerun_run is not None
+        tree_before: dict[str, dict[str, str]] = {}
+        heads_before: dict[str, str] = {}
+        baseline_dir = run_dir / "repo-baseline"
+        baseline_dir.mkdir(parents=True, exist_ok=True)
+        for alias in aliases:
+            wt = paths.req_worktree(root, jira, alias)
+            snap = _tree_state(wt)
+            if snap is None:
+                raise TestRejected(f"cannot read `git status` in {wt}; aborting before the run")
+            baseline_json = baseline_dir / f"{alias}.json"
+            baseline_txt = baseline_dir / f"{alias}.txt"
+            # On an interrupted resume, compare against the run's *original* baseline
+            # so a mutation left behind by the crashed attempt is still caught. A
+            # fresh run — or an amendment after a fix — records a new baseline.
+            if resuming and not amending and baseline_json.is_file():
+                try:
+                    loaded = json.loads(baseline_json.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    loaded = None
+                if isinstance(loaded, dict):
+                    tree_before[alias] = {str(k): str(v) for k, v in loaded.items()}
+                else:
+                    tree_before[alias] = snap
+            else:
+                tree_before[alias] = snap
+                baseline_json.write_text(
+                    json.dumps(snap, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+            if amending or not baseline_txt.is_file():
+                text = _porcelain(wt)
+                baseline_txt.write_text(text + ("\n" if text else ""), encoding="utf-8")
+            # A commit leaves `git status` clean, so the porcelain diff alone cannot
+            # see it; pin HEAD as a second baseline.
+            head_path = baseline_dir / f"{alias}.head"
+            if resuming and not amending and head_path.is_file():
+                heads_before[alias] = head_path.read_text(encoding="utf-8").strip()
+            else:
+                sha = _head_sha(wt) or ""
+                heads_before[alias] = sha
+                head_path.write_text(sha, encoding="utf-8")
+        root_png_before = _root_png_names(root)
+        _check_case_accounts(cfg, cases, jira)
+        # Resolve the default account so context/login use a real name. Concurrent
+        # cases may share it unless qa.yaml serialize_accounts is true.
         for job in cases:
-            if job.state == "held":
-                continue
-            fault = site_faults.get(exec_site_for_job(root, cfg, job) or "")
-            if fault and case_needs_exec_site(job) and job.state not in TERMINAL:
-                job.state = "blocked"
-                job.reason = f"env fault: {fault.get('message')}"
-                job.blocked_class = "env"
-                job.ended_at = stamp
-        if on_log is not None:
-            on_log(f"env fault: {env_fault['message']}\n")
+            resolved = _case_account(cfg, job)
+            if resolved in cfg.env.accounts:
+                job.account = resolved
+        auth_failures = _preload_auth(root, cfg, _used_accounts(cfg, cases), on_log, cases=cases)
+        if auth_failures:
+            stamp = now_iso()
+            for job in cases:
+                if job.state == "held":
+                    continue
+                why = _auth_failure_for(root, cfg, job, auth_failures)
+                if why is not None:
+                    job.state = "blocked"
+                    job.reason = f"auth failed: {why}"
+                    job.blocked_class = "auth"
+                    job.ended_at = stamp
 
-    ping()
+        pools = [PoolSlot.from_worker(w) for w in cfg.workers]
+        # M3: optionally probe each pool and drop the ones that cannot run.
+        if cfg.run_pool_preflight or pool_probe is not None:
+            probe = pool_probe or (
+                lambda p: _real_pool_probe(root, p, on_spawn=on_spawn, on_reap=on_reap)
+            )
+            kept: list[PoolSlot] = []
+            for p in pools:
+                try:
+                    res = probe(p)
+                except Exception as e:  # noqa: BLE001 — a probe failure is just a drop
+                    res = (False, str(e))
+                ok, reason = res if isinstance(res, tuple) else (bool(res), "")
+                if ok:
+                    kept.append(p)
+                else:
+                    qa_st.record_pools(root, jira, {p.id: "quarantined"})
+                    if on_log is not None:
+                        on_log(f"模型池预检失败，隔离 {p.id}：{reason}\n")
+            if not kept:
+                host_left = any(
+                    (c.driver or "browser") == "host" and c.state not in TERMINAL for c in cases
+                )
+                if not host_left:
+                    raise TestRejected("所有模型池预检失败；修好 provider/额度后重跑")
+                pools = []
+                if on_log is not None:
+                    on_log("模型池预检全部失败，本轮只执行 driver: host\n")
+            else:
+                pools = kept
+        qa_st.record_pools(root, jira, {p.id: "healthy" for p in pools})
+        if on_log is not None:
+            on_log("本轮使用启动时的 worker 配置\n")
+        progress_path = run_dir / "progress.yaml"
+        script_lock = Lock()
+        env_fault: dict[str, Any] | None = None
+        fuse_class: str | None = None
+        fuse_streak = 0
+        from dev_yard.script_exec import FUSE_CLASSES
+
+        executor, site_faults = ping_case_sites(root, jira, cfg, cases)
+        if executor is not None and executor.cross_site_warning and on_log is not None:
+            on_log(executor.cross_site_warning + "\n")
+        serial = not bool(getattr(cfg.env.exec_cfg, "parallel", False))
+        hold_setup = serial or (executor is not None and executor.use == "jms-k8s")
+
+        def ping() -> None:
+            _write_progress(
+                progress_path,
+                run_id,
+                cfg.active_env,
+                pools,
+                cases,
+                on_progress,
+                on_log,
+                env_fault=env_fault,
+            )
+
+        if site_faults:
+            first_fault = next(iter(site_faults.values()))
+            env_fault = {
+                "class": first_fault.get("class") or "unreachable",
+                "message": "; ".join(
+                    f"{site or '(default)'}: {fault.get('message')}"
+                    for site, fault in site_faults.items()
+                ),
+            }
+            stamp = now_iso()
+            for job in cases:
+                if job.state == "held":
+                    continue
+                fault = site_faults.get(exec_site_for_job(root, cfg, job) or "")
+                if fault and case_needs_exec_site(job) and job.state not in TERMINAL:
+                    job.state = "blocked"
+                    job.reason = f"env fault: {fault.get('message')}"
+                    job.blocked_class = "env"
+                    job.ended_at = stamp
+            if on_log is not None:
+                on_log(f"env fault: {env_fault['message']}\n")
+
+        ping()
+    except TestRejected:
+        # Setup never reached a real queue. A fresh dir would stay "running"
+        # with every case pending; an amend must keep the previous snapshot.
+        _drop_unstarted_progress(run_dir, resuming=resuming, prior=prior_progress)
+        raise
+
 
     run_wide_fault = False
 

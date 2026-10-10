@@ -2049,6 +2049,137 @@ def test_req_test_blocks_named_site_auth_failure(
     assert result["summary"]["blocked"] == 1
 
 
+def test_run_publishes_progress_before_auth_and_probe(tmp_path: Path, git_src: Path, monkeypatch):
+    """The board must leave the previous verdict before login and pool probe."""
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-EARLY")
+    _write_case(
+        yard,
+        "QA-EARLY",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+    seen: list[str] = []
+
+    def fake_auth(*_a, **_k):
+        evidence = yard / "reqs" / "QA-EARLY" / "qa" / "evidence"
+        docs = list(evidence.glob("*/progress.yaml"))
+        assert docs, "progress.yaml must exist before auth"
+        doc = yaml.safe_load(docs[0].read_text(encoding="utf-8"))
+        assert doc["cases"][0]["state"] == "pending"
+        seen.append("auth")
+        return {}
+
+    monkeypatch.setattr("dev_yard.qa._preload_auth", fake_auth)
+    result = req_test(
+        yard,
+        "QA-EARLY",
+        print_mode=True,
+        run_only=True,
+        unsafe_skip_review=True,
+        ingest=False,
+        case_runner=lambda job, slot: {"status": "passed", "repo": "backend"},
+    )
+    assert seen == ["auth"]
+    assert result["summary"]["passed"] == 1
+
+
+def test_rejected_setup_drops_the_unstarted_run(tmp_path: Path, git_src: Path, monkeypatch):
+    """A TestRejected before the first ping must not leave a fake running queue."""
+    from dev_yard.qa_runloop import find_incomplete_run
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-DROP")
+    _write_case(
+        yard,
+        "QA-DROP",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+
+    def boom(*_a, **_k):
+        evidence = yard / "reqs" / "QA-DROP" / "qa" / "evidence"
+        docs = list(evidence.glob("*/progress.yaml"))
+        assert docs, "progress.yaml is published before the account check"
+        doc = yaml.safe_load(docs[0].read_text(encoding="utf-8"))
+        assert doc["cases"][0]["state"] == "pending"
+        raise TestRejected("account missing")
+
+    monkeypatch.setattr("dev_yard.qa._check_case_accounts", boom)
+    with pytest.raises(TestRejected, match="account missing"):
+        req_test(
+            yard,
+            "QA-DROP",
+            print_mode=True,
+            run_only=True,
+            unsafe_skip_review=True,
+            ingest=False,
+            case_runner=lambda job, slot: {"status": "passed", "repo": "backend"},
+        )
+    qa = yard / "reqs" / "QA-DROP" / "qa"
+    assert not list((qa / "evidence").glob("*/progress.yaml"))
+    assert find_incomplete_run(qa) is None
+
+
+def test_rejected_amend_restores_the_previous_progress(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    """An amend that dies before ping puts the pre-snapshot progress.yaml back."""
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-KEEP")
+    _write_case(
+        yard,
+        "QA-KEEP",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\n---\n\nbody\n",
+    )
+    monkeypatch.setattr("dev_yard.qa._preload_auth", lambda *a, **k: {})
+    first = req_test(
+        yard,
+        "QA-KEEP",
+        print_mode=True,
+        run_only=True,
+        unsafe_skip_review=True,
+        ingest=False,
+        case_runner=lambda job, slot: {"status": "passed", "repo": "backend"},
+    )
+    run_dir = yard / "reqs" / "QA-KEEP" / "qa" / "evidence" / first["run_id"]
+    assert (run_dir / "result.yaml").is_file()
+
+    from dev_yard import qa as qa_mod
+
+    original = qa_mod._write_progress
+    captured: dict[str, bytes] = {}
+
+    def wrapped(path: Path, *args, **kwargs):
+        if "before" not in captured and path.is_file():
+            captured["before"] = path.read_bytes()
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(qa_mod, "_write_progress", wrapped)
+
+    def boom(*_a, **_k):
+        raise TestRejected("account missing")
+
+    monkeypatch.setattr(qa_mod, "_check_case_accounts", boom)
+    with pytest.raises(TestRejected, match="account missing"):
+        req_test(
+            yard,
+            "QA-KEEP",
+            print_mode=True,
+            ingest=False,
+            rerun_cases=["case-01"],
+        )
+    assert captured["before"]
+    assert run_dir.is_dir()
+    assert (run_dir / "progress.yaml").read_bytes() == captured["before"]
+    restored = yaml.safe_load((run_dir / "progress.yaml").read_text(encoding="utf-8"))
+    assert restored.get("pools"), "the empty early snapshot must not replace the last real queue"
+
+
 def test_req_test_setup_failure_still_runs_cleanup(
     tmp_path: Path, git_src: Path, monkeypatch
 ):

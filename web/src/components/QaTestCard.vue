@@ -231,6 +231,7 @@
             variant="outlined"
             color="error"
             class="px-2"
+            :disabled="disabled"
             title="这条用例已审核通过且执行失败，确认是产品问题后建票"
             @click.stop="emit('file-bug', testCase.id)"
           >

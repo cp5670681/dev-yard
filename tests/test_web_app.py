@@ -650,9 +650,12 @@ def test_each_case_has_its_own_execute_button():
     assert "showWaiting" in card
     assert "deps-met" in board
     assert "function caseLocked" in board
+    assert "props.suiteLocked" in board
     req = (root / "views" / "RequirementView.vue").read_text()
     assert "execution-locked" not in req
     assert "rerunningIds" in req
+    assert "suiteLocked" in req
+    assert "armSuite" in req
     assert ':disabled="caseLocked(c)"' in qa
     assert "|| liveActive" not in qa
     assert "return isRunningCase(c) || isRerunning(c.case)" in qa
@@ -666,6 +669,23 @@ def test_each_case_has_its_own_execute_button():
     assert "rerunBannerCases = done" in req
     assert "function canExecute" in qa
     assert "tableCases" in qa
+    # A full-suite lock closes the QA batch menu and 下 bug, and refuses a submit.
+    assert ':disabled="suiteLocked || batchBusy || listBusy(rerunnableCases)"' in qa
+    assert ':disabled="suiteLocked || batchBusy || listBusy(blockedCases)"' in qa
+    assert ':disabled="suiteLocked || batchBusy || listBusy(failedCases)"' in qa
+    assert 'acting !== \'\' || suiteLocked' in qa
+    assert 'rowState(c) === "failed"' in qa
+    menu_fn = qa.split("async function rerunCases", 1)[1].split("async function", 1)[0]
+    assert "suiteLocked.value" in menu_fn
+    assert "执行用例已在进行" in menu_fn
+    req_menu = req.split("async function rerunCases", 1)[1].split("async function", 1)[0]
+    assert "suiteLocked.value" in req_menu
+    assert 'v-else-if="suiteLocked && !livePools.length"' in req
+    composable = (root / "composables" / "qa.ts").read_text()
+    assert "baselineKey" in composable
+    assert "progressKey(real) === baselineKey.value" in composable
+    assert "armSuite(realProgress.value)" in req
+    assert "armSuite(runs.value[0]?.progress ?? null)" in qa
 
 
 def test_job_panel_can_cancel_running_jobs():

@@ -1,6 +1,113 @@
-import { computed, type ComputedRef, type Ref } from "vue";
-import type { JobBrief, QaAssertion, ShotItem } from "@/api/types";
+import { computed, ref, watch, type ComputedRef, type Ref } from "vue";
+import type { JobBrief, QaAssertion, QaProgress, ShotItem } from "@/api/types";
 import { jobsReady, runningJobs } from "@/state/jobs";
+
+const LIVE_CASE_STATES = new Set(["pending", "ready", "running", "held"]);
+
+/** A full 「执行用例」 has no case list. A re-run names the cases it touches. */
+export function isFullSuiteRun(job: { action?: string; qa_cases?: string[] | null }): boolean {
+  return job.action === "qa-run" && !(job.qa_cases && job.qa_cases.length);
+}
+
+export function progressIsLive(progress: { cases?: { state?: string }[] } | null | undefined): boolean {
+  return Boolean(progress?.cases?.some((c) => LIVE_CASE_STATES.has(c.state || "")));
+}
+
+/** Placeholder rows shown the instant 「执行用例」 is submitted. */
+export function queuedCaseProgress(
+  cases: { id: string; title?: string }[],
+  env?: string,
+): QaProgress {
+  return {
+    run_id: "",
+    env,
+    cases: cases.map((c) => ({
+      id: c.id,
+      title: c.title,
+      state: "pending",
+      reason: "已提交，等待开始",
+    })),
+  };
+}
+
+/** Identity of one progress document. A later ping changes pools or case state. */
+export function progressKey(
+  progress:
+    | {
+        run_id?: string;
+        cases?: { id?: string; state?: string }[];
+        pools?: { id?: string }[];
+      }
+    | null
+    | undefined,
+): string {
+  const cases = (progress?.cases || []).map((c) => `${c.id || ""}:${c.state || ""}`).join(",");
+  const pools = (progress?.pools || []).map((p) => p.id || "").join(",");
+  return `${progress?.run_id || ""}|${cases}|${pools}`;
+}
+
+export function useSuiteRun(jira: Ref<string>) {
+  const suiteArmed = ref(false);
+  const sawLive = ref(false);
+  // The document already on screen when 「执行用例」 was confirmed. It must not
+  // count as this submission's live progress (a partial round's held rows are live).
+  const baselineKey = ref("");
+
+  const fullRunJob = computed(() =>
+    runningJobs.value.some((j) => j.jira === jira.value && isFullSuiteRun(j)),
+  );
+  const suiteLocked = computed(() => suiteArmed.value || fullRunJob.value);
+
+  function armSuite(current?: Parameters<typeof progressKey>[0]): boolean {
+    if (suiteLocked.value) return false;
+    baselineKey.value = progressKey(current);
+    suiteArmed.value = true;
+    sawLive.value = false;
+    return true;
+  }
+
+  function disarmSuite() {
+    suiteArmed.value = false;
+  }
+
+  function noteProgress(progress: Parameters<typeof progressKey>[0]) {
+    if (suiteArmed.value && progressKey(progress) === baselineKey.value) return;
+    if (progressIsLive(progress)) sawLive.value = true;
+  }
+
+  function finishSuite() {
+    sawLive.value = true;
+    suiteArmed.value = false;
+  }
+
+  function overlayProgress(
+    real: QaProgress | null | undefined,
+    cases: { id: string; title?: string }[],
+  ): QaProgress | null {
+    // Keep the submitted placeholder until this attempt publishes a new document.
+    if (suiteArmed.value && progressKey(real) === baselineKey.value) {
+      return cases.length ? queuedCaseProgress(cases, real?.env) : (real ?? null);
+    }
+    if (progressIsLive(real) || sawLive.value) return real ?? null;
+    if (suiteLocked.value && cases.length) return queuedCaseProgress(cases, real?.env);
+    return real ?? null;
+  }
+
+  watch(jira, () => {
+    suiteArmed.value = false;
+    sawLive.value = false;
+    baselineKey.value = "";
+  });
+
+  return {
+    suiteLocked,
+    armSuite,
+    disarmSuite,
+    noteProgress,
+    finishSuite,
+    overlayProgress,
+  };
+}
 
 // QA actions that (re)design or run a case set: while one is in flight the case
 // files are still moving, so the review gate must stay closed. Keep in sync

@@ -178,7 +178,7 @@
                 :prepend-icon="mdiRefresh"
                 :append-icon="mdiMenuDown"
                 :loading="batchBusy"
-                :disabled="batchBusy || listBusy(rerunnableCases)"
+                :disabled="suiteLocked || batchBusy || listBusy(rerunnableCases)"
                 class="text-caption font-weight-medium"
                 title="按池并发重测本轮用例"
                 @click.stop
@@ -189,20 +189,20 @@
             <v-list density="compact" min-width="200">
               <v-list-item
                 v-if="blockedCases.length"
-                :disabled="batchBusy || listBusy(blockedCases)"
+                :disabled="suiteLocked || batchBusy || listBusy(blockedCases)"
                 @click="$emit('rerun-cases', blockedCases.map((c) => c.id))"
               >
                 <v-list-item-title>仅重测阻塞 ({{ blockedCases.length }})</v-list-item-title>
               </v-list-item>
               <v-list-item
                 v-if="failedCases.length"
-                :disabled="batchBusy || listBusy(failedCases)"
+                :disabled="suiteLocked || batchBusy || listBusy(failedCases)"
                 @click="$emit('rerun-cases', failedCases.map((c) => c.id))"
               >
                 <v-list-item-title>仅重测失败 ({{ failedCases.length }})</v-list-item-title>
               </v-list-item>
               <v-list-item
-                :disabled="batchBusy || listBusy(rerunnableCases)"
+                :disabled="suiteLocked || batchBusy || listBusy(rerunnableCases)"
                 @click="$emit('rerun-cases', rerunnableCases.map((c) => c.id))"
               >
                 <v-list-item-title>失败 + 阻塞 ({{ rerunnableCases.length }})</v-list-item-title>
@@ -487,6 +487,8 @@ const props = withDefaults(
     reviewApproved?: boolean;
     /** Case ids with a submit in flight. Only these cards lock. */
     rerunningIds?: string[];
+    /** Full 「执行用例」 is in flight: lock every case, not just the one running. */
+    suiteLocked?: boolean;
   }>(),
   {
     qaCases: () => [],
@@ -494,6 +496,7 @@ const props = withDefaults(
     phase: "open",
     reviewApproved: false,
     rerunningIds: () => [],
+    suiteLocked: false,
   }
 );
 
@@ -719,6 +722,7 @@ function isRerunning(id: string) {
 
 /** Lock the case that is running or whose own submit is in flight. */
 function caseLocked(testCase: QaCaseItem) {
+  if (props.suiteLocked) return true;
   return testCase.state === "running" || isRerunning(testCase.id);
 }
 

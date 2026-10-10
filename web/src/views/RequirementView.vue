@@ -131,8 +131,8 @@
               <v-btn
                 color="primary"
                 class="ghx-create-btn"
-                :disabled="!nextAction.enabled"
-                :loading="acting === nextAction.id"
+                :disabled="!nextAction.enabled || suiteBusy(nextAction.id)"
+                :loading="acting === nextAction.id || suiteBusy(nextAction.id)"
                 :block="!mdAndUp"
                 @click="confirmAction(nextAction.id, undefined, nextAction)"
               >
@@ -151,8 +151,8 @@
             <span v-bind="tip" class="d-inline-block" @click="!a.enabled && confirmAction(a.id, undefined, a)">
               <v-btn
                 variant="tonal"
-                :disabled="!a.enabled"
-                :loading="acting === a.id"
+                :disabled="!a.enabled || suiteBusy(a.id)"
+                :loading="acting === a.id || suiteBusy(a.id)"
                 @click="confirmAction(a.id, undefined, a)"
               >
                 {{ ACTION_LABELS[a.id] || a.label }}
@@ -407,6 +407,9 @@
           <p v-if="liveReady.length" class="text-caption text-medium-emphasis mb-0">
             就绪未派发 {{ liveReady.map((c) => c.id).join(", ") }}
           </p>
+          <p v-else-if="suiteLocked && !livePools.length" class="text-caption text-medium-emphasis mb-0">
+            已提交。正在准备登录、模型池和执行环境，完成前不能再点执行。
+          </p>
         </v-card-text>
       </v-card>
 
@@ -418,6 +421,7 @@
         :phase="detail.phase"
         :review-approved="Boolean(qaReview?.approved)"
         :rerunning-ids="rerunningIds"
+        :suite-locked="suiteLocked"
         @implement="(id) => confirmAction('implement', id)"
         @review="(id) => confirmAction('review', id)"
         @merge="(id) => confirmAction('merge', id)"
@@ -838,7 +842,14 @@
         <v-card-actions>
           <v-spacer />
           <v-btn variant="text" @click="confirm.open = false">取消</v-btn>
-          <v-btn color="primary" @click="runConfirmed">继续</v-btn>
+          <v-btn
+            color="primary"
+            :loading="acting === confirm.action"
+            :disabled="confirm.action === 'qa-run' && suiteLocked"
+            @click="runConfirmed"
+          >
+            继续
+          </v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
@@ -1048,7 +1059,7 @@ import {
   STAGE_ORDER,
   STEP_LABELS,
 } from "@/composables/labels";
-import { isQaJobActive, QA_GATE_ACTIONS, useQaActive } from "@/composables/qa";
+import { isFullSuiteRun, isQaJobActive, QA_GATE_ACTIONS, useQaActive, useSuiteRun } from "@/composables/qa";
 import {
   jobTail,
   submitRerun,
@@ -1119,6 +1130,12 @@ const frozenRepos = computed(() =>
     .sort(),
 );
 const rerunningIds = ref<string[]>([]);
+const { suiteLocked, armSuite, disarmSuite, noteProgress, finishSuite, overlayProgress } =
+  useSuiteRun(jira);
+
+function suiteBusy(action: string) {
+  return action === "qa-run" && suiteLocked.value;
+}
 const deleteOpen = ref(false);
 const exportForm = reactive({
   open: false,
@@ -1342,7 +1359,16 @@ watch(jira, () => {
   lastBannerRunId = "";
 });
 
-const liveProgress = computed(() => jobProgress.value || detail.value?.qa?.progress || null);
+const realProgress = computed(
+  () =>
+    (jobProgress.value?.cases?.length ? jobProgress.value : null) ||
+    detail.value?.qa?.progress ||
+    null,
+);
+watch(realProgress, (progress) => noteProgress(progress));
+const liveProgress = computed(() =>
+  overlayProgress(realProgress.value, detail.value?.qa?.cases || []),
+);
 const liveHasActive = computed(() =>
   Boolean(
     liveProgress.value?.cases?.some((c) =>
@@ -1516,6 +1542,10 @@ async function removeAttachment(name: string) {
 }
 
 function confirmAction(action: string, ticketId?: string, act?: Action) {
+  if (suiteBusy(action)) {
+    snack.notify("执行用例已在进行", "info");
+    return;
+  }
   const meta = act || detail.value?.actions.find((a) => a.id === action);
   if (meta && !meta.enabled) {
     snack.notify(meta.reason || "当前不能执行", "info");
@@ -1592,6 +1622,11 @@ function parseDesignRefs(raw: string): string[] {
 }
 
 function runConfirmed() {
+  if (confirm.action === "qa-run" && !armSuite(realProgress.value)) {
+    confirm.open = false;
+    snack.notify("执行用例已在进行", "info");
+    return;
+  }
   confirm.open = false;
   const env = confirm.action === "qa-run" ? confirm.env : undefined;
   const resume = confirm.action === "qa-run" ? confirm.resume : undefined;
@@ -1648,6 +1683,10 @@ function busyIds(): string[] {
 }
 
 async function rerunCases(caseIds: string[]) {
+  if (suiteLocked.value) {
+    snack.notify("执行用例已在进行", "info");
+    return;
+  }
   const { fresh, skipped } = splitBusyIds(caseIds, busyIds());
   if (!fresh.length) {
     if (skipped.length) snack.notify("这些用例已在执行", "info");
@@ -1843,13 +1882,16 @@ async function onAction(
     snack.notify(`已启动 ${ACTION_LABELS[action] || action}`, "success");
     await load();
   } catch (e) {
+    if (action === "qa-run") disarmSuite();
     error.value = e instanceof Error ? e.message : String(e);
+    snack.notify(error.value, "error");
   } finally {
     acting.value = "";
   }
 }
 
 function onJobDone(job?: JobSnapshot) {
+  if (job && isFullSuiteRun(job)) finishSuite();
   if (job && QA_GATE_ACTIONS.has(job.action)) jobProgress.value = null;
   if (job?.action === "export-bundle" && job.state === "ok") {
     window.location.assign(exportDownloadUrl(job.id));

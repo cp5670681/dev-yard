@@ -7,6 +7,8 @@ export interface JobBrief {
   state: JobState;
   ticket_ids: string[] | null;
   label?: string;
+  /** Set on qa-run. Empty means a full 「执行用例」; otherwise the re-run ids. */
+  qa_cases?: string[];
 }
 
 export interface PiRun {
