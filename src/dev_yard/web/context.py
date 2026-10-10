@@ -43,7 +43,7 @@ from dev_yard.qa_config import (
     save_qa_config,
 )
 from dev_yard.qa_config import TestRejected as QaConfigRejected
-from dev_yard.web.board import (
+from dev_yard.reqboard import (
     DOC_FILES,
     ReqDetail,
     asset_file,
@@ -111,12 +111,7 @@ class AppContext:
 
     # ---- templates -------------------------------------------------------
     def base(self, request: Request, **extra: Any) -> dict[str, Any]:
-        ctx: dict[str, Any] = {
-            "request": request,
-            "root": str(self.root),
-            "root_name": self.root.name,
-            "running_jobs": self.jobs.running_brief(),
-        }
+        ctx: dict[str, Any] = {"request": request}
         ctx.update(extra)
         return ctx
 

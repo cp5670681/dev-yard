@@ -3,8 +3,7 @@ from pathlib import Path
 import pytest
 
 from dev_yard import status as st
-from dev_yard.service import init_yard, repo_add, req_freeze, req_open
-from dev_yard.web.board import (
+from dev_yard.reqboard import (
     DOC_FILES,
     available_actions,
     list_requirements,
@@ -12,6 +11,7 @@ from dev_yard.web.board import (
     requirement_detail,
     save_doc,
 )
+from dev_yard.service import init_yard, repo_add, req_freeze, req_open
 
 
 def _yard(tmp_path: Path) -> Path:
@@ -389,7 +389,7 @@ def test_plugin_action_appended(tmp_path: Path, monkeypatch):
     assert not deploy.enabled
     assert "frozen" in deploy.reason
     assert deploy.stage == "freeze"
-    from dev_yard.web.board import PIPELINE
+    from dev_yard.reqboard import PIPELINE
 
     assert {s.id for s in detail.steps} == set(PIPELINE)
     assert "deploy" not in {s.id for s in detail.steps}

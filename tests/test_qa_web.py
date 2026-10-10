@@ -4,9 +4,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from dev_yard.reqboard import DOC_FILES
 from dev_yard.service import init_yard, repo_add, req_open
 from dev_yard.web.app import create_app
-from dev_yard.web.board import DOC_FILES
 from dev_yard.web.jobs import JobRunner
 
 

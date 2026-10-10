@@ -7,9 +7,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from dev_yard.qa_config import MASK, load_qa_config
+from dev_yard.reqboard import asset_file
 from dev_yard.service import init_yard, repo_add, req_open
 from dev_yard.web.app import check_bind_host, create_app, render_markdown
-from dev_yard.web.board import asset_file
 from dev_yard.web.jobs import JobRunner
 
 SPA_INDEX = Path(__file__).resolve().parents[1] / "src" / "dev_yard" / "web" / "spa" / "index.html"
@@ -112,7 +112,10 @@ def test_dashboard_skips_shared_docs(tmp_path: Path, monkeypatch):
     _assert_spa_shell(r)
     listed = client.get("/api/requirements").json()
     assert [row["jira"] for row in listed] == ["AB-30"]
-    assert client.get("/r/docs").status_code == 404
+    missing = client.get("/r/docs")
+    assert missing.status_code == 404
+    assert "回到看板" in missing.text
+    assert "/static/app.js" not in missing.text
     assert client.get("/api/requirements/docs").status_code == 404
     opened = client.post("/api/open", json={"jira": "docs", "source": "none"})
     assert opened.status_code == 400
@@ -695,27 +698,13 @@ def test_inconclusive_review_is_not_presented_as_failed():
     assert "contractTone" in dash
 
 
-def test_app_js_uses_event_source():
-    from dev_yard.web.app import HERE
-
-    js = (HERE / "static" / "app.js").read_text()
-    css = (HERE / "static" / "app.css").read_text()
+def test_job_events_use_event_source():
     vue_jobs = (
         Path(__file__).resolve().parents[1] / "web" / "src" / "state" / "jobs.ts"
     ).read_text()
     assert "EventSource" in vue_jobs
     assert "/api/jobs/events" in vue_jobs
-    assert "EventSource" in js
-    assert "/api/jobs/events" in js
-    assert "/api/requirements/" in js
-    assert "data-board" in js
-    assert "nav-dot" in js
-    assert "setTimeout(tick, 1000)" not in js
-    assert "setInterval" not in js
-    assert "/pi/" in js
-    assert "data-open-pi" in js
-    assert "pi-drawer" in css
-    assert ".nav-jobs { display: none; }" not in css
+    assert "setInterval" not in vue_jobs
 
 
 def test_pi_chat_api_streams_session_and_rejects_outside_cwd(tmp_path: Path, monkeypatch):

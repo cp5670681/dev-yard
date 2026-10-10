@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 from dev_yard import paths
 from dev_yard.cli import app
 from dev_yard.gitops import GitError, head_sha
+from dev_yard.reqboard import requirement_detail
 from dev_yard.service import (
     init_yard,
     repo_add,
@@ -19,7 +20,6 @@ from dev_yard.service import (
     requirement_diff,
 )
 from dev_yard.web.app import create_app
-from dev_yard.web.board import requirement_detail
 
 
 def _setup_yard_with_remotes(tmp_path: Path):

@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 from dev_yard import paths
-from dev_yard.web.board import DOC_FILES
+from dev_yard.reqboard import DOC_FILES
 from dev_yard.web.context import STATIC, AppContext, spa_index
 
 _SANDBOX_MEDIA = frozenset(

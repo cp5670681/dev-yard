@@ -16,10 +16,10 @@ from dev_yard.qa import req_test
 from dev_yard.qa_config import TestRejected, load_qa_config
 from dev_yard.qa_report import map_qa_result
 from dev_yard.qa_schedule import CaseJob, PoolSlot, normalize_status, run_schedule
+from dev_yard.reqboard import PIPELINE, requirement_detail
 from dev_yard.runners import DryRunRunner, Runner, RunResult
 from dev_yard.service import implement, init_yard, repo_add, req_freeze, req_open, review
 from dev_yard.test_report import ReportRejected, submit_test
-from dev_yard.web.board import PIPELINE, requirement_detail
 
 cli = CliRunner()
 

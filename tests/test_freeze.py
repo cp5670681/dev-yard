@@ -70,7 +70,7 @@ def test_legacy_freeze_keeps_worktree_branch_after_template_change(
 ):
     monkeypatch.delenv("JIRA_URL", raising=False)
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
-    from dev_yard.web.board import requirement_detail
+    from dev_yard.reqboard import requirement_detail
 
     yard = tmp_path / "yard"
     init_yard(yard)

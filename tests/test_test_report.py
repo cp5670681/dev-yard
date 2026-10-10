@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from dev_yard import status as st
+from dev_yard.reqboard import requirement_detail
 from dev_yard.runners import DryRunRunner
 from dev_yard.service import implement, init_yard, repo_add, req_freeze, req_open, review
 from dev_yard.test_report import (
@@ -15,7 +16,6 @@ from dev_yard.test_report import (
     submit_test,
 )
 from dev_yard.web.app import create_app
-from dev_yard.web.board import requirement_detail
 
 
 def _done_with_contract(tmp_path: Path, git_src: Path, key: str) -> Path:

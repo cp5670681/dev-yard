@@ -11,20 +11,20 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from dev_yard import __version__, attachments, gitops, paths
 from dev_yard import service as yard_service
 from dev_yard.gitops import GitError
+from dev_yard.reqboard import DOC_FILES, list_requirements
 from dev_yard.service import extract_req_key
-from dev_yard.web.board import DOC_FILES, list_requirements
 from dev_yard.web.context import AppContext, attach_feedback_html, render_markdown
 from dev_yard.web.schemas import (
     ActionIn,
     ContractReviewIn,
+    DocAlignApplyIn,
+    DocAlignIn,
     DocSaveIn,
     ExportIn,
     ImportIn,
     OpenIn,
     QaRerunIn,
     TestReportIn,
-    DocAlignApplyIn,
-    DocAlignIn,
     TicketReviewIn,
 )
 

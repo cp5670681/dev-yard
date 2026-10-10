@@ -12,7 +12,6 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from dev_yard import __version__, paths, service
 from dev_yard.actions import ACTION_LABELS
 from dev_yard.assistant import AssistantHub
-from dev_yard.web.board import DOC_FILES, PIPELINE
 from dev_yard.web.context import (
     HERE,
     SPA,
@@ -29,7 +28,7 @@ from dev_yard.web.routes import (
     api_settings,
     pages,
 )
-from dev_yard.web.security import OriginGuardMiddleware, bearer_ok
+from dev_yard.web.security import OriginGuardMiddleware
 
 __all__ = [
     "HERE",
@@ -41,24 +40,7 @@ __all__ = [
     "spa_index",
 ]
 
-# Kept for tests and external callers that still import them from here.
-_bearer_ok = bearer_ok
-
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
-
-STEP_LABELS = {
-    "open": "抽取",
-    "grill": "对齐",
-    "spec": "规约",
-    "tickets": "拆票",
-    "freeze": "冻结",
-    "implement": "实现",
-    "review": "审查",
-    "contract": "契约审查",
-    "testing": "提测",
-    "done": "完成",
-    "assistant": "助手",
-}
 
 
 def check_bind_host(host: str, allow_remote: bool = False) -> None:
@@ -88,9 +70,6 @@ def create_app(
         jobs.resume_pending_qa()
         service.recover_stale_tickets(root)
     templates = Jinja2Templates(directory=str(HERE / "templates"))
-    templates.env.globals["step_labels"] = STEP_LABELS
-    templates.env.globals["doc_files"] = DOC_FILES
-    templates.env.globals["pipeline"] = PIPELINE
 
     app = FastAPI(title="dev-yard", version=__version__, docs_url="/api/docs", redoc_url=None)
     app.add_middleware(OriginGuardMiddleware, allow_remote=allow_remote)

@@ -275,7 +275,7 @@ def test_spec_and_grill_protect_requirement():
 
 
 def test_board_change_gating(tmp_path: Path, git_src: Path, monkeypatch):
-    from dev_yard.web.board import requirement_detail
+    from dev_yard.reqboard import requirement_detail
 
     yard = _frozen(tmp_path, git_src, monkeypatch)
     detail = requirement_detail(yard, "AB-1")
