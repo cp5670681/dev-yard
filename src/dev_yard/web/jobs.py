@@ -906,6 +906,27 @@ def default_execute(root: Path, job: Job) -> None:
             raise RuntimeError(f"{spec.name} failed")
         job.append(f"{spec.name} finished")
         return
+    if job.action == "implement-all":
+        impl = JobLogRunner(job, root, "implement")
+        reviewer = JobLogRunner(job, root, "review")
+        resolver = JobLogRunner(
+            job, root, "resolve-ticket", spec=service._TICKET_CONFLICT_SPEC
+        )
+        result = service.implement_until_done(
+            root,
+            job.jira,
+            print_mode=True,
+            impl_runner=impl,
+            review_runner=reviewer,
+            resolve_runner=resolver,
+            on_log=job.append,
+            cancel_check=job.cancel_requested.is_set,
+        )
+        job.append(
+            "done: "
+            + (", ".join(result["done"]) if result["done"] else "(none)")
+        )
+        return
     bundle = {
         "grill": "grill",
         "spec": "spec",

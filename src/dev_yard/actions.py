@@ -30,6 +30,7 @@ BOARD_ACTIONS: tuple[ActionSpec, ...] = (
     ActionSpec("analyze", "核对"),
     ActionSpec("freeze", "冻结 worktree"),
     ActionSpec("implement", "实现 ready 票"),
+    ActionSpec("implement-all", "一次性实现"),
     ActionSpec("review", "审查"),
     ActionSpec("merge", "合并"),
     ActionSpec("contract", "契约审查"),

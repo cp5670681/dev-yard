@@ -66,6 +66,7 @@ ACTION_STAGES = {
     "analyze": "analyze",
     "freeze": "freeze",
     "implement": "implement",
+    "implement-all": "implement",
     "review": "review",
     "merge": "review",
     "contract": "review",
@@ -506,6 +507,18 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
             ACTION_LABELS["implement"],
             frozen and any_implement,
             "" if frozen and any_implement else "需要先 freeze，且有 ready/blocked 票",
+        ),
+        Action(
+            "implement-all",
+            ACTION_LABELS["implement-all"],
+            frozen and has_tickets and not tickets_done,
+            ""
+            if frozen and has_tickets and not tickets_done
+            else (
+                "票都已完成"
+                if frozen and has_tickets
+                else "需要先 freeze，且还有未完成的票"
+            ),
         ),
         Action(
             "review",

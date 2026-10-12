@@ -37,6 +37,7 @@ from dev_yard.doc_analyze import critical, load_issues, stamp
 from dev_yard.env import load_env
 from dev_yard.fsutil import atomic_write_bytes, atomic_write_text
 from dev_yard.runners import (
+    JobCancelled,
     Runner,
     RunResult,
     agent_binary,
@@ -1919,6 +1920,26 @@ def _review_blocked(result: RunResult) -> bool:
     return not result.ok
 
 
+# One-shot implement: first attempt plus three review-driven fixes.
+MAX_IMPLEMENT_PASSES = 4
+# A review that never submits a verdict is retried, then the ticket is parked.
+MAX_INCONCLUSIVE_REVIEWS = 2
+_UNTIL_DONE_IMPLEMENT = {"ready", "blocked", "implementing"}
+_UNTIL_DONE_REVIEW = {"implemented", "reviewing", "inconclusive"}
+
+
+def _until_done_step_limit(ticket_count: int) -> int:
+    """Room for a legal fail-until-cap run, including the final empty look.
+
+    Each of the four implement passes can be followed by two no-verdict
+    reviews before the next pass clears that counter. The park step and the
+    look that finds nothing left must still fit, or the run reports the step
+    ceiling instead of which ticket is stuck.
+    """
+    per = MAX_IMPLEMENT_PASSES * (1 + MAX_INCONCLUSIVE_REVIEWS) + 2
+    return max(per, ticket_count * per)
+
+
 _CLAIM = {
     "implement": ("implementing", {"ready", "blocked", "implementing"}),
     "review": ("reviewing", {"implemented", "reviewing", "inconclusive", "blocked"}),
@@ -2851,6 +2872,226 @@ def review(
                 st.save(root, jira, data)
         ran.append(tid)
     return ran
+
+
+def _until_done_snapshot(root: Path, jira: str) -> tuple[list, dict[str, Any]]:
+    """Reload tickets, promote pending ones whose dependencies are done, and save."""
+    req = paths.req_dir(root, jira)
+    parsed = load_tickets(req)
+    with st.jira_lock(jira):
+        data = st.sync_tickets(st.load(root, jira), parsed)
+        st.refresh_ready(data)
+        st.save(root, jira, data)
+    return parsed, data
+
+
+def _until_done_pick(
+    parsed: list,
+    data: dict[str, Any],
+    parked: set[str],
+) -> tuple[str, str] | None:
+    """Next unfinished ticket in file order: merge, then review, then implement."""
+    slots = data.get("tickets") or {}
+    for ticket in parsed:
+        if ticket.id in parked:
+            continue
+        state = (slots.get(ticket.id) or {}).get("state")
+        if state in {None, "done", "pending"}:
+            continue
+        if state == "approved":
+            return ticket.id, "merge"
+        if state in _UNTIL_DONE_REVIEW:
+            return ticket.id, "review"
+        if state in _UNTIL_DONE_IMPLEMENT:
+            return ticket.id, "implement"
+    return None
+
+
+def implement_until_done(
+    root: Path,
+    jira: str,
+    *,
+    print_mode: bool = False,
+    impl_runner: Runner | None = None,
+    review_runner: Runner | None = None,
+    resolve_runner: Runner | None = None,
+    on_log: Callable[[str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    """Implement, review, and merge every ticket without stopping between them.
+
+    Tickets run in file order. A ticket waits until its dependencies are done.
+    A failed review is implemented again, up to three fixes. A review with no
+    verdict is repeated once. A ticket that still cannot pass is left as it is,
+    and tickets that do not depend on it continue. Passed reviews merge through
+    the existing review path; an approved ticket waiting on a merge is merged
+    here, resolving a freeze-branch conflict first. Contract review and 提测
+    stay manual.
+    """
+    req = paths.req_dir(root, jira)
+    if not req.is_dir():
+        raise FileNotFoundError(f"no requirement {jira}")
+    phase = st.load(root, jira).get("phase")
+    if phase not in {"frozen", "testing"}:
+        raise ValueError("一次性实现需要先冻结")
+    if not load_tickets(req):
+        raise ValueError("没有可实现的票")
+
+    def log(text: str) -> None:
+        if on_log is not None:
+            on_log(text)
+
+    def cancelled() -> None:
+        if cancel_check is not None and cancel_check():
+            raise JobCancelled("一次性实现已取消")
+
+    impl = impl_runner or get_runner(root, "implement", print_mode=print_mode)
+    reviewer = review_runner or get_runner(root, "review", print_mode=print_mode)
+    passes: dict[str, int] = {}
+    misses: dict[str, int] = {}
+    parked: dict[str, str] = {}
+    steps = 0
+    limit = _until_done_step_limit(len(load_tickets(req)))
+
+    def park_error(tid: str, exc: BaseException, *, stuck_from: str, stuck_to: str) -> None:
+        # A crash after the slot is claimed must not leave the board spinning.
+        _reset_stuck_slot(root, jira, tid, stuck_from, stuck_to)
+        parked[tid] = str(exc) or "失败"
+        log(f"{tid} 停下：{parked[tid]}")
+
+    while True:
+        cancelled()
+        parsed, data = _until_done_snapshot(root, jira)
+        # Residual tickets spawned mid-run need the same per-ticket room.
+        limit = max(limit, _until_done_step_limit(len(parsed)))
+        picked = _until_done_pick(parsed, data, set(parked))
+        if picked is None:
+            break
+        steps += 1
+        if steps > limit:
+            raise RuntimeError("一次性实现步数超过上限，已停下")
+        tid, kind = picked
+        slot = (data.get("tickets") or {}).get(tid) or {}
+        if kind == "implement":
+            done_passes = passes.get(tid, 0)
+            if done_passes >= MAX_IMPLEMENT_PASSES:
+                verdict = slot.get("last_verdict")
+                if verdict == "failed":
+                    reason = f"审查未通过，已按意见修改 {MAX_IMPLEMENT_PASSES - 1} 次"
+                else:
+                    reason = f"实现 {MAX_IMPLEMENT_PASSES} 次仍未通过"
+                parked[tid] = reason
+                log(f"{tid} 停下：{reason}")
+                continue
+            passes[tid] = done_passes + 1
+            misses[tid] = 0
+            log(f"{tid} 开始实现（第 {passes[tid]} 次）")
+            try:
+                implement(
+                    root,
+                    jira,
+                    [tid],
+                    print_mode=print_mode,
+                    runner=impl,
+                )
+            except JobCancelled:
+                raise
+            except (ValueError, gitops.GitError, RuntimeError) as exc:
+                park_error(tid, exc, stuck_from="implementing", stuck_to="ready")
+                continue
+            state = ((st.load(root, jira).get("tickets") or {}).get(tid) or {}).get("state")
+            log(f"{tid} 实现结束，状态 {state}")
+            continue
+        if kind == "review":
+            seen = misses.get(tid, 0)
+            if slot.get("state") == "inconclusive" and seen >= MAX_INCONCLUSIVE_REVIEWS:
+                parked[tid] = "审查没有结论"
+                log(f"{tid} 停下：审查没有结论")
+                continue
+            log(f"{tid} 开始审查")
+            try:
+                review(
+                    root,
+                    jira,
+                    [tid],
+                    print_mode=print_mode,
+                    runner=reviewer,
+                )
+            except JobCancelled:
+                raise
+            except (ValueError, gitops.GitError, RuntimeError) as exc:
+                park_error(tid, exc, stuck_from="reviewing", stuck_to="implemented")
+                continue
+            state = ((st.load(root, jira).get("tickets") or {}).get(tid) or {}).get("state")
+            log(f"{tid} 审查结束，状态 {state}")
+            if state == "inconclusive":
+                misses[tid] = seen + 1
+                if misses[tid] >= MAX_INCONCLUSIVE_REVIEWS:
+                    parked[tid] = "审查没有结论"
+                    log(f"{tid} 停下：审查没有结论")
+            else:
+                misses[tid] = 0
+            continue
+        log(f"{tid} 合并进冻结分支")
+        try:
+            _until_done_merge(root, jira, tid, print_mode=print_mode, runner=resolve_runner)
+        except JobCancelled:
+            raise
+        except (ValueError, gitops.GitError, RuntimeError) as exc:
+            parked[tid] = str(exc) or "合并失败"
+            log(f"{tid} 停下：{parked[tid]}")
+            continue
+        log(f"{tid} 已合并")
+
+    parsed, data = _until_done_snapshot(root, jira)
+    slots = data.get("tickets") or {}
+    done_ids = [t.id for t in parsed if (slots.get(t.id) or {}).get("state") == "done"]
+    pending_ids = [
+        t.id
+        for t in parsed
+        if t.id not in parked and (slots.get(t.id) or {}).get("state") == "pending"
+    ]
+    result = {
+        "done": done_ids,
+        "parked": [{"id": tid, "reason": reason} for tid, reason in parked.items()],
+        "pending": pending_ids,
+    }
+    if parked or pending_ids:
+        parts: list[str] = []
+        if parked:
+            parts.append("卡住：" + "，".join(f"{tid}（{reason}）" for tid, reason in parked.items()))
+        if pending_ids:
+            parts.append("仍在等依赖：" + "，".join(pending_ids))
+        raise RuntimeError("；".join(parts))
+    log("全部票已完成")
+    return result
+
+
+def _until_done_merge(
+    root: Path,
+    jira: str,
+    ticket_id: str,
+    *,
+    print_mode: bool,
+    runner: Runner | None,
+) -> None:
+    """Merge an approved ticket. Resolve one freeze-branch conflict, then merge."""
+    data = st.load(root, jira)
+    slot = (data.get("tickets") or {}).get(ticket_id) or {}
+    if slot.get("merge_conflict"):
+        resolve_ticket_conflict(
+            root, jira, ticket_id, print_mode=print_mode, runner=runner
+        )
+    try:
+        ticket_merge(root, jira, ticket_id)
+    except ValueError:
+        data = st.load(root, jira)
+        if not (data.get("tickets") or {}).get(ticket_id, {}).get("merge_conflict"):
+            raise
+        resolve_ticket_conflict(
+            root, jira, ticket_id, print_mode=print_mode, runner=runner
+        )
+        ticket_merge(root, jira, ticket_id)
 
 
 def ticket_review_override(

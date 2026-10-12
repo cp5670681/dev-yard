@@ -329,7 +329,7 @@ dev-yard web --host 0.0.0.0 --allow-remote
 | `dev-yard grill <key>` | 需求答辩与对齐 | `--print`, `--dry-run` |
 | `dev-yard spec <key>` | 制定方案与契约 | `--print`, `--dry-run` |
 | `dev-yard tickets <key>` | 跨仓拆票与 DAG | `--print`, `--dry-run` |
-| `dev-yard implement <key> [T..]` | 编码实现 | `--print`, `--from-contract`, `--from-test`, `--force` |
+| `dev-yard implement <key> [T..]` | 编码实现。`--until-done` 逐张实现并审查，按意见修改后合并，直到全部票完成 | `--print`, `--from-contract`, `--from-test`, `--force`, `--until-done` |
 | `dev-yard review <key> [T..]` | 代码评审 / 契约检查 | `--contract`, `--print` |
 | `dev-yard stages` | 列出内置 + 已启用插件阶段 | |
 | `dev-yard run <stage> <key>` | 跑插件阶段，或 grill/spec/tickets | `--print`；`open`/`implement`/`review`/`contract`/`qa-*`/`test` 请用专用命令 |
