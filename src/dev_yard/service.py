@@ -13,11 +13,13 @@ from dev_yard import attachments, gitops, grill_round, paths
 from dev_yard import status as st
 from dev_yard.atlassian import collect_requirement
 from dev_yard.bug_tickets import (
+    expand_findings_repos,
     fix_ticket_ids,
     normalize_findings,
     parse_findings_from_summary,
     spawn_fix_tickets,
     spawn_fix_tickets_result,
+    split_review_findings,
 )
 from dev_yard.config import (
     Repo,
@@ -31,6 +33,7 @@ from dev_yard.config import (
     save_repos,
     ticket_branch_name,
 )
+from dev_yard.doc_analyze import critical, load_issues, stamp
 from dev_yard.env import load_env
 from dev_yard.fsutil import atomic_write_bytes, atomic_write_text
 from dev_yard.runners import (
@@ -362,6 +365,10 @@ def req_open(
         (d / "SPEC.md").write_text(SPEC_SKELETON.format(key=req_key), encoding="utf-8")
     if not (d / "TICKETS.md").exists():
         (d / "TICKETS.md").write_text(TICKETS_SKELETON.format(key=req_key), encoding="utf-8")
+    # The board lists ANALYZE.md with the other docs. Empty means "not filled";
+    # the analyze stage and the host stamp write the real report.
+    if not (d / "ANALYZE.md").exists():
+        (d / "ANALYZE.md").write_text("", encoding="utf-8")
     # uploads/ is never wiped above; re-point REQUIREMENT.md at whatever survives,
     # so a re-extract does not silently drop the human-added attachments.
     kept_uploads = attachments.list_names(root, req_key)
@@ -483,6 +490,12 @@ def req_freeze(
     tickets = load_tickets(req)
     if not tickets or not any(t.repo for t in tickets):
         raise ValueError("TICKETS.md has no tickets with a repo; finish to-tickets first")
+    blocking = critical(load_issues(root, jira))
+    if blocking:
+        lines = "\n".join(f"- {item.location}: {item.summary}" for item in blocking)
+        raise ValueError(
+            "规格编号还没对齐，不能冻结。先改文档或跑 dev-yard analyze。\n" + lines
+        )
     starts = {k: str(v).strip() for k, v in (start_refs or {}).items() if str(v).strip()}
     bases = {k: str(v).strip() for k, v in (base_refs or {}).items() if str(v).strip()}
     with st.jira_lock(jira):
@@ -1772,6 +1785,17 @@ def run_stage(
             if spec.builtin and result.ok and spec.sets_phase:
                 data["phase"] = spec.sets_phase
             st.save(root, jira, data)
+    if not dry_run and spec.name == "analyze":
+        found = stamp(root, jira)
+        note = f"host coverage: {len(found)} findings, {len(critical(found))} critical"
+        result = RunResult(
+            ok=result.ok,
+            summary=(result.summary + "\n" + note).strip(),
+            exit_code=result.exit_code,
+            verdict=result.verdict,
+            findings=result.findings,
+            verdict_missing=result.verdict_missing,
+        )
     return result
 
 
@@ -1928,6 +1952,8 @@ def _implement_prompt_extra(
     finding: str = "",
     sync_conflict: str | None = None,
     prior_verdict: str | None = None,
+    source: str = "",
+    review_findings: list[dict[str, Any]] | None = None,
 ) -> str:
     extra = f"Ticket: {tid} — {title}\nRepo alias: {repo}\nStay in this worktree."
     if sync_conflict:
@@ -1942,13 +1968,35 @@ def _implement_prompt_extra(
             f" Fix only {scope}; do not implement sibling bug tickets. "
             "The defect text is this ticket's section in TICKETS.md."
         )
-    if last_summary and (
+    gap_lines = "\n".join(
+        f"- {item.get('gap') or 'gap'} {item.get('ref') or ''} {item.get('detail') or item.get('title') or ''}".strip()
+        for item in (review_findings or [])
+        if isinstance(item, dict)
+    )
+    if gap_lines:
+        extra += (
+            "\n\nIn-ticket review gaps. Fix only these. Do not edit TICKETS.md "
+            "and do not pick up requirement ids outside this ticket's covers.\n"
+            + gap_lines
+        )
+        if last_summary:
+            extra += (
+                "\n\nReview report, for context only. Do not implement refs "
+                "that are not in the list above.\n"
+                f"{last_summary}"
+            )
+    elif last_summary and (
         prior_verdict == "failed" or _legacy_review_failed(last_summary)
     ):
         extra += (
             "\n\nPrevious review failed / feedback provided. Fix hard violations, Spec gaps, and review feedback "
             "in this report; do not expand scope; optional smells may stay.\n"
             f"{last_summary}"
+        )
+    if source == "review" and finding:
+        extra += (
+            f"\n\nThis ticket is a residual spec gap ({finding}). "
+            "Fix only that gap. Do not edit TICKETS.md and do not widen the change."
         )
     if contract_summary:
         extra += (
@@ -2155,7 +2203,7 @@ def triage_qa_cases(
 
 
 def ticket_delete(root: Path, jira: str, ticket_id: str) -> dict[str, Any]:
-    """Remove a not-yet-started bug ticket (contract/test) from TICKETS.md.
+    """Remove a not-yet-started bug ticket (contract/test/review) from TICKETS.md.
 
     Only bug tickets that have not started (state pending/ready, no worktree) can
     be dropped here; anything further along must be handled by hand.
@@ -2167,7 +2215,7 @@ def ticket_delete(root: Path, jira: str, ticket_id: str) -> dict[str, Any]:
         ticket = tickets.get(ticket_id)
         if ticket is None:
             raise FileNotFoundError(f"no ticket {ticket_id}")
-        if ticket.source not in {"contract", "test"}:
+        if ticket.source not in {"contract", "test", "review"}:
             raise ValueError(f"{ticket_id} 不是 bug 票，不能删除")
         data = st.sync_tickets(st.load(root, jira), list(tickets.values()))
         st.refresh_ready(data)
@@ -2334,7 +2382,7 @@ def implement(
             if not isinstance(prior_verdict, str):
                 prior_verdict = None
             was_blocked = slot.get("state") == "blocked"
-            was_fix_ticket = slot.get("source") in {"contract", "test"}
+            was_fix_ticket = slot.get("source") in {"contract", "test", "review"}
             slot["state"] = "implementing"
             if from_contract and data.get("phase") == "done":
                 data["phase"] = "frozen"
@@ -2370,6 +2418,10 @@ def implement(
                 finding=t.finding,
                 sync_conflict=sync_conflict,
                 prior_verdict=prior_verdict,
+                source=t.source,
+                review_findings=slot.get("review_findings")
+                if isinstance(slot.get("review_findings"), list)
+                else None,
             ),
         )
         try:
@@ -2673,16 +2725,64 @@ def review(
                 f"{_diff_vs_base(cwd, default_base, base)}\n\n"
                 "After the written report, call submit_review exactly once "
                 "with verdict passed or failed. That call is the only pass/fail "
-                "signal; do not encode the verdict in the report text."
+                "signal; do not encode the verdict in the report text.\n"
+                "Put every spec gap in findings. Each finding has id, title, repo, "
+                "detail, gap (missing, partial, contradicts, or unrequested), and "
+                "ref (an FR- / US / US/AC / C- id from SPEC.md).\n"
+                f"This ticket covers: {', '.join(t.covers) or '(none — legacy ticket)'}.\n"
+                "A gap whose ref is outside those covers is residual: still report it, "
+                "and do not treat it as work this ticket must do. "
+                "unrequested means the diff does something the spec did not ask for; "
+                "report it and do not delete the code yourself.\n"
+                "A passed verdict must not be a request to edit TICKETS.md."
             ),
         )
         result = _run_review_or_cancel(root, jira, runner, prompt, cwd, extra, tid)
+        findings = normalize_findings(result.findings or []) if result.verdict else []
+        in_ticket, residual, unrequested = split_review_findings(t, findings)
+        # A pass never rewrites TICKETS.md. A fail that only names other
+        # requirement ids appends those as new tickets and accepts this one.
+        # An explicit pass, or a run that simply succeeded without a verdict
+        # (dry-run and older runners), still merges. A failed verdict promotes
+        # only when every finding sits outside this ticket.
+        promote = not _review_blocked(result) or (
+            result.verdict == "failed" and bool(findings) and not in_ticket
+        )
+        if unrequested:
+            note = "未要求的改动（不自动删代码）：" + "；".join(
+                f"{item.get('ref') or item.get('id')}: {item.get('detail') or item.get('title')}"
+                for item in unrequested
+            )
+            result.summary = ((result.summary or "").rstrip() + "\n\n" + note).strip()
         with st.jira_lock(jira):
             data = st.load(root, jira)
             slot = data["tickets"][tid]
-            if not _review_blocked(result):
-                child = slot.get("child_worktree")
+            if residual and result.verdict == "failed":
+                queued = []
+                for item in residual:
+                    deps = [str(dep) for dep in item.get("depends_on") or [] if str(dep) != tid]
+                    deps.append(tid)
+                    queued.append({**item, "depends_on": deps})
+                known_repos = [str(repo) for repo in (data.get("repos") or []) if repo]
+                kept = expand_findings_repos(queued, known_repos)
+                dropped = [item for item in queued if item not in kept]
+                if kept:
+                    data["review_findings"] = kept
+                    st.save(root, jira, data)
+                    spawn_fix_tickets(root, jira, "review")
+                    data = st.load(root, jira)
+                    data.pop("review_findings", None)
+                    slot = data["tickets"][tid]
+                    st.save(root, jira, data)
+                if dropped:
+                    # A gap that cannot become a ticket must not be merged away.
+                    in_ticket = [*in_ticket, *dropped]
+                    promote = False
+            if promote:
+                slot.pop("review_findings", None)
                 slot["last_summary"] = result.summary
+                st.save(root, jira, data)
+                child = slot.get("child_worktree")
                 if child:
                     # Merge the child branch into the parent before persisting
                     # `done`; a conflicted merge must not strand a half-done state.
@@ -2734,6 +2834,10 @@ def review(
                 st.save(root, jira, data)
             else:
                 slot["last_summary"] = result.summary
+                if in_ticket:
+                    slot["review_findings"] = in_ticket
+                else:
+                    slot.pop("review_findings", None)
                 if result.verdict == "failed":
                     # submit_review rejected the change: needs an implement pass.
                     slot["state"] = "blocked"

@@ -24,6 +24,7 @@ EXPECTED_TOOLS = {
     "grill": "read,grep,find,ls,edit,write",
     "spec": "read,grep,find,ls,edit,write",
     "tickets": "read,grep,find,ls,edit,write",
+    "analyze": "read,grep,find,ls,edit,write",
     "implement": "read,bash,grep,find,ls,edit,write",
     "review": "read,grep,find,ls,submit_review",
     "contract": "read,grep,find,ls,submit_review",
@@ -35,6 +36,7 @@ EXPECTED_SKILLS = {
     "grill": ["grill-with-docs", "grilling", "domain-modeling"],
     "spec": ["to-spec"],
     "tickets": ["to-tickets"],
+    "analyze": ["analyze"],
     "implement": ["implement", "tdd", "codebase-design"],
     "review": ["code-review"],
     "contract": ["code-review"],
@@ -56,6 +58,9 @@ def test_builtin_registry_fields(tmp_path):
     assert reg["grill"].protects == ("REQUIREMENT.md", "SPEC.md", "TICKETS.md")
     assert reg["spec"].protects == ("REQUIREMENT.md", "GRILL.md", "TICKETS.md")
     assert reg["tickets"].protects == ("REQUIREMENT.md", "GRILL.md", "SPEC.md", "STATUS.yaml")
+    assert reg["analyze"].protects == ("REQUIREMENT.md", "GRILL.md", "SPEC.md", "TICKETS.md")
+    assert reg["analyze"].lists_sources is True
+    assert reg["tickets"].order < reg["analyze"].order < reg["implement"].order
     assert reg["implement"].protects == ()
     assert reg["review"].protects == ()
     assert reg["contract"].protects == ()

@@ -142,6 +142,24 @@ def test_tickets_enable_freeze(tmp_path: Path, monkeypatch):
     assert not ids["implement"].enabled
 
 
+def test_uncovered_ids_point_at_analyze(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _yard(tmp_path)
+    d, _ = req_open(yard, "AB-2b", source="none")
+    (d / "SPEC.md").write_text("# Spec\n\n- FR-001: 要做\n", encoding="utf-8")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n"
+    )
+    detail = requirement_detail(yard, "AB-2b")
+    assert detail.next_label == "analyze"
+    ids = {a.id: a for a in available_actions(detail, yard)}
+    assert ids["analyze"].enabled
+    assert not ids["freeze"].enabled
+    assert "T1" in ids["freeze"].reason
+    assert "covers" in ids["freeze"].reason
+
+
 def test_frozen_ready_implement(tmp_path: Path, git_src: Path, monkeypatch):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)

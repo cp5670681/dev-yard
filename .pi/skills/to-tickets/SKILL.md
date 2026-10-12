@@ -26,16 +26,20 @@ description: >
 - repo: backend
 - depends_on:
 - parallel: false
+- covers: FR-001 US1 US1/AC1
 
 ## T2: 短标题
 - repo: frontend
 - depends_on: T1
 - parallel: false
+- covers: US1/AC2 C-001
 ```
 
-二级标题必须是 `## T<n>: <title>`（如 `T1`、`T2`）。契约/提测缺陷由 CLI 追加 `## B<n>` 票，不要手写去覆盖。其它二级标题（「验收」「Further Notes」）CLI 会忽略。字段名必须是 `repo` / `depends_on` / `parallel`（bug 票还可有 `source` / `finding`）。没有 `- repo:` 的票不会入列。
+二级标题必须是 `## T<n>: <title>`（如 `T1`、`T2`）。契约/提测缺陷由 CLI 追加 `## B<n>` 票，不要手写去覆盖。其它二级标题（「验收」「Further Notes」）CLI 会忽略。字段名必须是 `repo` / `depends_on` / `parallel` / `covers`（bug 票还可有 `source` / `finding`）。没有 `- repo:` 的票不会入列。
 
-在标题下可用普通段落写「做什么 / 验收」。`parallel: true` 仅当同仓两张无依赖票要同时开子 worktree。
+`covers` 用空格分开，每项必须是 SPEC 里的 `FR-`、`US`、`US/AC` 或 `C-` 编号。一张票可以覆盖多条。规格里的每条 `FR-`、`C-`、验收场景都要至少被一张票覆盖；写了 `US1` 就覆盖这条故事下的全部场景。规格还没有这些编号时不要发明 `covers`。
+
+在标题下可用普通段落写「做什么 / 验收」，并点名本票的编号。`parallel: true` 仅当同仓两张无依赖票要同时开子 worktree。
 
 启动提示若含 `TDD mode is OFF`：验收只写可观察的业务行为。不要写「验收：spec」「补单测」，也不要要求新增测试文件。
 

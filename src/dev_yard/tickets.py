@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from dev_yard.fsutil import atomic_write_text
-from dev_yard.parse import as_bool
+from dev_yard.parse import as_bool, as_name_list
 
 
 @dataclass
@@ -19,6 +19,8 @@ class Ticket:
     finding: str = ""
     # Lightweight doc-change ticket: id of the STATUS.yaml `changes[]` entry.
     change: str = ""
+    # Requirement ids this ticket implements: FR-001, US1, US1/AC2, C-001.
+    covers: list[str] = field(default_factory=list)
 
 
 HEADING = re.compile(r"^##\s+((?:T|B)\d+)(?:\s*:\s*(.*))?$")
@@ -54,6 +56,8 @@ def parse_tickets(text: str) -> list[Ticket]:
             current.finding = val
         elif key == "change":
             current.change = val
+        elif key == "covers":
+            current.covers = as_name_list(val)
     if current:
         tickets.append(current)
     return tickets

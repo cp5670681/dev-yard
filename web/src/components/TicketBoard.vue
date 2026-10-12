@@ -597,7 +597,7 @@ const qaColumns = [
 // 1. Dev Tickets (T1..Tn)
 // -------------------------------------------------------------
 const devTickets = computed(() => {
-  return props.tickets.filter((t) => !t.id.startsWith("B") && t.source !== "test" && t.source !== "contract");
+  return props.tickets.filter((t) => !t.id.startsWith("B") && t.source !== "test" && t.source !== "contract" && t.source !== "review");
 });
 
 const devFilter = ref("active");
@@ -756,7 +756,7 @@ const rerunnableCases = computed(() => [...failedCases.value, ...blockedCases.va
 // 3. Bug Fix Tickets (B1..Bn)
 // -------------------------------------------------------------
 const bugTickets = computed(() => {
-  return props.tickets.filter((t) => t.id.startsWith("B") || t.source === "test" || t.source === "contract");
+  return props.tickets.filter((t) => t.id.startsWith("B") || t.source === "test" || t.source === "contract" || t.source === "review");
 });
 
 // Live-merged QA case info keyed by id, so B tickets can show their failure summary.

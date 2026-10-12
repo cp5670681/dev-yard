@@ -270,6 +270,7 @@ def _ticket_key(ticket: Any) -> tuple[Any, ...]:
         ticket.source,
         ticket.finding,
         ticket.change,
+        tuple(ticket.covers),
     )
 
 

@@ -27,6 +27,7 @@ BOARD_ACTIONS: tuple[ActionSpec, ...] = (
     ActionSpec("reset-grill", "重置对齐"),
     ActionSpec("spec", "写规约"),
     ActionSpec("tickets", "拆票"),
+    ActionSpec("analyze", "核对"),
     ActionSpec("freeze", "冻结 worktree"),
     ActionSpec("implement", "实现 ready 票"),
     ActionSpec("review", "审查"),

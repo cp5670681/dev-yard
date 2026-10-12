@@ -910,6 +910,7 @@ def default_execute(root: Path, job: Job) -> None:
         "grill": "grill",
         "spec": "spec",
         "tickets": "tickets",
+        "analyze": "analyze",
         "implement": "implement",
         "review": "review",
         "contract": "contract",
@@ -922,7 +923,7 @@ def default_execute(root: Path, job: Job) -> None:
         _run_web_grill(root, job)
         return
     runner = JobLogRunner(job, root, bundle)
-    if job.action in {"spec", "tickets"}:
+    if job.action in {"spec", "tickets", "analyze"}:
         result = service.run_stage(
             root, job.action, job.jira, print_mode=True, runner=runner
         )

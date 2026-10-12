@@ -7,6 +7,7 @@ from dev_yard import attachments, grill_round, paths
 from dev_yard import status as st
 from dev_yard.actions import ACTION_LABELS, BOARD_ACTION_IDS
 from dev_yard.config import load_repos, resolve_freeze_branch
+from dev_yard.doc_analyze import freeze_gate
 from dev_yard.service import GRILL_SKELETON, REQ_SKELETON, SPEC_SKELETON, TICKETS_SKELETON
 from dev_yard.tickets import load_tickets
 
@@ -15,6 +16,7 @@ DOC_FILES = {
     "grill": "GRILL.md",
     "spec": "SPEC.md",
     "tickets": "TICKETS.md",
+    "analyze": "ANALYZE.md",
 }
 
 PIPELINE = (
@@ -61,6 +63,7 @@ ACTION_STAGES = {
     "reset-grill": "grill",
     "spec": "spec",
     "tickets": "tickets",
+    "analyze": "analyze",
     "freeze": "freeze",
     "implement": "implement",
     "review": "review",
@@ -154,6 +157,8 @@ class ReqDetail:
     qa: dict | None = None
     branch: str = ""
     changes: list[dict] = field(default_factory=list)
+    coverage_blocked: bool = False
+    coverage_reason: str = ""
 
 
 def parse_requirement_title(text: str, jira: str) -> str | None:
@@ -269,6 +274,7 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
     from dev_yard.qa_board import qa_detail_summary
 
     qa = qa_detail_summary(root, jira)
+    coverage_blocked, coverage_reason = _coverage(root, jira)
     next_label = _next_label(
         phase,
         docs,
@@ -281,6 +287,7 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
         review_pending=bool(
             qa.get("has_cases") and not ((qa.get("review") or {}).get("approved"))
         ),
+        coverage_blocked=coverage_blocked,
     )
     steps = _steps(phase, docs, tickets, awaiting, data.get("contract_review"), test)
     detail = ReqDetail(
@@ -303,13 +310,25 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
         qa=qa,
         branch=resolve_freeze_branch(root, jira, data, sample_wt),
         changes=st.changes(data),
+        coverage_blocked=coverage_blocked,
+        coverage_reason=coverage_reason,
     )
     detail.actions = available_actions(detail, root)
     return detail
 
 
+def _coverage(root: Path, jira: str) -> tuple[bool, str]:
+    """Freeze gate for one requirement. Read the docs once; the board reuses it."""
+    req = paths.req_dir(root, jira)
+    spec = (req / "SPEC.md").read_text(encoding="utf-8") if (req / "SPEC.md").is_file() else ""
+    grill = (req / "GRILL.md").read_text(encoding="utf-8") if (req / "GRILL.md").is_file() else ""
+    return freeze_gate(spec, load_tickets(req), grill)
+
+
 def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
     has_tickets = bool(detail.tickets)
+    coverage_blocked = detail.coverage_blocked
+    coverage_reason = detail.coverage_reason
     frozen = detail.phase in {"frozen", "done", "testing"}
     any_implement = any(t.can_implement for t in detail.tickets)
     any_review = any(t.can_review for t in detail.tickets)
@@ -463,14 +482,22 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
         Action("spec", ACTION_LABELS["spec"], True),
         Action("tickets", ACTION_LABELS["tickets"], True),
         Action(
+            "analyze",
+            ACTION_LABELS["analyze"],
+            has_tickets,
+            "" if has_tickets else "先拆票",
+        ),
+        Action(
             "freeze",
             ACTION_LABELS["freeze"],
-            has_tickets and detail.phase not in {"testing", "done"},
+            has_tickets and detail.phase not in {"testing", "done"} and not coverage_blocked,
             ""
-            if has_tickets and detail.phase not in {"testing", "done"}
+            if has_tickets and detail.phase not in {"testing", "done"} and not coverage_blocked
             else (
                 "TICKETS.md 里还没有带 repo 的票"
                 if not has_tickets
+                else coverage_reason or "规格编号还没被票覆盖，先点「核对」或补上 covers"
+                if coverage_blocked
                 else "提测/完成后回退 freeze 请用 CLI --force"
             ),
         ),
@@ -700,6 +727,7 @@ def _next_label(
     has_qa_run: bool = False,
     has_cases: bool = False,
     review_pending: bool = False,
+    coverage_blocked: bool = False,
 ) -> str:
     by_slug = {d.slug: d for d in docs}
     if st.pipeline_complete({"phase": phase, "test": test}):
@@ -731,6 +759,8 @@ def _next_label(
     if phase in {"frozen", "done", "testing"}:
         return "implement"
     if tickets:
+        if coverage_blocked:
+            return "analyze"
         return "freeze"
     if grill_awaiting:
         return "grill"

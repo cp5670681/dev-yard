@@ -59,9 +59,15 @@ conflict as a question.
 Enumerate the design tree's top-level branches — scope/permissions, data & 口径,
 external/AI contract, UI & interaction, state & rollback, exceptions — and append a
 `### Frontier 清点` block to `GRILL.md` marking each `已问` / `默认` / `不适用` with a one-line
-reason. **Nothing may be left silently assumed.** This is an instruction, not a machine-checked
-gate — nothing downstream validates the block, so a `done: true` without it silently degrades
-the alignment rather than being rejected. Write it before declaring done.
+reason. **Nothing may be left silently assumed.** Write it before declaring done.
+
+Also, before `done: true`:
+
+- Fold each accepted answer into one sentence under `### 规范陈述`, and delete or rewrite the
+  sentence in `GRILL.md` that contradicts it. Do not leave both wordings.
+- Append `### 覆盖表` with one row each for 范围、状态机、角色、失败路径、外部契约、术语.
+  The status cell is only `已问`, `默认`, `不适用`, or `延后`. A high-impact gap that did not
+  fit in this round is `延后`, not a silent skip.
 
 ## Steps
 

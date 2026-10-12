@@ -26,5 +26,5 @@ description: >
 `ready` 时：
 
 - 只改和决定冲突的句子。其余字节保持原样，包括没冲突的票。
-- 不新增、不删除票，不改编号、`repo`、`depends_on`、`parallel`、`source`、`finding`、`change`。标题和冲突句可以改。
+- 不新增、不删除票，不改编号、`repo`、`depends_on`、`parallel`、`source`、`finding`、`change`、`covers`。标题和冲突句可以改。
 - 不改代码，不改 `STATUS.yaml`，不改 `qa/` 里的用例期望。

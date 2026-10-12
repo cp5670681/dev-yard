@@ -13,7 +13,8 @@ from dev_yard.config import load_repos
 from dev_yard.parse import as_bool, as_list
 from dev_yard.tickets import Ticket, load_tickets
 
-KINDS = ("contract", "test")
+KINDS = ("contract", "test", "review")
+GAPS = frozenset({"missing", "partial", "contradicts", "unrequested"})
 
 
 @dataclass
@@ -36,6 +37,7 @@ def normalize_findings(raw: list[dict[str, Any]] | None) -> list[dict[str, Any]]
         raw_files = item.get("files")
         if raw_files is None:
             raw_files = item.get("file")
+        gap = str(item.get("gap") or "").strip().lower()
         out.append(
             {
                 "id": fid,
@@ -46,6 +48,8 @@ def normalize_findings(raw: list[dict[str, Any]] | None) -> list[dict[str, Any]]
                 "depends_on": as_list(item.get("depends_on")),
                 "parallel": parallel,
                 "defect_class": str(item.get("defect_class") or "").strip().lower(),
+                "gap": gap if gap in GAPS else "",
+                "ref": str(item.get("ref") or "").strip(),
             }
         )
     return out
@@ -226,6 +230,38 @@ def _drop_findings_not_on_requirement(
     return out
 
 
+def split_review_findings(
+    ticket: Ticket, findings: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split a ticket review into in-ticket gaps, residual gaps, and unrequested notes.
+
+    A legacy ticket with no `covers` keeps every non-unrequested finding on
+    itself. A cited ref outside this ticket's covers becomes a new ticket
+    instead of widening this one. `unrequested` is recorded and never spawned.
+    """
+    covers = set(ticket.covers)
+    in_ticket: list[dict[str, Any]] = []
+    residual: list[dict[str, Any]] = []
+    unrequested: list[dict[str, Any]] = []
+    for finding in findings:
+        item = dict(finding)
+        if not item.get("repo"):
+            item["repo"] = ticket.repo
+        if item.get("gap") == "unrequested":
+            unrequested.append(item)
+            continue
+        if not covers:
+            in_ticket.append(item)
+            continue
+        ref = str(item.get("ref") or "")
+        parent = ref.split("/", 1)[0] if ref else ""
+        if not ref or ref in covers or parent in covers:
+            in_ticket.append(item)
+        else:
+            residual.append(item)
+    return in_ticket, residual, unrequested
+
+
 def _findings_for_kind(
     kind: str,
     data: dict[str, Any],
@@ -234,6 +270,9 @@ def _findings_for_kind(
     jira: str = "",
 ) -> list[dict[str, Any]]:
     repos = _repo_list(data, tickets)
+    if kind == "review":
+        raw = normalize_findings(data.get("review_findings") or [])
+        return expand_findings_repos(raw, repos)
     if kind == "test":
         slot = data.get("test") if isinstance(data.get("test"), dict) else {}
         raw = normalize_findings(slot.get("findings") or [])
@@ -386,6 +425,10 @@ def spawn_fix_tickets_result(
                 parallel = not has_new_dep
             else:
                 parallel = bool(f["parallel"]) and not has_new_dep
+            detail = f["detail"]
+            if kind == "review" and f.get("ref"):
+                # Body text, not `- covers:`, so freeze does not treat the bug ticket as owning the id.
+                detail = f"规格编号 {f['ref']}（{f.get('gap') or 'gap'}）。\n{detail}".strip()
             block = _render_ticket(
                 tid,
                 f["title"],
@@ -394,7 +437,7 @@ def spawn_fix_tickets_result(
                 parallel,
                 kind,
                 f["id"],
-                f["detail"],
+                detail,
             )
             blocks.append(block)
             ticket = Ticket(

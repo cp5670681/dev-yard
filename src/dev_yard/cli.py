@@ -1410,6 +1410,16 @@ def spec(
 
 
 @app.command()
+def analyze(
+    jira: str,
+    dry_run: bool = False,
+    print_mode: bool = typer.Option(False, "--print", help="pi -p one-shot instead of TUI"),
+) -> None:
+    """Cross-check requirement docs, then stamp the host coverage block."""
+    _run_registered("analyze", jira, dry_run, print_mode)
+
+
+@app.command()
 def tickets(
     jira: str,
     dry_run: bool = False,

@@ -29,7 +29,7 @@ description: >
    - 做了一次环境探测失败（依赖连不上：DB/Solr/中间件、Connection refused 等），记下原因后不再重试。
    套件慢不算跳过。免测时直接实现业务代码并做静态走查/语法检查。
 3. 提交到**当前分支**（不要推，不要开 PR）。
-4. 停在实现完成。不要自己跑 code-review：CLI 只把票标成 `implemented`。提示用户下一步 `dev-yard review <JIRA>`。
+4. 停在实现完成。不要自己跑 code-review：CLI 只把票标成 `implemented`。提示用户下一步 `dev-yard review <JIRA>`。不要改 `reqs/` 里的 `TICKETS.md`。启动提示若列出 in-ticket review gaps，只修那些 `ref`；`source: review` 的票只修它自己的 `finding`。
 
 ## 命令安全
 

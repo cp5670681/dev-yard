@@ -92,10 +92,24 @@ _GUIDANCE = {
         "已问/默认/不适用); otherwise it is an under-explored frontier. "
         "Focus on P0/P1 decisions, apply sensible defaults for minor implementation "
         "details, group questions by theme for large tasks, and cap grilling strictly "
-        "within 1-3 rounds."
+        "within 1-3 rounds. "
+        "Write each settled decision as one canonical sentence under ### 规范陈述, "
+        "replacing the contradictory sentence, and finish with a ### 覆盖表."
     ),
-    "spec": "Write only SPEC.md from GRILL.md. Do not interview. Do not write TICKETS.md.",
-    "tickets": "Write only TICKETS.md from SPEC.md.",
+    "spec": (
+        "Write only SPEC.md from GRILL.md. Do not interview. Do not write TICKETS.md. "
+        "Number stories US1 and requirements FR-001. Copy ### 规范陈述 and "
+        "默认假设 into SPEC.md verbatim."
+    ),
+    "tickets": (
+        "Write only TICKETS.md from SPEC.md. "
+        "Each feature ticket's covers lists the FR and US ids it implements."
+    ),
+    "analyze": (
+        "Write only the qualitative section of reqs/<REQ>/ANALYZE.md. "
+        "Do not edit REQUIREMENT.md, GRILL.md, SPEC.md, TICKETS.md, or the "
+        "host-coverage block."
+    ),
     "implement": (
         "Write code in the current worktree only. "
         "Do not add CONTEXT.md or docs/adr to the business repo."
@@ -182,6 +196,15 @@ BUILTIN_STAGES: dict[str, StageSpec] = {
             protects=("REQUIREMENT.md", "GRILL.md", "SPEC.md", "STATUS.yaml"),
             lists_sources=True,
             order=40,
+        ),
+        _spec(
+            "analyze",
+            "analyze",
+            ("analyze",),
+            ("read", "grep", "find", "ls", "edit", "write"),
+            protects=("REQUIREMENT.md", "GRILL.md", "SPEC.md", "TICKETS.md"),
+            lists_sources=True,
+            order=45,
         ),
         _spec(
             "implement",

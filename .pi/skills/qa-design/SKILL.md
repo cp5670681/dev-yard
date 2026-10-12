@@ -62,7 +62,7 @@ description: >
 3. **增量**更新 `meta.yaml`：改 `changes` / `base_branches` / `feature_branches` / `module` / `requirement`；保留已有 `routes:`，不要整文件覆盖。
 4. 覆盖：每个 D 至少 1 条 + 1 条正常流 + UI **可达**的后端错误分支（无权限/重复/超限）。**每条 `meta.yaml` 的 `changes[].id` 都必须被至少一条 case 的 `covers` 引用**（宿主会把未覆盖的 D 单独提示，不能漏）。控件 `disabled`/`maxlength`/无清空导致点不到的拦截，不要写成用例。**每条含 UI 预期的步骤还必须过「预期可达性审查」（见下节）**。
 5. 步骤用业务语言，不要写 selector、不要写 `bin/rails runner` / usql。按钮/文案必须来自 worktree 代码，不来自想象。
-6. 预期写需求口径。实现与 SPEC 不符时仍写需求值，并备注「需求偏差」。
+6. 预期写需求口径。实现与 SPEC 不符时仍写需求值，并备注「需求偏差」。SPEC 里有 `FR-` / `US` / `US/AC` 编号时，在用例正文点名本条覆盖的编号。
 7. 跨仓、跨地址拆成多条 case，每条一个 `repo:`（yard alias），从而一个 origin、一个库。跨地址的业务流程用 `depends_on` 串起来，不要在一条用例里换 host。没有页面、只证库或脚本结果的用例写 `driver: host`（宿主跑 setup、`verify.sql`、cleanup，不开浏览器）。要开页面的用例省略 `driver`（默认 `browser`）。
 8. `depends_on` 仅当共享可变数据或业务先后时写；无依赖省略，以便并发领取。
 9. 需要非默认账号的用例，在 frontmatter 写 `account: <account_key>`；名字必须来自 `context.md` 的 Accounts 列表（宿主跑前校验，未配置会直接报错让你先跑 `dev-yard req accounts <JIRA> --auto`）。不写就用 `account.default`。若需新增账号，按「权限账号与账号发现」写 `qa/accounts-discover.sql`（只读单条 `SELECT`，`username | account_key` 两列）并在 OPEN-QUESTIONS 注明。

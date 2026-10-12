@@ -19,6 +19,15 @@ description: >
 
 否则：列出会动的仓（`repos.yaml` alias）和模块。优先已有测试缝。向用户确认缝之后再落盘。
 
+## 编号
+
+行为用稳定编号，后面的票和核对靠它对齐：
+
+- 用户故事 `US1`、`US2`。每条故事至少一个场景 `US1/AC1`，写成 Given / When / Then。
+- 行为要求 `FR-001`。跨仓契约 `C-001`，仍写在 Implementation Decisions。
+- `GRILL.md` 的 `### 规范陈述` 每条原文抄进 `## 规范陈述`，不改写。
+- `GRILL.md` 的 `### 默认假设与实现细节` 抄进 `## 默认假设`。没有就写「无」。
+
 ## SPEC.md 模板
 
 ```markdown
@@ -26,11 +35,25 @@ description: >
 
 ## Problem Statement
 
-## Solution
+## 规范陈述
+
+- （从 GRILL.md「规范陈述」原样抄来；没有就写「无」）
+
+## 默认假设
+
+- （从 GRILL.md「默认假设与实现细节」原样抄来；没有就写「无」）
 
 ## User Stories
 
-1. As an <actor>, I want a <feature>, so that <benefit>
+### US1 — 短标题
+
+As an <actor>, I want a <feature>, so that <benefit>
+
+- US1/AC1: Given <state>, When <action>, Then <outcome>
+
+## Requirements
+
+- FR-001: <可观察的行为>
 
 ## Per-repo
 
@@ -39,7 +62,7 @@ description: >
 ## Implementation Decisions
 
 - 模块与接口
-- API / 事件 / 字段契约（跨仓必须写在这里）
+- C-001: API / 事件 / 字段契约（跨仓必须写在这里）
 - 架构与 schema
 
 不要写会很快过期的具体文件路径或大段代码。原型里真正编码了决策的片段（状态机、类型形状）可以内联并注明来自 prototype。

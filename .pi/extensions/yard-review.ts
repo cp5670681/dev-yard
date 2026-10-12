@@ -20,6 +20,15 @@ const Finding = Type.Object({
   detail: Type.String({ description: "What is missing or wrong" }),
   files: Type.Optional(Type.Array(Type.String({ description: "Repo-relative path" }))),
   depends_on: Type.Optional(Type.Array(Type.String({ description: "Other finding id" }))),
+  gap: Type.Optional(
+    stringEnum(
+      ["missing", "partial", "contradicts", "unrequested"],
+      "missing: not in the code; partial: incomplete; contradicts: conflicts with the spec; unrequested: diff has work the spec did not ask for",
+    ),
+  ),
+  ref: Type.Optional(
+    Type.String({ description: "SPEC id this gap cites: FR-001, US1, US1/AC1, or C-001" }),
+  ),
 });
 
 export default function (pi: ExtensionAPI) {
@@ -34,6 +43,7 @@ export default function (pi: ExtensionAPI) {
       "Finish a review or contract review by calling submit_review exactly once.",
       "verdict is passed or failed. Do not put the verdict in the report text.",
       "Contract gaps go in findings on that call, one object per independent gap.",
+      "Ticket reviews also pass findings. gap is missing, partial, contradicts, or unrequested. ref is the SPEC id.",
     ],
     parameters: Type.Object({
       verdict: stringEnum(
@@ -42,7 +52,7 @@ export default function (pi: ExtensionAPI) {
       ),
       findings: Type.Optional(
         Type.Array(Finding, {
-          description: "Contract gaps. Omit or pass an empty list for a ticket review.",
+          description: "Spec or contract gaps. Pass an empty list when there are none.",
         }),
       ),
     }),

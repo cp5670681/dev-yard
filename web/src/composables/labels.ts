@@ -70,6 +70,7 @@ export const STEP_LABELS: Record<string, string> = {
   grill: "对齐",
   spec: "规约",
   tickets: "拆票",
+  analyze: "核对",
   freeze: "冻结",
   implement: "实现",
   review: "审查",
@@ -112,6 +113,7 @@ export const STAGE_ORDER = [
   "grill",
   "spec",
   "tickets",
+  "analyze",
   "freeze",
   "implement",
   "review",
@@ -125,6 +127,7 @@ export const STAGE_LABELS: Record<string, string> = {
   grill: "对齐",
   spec: "规约",
   tickets: "拆票",
+  analyze: "核对",
   freeze: "冻结",
   implement: "实现",
   review: "审查",
@@ -138,6 +141,7 @@ export const DOC_LABELS: Record<string, string> = {
   grill: "对齐记录",
   spec: "规格说明",
   tickets: "任务拆分",
+  analyze: "核对报告",
 };
 
 export function docLabel(slug: string, filename?: string) {

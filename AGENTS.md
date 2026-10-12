@@ -28,6 +28,7 @@ pi 的 `bash` 工具 `timeout` 是可选、**无默认值**，内置 `find`/`gre
 | `dev-yard grill` | grill-with-docs + grilling + domain-modeling |
 | `dev-yard spec` | to-spec |
 | `dev-yard tickets` | to-tickets |
+| `dev-yard analyze` | 只读核对：技能写 `ANALYZE.md` 的定性部分，宿主盖上编号覆盖；规格用了 `FR-` / `US` 编号时，CRITICAL 会拦住 `req freeze` |
 | `dev-yard implement` | implement + tdd + codebase-design（`dev.tdd=false` 时不加载 tdd） |
 | `dev-yard review` | code-review |
 | `dev-yard run <stage>` | 插件阶段，以及 grill/spec/tickets（`dev-yard stages` 可查）。`open` / `implement` / `review` / `contract` / `qa-design` / `qa-run` / `test` 走专用命令 |

@@ -48,6 +48,13 @@ pi 没有子 agent。两轴都自己做，先 Spec 再 Standards（契约模式�
 
 **Spec**：diff + `SPEC.md`（契约模式）或该票正文（票级）。报告 (a) spec 有但缺/残 (b) 没要的 scope creep (c) 看起来做了但做错。每条引用 spec。少于 400 字。若提示中注明 `TDD mode is OFF`：`SPEC.md` 任何位置要求测试文件的句子（含 Testing Decisions）和票里「验收：spec / 单测」都不是 Spec 缺口。缺少测试、测试文件跑不起来、或未执行测试，不得写入 Spec 轴，也不得因此把 `submit_review` 的 `verdict` 设为 `failed`。只审生产代码是否满足业务行为。
 
+票级审查把每条 Spec 发现放进 `submit_review` 的 `findings`，不要只写在正文里：
+
+- `gap` 只能是 `missing`（代码里没有）、`partial`（做了一部分）、`contradicts`（和规格相反）、`unrequested`（规格没要，出现在 diff 里）。
+- `ref` 是 `SPEC.md` 里的 `FR-001`、`US1`、`US1/AC1` 或 `C-001`。对得上本票 `covers` 的，算本票要修的。对不上的也要报，宿主会另开一张票，不要把范围扩进本票。
+- `unrequested` 只记录。不要在审查里删这些代码。
+- 没有发现时 `findings` 传空数组，`verdict` 为 `passed`。不要改 `TICKETS.md`。
+
 **Standards**（票级；契约模式可省略）：完整 diff、commit 列表、标准文件。报告每处 (a) 违反成文标准（引用文件+规则）(b) 气味（点名+摘 hunk）。硬违规 vs 判断题分开。少于 400 字。若提示中注明 `TDD mode is OFF`：测试文件缺失、跑不起来或未执行同样不是违规或缺陷。
 
 ## 5. 汇总
