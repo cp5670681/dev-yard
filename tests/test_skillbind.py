@@ -53,7 +53,11 @@ def test_pi_argv_binds_skills(monkeypatch):
     assert argv[0] == "pi"
     assert "--approve" in argv
     assert "--no-skills" in argv
+    assert "--no-extensions" in argv
     assert "--skill" in argv
+    extensions = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--extension"]
+    assert any(path.endswith("yard-guard.ts") for path in extensions)
+    assert not any(path.endswith("yard-doc-align.ts") for path in extensions)
     assert "--append-system-prompt" not in argv
     joined = " ".join(argv)
     assert ".pi/skills" in joined
@@ -127,6 +131,7 @@ def test_assistant_pi_argv_loads_safety_extension(tmp_path: Path, monkeypatch):
     argv = assistant_pi_argv(
         root=tmp_path, session_id="s", session_dir=tmp_path / "sessions"
     )
+    assert "--no-extensions" in argv
     assert "--extension" in argv
     assert Path(argv[argv.index("--extension") + 1]).name == "yard-guard.ts"
 

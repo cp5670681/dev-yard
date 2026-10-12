@@ -405,13 +405,17 @@ def pi_argv(
     cmd = binary or agent_binary()
     # --no-skills: skip ~/.pi/agent/skills and extra project skills.
     # Explicit --skill still loads this command's bundle (project copies).
+    # --no-extensions: skip discovery of .pi/extensions and user extensions.
+    # Explicit --extension still loads yard-guard on every run, yard-review
+    # on review/contract, and yard-doc-align only for doc-align. Discovery
+    # would put that write allow-list on grill and block GRILL.md.
     # Do not --append-system-prompt AGENTS.md: pi already loads it from cwd.
     # Do not @-attach REQUIREMENT.md: large dumps break tool-call arguments.
     if spec is None:
         spec = load_registry(root).get(bundle)
     if spec is None:
         raise ValueError(f"unknown stage {bundle!r}; run: dev-yard stages")
-    argv = [cmd, "--approve", "--no-skills"]
+    argv = [cmd, "--approve", "--no-skills", "--no-extensions"]
     if provider is None and model is None:
         provider, model = resolve_pi_choice(root, bundle, repo=repo)
     if provider:
@@ -452,7 +456,7 @@ def assistant_pi_argv(
     cmd = binary or agent_binary()
     if provider is None and model is None:
         provider, model = resolve_pi_choice(root, "assistant")
-    argv = [cmd, "--approve", "--no-skills", "--mode", "rpc"]
+    argv = [cmd, "--approve", "--no-skills", "--no-extensions", "--mode", "rpc"]
     if provider:
         argv.extend(["--provider", provider])
     if model:

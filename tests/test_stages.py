@@ -84,7 +84,7 @@ def test_argv_equivalence_builtin(tmp_path, name):
     root = _workspace(tmp_path)
     _make_skills(root, sorted({n for v in EXPECTED_SKILLS.values() for n in v}))
     argv = pi_argv(root=root, bundle=name, prompt="(p)")
-    assert argv[1:3] == ["--approve", "--no-skills"]
+    assert argv[1:4] == ["--approve", "--no-skills", "--no-extensions"]
     tools = argv[argv.index("--tools") + 1]
     assert tools == EXPECTED_TOOLS[name]
     skill_args = [argv[i + 1] for i, a in enumerate(argv) if a == "--skill"]

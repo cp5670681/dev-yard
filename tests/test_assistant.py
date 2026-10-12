@@ -94,6 +94,7 @@ def test_assistant_pi_argv_is_rpc_readonly(tmp_path: Path, monkeypatch):
         binary="pi",
     )
     assert argv[0] == "pi"
+    assert "--no-extensions" in argv
     assert "--mode" in argv and "rpc" in argv
     assert "-p" not in argv
     tools = argv[argv.index("--tools") + 1]

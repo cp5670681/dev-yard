@@ -443,6 +443,7 @@ def test_doc_align_argv_loads_the_write_guard(monkeypatch):
         binary="pi",
         spec=DOC_ALIGN_SPEC,
     )
+    assert "--no-extensions" in argv
     extensions = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--extension"]
     assert any(path.endswith("yard-doc-align.ts") for path in extensions)
 
