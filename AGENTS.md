@@ -29,7 +29,7 @@ pi 的 `bash` 工具 `timeout` 是可选、**无默认值**，内置 `find`/`gre
 | `dev-yard spec` | to-spec |
 | `dev-yard tickets` | to-tickets |
 | `dev-yard analyze` | 只读核对：技能写 `ANALYZE.md` 的定性部分，宿主盖上编号覆盖；规格用了 `FR-` / `US` 编号时，CRITICAL 会拦住 `req freeze` |
-| `dev-yard implement` | implement + tdd + codebase-design（`dev.tdd=false` 时不加载 tdd） |
+| `dev-yard implement` | implement + tdd + codebase-design（`dev.tdd=false` 时不加载 tdd）。`--until-done` 按依赖逐张实现、审查、按意见修改并合并，直到全部票完成或某张卡住；不跑契约审查、不提测。网页按钮是「一次性实现」 |
 | `dev-yard review` | code-review |
 | `dev-yard run <stage>` | 插件阶段，以及 grill/spec/tickets（`dev-yard stages` 可查）。`open` / `implement` / `review` / `contract` / `qa-design` / `qa-run` / `test` 走专用命令 |
 | `dev-yard req submit-test` | 提测：把冻结分支 push 到远端，再 merge 进各仓 `test_branch` 并 push（缺 `test_branch` 的仓跳过）；幂等可重入，冲突时默认用 implement 模型消解（`--no-resolve` 关闭，`--all` 全量重推） |

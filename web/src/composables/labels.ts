@@ -101,6 +101,7 @@ export const ACTION_LABELS: Record<string, string> = {
   sync: "同步远端",
   "reset-phase": "重置阶段",
   "reset-grill": "重置对齐",
+  "implement-all": "一次性实现",
   "doc-align": "按审查意见改文档",
   repo_add: "仓库 · clone",
 };

@@ -1579,7 +1579,8 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
   const sync = action === "sync";
   const runTest = action === "qa-run";
   const designTest = action === "qa-design";
-  if (resetPhase || resetGrill || freeze || push || pull || sync || runTest || designTest) {
+  const implementAll = action === "implement-all";
+  if (resetPhase || resetGrill || freeze || push || pull || sync || runTest || designTest || implementAll) {
     confirm.action = action;
     confirm.ticketId = ticketId || "";
     const branch = detail.value?.branch || `req/${jira.value}`;
@@ -1597,6 +1598,8 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
       ? "将执行已审核的用例。失败只记结果，不会自动建票；确认是产品问题后再在用例上「下 bug」。确认继续？"
       : resetGrill
       ? "将停止正在等待的对齐任务，丢弃当前待答轮次，并把 GRILL.md 清回空白：下次「对齐」从头生成问题。阶段/票/契约保留。确认继续？"
+      : implementAll
+      ? "将按依赖顺序逐张实现并审查。审查未过会按意见修改，同一张票最多改 3 次；没有结论会再审一次。通过后自动合并，再做后面的票，直到全部完成。某张卡住会停在那张，不依赖它的票继续。不会跑契约审查，也不会提测。确认开始？"
       : "将把需求重置回 open 阶段：拆掉 worktree 和本地分支，清空票/契约/测试状态。文档与截图保留。确认继续？";
     if (runTest) {
       const envs = qaEnvs.value;

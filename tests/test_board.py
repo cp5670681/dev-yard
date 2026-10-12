@@ -178,6 +178,7 @@ def test_frozen_ready_implement(tmp_path: Path, git_src: Path, monkeypatch):
     assert not detail.tickets[0].can_review
     ids = {a.id: a for a in detail.actions}
     assert ids["implement"].enabled
+    assert ids["implement-all"].enabled
     assert ids["freeze"].enabled
     assert not ids["review"].enabled
     assert ids["contract"].enabled

@@ -1505,8 +1505,24 @@ def implement(
         "--force",
         help="Implement explicit ticket ids even if pending/done",
     ),
+    until_done: bool = typer.Option(
+        False,
+        "--until-done",
+        help="实现、审查、按意见修改并合并，按依赖做到全部票完成",
+    ),
 ) -> None:
     root = root_opt()
+    if until_done:
+        if ticket_ids or from_contract or from_test or force or dry_run:
+            _die(ValueError("--until-done 不能和票号、--from-contract、--from-test、--force、--dry-run 一起用"))
+        try:
+            result = service.implement_until_done(
+                root, jira, print_mode=print_mode, on_log=typer.echo
+            )
+        except (ValueError, GitError, KeyError, FileNotFoundError, RuntimeError) as e:
+            _die(e)
+        typer.echo("done: " + (", ".join(result["done"]) if result["done"] else "(none)"))
+        return
     try:
         ran = service.implement(
             root,
