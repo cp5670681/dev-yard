@@ -10,6 +10,7 @@ the agent instead of failing the run.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import time
@@ -668,6 +669,188 @@ def attribute_zero_rows(
     return ""
 
 
+_SCHEMA_CONJUNCT = re.compile(
+    r"(?:\b[\w.]+\.)?(?:table_schema|table_catalog)\s*=\s*'[^']+'",
+    re.I,
+)
+_IDENTITY_CONJUNCT = re.compile(
+    r"(?:\b[\w.]+\.)?(?:name_en|username|role_name)\s*=\s*'[^']+'",
+    re.I,
+)
+_ATTR_CONJUNCT = re.compile(r"断言 (.+?) 使结果为 0 行")
+_DATA_GAPS = ".data-gaps.yaml"
+
+
+def conjunct_from_error(error: str) -> str:
+    match = _ATTR_CONJUNCT.search(error or "")
+    return match.group(1).strip() if match else ""
+
+
+def load_data_gaps(qa: Path) -> dict[str, dict[str, str]]:
+    """Gaps keyed by case id. Each value is note + fingerprint of the scripts.
+
+    A bare string (older file) has no fingerprint, so it does not skip a later run.
+    """
+    path = qa / _DATA_GAPS
+    if not path.is_file():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for key, value in data.items():
+        if isinstance(value, str) and value:
+            out[str(key)] = {"note": value, "fingerprint": ""}
+        elif isinstance(value, dict) and value.get("note"):
+            out[str(key)] = {
+                "note": str(value.get("note")),
+                "fingerprint": str(value.get("fingerprint") or ""),
+            }
+    return out
+
+
+def remember_data_gap(qa: Path, case_id: str, note: str, fingerprint: str) -> None:
+    current = load_data_gaps(qa)
+    current[case_id] = {"note": note, "fingerprint": fingerprint}
+    (qa / _DATA_GAPS).write_text(
+        yaml.safe_dump(current, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+
+def forget_data_gap(qa: Path, case_id: str) -> None:
+    current = load_data_gaps(qa)
+    if case_id not in current:
+        return
+    current.pop(case_id, None)
+    path = qa / _DATA_GAPS
+    if not current:
+        path.unlink(missing_ok=True)
+        return
+    path.write_text(
+        yaml.safe_dump(current, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+
+def case_gap_fingerprint(job: CaseJob) -> str:
+    """Hash of the case markdown and verify.sql this gap was decided against."""
+    digest = hashlib.sha1()
+    body = b""
+    if job.path:
+        try:
+            body = Path(job.path).read_bytes()
+        except OSError:
+            body = (job.body or "").encode()
+    else:
+        body = (job.body or "").encode()
+    digest.update(body)
+    digest.update(b"\0")
+    script = b""
+    if job.verify:
+        try:
+            script = case_script_path(job, job.verify, "verify").read_bytes()
+        except (OSError, TestRejected):
+            script = b""
+    digest.update(script)
+    return digest.hexdigest()
+
+
+def _norm_sql(text: str) -> str:
+    return " ".join((text or "").split())
+
+
+def drop_where_conjunct(sql: str, conjunct: str) -> str | None:
+    """Return sql without one WHERE conjunct, or None when it is not there."""
+    parsed = _where_conjuncts(sql)
+    if parsed is None:
+        return None
+    head, parts, tail = parsed
+    needle = _norm_sql(conjunct)
+    remain = [p for p in parts if _norm_sql(p) != needle]
+    if len(remain) == len(parts) or not remain:
+        return None
+    return head + " " + " AND ".join(remain) + " " + tail
+
+
+def _append_open_question(qa: Path, case_id: str, conjunct: str) -> None:
+    path = qa / "OPEN-QUESTIONS.md"
+    try:
+        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    except (OSError, UnicodeDecodeError):
+        existing = ""
+    marker = f"{case_id} 现场没有该身份的在职数据"
+    if marker in existing:
+        return
+    nums = [int(n) for n in re.findall(r"\bQ(\d+)\b", existing)]
+    number = max(nums, default=0) + 1
+    block = (
+        f"\n\n## Q{number} {marker}\n\n"
+        f"断言 `{conjunct}` 查不到行。保持未覆盖，不要为此回灌设计。\n"
+    )
+    if not existing.strip():
+        existing = "# OPEN-QUESTIONS\n"
+    path.write_text(existing.rstrip() + block, encoding="utf-8")
+
+
+def settle_host_failures(
+    qa: Path,
+    cases: list[CaseJob],
+    results: dict[str, VerifyResult],
+    *,
+    on_log: Callable[[str], None] | None = None,
+) -> bool:
+    """Drop a wrong schema predicate, and park identity gaps that have no row.
+
+    Returns True when a verify.sql file changed and the caller should re-check
+    without calling the model. An identity gap stays failed with skip_design
+    so the model is not called and the gate does not treat it as proven.
+    The gap is bound to the case markdown and verify.sql; a later edit re-runs.
+    """
+    by_id = {job.id: job for job in cases}
+    edited = False
+    for result in list(results.values()):
+        if result.status != "failed" or "0 rows" not in (result.error or ""):
+            continue
+        conjunct = conjunct_from_error(result.error)
+        if not conjunct:
+            continue
+        job = by_id.get(result.case)
+        if _SCHEMA_CONJUNCT.search(conjunct):
+            if job is None or not job.verify:
+                continue
+            try:
+                script = case_script_path(job, job.verify, "verify")
+                text = script.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError, TestRejected):
+                continue
+            rewritten = drop_where_conjunct(text, conjunct)
+            if rewritten is None or _norm_sql(rewritten) == _norm_sql(text):
+                continue
+            script.write_text(rewritten if rewritten.endswith("\n") else rewritten + "\n", encoding="utf-8")
+            edited = True
+            if on_log is not None:
+                on_log(f"{result.case}: 宿主去掉 schema 条件 `{conjunct}`\n")
+            continue
+        if _IDENTITY_CONJUNCT.search(conjunct):
+            if job is None:
+                continue
+            note = f"未覆盖：{conjunct} 在现场没有匹配行"
+            remember_data_gap(qa, result.case, note, case_gap_fingerprint(job))
+            _append_open_question(qa, result.case, conjunct)
+            result.status = "failed"
+            result.reason = note
+            result.error = note
+            result.lint = {**result.lint, "skip_design": True}
+            _write_result(qa, result)
+            if on_log is not None:
+                on_log(f"{result.case}: 现场没有匹配的身份数据，保持未覆盖，不回灌\n")
+    return edited
+
+
 def needs_verify(job: CaseJob) -> bool:
     """Whether the case declares data prerequisites that must be proven.
 
@@ -773,6 +956,18 @@ def verify_case(
     have a durable record.
     """
     result = VerifyResult(case=job.id, fingerprint=fingerprint)
+    qa = paths.qa_dir(root, jira)
+    gap = load_data_gaps(qa).get(job.id)
+    current_fp = case_gap_fingerprint(job)
+    if gap and gap.get("fingerprint") and gap["fingerprint"] == current_fp:
+        result.status = "failed"
+        result.reason = gap["note"]
+        result.error = gap["note"]
+        result.lint = {"skip_design": True}
+        _write_result(qa, result)
+        return result
+    if gap:
+        forget_data_gap(qa, job.id)
 
     def finish() -> VerifyResult:
         if result.status == "failed" and not result.lint.get("skip_design"):

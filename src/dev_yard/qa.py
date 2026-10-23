@@ -38,6 +38,7 @@ from dev_yard.qa_design import (
     _mark_design_pending,
     _permission_gap_warning,
     _raise_if_cancelled,
+    _start_repair,
     _verify_loop,
     design_pending,
     lint_cases,
@@ -55,6 +56,7 @@ from dev_yard.qa_exec import (
     recheck_db_assertions,
     run_case_script,
 )
+from dev_yard.qa_facts import absorb_worktree_constants
 from dev_yard.qa_report import has_design_blocked_skip, map_qa_result, triage_buckets
 from dev_yard.qa_review import (
     approve_cases,
@@ -526,53 +528,64 @@ def _req_test(
 
     # M7: static contract lint with one bounded design fix pass, before verify.
     # A seed/contract mistake should not cost a human review or a run.
+    pending_contract: list[str] = []
+
+    def _run_contract_fix(problems: list[str]) -> None:
+        nonlocal cases
+        if on_log is not None:
+            on_log("用例契约检查未通过，回灌 design 修正：" + "；".join(problems) + "\n")
+        _raise_if_cancelled(cancel_check, "qa-design")
+        fix_prompt = _design_prompt(
+            root,
+            jira,
+            cfg,
+            verify_feedback=(
+                "宿主静态契约检查未通过，请只修正这些问题：\n"
+                + "\n".join(f"- {p}" for p in problems)
+            ),
+            contract_fix=True,
+        )
+        _mark_design_pending(qa)
+        result = _start_repair(
+            _ensure_design_runner(), fix_prompt, root, jira, on_log=on_log
+        )
+        _raise_if_cancelled(cancel_check, "qa-design")
+        if not result.ok:
+            # The first design already finished. A stalled patch must not
+            # leave the pending sentinel, or the next click redesigns
+            # every case on the same model.
+            if read_design_marker(qa) is None:
+                raise TestRejected(
+                    f"qa-design 契约修正失败: {result.summary or result.exit_code}"
+                )
+            (qa / _DESIGN_PENDING).unlink(missing_ok=True)
+            if on_log is not None:
+                on_log(
+                    "契约修正没有得到模型回复，已保留本轮用例并继续数据核实："
+                    f"{result.summary or result.exit_code}\n"
+                    "未改掉的契约问题仍会挡住审核。\n"
+                )
+        else:
+            cases = discover_cases(qa)
+            _finish_design(qa)
+            # The changed case set invalidates any prior approval; the review
+            # gate holds it for a fresh look (no need to force `rejected`).
+
     if cases and not run_only and not rerun_ids and not verify_only and not allow_unverified:
         problems = lint_cases(root, jira, cfg, cases)
+        added = absorb_worktree_constants(root, jira, problems)
+        if added:
+            if on_log is not None:
+                on_log("常量在冻结代码里，已写入 facts，不回灌：" + "、".join(added) + "\n")
+            problems = lint_cases(root, jira, cfg, cases)
         account_gaps = [p for p in problems if _is_account_gap(p)]
         problems = [p for p in problems if p not in account_gaps]
         if account_gaps and on_log is not None:
             on_log("缺账号不回灌设计，保持未覆盖：" + "；".join(account_gaps) + "\n")
-        if problems:
-            if on_log is not None:
-                on_log("用例契约检查未通过，回灌 design 修正：" + "；".join(problems) + "\n")
-            _raise_if_cancelled(cancel_check, "qa-design")
-            fix_prompt = _design_prompt(
-                root,
-                jira,
-                cfg,
-                verify_feedback=(
-                    "宿主静态契约检查未通过，请只修正这些问题：\n"
-                    + "\n".join(f"- {p}" for p in problems)
-                ),
-                contract_fix=True,
-            )
-            _mark_design_pending(qa)
-            result = _ensure_design_runner().start(
-                fix_prompt,
-                root,
-                attachments.with_images(root, jira, [qa, paths.req_dir(root, jira)]),
-            )
-            _raise_if_cancelled(cancel_check, "qa-design")
-            if not result.ok:
-                # The first design already finished. A stalled patch must not
-                # leave the pending sentinel, or the next click redesigns
-                # every case on the same model.
-                if read_design_marker(qa) is None:
-                    raise TestRejected(
-                        f"qa-design 契约修正失败: {result.summary or result.exit_code}"
-                    )
-                (qa / _DESIGN_PENDING).unlink(missing_ok=True)
-                if on_log is not None:
-                    on_log(
-                        "契约修正没有得到模型回复，已保留本轮用例并继续数据核实："
-                        f"{result.summary or result.exit_code}\n"
-                        "未改掉的契约问题仍会挡住审核。\n"
-                    )
-            else:
-                cases = discover_cases(qa)
-                _finish_design(qa)
-                # The changed case set invalidates any prior approval; the review
-                # gate holds it for a fresh look (no need to force `rejected`).
+        if problems and not verify_enabled:
+            _run_contract_fix(problems)
+        elif problems:
+            pending_contract = problems
 
     # M1/M3: prove each case's declared data prerequisites host-side. Failures
     # loop back into design (bounded); the final verdict is written so the gate
@@ -580,6 +593,7 @@ def _req_test(
     verify_results: dict[str, VerifyResult] = {}
     verify_fingerprint = cases_fingerprint(qa) if cases else ""
     pre_verify_fingerprint = verify_fingerprint
+    repair_note: list[bool] = []
     if verify_enabled and cases and not run_only and not rerun_ids:
         _try_transition(root, jira, "verify_start", on_log=on_log)
         if verify_only:
@@ -603,9 +617,42 @@ def _req_test(
                 design_runner=_ensure_design_runner,
                 on_log=on_log,
                 cancel_check=cancel_check,
+                contract_problems=pending_contract,
+                repair_note=repair_note,
             )
             cases = discover_cases(qa)
             verify_fingerprint = cases_fingerprint(qa)
+        if pending_contract and not repair_note and not verify_only:
+            before_fp = cases_fingerprint(qa)
+            _run_contract_fix(pending_contract)
+            cases = discover_cases(qa)
+            verify_fingerprint = cases_fingerprint(qa)
+            # A contract pass that adds a case or a data.verify needs the
+            # bounded verify loop. An unchanged case set is re-checked once.
+            if verify_fingerprint != before_fp:
+                verify_results = _verify_loop(
+                    root,
+                    jira,
+                    cfg,
+                    qa,
+                    cases,
+                    history_text=history_text,
+                    design_runner=_ensure_design_runner,
+                    on_log=on_log,
+                    cancel_check=cancel_check,
+                )
+                cases = discover_cases(qa)
+                verify_fingerprint = cases_fingerprint(qa)
+            else:
+                verify_results = verify_cases(
+                    root,
+                    jira,
+                    cfg,
+                    cases,
+                    fingerprint=verify_fingerprint,
+                    on_log=on_log,
+                    cancel_check=cancel_check,
+                )
         write_summary(root, jira, verify_results, verify_fingerprint)
         if on_log is not None:
             on_log(describe(verify_results) + "\n")

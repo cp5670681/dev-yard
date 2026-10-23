@@ -114,6 +114,105 @@ def test_facts_prompt_block_inlines_yaml(tmp_path: Path):
     assert "ROWNUM" in text
 
 
+def test_scan_diff_constants_reads_ruby_outside_models(tmp_path: Path, monkeypatch):
+    from dev_yard.qa_facts import scan_diff_constants
+
+    jira = "J-1"
+    alias = "legacy"
+    wt = tmp_path / "reqs" / jira / "worktrees" / alias
+    cmd = wt / "app" / "commands"
+    cmd.mkdir(parents=True)
+    (cmd / "fetch.rb").write_text(
+        "class FetchWidgetCommand\n  PAGE_ID_MAPPING = {}\nend\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("dev_yard.paths.req_worktree", lambda *_a, **_k: wt)
+
+    class Repo:
+        default_base = "main"
+
+    monkeypatch.setattr(
+        "dev_yard.qa_facts.load_repos", lambda _root: {alias: Repo()}
+    )
+    monkeypatch.setattr(
+        "dev_yard.status.load", lambda *_a, **_k: {"base_shas": {alias: "abc"}}
+    )
+    monkeypatch.setattr("dev_yard.gitops.freeze_base", lambda *_a, **_k: "abc")
+    monkeypatch.setattr(
+        "dev_yard.gitops.changed_files",
+        lambda *_a, **_k: {"app/commands/fetch.rb"},
+    )
+    monkeypatch.setattr("dev_yard.gitops.untracked_files", lambda *_a, **_k: set())
+    names = scan_diff_constants(tmp_path, jira, alias)
+    assert "FetchWidgetCommand::PAGE_ID_MAPPING" in names
+
+
+def test_symbols_in_source_reads_role_and_table():
+    from dev_yard.qa_facts import symbols_in_source
+
+    roles, tables = symbols_in_source(
+        "create_table :score_rows do |t|\n"
+        "name_en: 'rank_view_role'\n"
+    )
+    assert roles == ["rank_view_role"]
+    assert tables == ["score_rows"]
+
+
+def test_probe_role_names_marks_zero_employees(monkeypatch):
+    from dev_yard.qa_facts import probe_role_names
+
+    monkeypatch.setattr(
+        "dev_yard.qa_facts.run_sql_lines",
+        lambda cfg, sql, catalog=None: ["rank_view_role|0"],
+    )
+    rows = probe_role_names(None, "main", ["rank_view_role", "other_role"])
+    by_name = {row["name"]: row for row in rows}
+    assert by_name["rank_view_role"]["exists"] is True
+    assert by_name["rank_view_role"]["active_employees"] == 0
+    assert by_name["other_role"]["exists"] is False
+
+
+def test_ruby_defines_requires_same_file_assignment(tmp_path: Path):
+    import subprocess
+
+    from dev_yard.qa_facts import _ruby_defines
+
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    subprocess.run(["git", "init"], cwd=wt, check=True, capture_output=True)
+    (wt / "employee.rb").write_text(
+        "class Employee\n  VALID_ID = 1\nend\n", encoding="utf-8"
+    )
+    (wt / "other.rb").write_text("ID_MAP = {}\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=wt, check=True, capture_output=True)
+    assert _ruby_defines(wt, "Employee::ID") is False
+    (wt / "real.rb").write_text("class Employee\n  ID = 1\nend\n", encoding="utf-8")
+    assert _ruby_defines(wt, "Employee::ID") is True
+    (wt / "widget.rb").write_text("module Widget\n  CODE = 1\nend\n", encoding="utf-8")
+    assert _ruby_defines(wt, "Widget::CODE") is True
+
+
+def test_absorb_worktree_constants_drops_known_names(tmp_path: Path, monkeypatch):
+    from dev_yard.qa_facts import absorb_worktree_constants
+
+    qa = tmp_path / "reqs" / "J-1" / "qa"
+    qa.mkdir(parents=True)
+    (qa / "facts.yaml").write_text(
+        "worktrees:\n  legacy:\n    constants: [Widget]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("dev_yard.paths.req_worktree", lambda *_a, **_k: tmp_path)
+    monkeypatch.setattr("dev_yard.qa_facts._ruby_defines", lambda *_a, **_k: True)
+    added = absorb_worktree_constants(
+        tmp_path,
+        "J-1",
+        ["case-01: 常量 FetchWidgetCommand::PAGE_ID_MAPPING 不在 facts.yaml constants"],
+    )
+    assert added == ["FetchWidgetCommand::PAGE_ID_MAPPING"]
+    text = (qa / "facts.yaml").read_text(encoding="utf-8")
+    assert "FetchWidgetCommand::PAGE_ID_MAPPING" in text
+
+
 def test_lint_facts_blob_unknown_const_and_skip_freeze():
     msgs = lint_facts_blob(
         "EmployeesGroup::MAX\nWidget.new\n",

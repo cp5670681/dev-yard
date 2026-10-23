@@ -199,6 +199,24 @@ def test_other_stages_ignore_the_review_tool():
     assert result.verdict is None
 
 
+def test_qa_design_json_error_is_not_success():
+    raw = _event(
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "stopReason": "error",
+                "errorMessage": "rate limit",
+                "content": [],
+            },
+        }
+    )
+    result = finish_pi_run("qa-design", 0, raw)
+    assert result.ok is False
+    assert "rate limit" in result.summary
+    assert finish_pi_run("qa-design", 0, "wrote cases\n").ok is True
+
+
 def test_live_log_shows_prose_not_json():
     raw = _event(
         {

@@ -713,6 +713,258 @@ def test_repair_prompt_does_not_ask_for_a_redesign(tmp_path: Path, git_src: Path
     assert "模型不认的字段从 setup 删掉" not in prompts[1]
 
 
+def test_settle_parks_identity_gap_and_rewrites_schema(tmp_path: Path):
+    from dev_yard.qa_verify import settle_host_failures
+
+    qa = tmp_path / "qa"
+    case_dir = qa / "cases" / "case-01"
+    case_dir.mkdir(parents=True)
+    case_md = case_dir / "case.md"
+    case_md.write_text("---\nid: case-01\n---\n", encoding="utf-8")
+    verify = case_dir / "verify.sql"
+    verify.write_text(
+        "SELECT table_name FROM information_schema.tables\n"
+        "WHERE table_schema = 'public' AND table_name = 'widgets'\n",
+        encoding="utf-8",
+    )
+    schema_job = CaseJob(
+        id="case-01",
+        title="t",
+        repo="backend",
+        path=str(case_md),
+        verify="verify.sql",
+    )
+    id_dir = qa / "cases" / "case-02"
+    id_dir.mkdir(parents=True)
+    id_md = id_dir / "case.md"
+    id_md.write_text("---\nid: case-02\n---\n", encoding="utf-8")
+    (id_dir / "verify.sql").write_text(
+        "SELECT id FROM employees e WHERE e.username = 'rank_view' AND e.active = 1\n",
+        encoding="utf-8",
+    )
+    identity_job = CaseJob(
+        id="case-02",
+        title="t",
+        repo="backend",
+        path=str(id_md),
+        verify="verify.sql",
+    )
+    logs: list[str] = []
+    results = {
+        "case-01": VerifyResult(
+            case="case-01",
+            status="failed",
+            error="0 rows；断言 table_schema = 'public' 使结果为 0 行：去掉该项即 1 行",
+        ),
+        "case-02": VerifyResult(
+            case="case-02",
+            status="failed",
+            error="0 rows；断言 e.username = 'rank_view' 使结果为 0 行：去掉该项即 1 行",
+        ),
+    }
+    edited = settle_host_failures(
+        qa, [schema_job, identity_job], results, on_log=logs.append
+    )
+    assert edited is True
+    assert "table_schema" not in verify.read_text(encoding="utf-8")
+    assert "table_name = 'widgets'" in verify.read_text(encoding="utf-8")
+    assert results["case-02"].status == "failed"
+    assert results["case-02"].lint.get("skip_design") is True
+    assert "不回灌" in "".join(logs)
+    questions = (qa / "OPEN-QUESTIONS.md").read_text(encoding="utf-8")
+    assert "Q1" in questions
+    assert "case-02" in questions
+
+
+def test_identity_gap_follows_the_script_and_blocks_the_gate(
+    tmp_path: Path, monkeypatch
+):
+    from dev_yard.qa_verify import settle_host_failures
+
+    qa = paths.qa_dir(tmp_path, JIRA)
+    case_dir = qa / "cases" / "case-02"
+    case_dir.mkdir(parents=True)
+    case_md = case_dir / "case.md"
+    case_md.write_text("---\nid: case-02\n---\n", encoding="utf-8")
+    verify = case_dir / "verify.sql"
+    verify.write_text(
+        "SELECT id FROM employees e WHERE e.username = 'rank_view' AND e.active = 1\n",
+        encoding="utf-8",
+    )
+    job = CaseJob(
+        id="case-02",
+        title="t",
+        repo="backend",
+        path=str(case_md),
+        verify="verify.sql",
+    )
+    result = VerifyResult(
+        case="case-02",
+        status="failed",
+        error="0 rows；断言 e.username = 'rank_view' 使结果为 0 行：去掉该项即 1 行",
+    )
+    settle_host_failures(qa, [job], {"case-02": result})
+    seen: list[str] = []
+
+    def rows(cfg, sql, on_log=None, **k):
+        seen.append(sql)
+        return 1
+
+    monkeypatch.setattr("dev_yard.qa_verify.run_sql_count", rows)
+    again = verify_case(tmp_path, JIRA, _cfg(tmp_path), job, fingerprint="fp")
+    assert again.status == "failed"
+    assert again.lint.get("skip_design") is True
+    assert seen == []
+    write_summary(tmp_path, JIRA, {"case-02": again}, cases_fingerprint(qa))
+    ok, reason = verify_gate(qa, cases_fingerprint(qa))
+    assert ok is False
+    assert "case-02" in reason
+
+    verify.write_text("SELECT id FROM employees WHERE active = 1\n", encoding="utf-8")
+    rerun = verify_case(tmp_path, JIRA, _cfg(tmp_path), job, fingerprint="fp2")
+    assert seen
+    assert rerun.status == "passed"
+
+
+def test_rolled_back_repair_still_runs_contract_fix(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    def rows(cfg, sql, on_log=None, **k):
+        return 0 if "669215" in (sql or "") else 1
+
+    monkeypatch.setattr("dev_yard.qa_verify.run_sql_count", rows)
+    monkeypatch.setattr("dev_yard.qa_verify.attribute_zero_rows", lambda *a, **k: "")
+    yard = _testing_req(tmp_path, git_src, "QA-RB")
+    qa = yard / "reqs" / "QA-RB" / "qa"
+    qa.mkdir(parents=True, exist_ok=True)
+    (qa / "meta.yaml").write_text(
+        "changes:\n  - {id: D1, repo: backend}\n  - {id: D2, repo: backend}\n",
+        encoding="utf-8",
+    )
+    prompts: list[str] = []
+
+    class _Rollback(_CaseWriter):
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            prompts.append(prompt)
+            self.called += 1
+            d = self.yard / "reqs" / self.key / "qa" / "cases" / "mod"
+            d.mkdir(parents=True, exist_ok=True)
+            path = d / "case-01.md"
+            if self.called == 1:
+                path.write_text(_CASE.format(key=self.key), encoding="utf-8")
+                (d / "verify.sql").write_text(
+                    "SELECT id FROM projects WHERE id=669215\n", encoding="utf-8"
+                )
+            elif self.called == 2:
+                text = _CASE.format(key=self.key).replace(
+                    "covers: [D1]", "covers: [D1, D2]"
+                )
+                text = text.replace("打开项目", "打开任意页面")
+                path.write_text(text, encoding="utf-8")
+                (d / "verify.sql").write_text("SELECT 1\n", encoding="utf-8")
+            else:
+                path.write_text(
+                    _CASE.format(key=self.key).replace("covers: [D1]", "covers: [D1, D2]"),
+                    encoding="utf-8",
+                )
+            return RunResult(ok=True, summary="designed")
+
+    writer = _Rollback(yard, "QA-RB")
+    result = req_test(yard, "QA-RB", print_mode=True, design_only=True, runner=writer)
+    body = (qa / "cases" / "mod" / "case-01.md").read_text(encoding="utf-8")
+    assert writer.called == 3
+    assert "数据核实修补" in prompts[1]
+    assert "契约修补" in prompts[2]
+    assert "打开项目" in body
+    assert "打开任意页面" not in body
+    assert result["lint"] == []
+
+
+def test_contract_repair_may_fill_fields_and_add_a_case(tmp_path: Path):
+    from dev_yard.qa_design import _repair_keeps_assertions, repair_keeps_assertions
+
+    before = (
+        "---\nid: case-01\ncovers: [D1]\n---\n\n"
+        "## 步骤\n1. 打开项目\n\n## 预期\n- DB: 存在\n"
+    )
+    grown = before.replace("covers: [D1]", "covers: [D1, D2]")
+    assert repair_keeps_assertions(before, grown, allow_contract=True)
+    shrunk = before.replace("covers: [D1]", "covers: []")
+    assert not repair_keeps_assertions(before, shrunk, allow_contract=True)
+    filled = (
+        "---\nid: case-01\nrepo: backend\ncovers: [D1]\n"
+        "data: {verify: verify.sql, identity: 'id=1'}\n---\n\n"
+        "## 步骤\n1. 打开项目\n\n## 预期\n- DB: 存在\n"
+    )
+    assert repair_keeps_assertions(before, filled, allow_contract=True)
+    retarget = filled.replace("repo: backend", "repo: other")
+    assert not repair_keeps_assertions(filled, retarget, allow_contract=True)
+    stepped = grown.replace("打开项目", "打开任意页面")
+    assert not repair_keeps_assertions(before, stepped, allow_contract=True)
+
+    qa = tmp_path / "qa"
+    case = qa / "cases" / "mod" / "case-01.md"
+    case.parent.mkdir(parents=True)
+    case.write_text(before, encoding="utf-8")
+    snap = {str(case): before.encode()}
+    case.write_text(grown, encoding="utf-8")
+    new = qa / "cases" / "mod" / "case-02.md"
+    new.write_text(
+        "---\nid: case-02\nrepo: backend\n---\n\n## 步骤\n1. 新用例\n\n## 预期\n- ok\n",
+        encoding="utf-8",
+    )
+    assert _repair_keeps_assertions(qa, snap, allow_contract=True)
+    assert not _repair_keeps_assertions(qa, snap)
+
+
+def test_contract_and_verify_share_one_repair(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    state = {"fixed": False}
+
+    def rows(cfg, sql, on_log=None, **k):
+        return 1 if state["fixed"] else 0
+
+    monkeypatch.setattr("dev_yard.qa_verify.run_sql_count", rows)
+    monkeypatch.setattr(
+        "dev_yard.qa_verify.attribute_zero_rows", lambda *a, **k: ""
+    )
+    yard = _testing_req(tmp_path, git_src, "QA-BOTH")
+    qa = yard / "reqs" / "QA-BOTH" / "qa"
+    qa.mkdir(parents=True, exist_ok=True)
+    (qa / "meta.yaml").write_text(
+        "changes:\n  - {id: D1, repo: backend}\n  - {id: D2, repo: backend}\n",
+        encoding="utf-8",
+    )
+    prompts: list[str] = []
+
+    class _Both(_CaseWriter):
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            prompts.append(prompt)
+            if self.called == 0:
+                self.bodies = ["SELECT id FROM projects WHERE id=669215"]
+            else:
+                state["fixed"] = True
+                text = _CASE.format(key="QA-BOTH").replace("covers: [D1]", "covers: [D1, D2]")
+                d = self.yard / "reqs" / self.key / "qa" / "cases" / "mod"
+                d.mkdir(parents=True, exist_ok=True)
+                (d / "case-01.md").write_text(text, encoding="utf-8")
+                (d / "verify.sql").write_text(
+                    "SELECT id FROM projects WHERE id=1\n", encoding="utf-8"
+                )
+                self.called += 1
+                return RunResult(ok=True, summary="fixed")
+            return super().start(prompt, cwd, extra_read_paths, repo)
+
+    writer = _Both(yard, "QA-BOTH")
+    result = req_test(yard, "QA-BOTH", print_mode=True, design_only=True, runner=writer)
+    assert writer.called == 2
+    assert "数据核实修补" in prompts[1]
+    assert "静态契约" in prompts[1]
+    assert "D2" in prompts[1]
+    assert result["lint"] == []
+
+
 def test_render_feedback_lists_only_failures():
     text = render_feedback(
         {

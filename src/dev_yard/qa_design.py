@@ -30,10 +30,11 @@ from dev_yard.qa_verify import (
     failed_cases,
     needs_verify,
     render_feedback,
+    settle_host_failures,
     verify_cases,
     worktree_schema_files,
 )
-from dev_yard.runners import JobCancelled, Runner
+from dev_yard.runners import JobCancelled, Runner, RunResult
 from dev_yard.skillbind import session_prompt_for
 from dev_yard.stages import load_registry
 
@@ -813,6 +814,7 @@ def _design_prompt(
     if contract_fix and verify_feedback and verify_feedback.strip():
         extra = (
             "契约修补。这不是重新设计。\n"
+            "这一轮没有 bash、grep、find、ls。只读、只改清单里的用例文件。\n"
             "只改清单点名的问题：给已有用例补上 covers，或补上 data.verify / repo / identity。\n"
             "不要改其它用例的步骤和预期，不要 diff，不要读 dev-yard 的 src/。\n"
             "改动点没有 covers 时，加到已经在断言该行为的用例上；没有这样的用例再补一条。\n"
@@ -822,6 +824,7 @@ def _design_prompt(
     if repair_only and verify_feedback and verify_feedback.strip():
         extra = (
             "数据核实修补。这不是重新设计。\n"
+            "这一轮没有 bash、grep、find、ls。只读、只改清单里的用例文件。\n"
             "只改失败清单里的用例文件（setup、cleanup、verify.sql、该用例的前置）。\n"
             "不要改其它用例，不要 diff，不要读 dev-yard 的 src/。\n"
             "错误里的异常行是结论；忽略 Rails 启动警告。\n"
@@ -875,6 +878,52 @@ def _context_block(root: Path, jira: str, cfg: QaConfig) -> str:
     return f"qa/context.md:\n{text}".strip() + facts_prompt_block(qa) + probe_prompt_block(qa)
 
 
+REPAIR_TOOLS = ("read", "edit", "write")
+
+
+def _start_repair(
+    runner: Runner,
+    prompt: str,
+    root: Path,
+    jira: str,
+    *,
+    on_log: LogFn | None,
+) -> RunResult:
+    """One repair pi. Tools are read/edit/write when the runner allows it."""
+    qa = paths.qa_dir(root, jira)
+    previous_tools = getattr(runner, "tool_override", None)
+    previous_hook = getattr(runner, "on_tool", None)
+    previous_note = getattr(runner, "on_note", None)
+    if hasattr(runner, "tool_override"):
+        runner.tool_override = REPAIR_TOOLS
+
+    def _hook(brief: str) -> None:
+        if on_log is not None and brief:
+            on_log(f"修补 {brief}\n")
+
+    def _note(text: str) -> None:
+        if on_log is not None and text:
+            on_log(text if text.endswith("\n") else text + "\n")
+
+    if hasattr(runner, "on_tool"):
+        runner.on_tool = _hook
+    if hasattr(runner, "on_note"):
+        runner.on_note = _note
+    try:
+        return runner.start(
+            prompt,
+            root,
+            attachments.with_images(root, jira, [qa, paths.req_dir(root, jira)]),
+        )
+    finally:
+        if hasattr(runner, "tool_override"):
+            runner.tool_override = previous_tools
+        if hasattr(runner, "on_tool"):
+            runner.on_tool = previous_hook
+        if hasattr(runner, "on_note"):
+            runner.on_note = previous_note
+
+
 def _verify_loop(
     root: Path,
     jira: str,
@@ -886,6 +935,8 @@ def _verify_loop(
     design_runner: Callable[[], Runner],
     on_log: LogFn | None,
     cancel_check: CancelCheck | None,
+    contract_problems: list[str] | None = None,
+    repair_note: list[bool] | None = None,
 ) -> dict[str, VerifyResult]:
     """Verify, feed case gaps back to design, and retry environment blocks (M5)."""
     case_attempts = max(1, cfg.design_verify_attempts)
@@ -893,6 +944,7 @@ def _verify_loop(
     results: dict[str, VerifyResult] = {}
     case_round = 0
     env_round = 0
+    host_rounds = 0
     prev_fail_ids: frozenset[str] | None = None
     while True:
         _raise_if_cancelled(cancel_check, "qa-verify")
@@ -906,6 +958,10 @@ def _verify_loop(
             on_log=on_log,
             cancel_check=cancel_check,
         )
+        if host_rounds < 2 and settle_host_failures(qa, cases, results, on_log=on_log):
+            host_rounds += 1
+            cases = discover_cases(qa)
+            continue
         failures = [
             r for r in results.values() if r.status == "failed" and not r.lint.get("skip_design")
         ]
@@ -938,26 +994,39 @@ def _verify_loop(
                     f"数据核实 {len(failures)} 条未通过，只修补这些用例"
                     f"（第 {case_round}/{case_attempts - 1} 次）\n"
                 )
+            feedback = render_feedback(results)
+            if contract_problems and case_round == 1:
+                feedback = (
+                    "同时修正这些静态契约问题（不要为此重写其它用例）：\n"
+                    + "\n".join(f"- {p}" for p in contract_problems)
+                    + "\n\n"
+                    + feedback
+                )
             prompt = _design_prompt(
                 root,
                 jira,
                 cfg,
-                verify_feedback=render_feedback(results),
+                verify_feedback=feedback,
                 repair_only=True,
             )
             body_snap = _snapshot_case_bodies(qa)
             _mark_design_pending(qa)
-            result = design_runner().start(
-                prompt,
-                root,
-                attachments.with_images(root, jira, [qa, paths.req_dir(root, jira)]),
+            result = _start_repair(
+                design_runner(), prompt, root, jira, on_log=on_log
             )
             _raise_if_cancelled(cancel_check, "qa-design")
             if not result.ok:
                 raise TestRejected(
                     f"qa-design 数据核实回流失败: {result.summary or result.exit_code}"
                 )
-            if not _repair_keeps_assertions(qa, body_snap):
+            # A repair that is rolled back, or that leaves the contract lint in
+            # place, must not suppress the dedicated contract pass.
+            contract_round = bool(contract_problems) and case_round == 1
+            if not _repair_keeps_assertions(
+                qa,
+                body_snap,
+                allow_contract=contract_round,
+            ):
                 _restore_case_bodies(qa, body_snap)
                 _finish_design(qa)
                 reject_cases(qa, render_feedback(results))
@@ -968,6 +1037,12 @@ def _verify_loop(
                     )
                 break
             cases = discover_cases(qa)
+            if repair_note is not None and contract_round:
+                fresh = [
+                    p for p in lint_cases(root, jira, cfg, cases) if not _is_account_gap(p)
+                ]
+                if not fresh:
+                    repair_note.append(True)
             _finish_design(qa)
             # Record the host's findings as the review state's feedback, so a
             # human sees what the loop changed even when it ends green.
@@ -1033,11 +1108,74 @@ def _meta_without_scripts(meta: dict[str, Any], data: dict[str, Any]) -> dict[st
     return out
 
 
-def repair_keeps_assertions(before: str, after: str) -> bool:
+def _cover_items(value: Any) -> list[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return [str(value)]
+
+
+def _covers_only_grew(before: Any, after: Any) -> bool:
+    old = _cover_items(before)
+    new = _cover_items(after)
+    return all(item in new for item in old)
+
+
+def _missing_meta(value: Any) -> bool:
+    return value is None or value == "" or value == []
+
+
+def _same_or_fill(before: dict[str, Any], after: dict[str, Any], key: str) -> bool:
+    """Allow an unchanged key, or filling one that was empty. Not a retarget."""
+    old = before.get(key)
+    new = after.get(key)
+    if old == new or (_missing_meta(old) and not _missing_meta(new)):
+        before.pop(key, None)
+        after.pop(key, None)
+        return True
+    return False
+
+
+def _apply_contract_fills(before_meta: dict[str, Any], after_meta: dict[str, Any]) -> bool:
+    """Covers may only grow. repo / data.verify / data.identity may be filled in."""
+    if not _covers_only_grew(before_meta.get("covers"), after_meta.get("covers")):
+        return False
+    before_meta.pop("covers", None)
+    after_meta.pop("covers", None)
+    if not _same_or_fill(before_meta, after_meta, "repo"):
+        return False
+    before_data = before_meta.get("data")
+    after_data = after_meta.get("data")
+    before_data = dict(before_data) if isinstance(before_data, dict) else {}
+    after_data = dict(after_data) if isinstance(after_data, dict) else {}
+    for key in ("verify", "identity"):
+        if not _same_or_fill(before_data, after_data, key):
+            return False
+    if before_data:
+        before_meta["data"] = before_data
+    else:
+        before_meta.pop("data", None)
+    if after_data:
+        after_meta["data"] = after_data
+    else:
+        after_meta.pop("data", None)
+    return True
+
+
+def repair_keeps_assertions(
+    before: str,
+    after: str,
+    *,
+    allow_covers: bool = False,
+    allow_contract: bool = False,
+) -> bool:
     """True when a repair only drops setup/cleanup or rewrites 前置.
 
     Dropping setup may also drop data.writes and data.identity. Those keys
-    may not be pointed at a different row.
+    may not be pointed at a different row. A combined contract repair may
+    grow `covers`, fill a missing repo / data.verify / data.identity, and
+    add a case. It may not shrink covers or retarget those fields.
     """
     try:
         meta_before, body_before = split_frontmatter(before)
@@ -1055,18 +1193,33 @@ def repair_keeps_assertions(before: str, after: str) -> bool:
                 before_data.pop(key, None)
             elif before_data.get(key) != after_data.get(key):
                 return False
-    if _meta_without_scripts(meta_before, before_data) != _meta_without_scripts(
-        meta_after, after_data
-    ):
+    before_meta = _meta_without_scripts(meta_before, before_data)
+    after_meta = _meta_without_scripts(meta_after, after_data)
+    if allow_contract:
+        if not _apply_contract_fills(before_meta, after_meta):
+            return False
+    elif allow_covers:
+        before_meta.pop("covers", None)
+        after_meta.pop("covers", None)
+    if before_meta != after_meta:
         return False
     return _assertion_sections(body_before) == _assertion_sections(body_after)
 
 
-def _repair_keeps_assertions(qa: Path, snap: dict[str, bytes]) -> bool:
+def _repair_keeps_assertions(
+    qa: Path,
+    snap: dict[str, bytes],
+    *,
+    allow_covers: bool = False,
+    allow_contract: bool = False,
+) -> bool:
     from dev_yard.qa_review import _case_assets
 
     current = {str(path): path.read_bytes() for path in _case_assets(qa, "bodies")}
-    if set(current) != set(snap):
+    if allow_contract:
+        if not set(snap).issubset(current):
+            return False
+    elif set(current) != set(snap):
         return False
     for path, old in snap.items():
         new = current[path]
@@ -1077,7 +1230,12 @@ def _repair_keeps_assertions(qa: Path, snap: dict[str, bytes]) -> bool:
             after = new.decode("utf-8")
         except UnicodeDecodeError:
             return False
-        if not repair_keeps_assertions(before, after):
+        if not repair_keeps_assertions(
+            before,
+            after,
+            allow_covers=allow_covers,
+            allow_contract=allow_contract,
+        ):
             return False
     return True
 

@@ -157,6 +157,40 @@ def test_open_prompt():
     assert "REQUIREMENT.md" in p
 
 
+def test_tool_event_brief_names_the_path():
+    from dev_yard.runners import tool_event_brief
+
+    line = (
+        '{"type":"tool_execution_start","toolName":"read",'
+        '"args":{"path":"reqs/J/qa/cases/case-01/verify.sql"}}\n'
+    )
+    assert tool_event_brief(line) == "read reqs/J/qa/cases/case-01/verify.sql"
+    assert tool_event_brief("not json") == ""
+
+
+def test_repair_event_stream_limits_tools(monkeypatch):
+    from dataclasses import replace
+
+    from dev_yard.stages import load_registry
+
+    monkeypatch.delenv("YARD_PI_PROVIDER", raising=False)
+    monkeypatch.delenv("YARD_PI_MODEL", raising=False)
+    root = Path(__file__).resolve().parents[1]
+    spec = replace(load_registry(root)["qa-design"], tools=("read", "edit", "write"))
+    argv = pi_argv(
+        root=root,
+        bundle="qa-design",
+        prompt="r",
+        print_mode=True,
+        binary="pi",
+        spec=spec,
+        event_stream=True,
+    )
+    assert argv[argv.index("--tools") + 1] == "read,edit,write"
+    assert argv[argv.index("--mode") + 1] == "json"
+    assert "bash" not in argv[argv.index("--tools") + 1]
+
+
 def test_pi_argv_print_mode(monkeypatch):
     monkeypatch.delenv("YARD_PI_PROVIDER", raising=False)
     monkeypatch.delenv("YARD_PI_MODEL", raising=False)

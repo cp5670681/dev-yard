@@ -9,7 +9,7 @@ import subprocess
 import sys
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -372,8 +372,26 @@ def finish_pi_run(bundle: str, code: int, raw: str) -> RunResult:
             findings=[],
             verdict_missing=True,
         )
+    failure = json_turn_failure(raw)
+    if failure:
+        # JSON mode exits 0 when the assistant turn stops with error/aborted.
+        return RunResult(ok=False, summary=failure, exit_code=code or 1)
     summary = clip_summary(raw, bundle) or f"pi exit {code}"
     return RunResult(ok=code == 0, summary=summary, exit_code=code)
+
+
+def json_turn_failure(raw: str) -> str | None:
+    """error/aborted stopReason from a `pi --mode json` stream, if any.
+
+    Review stages read this inside their own verdict parse. Other stages,
+    including qa-design repair, still have to: the process exit code stays 0.
+    """
+    if not raw or "{" not in raw:
+        return None
+    stream = ReviewStream()
+    for line in raw.splitlines(keepends=True):
+        stream.feed(line)
+    return stream.failure
 
 
 def attachment_args(paths: list[Path]) -> list[str]:
@@ -401,6 +419,7 @@ def pi_argv(
     model: str | None = None,
     attach: list[Path] | None = None,
     session_id: str | None = None,
+    event_stream: bool = False,
 ) -> list[str]:
     cmd = binary or agent_binary()
     # --no-skills: skip ~/.pi/agent/skills and extra project skills.
@@ -428,7 +447,7 @@ def pi_argv(
     argv.extend(extension_args(root, bundle))
     if print_mode:
         argv.append("-p")
-        if bundle in STRUCTURED_REVIEW_STAGES:
+        if bundle in STRUCTURED_REVIEW_STAGES or event_stream:
             argv.extend(["--mode", "json"])
     if attach:
         argv.extend(attachment_args(attach))
@@ -477,6 +496,27 @@ def assistant_pi_argv(
         ]
     )
     return argv
+
+
+def tool_event_brief(line: str) -> str:
+    """Short `tool path` line from a pi JSON tool_execution_start event."""
+    text = (line or "").strip()
+    if not text.startswith("{"):
+        return ""
+    try:
+        event = json.loads(text)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(event, dict) or event.get("type") != "tool_execution_start":
+        return ""
+    name = str(event.get("toolName") or "")
+    args = event.get("args") if isinstance(event.get("args"), dict) else {}
+    target = ""
+    for key in ("path", "file_path", "command", "pattern"):
+        if args.get(key):
+            target = str(args[key]).replace("\n", " ")[:160]
+            break
+    return f"{name} {target}".strip()
 
 
 def kill_proc_group(proc: subprocess.Popen) -> None:
@@ -646,6 +686,10 @@ class PiRunner(Runner):
         # caller can kill it; `on_reap` drops it once the run returns.
         self.on_spawn = on_spawn
         self.on_reap = on_reap
+        # Repair rounds set these so pi cannot wander with bash/find.
+        self.tool_override: tuple[str, ...] | None = None
+        self.on_tool: Callable[[str], None] | None = None
+        self.on_note: Callable[[str], None] | None = None
 
     def start(
         self,
@@ -667,6 +711,9 @@ class PiRunner(Runner):
                 session_id = f"yard{self.bundle.replace('-', '')}{uuid.uuid4().hex[:12]}"
 
             def _argv(attach: list[Path] | None) -> list[str]:
+                spec = self.spec
+                if self.tool_override and spec is not None:
+                    spec = replace(spec, tools=self.tool_override)
                 return pi_argv(
                     root=self.root,
                     bundle=self.bundle,
@@ -674,18 +721,48 @@ class PiRunner(Runner):
                     print_mode=True,
                     binary=self.binary,
                     repo=repo,
-                    spec=self.spec,
+                    spec=spec,
                     provider=self.provider,
                     model=self.model,
                     attach=attach,
                     session_id=session_id,
+                    event_stream=bool(self.tool_override),
                 )
 
             stream = (
                 ReviewStream() if self.bundle in STRUCTURED_REVIEW_STAGES else None
             )
+            watch = stream if stream is not None else (
+                ReviewStream() if self.tool_override else None
+            )
+            announced: set[str] = set()
 
             def _echo(line: str) -> None:
+                if self.tool_override:
+                    brief = tool_event_brief(line)
+                    if brief:
+                        if self.on_tool is not None:
+                            self.on_tool(brief)
+                        sys.stdout.write(brief + "\n")
+                        sys.stdout.flush()
+                        return
+                    if line.strip().startswith("{"):
+                        shown = watch.feed(line) if watch is not None else ""
+                        if shown:
+                            sys.stdout.write(shown)
+                            sys.stdout.flush()
+                        if (
+                            watch is not None
+                            and watch.failure
+                            and watch.failure not in announced
+                        ):
+                            announced.add(watch.failure)
+                            text = watch.failure
+                            sys.stdout.write(text if text.endswith("\n") else text + "\n")
+                            sys.stdout.flush()
+                            if self.on_note is not None:
+                                self.on_note(watch.failure)
+                        return
                 shown = stream.feed(line) if stream is not None else line
                 if shown:
                     sys.stdout.write(shown)
@@ -701,6 +778,8 @@ class PiRunner(Runner):
             )
             if stream is not None:
                 _flush_stream_log(stream)
+            elif watch is not None:
+                _flush_stream_log(watch)
             result = finish_pi_run(self.bundle, code, raw)
             if stream is not None and result.verdict_missing and session_id:
                 result = retry_missing_verdict(

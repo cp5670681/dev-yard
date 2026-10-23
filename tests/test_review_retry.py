@@ -135,6 +135,48 @@ def test_session_create_warning_is_not_stored_as_the_report():
     assert "creating a new session" not in result.summary
 
 
+def test_repair_json_abort_is_a_failed_run(tmp_path: Path, monkeypatch, capsys):
+    tool = _event(
+        {
+            "type": "tool_execution_start",
+            "toolName": "read",
+            "args": {"path": "qa/cases/case-01.md"},
+        }
+    )
+    end = _event(
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "stopReason": "aborted",
+                "errorMessage": "provider aborted",
+                "content": [],
+            },
+        }
+    )
+    raw = tool + end
+    notes: list[str] = []
+    tools: list[str] = []
+
+    def fake(argv, cwd, prompt, on_line=None, **kwargs):
+        if on_line is not None:
+            for line in raw.splitlines(keepends=True):
+                on_line(line)
+        return 0, raw
+
+    monkeypatch.setattr(runners, "run_pi_print_tracked", fake)
+    runner = _runner(tmp_path, "qa-design")
+    runner.tool_override = ("read", "edit", "write")
+    runner.on_note = notes.append
+    runner.on_tool = tools.append
+    result = runner.start("repair", tmp_path, [])
+    assert result.ok is False
+    assert "provider aborted" in result.summary
+    assert tools == ["read qa/cases/case-01.md"]
+    assert notes == ["provider aborted"]
+    assert "provider aborted" in capsys.readouterr().out
+
+
 def test_no_retry_when_the_first_run_has_a_verdict(tmp_path: Path, monkeypatch):
     calls = _install(monkeypatch, [_verdict("failed")])
     result = _runner(tmp_path).start("review this", tmp_path, [])
