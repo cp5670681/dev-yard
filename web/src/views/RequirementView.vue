@@ -443,8 +443,22 @@
             <div class="d-flex align-center ga-2 flex-wrap">
               <v-chip size="x-small" variant="tonal">{{ c.id }}</v-chip>
               <span class="text-caption text-medium-emphasis">{{ c.at }}</span>
-              <v-chip v-if="c.ticket" size="x-small" color="primary" variant="tonal">
-                {{ c.ticket }}
+              <v-chip
+                v-for="name in changeRepos(c)"
+                :key="`${c.id}-repo-${name}`"
+                size="x-small"
+                variant="tonal"
+              >
+                {{ name }}
+              </v-chip>
+              <v-chip
+                v-for="id in changeTickets(c)"
+                :key="`${c.id}-ticket-${id}`"
+                size="x-small"
+                color="primary"
+                variant="tonal"
+              >
+                {{ id }}
               </v-chip>
               <v-chip v-if="c.contract_touched" size="x-small" color="warning" variant="tonal">
                 触及契约
@@ -869,7 +883,7 @@
         <v-card-text>
           <p class="text-body-2 mb-3">
             只改描述 / 规则 / 验收等非契约内容；涉及接口契约请另开需求。
-            流程：追加变更记录 →（可选）对齐 → 写规约 → 追加一张轻量票。
+            流程：追加一条变更记录 →（可选）对齐 → 写一次规约 → 每个仓追加一张轻量票。
           </p>
           <v-textarea
             v-model="changeForm.note"
@@ -881,13 +895,24 @@
             hide-details
           />
           <v-select
-            v-model="changeForm.repo"
+            v-model="changeForm.repos"
             :items="frozenRepos"
-            label="受影响仓库（本需求已冻结的仓）"
+            label="受影响仓库（本需求已冻结的仓，可多选）"
+            multiple
+            chips
+            closable-chips
             density="compact"
             variant="outlined"
             class="mt-3"
             hide-details
+          />
+          <v-checkbox
+            v-if="changeForm.repos.length > 1"
+            v-model="changeForm.ordered"
+            density="compact"
+            hide-details
+            label="按选择顺序依赖（后一张票等前一张合并）"
+            class="mt-2"
           />
           <v-checkbox
             v-model="changeForm.grill"
@@ -900,7 +925,11 @@
             v-model="changeForm.run"
             density="compact"
             hide-details
-            label="创建后立即实现这张票"
+            :label="
+              changeForm.ordered && changeForm.repos.length > 1
+                ? '创建后只实现第一张就绪票（后面的等合并）'
+                : '创建后立即实现这些票'
+            "
           />
         </v-card-text>
         <v-card-actions>
@@ -908,7 +937,7 @@
           <v-btn variant="text" @click="changeOpen = false">取消</v-btn>
           <v-btn
             color="primary"
-            :disabled="!changeForm.note.trim() || !changeForm.repo"
+            :disabled="!changeForm.note.trim() || !changeForm.repos.length"
             @click="runChange"
           >
             开始
@@ -1122,7 +1151,13 @@ const readySteps = ref<{ step: string; status: string; detail: string }[]>([]);
 const qaReviewOpen = ref(false);
 const qaReviewFeedback = ref("");
 const changeOpen = ref(false);
-const changeForm = reactive({ note: "", repo: "", grill: false, run: false });
+const changeForm = reactive({
+  note: "",
+  repos: [] as string[],
+  grill: false,
+  run: false,
+  ordered: false,
+});
 const frozenRepos = computed(() =>
   (detail.value?.worktrees || [])
     .map((p) => p.split("/").filter(Boolean).pop() || "")
@@ -1553,9 +1588,10 @@ function confirmAction(action: string, ticketId?: string, act?: Action) {
   }
   if (action === "change") {
     changeForm.note = "";
-    changeForm.repo = frozenRepos.value[0] || "";
+    changeForm.repos = frozenRepos.value[0] ? [frozenRepos.value[0]] : [];
     changeForm.grill = false;
     changeForm.run = false;
+    changeForm.ordered = false;
     changeOpen.value = true;
     return;
   }
@@ -1647,10 +1683,22 @@ function runChange() {
   changeOpen.value = false;
   void onAction("change", undefined, undefined, undefined, {
     note: changeForm.note.trim(),
-    repo: changeForm.repo,
+    repos: [...changeForm.repos],
+    repo: changeForm.repos[0] || "",
+    ordered: changeForm.ordered && changeForm.repos.length > 1,
     grill: changeForm.grill,
     run: changeForm.run,
   });
+}
+
+function changeRepos(entry: { repos?: string[]; repo?: string }) {
+  if (entry.repos?.length) return entry.repos;
+  return entry.repo ? [entry.repo] : [];
+}
+
+function changeTickets(entry: { tickets?: string[]; ticket?: string }) {
+  if (entry.tickets?.length) return entry.tickets;
+  return entry.ticket ? [entry.ticket] : [];
 }
 
 function openQaReview() {
@@ -1853,6 +1901,8 @@ async function onAction(
     design_refs?: string[];
     note?: string;
     repo?: string;
+    repos?: string[];
+    ordered?: boolean;
     grill?: boolean;
     run?: boolean;
   },
@@ -1875,6 +1925,8 @@ async function onAction(
       design_refs: extra?.design_refs,
       note: extra?.note,
       repo: extra?.repo,
+      repos: extra?.repos,
+      ordered: extra?.ordered,
       grill: extra?.grill,
       run: extra?.run,
     });

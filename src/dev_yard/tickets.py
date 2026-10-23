@@ -77,13 +77,20 @@ def next_ticket_id(tickets: list[Ticket]) -> str:
 
 
 def format_light_ticket(
-    *, ticket_id: str, title: str, repo: str, note: str, change_id: str
+    *,
+    ticket_id: str,
+    title: str,
+    repo: str,
+    note: str,
+    change_id: str,
+    depends_on: list[str] | None = None,
 ) -> str:
+    deps = " ".join(depends_on or [])
     return "\n".join(
         [
             f"## {ticket_id}: {title}",
             f"- repo: {repo}",
-            "- depends_on:",
+            f"- depends_on: {deps}",
             "- parallel: false",
             "- source: light",
             f"- change: {change_id}",
@@ -104,6 +111,7 @@ def append_light_ticket(
     repo: str,
     note: str,
     change_id: str,
+    depends_on: list[str] | None = None,
 ) -> Path:
     """Append one `source: light` ticket to TICKETS.md without touching existing tickets."""
     path = req_path / "TICKETS.md"
@@ -113,7 +121,12 @@ def append_light_ticket(
     if not existing.strip():
         existing = f"# Tickets — {req_path.name}\n"
     block = format_light_ticket(
-        ticket_id=ticket_id, title=title, repo=repo, note=note, change_id=change_id
+        ticket_id=ticket_id,
+        title=title,
+        repo=repo,
+        note=note,
+        change_id=change_id,
+        depends_on=depends_on,
     )
     text = existing.rstrip() + "\n\n" + block
     if not text.endswith("\n"):

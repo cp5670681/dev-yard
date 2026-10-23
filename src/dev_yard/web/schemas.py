@@ -88,6 +88,7 @@ class ActionIn(BaseModel):
     resolve: bool | None = None
     note: str = ""
     repo: str = ""
+    ordered: bool = False
     grill: bool = False
     run: bool = False
 

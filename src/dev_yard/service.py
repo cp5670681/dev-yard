@@ -919,61 +919,132 @@ def _sanitize_note(note: str) -> str:
     return text
 
 
+def _split_change_names(raw: str) -> list[str]:
+    return [part for part in re.split(r"[,，\s]+", raw.strip()) if part]
+
+
+def _selected_repos(repo: str | None, repos: list[str] | None) -> list[str]:
+    """Preserve order, drop blanks and duplicates. `repos` wins when non-empty."""
+    raw = list(repos) if repos else ([repo] if repo else [])
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        name = str(item or "").strip()
+        if not name or name in seen:
+            continue
+        if _split_change_names(name) != [name]:
+            raise ValueError(f"repo alias {name!r} 不能包含空格或逗号")
+        seen.add(name)
+        out.append(name)
+    if not out:
+        raise ValueError("必须选择至少一个仓（--repo）")
+    return out
+
+
+def _entry_names(entry: dict[str, Any], plural: str, singular: str) -> list[str]:
+    raw = entry.get(plural)
+    if isinstance(raw, list) and raw:
+        return [str(item) for item in raw if str(item).strip()]
+    one = str(entry.get(singular) or "").strip()
+    return [one] if one else []
+
+
 def _format_change_note(entry: dict[str, Any]) -> str:
     lines = [
         f"### {entry.get('id')} · {entry.get('at')} ({entry.get('actor') or 'host'})",
         str(entry.get("note") or ""),
     ]
-    repo = str(entry.get("repo") or "")
-    ticket = str(entry.get("ticket") or "")
-    if repo or ticket:
+    repos = _entry_names(entry, "repos", "repo")
+    tickets = _entry_names(entry, "tickets", "ticket")
+    if repos or tickets:
         lines.append("")
-        if repo:
-            lines.append(f"- 仓：{repo}")
-        if ticket:
-            lines.append(f"- 票：{ticket}")
+        if repos:
+            lines.append("- 仓：" + ", ".join(repos))
+        if tickets:
+            lines.append("- 票：" + ", ".join(tickets))
+        if entry.get("ordered"):
+            lines.append("- 顺序：是")
     return "\n".join(lines)
 
 
-def _parse_change_log(text: str) -> list[tuple[str, str]]:
-    """`(change_id, note)` pairs from REQUIREMENT.md's `## 变更记录` section."""
+def _parse_change_entries(text: str) -> list[dict[str, Any]]:
+    """Change-log blocks from REQUIREMENT.md. The note is the first prose line."""
     lines = text.splitlines()
-    out: list[tuple[str, str]] = []
-    for i, line in enumerate(lines):
-        m = _CHANGE_ENTRY_RE.match(line.strip())
-        if not m:
+    out: list[dict[str, Any]] = []
+    index = 0
+    while index < len(lines):
+        match = _CHANGE_ENTRY_RE.match(lines[index].strip())
+        if not match:
+            index += 1
             continue
         note = ""
-        for nxt in lines[i + 1 :]:
-            stripped = nxt.strip()
-            if not stripped:
-                continue
-            if stripped.startswith(("#", "- ")):
-                break
-            note = stripped
-            break
-        out.append((m.group(1), note))
+        repos: list[str] = []
+        tickets: list[str] = []
+        ordered = False
+        index += 1
+        while index < len(lines) and not lines[index].startswith("### "):
+            stripped = lines[index].strip()
+            if stripped.startswith("- 仓："):
+                repos = _split_change_names(stripped.split("：", 1)[1])
+            elif stripped.startswith("- 票："):
+                tickets = _split_change_names(stripped.split("：", 1)[1])
+            elif stripped.startswith("- 顺序："):
+                ordered = stripped.split("：", 1)[1].strip() in {"是", "true", "yes"}
+            elif stripped and not stripped.startswith(("#", "- ")) and not note:
+                note = stripped
+            index += 1
+        out.append(
+            {
+                "id": match.group(1),
+                "note": note,
+                "repos": repos,
+                "tickets": tickets,
+                "ordered": ordered,
+            }
+        )
     return out
 
 
 def _append_change_note(
-    req: Path, *, note: str, actor: str, repo: str, at: str
+    req: Path, *, note: str, actor: str, repos: list[str], ordered: bool, at: str
 ) -> str:
-    """Append a change-log entry (idempotent by note); returns its id.
+    """Append a change-log entry; returns its id.
+
+    The same note reuses its id only when the repo list matches. A different
+    repo list is rejected so a retry cannot silently drop a repository.
 
     Caller must hold `st.jira_lock(jira)`. The log in REQUIREMENT.md is the
     authority for change ids, so concurrent changes cannot reuse one.
     """
     path = req / "REQUIREMENT.md"
     existing = path.read_text(encoding="utf-8") if path.is_file() else ""
-    entries = _parse_change_log(existing)
-    for cid, text in entries:
-        if text == note:
-            return cid
-    nums = [int(cid[1:]) for cid, _ in entries if cid[1:].isdigit()]
+    entries = _parse_change_entries(existing)
+    for entry in entries:
+        if entry["note"] != note:
+            continue
+        recorded = list(entry["repos"])
+        if recorded != repos:
+            shown = "、".join(recorded) if recorded else "（未记录仓库）"
+            raise ValueError(
+                f"同一说明已记为 {entry['id']}（仓 {shown}）。要改受影响仓库请换一句说明。"
+            )
+        if bool(entry.get("ordered")) != ordered:
+            recorded_order = "按顺序" if entry.get("ordered") else "不按顺序"
+            raise ValueError(
+                f"同一说明已记为 {entry['id']}（{recorded_order}）。要改依赖方式请换一句说明。"
+            )
+        return str(entry["id"])
+    nums = [int(entry["id"][1:]) for entry in entries if str(entry["id"])[1:].isdigit()]
     change_id = f"c{max(nums, default=0) + 1}"
     block = _format_change_note(
-        {"id": change_id, "at": at, "actor": actor, "note": note, "repo": repo}
+        {
+            "id": change_id,
+            "at": at,
+            "actor": actor,
+            "note": note,
+            "repos": repos,
+            "ordered": ordered,
+        }
     )
     if _CHANGE_LOG_HEADING in existing:
         text = existing.rstrip() + "\n\n" + block + "\n"
@@ -981,6 +1052,47 @@ def _append_change_note(
         text = existing.rstrip() + "\n\n" + _CHANGE_LOG_HEADING + "\n\n" + block + "\n"
     atomic_write_text(path, text)
     return change_id
+
+
+def _stamp_change_tickets(
+    req: Path,
+    change_id: str,
+    repos: list[str],
+    tickets: list[str],
+    *,
+    ordered: bool,
+) -> None:
+    """Write the repo and ticket lines onto an existing change-log block."""
+    path = req / "REQUIREMENT.md"
+    if not path.is_file():
+        return
+    lines = path.read_text(encoding="utf-8").splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if line.strip().startswith(f"### {change_id} ·"):
+            start = index
+            break
+    if start is None:
+        return
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if lines[index].startswith("### "):
+            end = index
+            break
+    kept = [
+        line
+        for line in lines[start:end]
+        if not line.strip().startswith(("- 仓：", "- 票：", "- 顺序："))
+    ]
+    while kept and not kept[-1].strip():
+        kept.pop()
+    meta = ["", "- 仓：" + ", ".join(repos)]
+    if tickets:
+        meta.append("- 票：" + ", ".join(tickets))
+    if ordered:
+        meta.append("- 顺序：是")
+    stamped = lines[:start] + kept + meta + [""] + lines[end:]
+    atomic_write_text(path, "\n".join(stamped).rstrip() + "\n")
 
 
 def _is_contract_heading(line: str) -> bool:
@@ -1015,11 +1127,15 @@ def _light_title(note: str) -> str:
     return f"轻量变更：{one}"
 
 
-def _spec_change_prompt(note: str, repo: str, jira: str) -> str:
+def _spec_change_prompt(note: str, repos: list[str], *, ordered: bool) -> str:
+    order = ""
+    if ordered and len(repos) > 1:
+        order = "Ticket order: " + " -> ".join(repos) + ". Later repos depend on earlier ones.\n"
     return (
         "This is a LIGHTWEIGHT requirement change, not a full re-spec. "
         f"Change note: {note}\n"
-        f"Affected repo: {repo}.\n"
+        f"Affected repos: {', '.join(repos)}. Each repo gets its own ticket.\n"
+        f"{order}"
         "Update SPEC.md incrementally: edit only the sections this change touches; "
         "do not rewrite the whole document and do not touch unrelated sections. "
         "Do NOT modify REQUIREMENT.md, GRILL.md, or TICKETS.md. "
@@ -1034,7 +1150,8 @@ def _req_change_begin(
     jira: str,
     note: str,
     *,
-    repo: str,
+    repos: list[str],
+    ordered: bool,
     actor: str,
     on_progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
@@ -1044,11 +1161,10 @@ def _req_change_begin(
     clean = _sanitize_note(note)
     if not clean:
         raise ValueError("变更说明不能为空")
-    repo = (repo or "").strip()
-    if not repo:
-        raise ValueError("必须选择一个仓（--repo）")
-    if repo not in load_repos(root):
-        raise ValueError(f"unknown repo alias {repo}")
+    known = load_repos(root)
+    for alias in repos:
+        if alias not in known:
+            raise ValueError(f"unknown repo alias {alias}")
     at = datetime.now(UTC).astimezone().strftime("%Y-%m-%d %H:%M")
     with st.jira_lock(jira):
         data = st.load(root, jira)
@@ -1060,10 +1176,12 @@ def _req_change_begin(
                 else "；请先 freeze，或在 open 阶段直接改文档后重跑阶段"
             )
             raise ValueError(f"{jira} phase={phase}; 轻量变更仅在 frozen/testing 可用{hint}")
-        if not paths.req_worktree(root, jira, repo).is_dir():
-            raise ValueError(f"{repo} 没有冻结 worktree（该仓未参与本需求 freeze）")
+        for alias in repos:
+            if not paths.req_worktree(root, jira, alias).is_dir():
+                raise ValueError(f"{alias} 没有冻结 worktree（该仓未参与本需求 freeze）")
+        normalized = ordered and len(repos) > 1
         change_id = _append_change_note(
-            req, note=clean, actor=actor, repo=repo, at=at
+            req, note=clean, actor=actor, repos=repos, ordered=normalized, at=at
         )
         docs_before = doc_fingerprint(req)
     spec_path = req / "SPEC.md"
@@ -1076,15 +1194,27 @@ def _req_change_begin(
         "at": at,
         "actor": actor,
         "note": clean,
-        "repo": repo,
+        "repos": repos,
+        "repo": repos[0],
+        "ordered": normalized,
         "docs_before": docs_before,
         "spec_before": spec_before,
     }
 
 
-def _req_change_apply(root: Path, jira: str, ctx: dict[str, Any], **fields: Any) -> str:
-    """Append (or reuse) the light ticket and write STATUS, under one lock."""
+def _light_tickets_for(req: Path, change_id: str) -> list[Any]:
+    return [
+        ticket
+        for ticket in load_tickets(req)
+        if ticket.source == "light" and ticket.change == change_id
+    ]
+
+
+def _req_change_apply(root: Path, jira: str, ctx: dict[str, Any], **fields: Any) -> list[str]:
+    """Append (or reuse) one light ticket per repo and write STATUS, under one lock."""
     req = paths.req_dir(root, jira)
+    repos: list[str] = list(ctx["repos"])
+    ordered = bool(ctx["ordered"])
     with st.jira_lock(jira):
         data = st.load(root, jira)
         phase = data.get("phase") or "open"
@@ -1098,44 +1228,122 @@ def _req_change_apply(root: Path, jira: str, ctx: dict[str, Any], **fields: Any)
             else ""
         )
         parsed_all = parse_tickets(text)
-        existing = next(
-            (
-                t
-                for t in parsed_all
-                if t.source == "light" and t.change == ctx["change_id"]
-            ),
-            None,
-        )
-        if existing is not None:
-            ticket_id = existing.id
-        else:
-            ticket_id = next_ticket_id(parsed_all)
+        by_repo: dict[str, Any] = {}
+        for ticket in parsed_all:
+            if ticket.source != "light" or ticket.change != ctx["change_id"]:
+                continue
+            if ticket.repo not in repos:
+                raise RuntimeError(
+                    f"{ticket.id} belongs to change {ctx['change_id']} "
+                    f"but repo {ticket.repo} is not in this change"
+                )
+            by_repo.setdefault(ticket.repo, ticket)
+        ticket_ids: list[str] = []
+        prev: str | None = None
+        for alias in repos:
+            found = by_repo.get(alias)
+            if found is not None:
+                ticket_ids.append(found.id)
+                prev = found.id
+                continue
+            ticket_text = (
+                (req / "TICKETS.md").read_text(encoding="utf-8")
+                if (req / "TICKETS.md").is_file()
+                else ""
+            )
+            ticket_id = next_ticket_id(parse_tickets(ticket_text))
+            depends_on = [prev] if ordered and prev else []
             append_light_ticket(
                 req,
                 ticket_id=ticket_id,
                 title=_light_title(ctx["note"]),
-                repo=ctx["repo"],
+                repo=alias,
                 note=ctx["note"],
                 change_id=ctx["change_id"],
+                depends_on=depends_on,
             )
-            if not any(t.id == ticket_id for t in load_tickets(req)):
+            if not any(ticket.id == ticket_id for ticket in load_tickets(req)):
                 raise RuntimeError("light ticket was appended but did not parse")
+            ticket_ids.append(ticket_id)
+            prev = ticket_id
         data = st.sync_tickets(data, load_tickets(req))
         st.refresh_ready(data)
+        _stamp_change_tickets(
+            req, ctx["change_id"], repos, ticket_ids, ordered=ordered
+        )
+        extra = dict(fields)
+        grilled = bool(extra.pop("grilled", False))
+        contract_touched = bool(extra.pop("contract_touched", False))
+        docs_before = extra.pop("docs_before", None)
+        at = ctx["at"]
+        stored = next(
+            (
+                entry
+                for entry in st.changes(data)
+                if str(entry.get("id") or "") == ctx["change_id"]
+            ),
+            None,
+        )
+        # A later retry must not clear a flag the earlier attempt already recorded.
+        if stored:
+            grilled = grilled or bool(stored.get("grilled"))
+            contract_touched = contract_touched or bool(stored.get("contract_touched"))
+            if stored.get("at"):
+                at = stored["at"]
+            if stored.get("docs_before"):
+                docs_before = stored["docs_before"]
         st.upsert_change(
             data,
             {
                 "id": ctx["change_id"],
-                "at": ctx["at"],
+                "at": at,
                 "actor": ctx["actor"],
                 "note": ctx["note"],
-                "repo": ctx["repo"],
-                "ticket": ticket_id,
-                **fields,
+                "repo": repos[0],
+                "repos": repos,
+                "ticket": ticket_ids[0],
+                "tickets": ticket_ids,
+                "ordered": ordered,
+                "grilled": grilled,
+                "contract_touched": contract_touched,
+                "docs_before": docs_before,
+                **extra,
             },
         )
         st.save(root, jira, data)
-    return ticket_id
+    return ticket_ids
+
+
+def _stored_change(root: Path, jira: str, change_id: str) -> dict[str, Any] | None:
+    for entry in st.changes(st.load(root, jira)):
+        if str(entry.get("id") or "") == change_id:
+            return entry
+    return None
+
+
+def _change_outcome(
+    ctx: dict[str, Any],
+    ticket_ids: list[str],
+    *,
+    grilled: bool,
+    contract_touched: bool,
+    qa_stale: bool,
+    ran: list[str],
+) -> dict[str, Any]:
+    repos: list[str] = list(ctx["repos"])
+    return {
+        "jira": ctx["jira"],
+        "change_id": ctx["change_id"],
+        "tickets": ticket_ids,
+        "ticket": ticket_ids[0] if ticket_ids else "",
+        "repos": repos,
+        "repo": repos[0] if repos else "",
+        "ordered": bool(ctx["ordered"]),
+        "grilled": grilled,
+        "contract_touched": contract_touched,
+        "qa_stale": qa_stale,
+        "ran": ran,
+    }
 
 
 def _mark_qa_stale(root: Path, jira: str, change_id: str) -> bool:
@@ -1154,22 +1362,60 @@ def req_change(
     jira: str,
     note: str,
     *,
-    repo: str,
+    repo: str = "",
+    repos: list[str] | None = None,
     grill: bool = False,
     run: bool = False,
+    ordered: bool = False,
     print_mode: bool = False,
     actor: str = "cli",
     on_progress: Callable[[str], None] | None = None,
     runner_factory: Callable[[str], Runner] | None = None,
     grill_runner: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
-    """Lightweight requirement-doc change: note -> (grill) -> spec -> one light ticket."""
+    """Lightweight requirement-doc change: note -> (grill) -> spec -> one light ticket per repo."""
+    selected = _selected_repos(repo, repos)
     ctx = _req_change_begin(
-        root, jira, note, repo=repo, actor=actor, on_progress=on_progress
+        root,
+        jira,
+        note,
+        repos=selected,
+        ordered=ordered,
+        actor=actor,
+        on_progress=on_progress,
     )
     req = paths.req_dir(root, jira)
+    with st.jira_lock(jira):
+        existing = _light_tickets_for(req, ctx["change_id"])
+        stored = _stored_change(root, jira, ctx["change_id"])
+    complete = [ticket.repo for ticket in existing] == selected
+    if complete and stored is not None:
+        ticket_ids = [ticket.id for ticket in existing]
+        outcome = _change_outcome(
+            ctx,
+            ticket_ids,
+            grilled=bool(stored.get("grilled")),
+            contract_touched=bool(stored.get("contract_touched")),
+            qa_stale=bool((stored.get("stale") or {}).get("qa")),
+            ran=[],
+        )
+        if on_progress:
+            on_progress(f"{jira} change {ctx['change_id']}: reuse {', '.join(ticket_ids)}")
+        if run:
+            outcome["ran"] = implement(
+                root,
+                jira,
+                ticket_ids,
+                print_mode=print_mode,
+                runner=runner_factory("implement") if runner_factory else None,
+            )
+        return outcome
+    # Tickets already on disk mean a previous attempt got past spec and died
+    # before finishing. Re-running spec would diff against the already-updated
+    # contract text and could record contract_touched=false.
+    ran_spec = not existing
     grilled = False
-    if grill:
+    if ran_spec and grill:
         if on_progress:
             on_progress(f"grill: {ctx['change_id']}")
         if grill_runner is not None:
@@ -1187,22 +1433,31 @@ def req_change(
             if not result.ok:
                 raise RuntimeError("grill failed; change note kept, no ticket created")
         grilled = True
-    if on_progress:
-        on_progress(f"spec: {ctx['change_id']}")
-    spec_extra = _spec_change_prompt(ctx["note"], ctx["repo"], jira)
-    runner = runner_factory("spec") if runner_factory else None
-    result = run_stage(
-        root, "spec", jira, print_mode=print_mode, runner=runner, prompt_extra=spec_extra
-    )
-    if not result.ok:
-        raise RuntimeError("spec failed; change note kept, no ticket created")
-    spec_path = req / "SPEC.md"
-    spec_after = spec_path.read_text(encoding="utf-8") if spec_path.is_file() else ""
-    contract_touched = _contract_section(ctx["spec_before"]) != _contract_section(spec_after)
-    # Mark QA stale before the final write: if this fails, nothing has been
-    # appended yet and the whole change can be retried (note is idempotent).
+    if ran_spec:
+        if on_progress:
+            on_progress(f"spec: {ctx['change_id']}")
+        spec_extra = _spec_change_prompt(ctx["note"], selected, ordered=bool(ctx["ordered"]))
+        runner = runner_factory("spec") if runner_factory else None
+        result = run_stage(
+            root, "spec", jira, print_mode=print_mode, runner=runner, prompt_extra=spec_extra
+        )
+        if not result.ok:
+            raise RuntimeError("spec failed; change note kept, no ticket created")
+    if ran_spec:
+        spec_path = req / "SPEC.md"
+        spec_after = spec_path.read_text(encoding="utf-8") if spec_path.is_file() else ""
+        contract_touched = _contract_section(ctx["spec_before"]) != _contract_section(spec_after)
+    elif stored is not None:
+        contract_touched = bool(stored.get("contract_touched"))
+    else:
+        contract_touched = True
+    if stored is not None:
+        grilled = grilled or bool(stored.get("grilled"))
+        contract_touched = contract_touched or bool(stored.get("contract_touched"))
+    # Mark QA stale before the final STATUS write. The note is already on disk
+    # and is reused on retry; tickets may already exist from a partial attempt.
     qa_stale = _mark_qa_stale(root, jira, ctx["change_id"])
-    ticket_id = _req_change_apply(
+    ticket_ids = _req_change_apply(
         root,
         jira,
         ctx,
@@ -1211,19 +1466,18 @@ def req_change(
         contract_touched=contract_touched,
         stale={"qa": qa_stale},
     )
-    outcome: dict[str, Any] = {
-        "jira": jira,
-        "change_id": ctx["change_id"],
-        "ticket": ticket_id,
-        "repo": ctx["repo"],
-        "grilled": grilled,
-        "contract_touched": contract_touched,
-        "qa_stale": qa_stale,
-        "ran": [],
-    }
+    outcome = _change_outcome(
+        ctx,
+        ticket_ids,
+        grilled=grilled,
+        contract_touched=contract_touched,
+        qa_stale=qa_stale,
+        ran=[],
+    )
     if on_progress:
+        joined = ", ".join(f"+{ticket_id}" for ticket_id in ticket_ids)
         on_progress(
-            f"{jira} change {ctx['change_id']}: +{ticket_id} "
+            f"{jira} change {ctx['change_id']}: {joined} "
             f"({'contract touched; ' if contract_touched else ''}"
             f"qa_stale={qa_stale})"
         )
@@ -1231,7 +1485,7 @@ def req_change(
         outcome["ran"] = implement(
             root,
             jira,
-            [ticket_id],
+            ticket_ids,
             print_mode=print_mode,
             runner=runner_factory("implement") if runner_factory else None,
         )

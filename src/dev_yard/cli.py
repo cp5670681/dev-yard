@@ -410,23 +410,34 @@ def req_reset_grill(
 def req_change_cmd(
     jira: str = typer.Argument(..., help="Requirement key (e.g. PROJ-101)"),
     note: str = typer.Option(..., "--note", "-n", help="变更说明（一句话）"),
-    repo: str = typer.Option(
-        ..., "--repo", "-r", help="受影响的仓 alias（必须是本需求已冻结的仓）"
+    repo: list[str] = typer.Option(
+        ...,
+        "--repo",
+        "-r",
+        help="受影响的仓 alias，可重复（必须是本需求已冻结的仓）",
     ),
     grill: bool = typer.Option(False, "--grill", help="先跑一轮 grill 澄清"),
-    run: bool = typer.Option(False, "--run", help="建票后立即实现这张轻量票"),
+    run: bool = typer.Option(
+        False,
+        "--run",
+        help="建票后立即实现当前已就绪的轻量票；--ordered 时后一张要等前一张合并",
+    ),
+    ordered: bool = typer.Option(
+        False, "--ordered", help="按 --repo 顺序依赖：后一张票等前一张合并"
+    ),
     print_mode: bool = typer.Option(False, "--print", help="pi -p one-shot instead of TUI"),
 ) -> None:
-    """Lightweight requirement-doc change: append change note, update SPEC, add one ticket."""
+    """Lightweight requirement-doc change: append change note, update SPEC, add one ticket per repo."""
     root = root_opt()
     try:
         out = service.req_change(
             root,
             jira,
             note,
-            repo=repo,
+            repos=repo,
             grill=grill,
             run=run,
+            ordered=ordered,
             print_mode=print_mode,
             actor="cli",
             on_progress=lambda line: typer.echo(line, err=True),
@@ -434,11 +445,21 @@ def req_change_cmd(
     except (ValueError, FileNotFoundError, RuntimeError, GitError) as e:
         _die(e)
         return
-    typer.echo(f"change {out['change_id']}: +{out['ticket']} ({out['repo']})")
+    tickets = [str(item) for item in (out.get("tickets") or []) if str(item)]
+    repos = [str(item) for item in (out.get("repos") or []) if str(item)]
+    pairs = ", ".join(
+        f"+{ticket} ({alias})"
+        for ticket, alias in zip(tickets, repos, strict=False)
+    )
+    typer.echo(f"change {out['change_id']}: {pairs}")
     if out.get("contract_touched"):
         typer.echo("warning: SPEC 契约段被改动，建议重跑契约审查", err=True)
-    if not out.get("ran"):
-        typer.echo(f"next: dev-yard implement {jira} {out['ticket']}")
+    ran = {str(item) for item in (out.get("ran") or [])}
+    left = [ticket for ticket in tickets if ticket not in ran]
+    if left:
+        typer.echo(f"next: dev-yard implement {jira} {' '.join(left)}")
+        if ran and out.get("ordered"):
+            typer.echo("后续票要等前一张合并后才会就绪", err=True)
 
 
 @req_app.command("changes")
@@ -458,9 +479,15 @@ def req_changes(jira: str = typer.Argument(..., help="Requirement key (e.g. PROJ
         return
     for c in entries:
         bits = []
-        if c.get("repo"):
+        repos = c.get("repos") if isinstance(c.get("repos"), list) else []
+        tickets = c.get("tickets") if isinstance(c.get("tickets"), list) else []
+        if repos:
+            bits.append("repo=" + ",".join(str(item) for item in repos))
+        elif c.get("repo"):
             bits.append(f"repo={c['repo']}")
-        if c.get("ticket"):
+        if tickets:
+            bits.append("ticket=" + ",".join(str(item) for item in tickets))
+        elif c.get("ticket"):
             bits.append(f"ticket={c['ticket']}")
         if c.get("contract_touched"):
             bits.append("contract_touched")

@@ -230,7 +230,10 @@ export interface ChangeEntry {
   actor?: string;
   note?: string;
   repo?: string;
+  repos?: string[];
   ticket?: string;
+  tickets?: string[];
+  ordered?: boolean;
   grilled?: boolean;
   contract_touched?: boolean;
   stale?: { qa?: boolean };

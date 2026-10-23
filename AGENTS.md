@@ -42,7 +42,7 @@ pi 的 `bash` 工具 `timeout` 是可选、**无默认值**，内置 `find`/`gre
 | `dev-yard qa check-env` | 不跑 agent；解析 qa.yaml exec 配方 → ping → hello 回显 |
 | `dev-yard req triage <JIRA>` | 不跑 agent；给待判定失败用例批量下 bug（默认只对宿主判定为 `product` 的项，`--all` 含未分类）；web「批量下 bug」同款 |
 | `dev-yard qa status <JIRA>` | 不跑 agent；读 `qa/state.yaml` + 证据推导当前态（designing/awaiting_review/running/awaiting_triage…）、待判定失败项、隔离模型池与下一步 |
-| `dev-yard req change <JIRA> --note ... --repo ...` | 轻量变更：追加变更记录到 REQUIREMENT.md →（可选 grill）→ 更新 SPEC → 追加一张 `source: light` 票；不重跑 tickets、不改 phase、不动契约。仅 frozen/testing，不涉及契约 |
+| `dev-yard req change <JIRA> --note ... --repo ...` | 轻量变更：追加变更记录到 REQUIREMENT.md →（可选 grill）→ 更新 SPEC 一次 → 每个 `--repo`（可重复）追加一张 `source: light` 票；`--ordered` 时后一张等前一张合并。不重跑 tickets、不改 phase、不动契约。仅 frozen/testing，不涉及契约 |
 | `dev-yard req reset-grill <JIRA>` | 不跑 agent；丢弃待答的对齐轮次（`.grill-round.json`）+ 把 GRILL.md 清回空白 + 清 `stage_runs.grill`，下次「对齐」从头生成；不改 phase/票/契约。web 需求页有对应「重置对齐」按钮 |
 | `dev-yard implement --from-test` | 修就绪的测试 bug 票（B 票） |
 | `dev-yard tdd [on\|off\|status]` | 开/关 TDD（写 `repos.yaml` 的 `dev.tdd`，默认 on）；不跑 agent。关掉后 spec/tickets 不写测试验收，implement 不写不跑测试，review 不因测试文件缺失或跑不起来打回 |

@@ -539,6 +539,7 @@ def build(ctx: AppContext) -> APIRouter:
             "resolve": body.resolve,
             "note": body.note,
             "repo": body.repo,
+            "ordered": body.ordered,
             "grill": body.grill,
             "run": body.run,
         }

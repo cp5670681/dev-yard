@@ -634,9 +634,16 @@ def default_execute(root: Path, job: Job) -> None:
         return
     if job.action == "change":
         note = str(extra.get("note") or "")
+        raw_repos = extra.get("repos")
+        repos = (
+            [str(item).strip() for item in raw_repos if str(item).strip()]
+            if isinstance(raw_repos, list)
+            else []
+        )
         repo = str(extra.get("repo") or "")
         want_grill = bool(extra.get("grill"))
         want_run = bool(extra.get("run"))
+        want_ordered = bool(extra.get("ordered"))
 
         def _runner_factory(name: str) -> JobLogRunner:
             return JobLogRunner(job, root, name)
@@ -649,22 +656,31 @@ def default_execute(root: Path, job: Job) -> None:
             job.jira,
             note,
             repo=repo,
+            repos=repos or None,
             grill=want_grill,
             run=want_run,
+            ordered=want_ordered,
             print_mode=True,
             actor="web",
             on_progress=job.append,
             runner_factory=_runner_factory,
             grill_runner=_grill if want_grill else None,
         )
-        job.append(f"change {out['change_id']}: +{out['ticket']}")
+        created = [str(item) for item in (out.get("tickets") or []) if str(item)]
+        if not created and out.get("ticket"):
+            created = [str(out["ticket"])]
+        job.append(f"change {out['change_id']}: " + ", ".join(f"+{item}" for item in created))
         if out.get("contract_touched"):
             job.append(
                 "warning: SPEC contract section changed; "
                 "consider re-running 契约审查"
             )
-        if out.get("ran"):
-            job.append("ran: " + ", ".join(out["ran"]))
+        ran = [str(item) for item in (out.get("ran") or [])]
+        if ran:
+            job.append("ran: " + ", ".join(ran))
+        waiting = [item for item in created if item not in set(ran)]
+        if waiting and ran and out.get("ordered"):
+            job.append("waiting until merge: " + ", ".join(waiting))
         return
     if job.action == "freeze":
         created = service.req_freeze(

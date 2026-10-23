@@ -235,10 +235,11 @@ repos:
 
 ```bash
 dev-yard req change PROJ-101 --note "外聘联系人可同时挂靠" --repo core-api
+dev-yard req change PROJ-101 --note "只保留某角色" --repo core-api --repo web --ordered
 dev-yard req changes PROJ-101            # 查看变更记录（只读）
 ```
 
-流程：追加变更记录到 `REQUIREMENT.md`（`## 变更记录`，不改原文）→（可选 `--grill`）→ 更新 `SPEC.md` → 追加**一张** `source: light` 的票。不重跑 `to-tickets`、不重排已有票、不改 `phase`、不动契约审查。新票按普通票「实现 → 审查 → 合并」；合并后 `submit-test` 幂等重提。若 SPEC 契约段被改动会告警，QA 用例会被标为待复核（需重新审核/`--redesign`）。
+流程：追加变更记录到 `REQUIREMENT.md`（`## 变更记录`，不改原文）→（可选 `--grill`）→ 更新一次 `SPEC.md` → 每个 `--repo` 追加一张 `source: light` 的票。同一说明且仓库列表相同会复用，不重复写规约；仓库列表不同会拒绝。`--ordered` 让后一张票等前一张合并。不重跑 `to-tickets`、不重排已有票、不改 `phase`、不动契约审查。新票按普通票「实现 → 审查 → 合并」；合并后 `submit-test` 幂等重提。若 SPEC 契约段被改动会告警，QA 用例会被标为待复核（需重新审核/`--redesign`）。
 
 ### 外部导入（已有代码直接测试）
 

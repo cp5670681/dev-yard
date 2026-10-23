@@ -267,6 +267,7 @@ export function runAction(
     design_refs?: string[];
     note?: string;
     repo?: string;
+    ordered?: boolean;
     grill?: boolean;
     run?: boolean;
   } = {},

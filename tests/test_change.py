@@ -334,6 +334,216 @@ def test_cli_req_changes(tmp_path: Path, git_src: Path, monkeypatch):
     assert "ticket=T2" in result.stdout
 
 
+def _frozen_two(tmp_path: Path, git_src: Path, monkeypatch) -> Path:
+    import conftest
+
+    yard = _yard(tmp_path, git_src, monkeypatch)
+    front = conftest.make_git_repo(tmp_path / "srcfe")
+    repo_add(yard, "frontend", str(front), "main", "fe", str(front))
+    d, _ = req_open(yard, "AB-1", source="none")
+    (d / "TICKETS.md").write_text(
+        "## T1: x\n- repo: backend\n- depends_on:\n- parallel: false\n\n"
+        "## T2: y\n- repo: frontend\n- depends_on:\n- parallel: false\n"
+    )
+    (d / "SPEC.md").write_text("# Spec\n\n## Implementation Decisions\n\n- none\n")
+    req_freeze(yard, "AB-1")
+    return yard
+
+
+def test_change_two_repos_one_spec(tmp_path: Path, git_src: Path, monkeypatch):
+    yard = _frozen_two(tmp_path, git_src, monkeypatch)
+    d = yard / "reqs" / "AB-1"
+    calls = _fake_run_stage(monkeypatch)
+
+    out = req_change(
+        yard, "AB-1", "两边一起改", repos=["backend", "frontend"]
+    )
+
+    assert out["change_id"] == "c1"
+    assert out["tickets"] == ["T3", "T4"]
+    assert out["ticket"] == "T3"
+    assert out["repos"] == ["backend", "frontend"]
+    assert [c["name"] for c in calls] == ["spec"]
+    assert "backend" in calls[0]["prompt_extra"]
+    assert "frontend" in calls[0]["prompt_extra"]
+    data = st.load(yard, "AB-1")
+    assert data["tickets"]["T3"]["state"] == "ready"
+    assert data["tickets"]["T3"]["repo"] == "backend"
+    assert data["tickets"]["T4"]["state"] == "ready"
+    assert data["tickets"]["T4"]["repo"] == "frontend"
+    assert data["changes"][0]["tickets"] == ["T3", "T4"]
+    assert data["changes"][0]["ticket"] == "T3"
+    assert data["changes"][0]["repo"] == "backend"
+    req_text = (d / "REQUIREMENT.md").read_text()
+    assert "- 仓：backend, frontend" in req_text
+    assert "- 票：T3, T4" in req_text
+    tickets = load_tickets(d)
+    assert [t.id for t in tickets if t.change == "c1"] == ["T3", "T4"]
+
+
+def test_change_same_note_rejects_different_repos(tmp_path: Path, git_src: Path, monkeypatch):
+    yard = _frozen_two(tmp_path, git_src, monkeypatch)
+    d = yard / "reqs" / "AB-1"
+    _fake_run_stage(monkeypatch)
+    req_change(yard, "AB-1", "两边一起改", repos=["backend"])
+    with pytest.raises(ValueError, match="同一说明已记为 c1"):
+        req_change(yard, "AB-1", "两边一起改", repos=["backend", "frontend"])
+    assert {t.id for t in load_tickets(d)} == {"T1", "T2", "T3"}
+
+
+def test_change_same_repos_skips_second_spec(tmp_path: Path, git_src: Path, monkeypatch):
+    yard = _frozen_two(tmp_path, git_src, monkeypatch)
+    calls = _fake_run_stage(monkeypatch)
+    first = req_change(yard, "AB-1", "两边一起改", repos=["backend", "frontend"])
+    second = req_change(yard, "AB-1", "两边一起改", repos=["backend", "frontend"])
+    assert first["tickets"] == second["tickets"] == ["T3", "T4"]
+    assert [c["name"] for c in calls] == ["spec"]
+    assert len(st.load(yard, "AB-1")["changes"]) == 1
+    with pytest.raises(ValueError, match="同一说明已记为 c1"):
+        req_change(yard, "AB-1", "两边一起改", repos=["frontend", "backend"])
+
+
+def test_change_rejects_alias_that_cannot_round_trip(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    yard = _frozen(tmp_path, git_src, monkeypatch)
+    with pytest.raises(ValueError, match="不能包含空格或逗号"):
+        req_change(yard, "AB-1", "x", repo="my api")
+
+
+def test_change_ordered_flip_rejected(tmp_path: Path, git_src: Path, monkeypatch):
+    yard = _frozen_two(tmp_path, git_src, monkeypatch)
+    calls = _fake_run_stage(monkeypatch)
+    req_change(
+        yard, "AB-1", "先后端再前端", repos=["backend", "frontend"], ordered=True
+    )
+    with pytest.raises(ValueError, match="要改依赖方式"):
+        req_change(
+            yard, "AB-1", "先后端再前端", repos=["backend", "frontend"], ordered=False
+        )
+    assert [c["name"] for c in calls] == ["spec"]
+    assert "- 顺序：是" in (yard / "reqs" / "AB-1" / "REQUIREMENT.md").read_text()
+
+
+def test_change_partial_tickets_skip_spec(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.tickets import append_light_ticket
+
+    yard = _frozen_two(tmp_path, git_src, monkeypatch)
+    req = yard / "reqs" / "AB-1"
+    note = (req / "REQUIREMENT.md").read_text().rstrip() + (
+        "\n\n## 变更记录\n\n"
+        "### c1 · 2026-01-01 00:00 (cli)\n"
+        "补后一张\n\n"
+        "- 仓：backend, frontend\n"
+        "- 顺序：是\n"
+    )
+    (req / "REQUIREMENT.md").write_text(note)
+    append_light_ticket(
+        req,
+        ticket_id="T3",
+        title="轻量变更：补后一张",
+        repo="backend",
+        note="补后一张",
+        change_id="c1",
+    )
+    calls = _fake_run_stage(monkeypatch)
+    out = req_change(
+        yard, "AB-1", "补后一张", repos=["backend", "frontend"], ordered=True
+    )
+    assert calls == []
+    assert out["tickets"] == ["T3", "T4"]
+    assert out["contract_touched"] is True
+    data = st.load(yard, "AB-1")
+    assert data["tickets"]["T4"]["state"] == "pending"
+    assert data["tickets"]["T4"]["depends_on"] == ["T3"]
+    assert data["changes"][0]["contract_touched"] is True
+
+
+def test_change_ordered_run_leaves_the_rest_pending(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard.runners import Runner
+
+    class FakeRunner(Runner):
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            return RunResult(ok=True, summary="done")
+
+    yard = _frozen_two(tmp_path, git_src, monkeypatch)
+    _fake_run_stage(monkeypatch)
+    out = req_change(
+        yard,
+        "AB-1",
+        "先后端再前端",
+        repos=["backend", "frontend"],
+        ordered=True,
+        run=True,
+        runner_factory=lambda name: FakeRunner(),
+    )
+    assert out["ran"] == ["T3"]
+    assert out["tickets"] == ["T3", "T4"]
+    data = st.load(yard, "AB-1")
+    assert data["tickets"]["T3"]["state"] == "implemented"
+    assert data["tickets"]["T4"]["state"] == "pending"
+
+
+def test_change_ordered_dependency(tmp_path: Path, git_src: Path, monkeypatch):
+    yard = _frozen_two(tmp_path, git_src, monkeypatch)
+    d = yard / "reqs" / "AB-1"
+    calls = _fake_run_stage(monkeypatch)
+    req_change(
+        yard,
+        "AB-1",
+        "先后端再前端",
+        repos=["backend", "frontend"],
+        ordered=True,
+    )
+    data = st.load(yard, "AB-1")
+    assert data["tickets"]["T3"]["state"] == "ready"
+    assert data["tickets"]["T4"]["state"] == "pending"
+    assert data["tickets"]["T4"]["depends_on"] == ["T3"]
+    assert data["changes"][0]["ordered"] is True
+    assert "Ticket order: backend -> frontend" in calls[0]["prompt_extra"]
+    text = (d / "TICKETS.md").read_text()
+    assert "- depends_on: T3" in text
+
+
+def test_change_two_repos_run(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.runners import Runner
+
+    class FakeRunner(Runner):
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            return RunResult(ok=True, summary="done")
+
+    yard = _frozen_two(tmp_path, git_src, monkeypatch)
+    _fake_run_stage(monkeypatch)
+    out = req_change(
+        yard,
+        "AB-1",
+        "一起实现",
+        repos=["backend", "frontend"],
+        run=True,
+        runner_factory=lambda name: FakeRunner(),
+    )
+    assert out["ran"] == ["T3", "T4"]
+    data = st.load(yard, "AB-1")
+    assert data["tickets"]["T3"]["state"] == "implemented"
+    assert data["tickets"]["T4"]["state"] == "implemented"
+
+
+def test_web_job_change_many_repos(tmp_path: Path, git_src: Path, monkeypatch):
+    from dev_yard.web.jobs import JobRunner, default_execute
+
+    yard = _frozen_two(tmp_path, git_src, monkeypatch)
+    _fake_run_stage(monkeypatch)
+    job = JobRunner(yard, execute=default_execute, sync=True).submit(
+        "change",
+        "AB-1",
+        extra={"note": "web 两边", "repos": ["backend", "frontend"]},
+    )
+    assert job.state == "ok", job.log
+    assert "change c1: +T3, +T4" in job.log
+
+
 def test_doc_fingerprint(tmp_path: Path):
     req = tmp_path / "reqs" / "AB-1"
     req.mkdir(parents=True)
