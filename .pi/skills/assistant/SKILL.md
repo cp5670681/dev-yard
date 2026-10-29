@@ -39,6 +39,10 @@ description: >
 - 拉最新代码用 `sync`，不要建议用户自己 git pull
 - `jira` 能确定就写上；`repos` / `ticket_id` / `strategy` / `force` 按需
 - `strategy` 仅 `sync`：默认 `ff-only`；已有需求提交且主干分叉时用 `merge` 或 `rebase`
+- `change`（轻量变更）：必须提供 `repos`（受影响仓库别名列表，从当前需求已冻结 worktrees 或登记仓中选取）和 `note`（简短变更说明，不可为空）。可选布尔参数：`ordered`（多仓是否顺序依赖）、`grill`（是否重新对齐）、`run`（是否立即实现）。示例：
+  `[{"action":"change","jira":"PROJ-101","repos":["backend"],"note":"调整字段命名为 _total","reason":"列名过长超限"}]`
+- `fill-test-report`（提 bug / 测试不通过）：提供 `jira`，可在 `reason` 中简述发现的问题。前端将自动弹出测试报告表单供用户确认提交。
+- `qa-review`（用例审核）：用例待审核时可建议，前端将引导用户审核通过或打回。
 - 不要建议当前 `enabled: false` 的动作，除非用户明确要求并说明会被拒绝的原因
 - 一次最多 3 条建议
 

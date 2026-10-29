@@ -1080,6 +1080,7 @@ import CaseDetailDialog from "@/components/CaseDetailDialog.vue";
 import TicketDiffDialog from "@/components/TicketDiffDialog.vue";
 import TicketReviewDialog from "@/components/TicketReviewDialog.vue";
 import { runningJobs, watchJobs } from "@/state/jobs";
+import { INTERACTIVE_ACTIONS, registerActionHandler } from "@/state/assistant";
 import {
   ACTION_LABELS,
   contractTone,
@@ -1576,16 +1577,21 @@ async function removeAttachment(name: string) {
   }
 }
 
+function refuseIfDisabled(action: string, act?: Action) {
+  const meta = act || detail.value?.actions.find((a) => a.id === action);
+  if (meta && !meta.enabled) {
+    snack.notify(meta.reason || "当前不能执行", "info");
+    return true;
+  }
+  return false;
+}
+
 function confirmAction(action: string, ticketId?: string, act?: Action) {
   if (suiteBusy(action)) {
     snack.notify("执行用例已在进行", "info");
     return;
   }
-  const meta = act || detail.value?.actions.find((a) => a.id === action);
-  if (meta && !meta.enabled) {
-    snack.notify(meta.reason || "当前不能执行", "info");
-    return;
-  }
+  if (refuseIfDisabled(action, act)) return;
   if (action === "change") {
     changeForm.note = "";
     changeForm.repos = frozenRepos.value[0] ? [frozenRepos.value[0]] : [];
@@ -2014,12 +2020,57 @@ function showRunEndBanner() {
   snack.notify(runEndBanner.text, failed > 0 ? "error" : "success");
 }
 
+let unregisterAction: (() => void) | null = null;
+
 onMounted(() => {
   stop = watchJobs();
   void load();
+  unregisterAction = registerActionHandler(async (req) => {
+    if (req.jira !== jira.value) return false;
+    if (!detail.value || detail.value.jira !== jira.value) {
+      await load();
+    }
+    if (INTERACTIVE_ACTIONS.has(req.action) && refuseIfDisabled(req.action)) {
+      return true;
+    }
+    if (req.action === "change") {
+      changeForm.note = req.act.note || req.act.reason || "";
+      const requestedRepos = req.act.repos?.length
+        ? req.act.repos
+        : (req.act.repo ? [req.act.repo] : []);
+      const validRequested = requestedRepos.filter((r) => frozenRepos.value.includes(r));
+      if (validRequested.length) {
+        changeForm.repos = validRequested;
+      } else {
+        if (requestedRepos.length) {
+          snack.notify("建议的仓未冻结", "info");
+        }
+        changeForm.repos = frozenRepos.value[0] ? [frozenRepos.value[0]] : [];
+      }
+      changeForm.grill = Boolean(req.act.grill);
+      changeForm.run = Boolean(req.act.run);
+      changeForm.ordered = Boolean(req.act.ordered && changeForm.repos.length > 1);
+      changeOpen.value = true;
+      return true;
+    }
+    if (req.action === "qa-review") {
+      openQaReview();
+      return true;
+    }
+    if (req.action === "fill-test-report") {
+      reportForm.verdict = "failed";
+      reportForm.summary = req.act.reason || "";
+      reportForm.body = "";
+      resetFindingRows();
+      reportForm.open = true;
+      return true;
+    }
+    return false;
+  });
 });
 onUnmounted(() => {
   stop?.();
+  unregisterAction?.();
   if (boardPoll) clearInterval(boardPoll);
 });
 watch(jira, () => void load());

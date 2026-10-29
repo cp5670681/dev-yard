@@ -36,6 +36,47 @@ def test_parse_suggested_actions_strips_fence_and_unknown():
     assert parse_suggested_actions("just talk") == ("just talk", [])
 
 
+def test_parse_suggested_actions_change_fields():
+    text = (
+        "可以进行轻量变更。\n\n"
+        "```suggested-actions\n"
+        '[{"action":"change","jira":"PG-1","repo":"backend","note":"修改字段","ordered":true,"grill":true,"run":true},'
+        '{"action":"change","jira":"PG-2","repos":["research"],"reason":"精简命名"}]\n'
+        "```\n"
+    )
+    display, actions = parse_suggested_actions(text)
+    assert len(actions) == 2
+    first = actions[0]
+    assert first["action"] == "change"
+    assert first["jira"] == "PG-1"
+    assert first["repos"] == ["backend"]
+    assert first["note"] == "修改字段"
+    assert first["ordered"] is True
+    assert first["grill"] is True
+    assert first["run"] is True
+
+    second = actions[1]
+    assert second["action"] == "change"
+    assert second["jira"] == "PG-2"
+    assert second["repos"] == ["research"]
+    assert second["reason"] == "精简命名"
+    # Fallback to reason when note is omitted
+    assert second["note"] == "精简命名"
+
+def test_parse_suggested_actions_fill_test_report():
+    text = (
+        "测试不通过，建议提 bug。\n\n"
+        "```suggested-actions\n"
+        '[{"action":"fill-test-report","jira":"PG-1","reason":"登录接口返回 500"}]\n'
+        "```\n"
+    )
+    display, actions = parse_suggested_actions(text)
+    assert len(actions) == 1
+    assert actions[0]["action"] == "fill-test-report"
+    assert actions[0]["jira"] == "PG-1"
+    assert actions[0]["reason"] == "登录接口返回 500"
+
+
 def test_page_context_includes_requirement(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_URL", raising=False)

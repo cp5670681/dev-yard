@@ -577,6 +577,24 @@ def test_assistant_drawer_is_wired():
     assert "v-html" in drawer
 
 
+def test_assistant_interactive_actions_do_not_start_jobs():
+    root = Path(__file__).resolve().parents[1]
+    drawer = (root / "web" / "src" / "components" / "AssistantDrawer.vue").read_text()
+    req = (root / "web" / "src" / "views" / "RequirementView.vue").read_text()
+    state = (root / "web" / "src" / "state" / "assistant.ts").read_text()
+    assistant = (root / "src" / "dev_yard" / "assistant.py").read_text()
+    assert 'route.name === "requirement"' in drawer
+    assert "INTERACTIVE_ACTIONS" in drawer
+    assert "INTERACTIVE_ACTIONS" in req
+    assert 'fill-test-report' in state
+    assert "请前往需求页确认轻量变更" in drawer
+    assert "never start a job" in drawer
+    assert "refuseIfDisabled" in req
+    assert "建议的仓未冻结" in req
+    assert "changeForm.repos = requestedRepos" not in req
+    assert "HOST_ACTIONS" not in assistant
+
+
 def test_qa_design_accepts_notes_and_refs():
     root = Path(__file__).resolve().parents[1]
     req = (root / "web" / "src" / "views" / "RequirementView.vue").read_text()

@@ -161,7 +161,7 @@
                     :loading="running === keyOf(act)"
                     @click="runSuggested(act)"
                   >
-                    确认执行
+                    {{ actionBtnLabel(act.action) }}
                   </v-btn>
                 </v-card-actions>
               </v-card>
@@ -222,7 +222,12 @@ import type { AssistantSession, PiEntry, SuggestedAction } from "@/api/types";
 import { ACTION_LABELS } from "@/composables/labels";
 import { formatMs, stepsRunning, stepsTitle } from "@/composables/tools";
 import { useSnack } from "@/composables/snack";
-import { assistantOpen, closeAssistant } from "@/state/assistant";
+import {
+  INTERACTIVE_ACTIONS,
+  assistantOpen,
+  closeAssistant,
+  dispatchActionRequest,
+} from "@/state/assistant";
 import { closePi } from "@/state/pi";
 import ToolStep from "@/components/ToolStep.vue";
 
@@ -479,19 +484,79 @@ function keyOf(act: SuggestedAction) {
   return [act.action, act.jira, act.ticket_id, (act.repos || []).join(",")].join(":");
 }
 
+function actionBtnLabel(action: string) {
+  if (action === "change") return "去变更";
+  if (action === "qa-review") return "去审核";
+  if (action === "fill-test-report") return "去提 bug";
+  return "确认执行";
+}
+
+function onRequirementPage(jira: string) {
+  return route.name === "requirement" && route.params.jira === jira;
+}
+
+function interactiveHint(action: string) {
+  if (action === "change") return "请前往需求页确认轻量变更";
+  if (action === "qa-review") return "请前往需求页审核测试用例";
+  return "请前往需求页填写测试报告 / 提 bug";
+}
+
+async function dispatchWithRetry(req: {
+  action: string;
+  jira: string;
+  act: SuggestedAction;
+}) {
+  if (await dispatchActionRequest(req)) return true;
+  for (let i = 0; i < 8; i++) {
+    await nextTick();
+    if (await dispatchActionRequest(req)) return true;
+  }
+  return false;
+}
+
 async function runSuggested(act: SuggestedAction) {
   const jira = act.jira || pageJira.value || session.value?.jira;
   if (!jira) {
     snack.notify("这条建议没有需求号", "error");
     return;
   }
+
+  const interactive = INTERACTIVE_ACTIONS.has(act.action);
+  const needNav = interactive && !onRequirementPage(jira);
+  if (needNav) {
+    await router.push({ name: "requirement", params: { jira } });
+    await nextTick();
+  }
+
+  const req = { action: act.action, jira, act };
+  const handled = interactive
+    ? await dispatchWithRetry(req)
+    : await dispatchActionRequest(req);
+  if (handled) {
+    closeAssistant();
+    return;
+  }
+
+  // change / qa-review / fill-test-report open a confirm form; never start a job.
+  if (interactive) {
+    snack.notify(interactiveHint(act.action), "info");
+    return;
+  }
+
   running.value = keyOf(act);
   try {
+    const note = act.note || act.reason || "";
+    const repos = act.repos?.length ? act.repos : (act.repo ? [act.repo] : undefined);
     const out = await runAction(jira, act.action, {
       ticket_id: act.ticket_id,
-      repos: act.repos,
+      repos,
+      repo: repos?.[0],
       strategy: act.strategy,
       force: act.force,
+      note,
+      ordered: act.ordered,
+      grill: act.grill,
+      run: act.run,
     });
     const job = out.jobs[0]?.id;
     snack.notify(`已启动 ${ACTION_LABELS[act.action] || act.action}`, "success");

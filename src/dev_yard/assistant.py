@@ -12,11 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from dev_yard import paths
-from dev_yard.actions import JOB_ACTIONS
+from dev_yard.actions import BOARD_ACTION_IDS
 from dev_yard.config import load_repos
 from dev_yard.reqboard import list_requirements, requirement_detail
 
-HOST_ACTIONS = JOB_ACTIONS
+SUGGESTED_ACTIONS = BOARD_ACTION_IDS | {"resolve-conflict"}
 _FENCE = re.compile(r"```suggested-actions\s*(\[.*?\])\s*```", re.S | re.I)
 _MD_ROLES = frozenset({"assistant", "user"})
 _SUMMARY_LIMIT = 160
@@ -139,7 +139,7 @@ def page_context(root: Path, route: str = "", jira: str = "") -> dict[str, Any]:
                         "reason": a.reason,
                     }
                     for a in detail.actions
-                    if a.id in HOST_ACTIONS
+                    if a.id in SUGGESTED_ACTIONS
                 ],
                 "worktrees": detail.worktrees,
             }
@@ -155,7 +155,7 @@ def format_context(ctx: dict[str, Any]) -> str:
 
 
 def compose_prompt(ctx: dict[str, Any], user_text: str) -> str:
-    actions = HOST_ACTIONS
+    actions = SUGGESTED_ACTIONS
     req = ctx.get("requirement") if isinstance(ctx.get("requirement"), dict) else {}
     listed = req.get("actions") if isinstance(req, dict) else None
     if listed:
@@ -195,7 +195,7 @@ def parse_suggested_actions(text: str) -> tuple[str, list[dict[str, Any]]]:
         if not isinstance(item, dict):
             continue
         action = str(item.get("action") or "").strip()
-        if action not in HOST_ACTIONS:
+        if action not in SUGGESTED_ACTIONS:
             continue
         row: dict[str, Any] = {"action": action}
         if isinstance(item.get("jira"), str) and item["jira"].strip():
@@ -213,6 +213,18 @@ def parse_suggested_actions(text: str) -> tuple[str, list[dict[str, Any]]]:
             aliases = [str(r).strip() for r in repos if str(r).strip()]
             if aliases:
                 row["repos"] = aliases
+        elif isinstance(item.get("repo"), str) and item["repo"].strip():
+            row["repos"] = [item["repo"].strip()]
+        if isinstance(item.get("note"), str) and item["note"].strip():
+            row["note"] = item["note"].strip()
+        elif action == "change" and isinstance(item.get("reason"), str) and item["reason"].strip():
+            row["note"] = item["reason"].strip()
+        if item.get("ordered") is True:
+            row["ordered"] = True
+        if item.get("grill") is True:
+            row["grill"] = True
+        if item.get("run") is True:
+            row["run"] = True
         out.append(row)
     return display, out
 

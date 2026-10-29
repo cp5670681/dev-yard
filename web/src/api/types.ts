@@ -589,10 +589,15 @@ export interface SuggestedAction {
   action: string;
   jira?: string;
   ticket_id?: string;
+  repo?: string;
   repos?: string[];
   strategy?: string;
   force?: boolean;
   reason?: string;
+  note?: string;
+  ordered?: boolean;
+  grill?: boolean;
+  run?: boolean;
 }
 
 export interface AssistantSession {
