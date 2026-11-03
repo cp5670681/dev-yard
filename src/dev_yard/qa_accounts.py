@@ -43,6 +43,9 @@ _ROW_SEP = "|"
 _FALLBACK_KEY = "auto"
 _COMMENT_BLOCK = re.compile(r"/\*.*?\*/", re.S)
 _COMMENT_LINE = re.compile(r"--[^\n]*")
+# usql 0.21 runs a statement that starts with "(" via Exec and prints this
+# instead of the result rows. It is not a username.
+_EXEC_ROW = re.compile(r"^EXEC\s+\d+\s*$", re.I)
 
 
 def _sql_body(sql: str) -> str:
@@ -92,6 +95,20 @@ def assert_readonly_sql(sql: str) -> str:
     return text
 
 
+def query_for_usql(sql: str) -> str:
+    """SQL text actually sent to usql.
+
+    A statement that starts with ``(`` is run by usql 0.21 via Exec, which
+    prints ``EXEC <n>`` and drops the rows. Wrap it so the driver sees a
+    SELECT. The alias has no ``AS`` — Oracle rejects that form.
+    """
+    assert_readonly_sql(sql)
+    body = _sql_body(sql).rstrip().rstrip(";").strip()
+    if body.startswith("("):
+        return f"SELECT * FROM (\n{body}\n) qa_discover"
+    return body
+
+
 @dataclass(frozen=True)
 class Candidate:
     """One discovered login the design stage can point a case at."""
@@ -114,7 +131,7 @@ def parse_candidates(stdout: str) -> list[Candidate]:
     out: list[Candidate] = []
     seen: set[tuple[str, str]] = set()
     for line in stdout.splitlines():
-        if not line.strip():
+        if not line.strip() or _EXEC_ROW.match(line.strip()):
             continue
         parts = line.split(_ROW_SEP)
         username = parts[0].strip()
@@ -133,7 +150,7 @@ def discover(db_url: str, sql: str, timeout: int = 30) -> list[Candidate]:
     """Run the read-only discovery query and return parsed candidates."""
     if not db_url:
         raise ValueError("qa.yaml envs.<env>.db.url is not configured; cannot run --sql")
-    text = assert_readonly_sql(sql)
+    text = query_for_usql(sql)
     binary = shutil.which("usql")
     if not binary:
         raise ValueError("usql not found; install it to discover accounts")
@@ -149,7 +166,10 @@ def discover(db_url: str, sql: str, timeout: int = 30) -> list[Candidate]:
     if r.returncode != 0:
         err = (r.stderr or r.stdout or "").strip() or str(r.returncode)
         raise ValueError(f"discovery query failed: {err}")
-    return parse_candidates(r.stdout)
+    found = parse_candidates(r.stdout)
+    if not found and any(_EXEC_ROW.match(ln.strip()) for ln in (r.stdout or "").splitlines()):
+        raise ValueError("发现查询没有返回账号")
+    return found
 
 
 def first_per_key(
@@ -174,6 +194,104 @@ def first_per_key(
     for items in groups.values():
         picked.append(next((c for c in items if c.username not in exclude), items[0]))
     return picked
+
+
+def case_accounts_to_discover(root: Path, jira: str, cfg: QaConfig) -> list[str]:
+    """Case account keys that are not already configured.
+
+    The global default name and accounts already on the requirement are filled
+    by hand or by an earlier discovery. They do not have to come back from the
+    query.
+    """
+    from dev_yard.qa_cases import discover_cases
+
+    qa = paths.qa_dir(root, jira)
+    if not qa.is_dir():
+        return []
+    configured = set(cfg.env.accounts)
+    configured.add(cfg.env.auth_default or "default")
+    needed = {job.account for job in discover_cases(qa) if job.account}
+    return sorted(needed - configured)
+
+
+def discovery_key_gaps(root: Path, jira: str, cfg: QaConfig) -> tuple[list[str], str]:
+    """Account keys a written discovery query did not return.
+
+    No query file means there is nothing to judge here; a missing account in
+    the yaml stays on the fill path. A query that errors, or that returns no
+    row for a key, is a defect of that query.
+    """
+    needed = case_accounts_to_discover(root, jira, cfg)
+    if not needed:
+        return [], ""
+    sql_path = paths.qa_accounts_discover_sql(root, jira)
+    if not sql_path.is_file():
+        return [], ""
+    if not cfg.env.db_url:
+        return needed, "没有数据库连接，发现查询没跑"
+    try:
+        text = sql_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        return needed, str(e)
+    try:
+        found = discover(cfg.env.db_url, text)
+    except (ValueError, OSError) as e:
+        return needed, str(e)
+    found_keys = {cand.key for cand in first_per_key(found)}
+    return sorted(set(needed) - found_keys), ""
+
+
+def note_discovery_gaps(qa: Path, keys: list[str], reason: str = "") -> None:
+    """Record account keys the discovery query still did not return."""
+    fresh = [key for key in keys if key]
+    if not fresh:
+        return
+    path = qa / "OPEN-QUESTIONS.md"
+    try:
+        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    except (OSError, UnicodeDecodeError):
+        existing = ""
+    pending = [key for key in fresh if key not in existing]
+    if not pending:
+        return
+    nums = [int(n) for n in re.findall(r"\bQ(\d+)\b", existing)]
+    number = max(nums, default=0) + 1
+    why = f"（{reason.strip()[:200]}）" if reason and reason.strip() else ""
+    listed = "、".join(pending)
+    block = (
+        f"\n\n## Q{number} 发现查询没有返回账号：{listed}\n\n"
+        f"宿主跑过发现查询，这些 account_key 没有行{why}。"
+        "权限若不在可查的库里，不要编 JOIN；对应用例保持未覆盖。\n"
+    )
+    if not existing.strip():
+        existing = "# OPEN-QUESTIONS\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(existing.rstrip() + block + "\n", encoding="utf-8")
+
+
+def missing_case_accounts(
+    root: Path,
+    jira: str,
+    candidates: list[Candidate],
+    configured: set[str] | None = None,
+) -> list[str]:
+    """Case ``account:`` keys this fill would still leave unset.
+
+    An empty discovery key is stored as ``auto`` and does not cover a named
+    key. Keys already on the requirement, and the global default account name,
+    are already configured and are not required from the query.
+    """
+    from dev_yard.qa_cases import discover_cases
+
+    qa = paths.qa_dir(root, jira)
+    if not qa.is_dir():
+        return []
+    needed = {job.account for job in discover_cases(qa) if job.account}
+    if not needed:
+        return []
+    found = {cand.key for cand in first_per_key(candidates)}
+    found.update(configured or ())
+    return sorted(needed - found)
 
 
 def accounts_overview(root: Path, jira: str, cfg: QaConfig) -> dict:
@@ -239,8 +357,18 @@ def autofill(
     picked = first_per_key(candidates, exclude={gacct.username})
     if not picked:
         raise TestRejected("discovery returned no candidates to fill")
-
     existing = load_req_accounts(root, jira, env)
+    configured = {global_default}
+    if existing:
+        configured.update(existing[1])
+    missing = missing_case_accounts(root, jira, candidates, configured)
+    if missing:
+        raise TestRejected(
+            "发现结果没有用例要的账号："
+            + "、".join(missing)
+            + "。请改发现查询后再点「发现并填充」。"
+        )
+
     if existing:
         default, accounts = existing
         accounts = dict(accounts)

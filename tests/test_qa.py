@@ -4972,6 +4972,102 @@ def test_missing_account_does_not_redesign(
     assert any("no_perm" in item for item in result["lint"])
 
 
+def test_discovery_query_miss_rewrites_sql_not_cases(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-DQ")
+    logs: list[str] = []
+
+    class _QueryRunner(Runner):
+        def __init__(self):
+            self.called = 0
+            self.prompts: list[str] = []
+
+        def start(self, prompt, cwd, extra_read_paths, repo=None):
+            self.called += 1
+            self.prompts.append(prompt)
+            qa = yard / "reqs" / "QA-DQ" / "qa"
+            d = qa / "cases" / "mod"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "case-01.md").write_text(
+                "---\nid: case-01\ntitle: t\nrepo: backend\naccount: has_perm\n---\n\n"
+                "body stays\n",
+                encoding="utf-8",
+            )
+            (qa / "accounts-discover.sql").write_text(
+                "SELECT 'someone' AS username, 'other' AS account_key\n",
+                encoding="utf-8",
+            )
+            return RunResult(ok=True, summary="designed")
+
+    runner = _QueryRunner()
+    req_test(
+        yard,
+        "QA-DQ",
+        print_mode=True,
+        design_only=True,
+        verify=False,
+        runner=runner,
+        on_log=logs.append,
+    )
+    assert runner.called == 2
+    assert "发现查询修补" in runner.prompts[1]
+    assert "has_perm" in runner.prompts[1]
+    body = (yard / "reqs" / "QA-DQ" / "qa" / "cases" / "mod" / "case-01.md").read_text(
+        encoding="utf-8"
+    )
+    assert "body stays" in body
+    questions = (yard / "reqs" / "QA-DQ" / "qa" / "OPEN-QUESTIONS.md").read_text(
+        encoding="utf-8"
+    )
+    assert "has_perm" in questions
+    assert any("只重写发现查询" in line for line in logs)
+    assert any("缺账号不回灌" in line for line in logs)
+
+
+def test_approve_account_gap_points_at_fill(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-LA2")
+    _write_case(
+        yard,
+        "QA-LA2",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\naccount: no_perm\n---\n\nbody\n",
+    )
+    with pytest.raises(TestRejected, match="发现并填充") as raised:
+        req_test(yard, "QA-LA2", print_mode=True, approve=True, verify=False)
+    assert "重跑设计" not in str(raised.value)
+    assert "--allow-unverified" not in str(raised.value)
+
+
+def test_lint_block_message_keeps_redesign_for_other_problems():
+    from dev_yard.qa import _lint_block_message
+
+    text = _lint_block_message(
+        ["case-01: repo 'missing' 不是 repos.yaml 别名", "case-01: account 'no_perm' 未配置"]
+    )
+    assert "重跑设计" in text
+    assert "发现并填充" not in text
+    account_only = _lint_block_message(["case-01: account 'no_perm' 未配置"])
+    assert "发现并填充" in account_only
+    assert "重跑设计" not in account_only
+
+    from dev_yard.qa import _approve_lint_error
+
+    gap = "case-01: account 'no_perm' 未配置"
+    other = "case-01: repo 'missing' 不是 repos.yaml 别名"
+    waived = _approve_lint_error([gap], allow_unverified=True)
+    assert waived is not None and "发现并填充" in waived
+    assert _approve_lint_error([other], allow_unverified=True) is None
+    mixed = _approve_lint_error([other, gap], allow_unverified=False)
+    assert mixed is not None and "重跑设计" in mixed
+
+
 def test_pool_preflight_drops_bad_pool(tmp_path: Path, git_src: Path, monkeypatch):
     from dev_yard import qa_state as qa_st
 

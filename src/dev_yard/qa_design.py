@@ -622,6 +622,11 @@ def _duties(kind: str, jira: str) -> str:
             "permission code and write the read-only discovery query to "
             "qa/accounts-discover.sql (username|account_key; host runs it via "
             "`req accounts --auto`).\n"
+            "The host runs that query at the end of design. An account_key with "
+            "no row is a defect of the query: rewrite it from the permission "
+            "code. If the grant is not in a database the host can query, do not "
+            "invent a join; record it in OPEN-QUESTIONS and leave the case "
+            "not covered.\n"
             "Data prerequisites must be executable: declare `data.verify` "
             "(single read-only SELECT; >=1 row means pass) for every case that "
             "declares setup/cleanup or a DB expectation; the host runs it and "
@@ -809,8 +814,21 @@ def _design_prompt(
     history: str | None = None,
     repair_only: bool = False,
     contract_fix: bool = False,
+    discover_fix: bool = False,
 ) -> str:
     spec = load_registry(root)["qa-design"]
+    if discover_fix and verify_feedback and verify_feedback.strip():
+        extra = (
+            "发现查询修补。这不是重新设计。\n"
+            "只改 qa/accounts-discover.sql。\n"
+            "可以读 worktree 里判定权限的代码，确认授权存在哪张表或哪个外部系统。\n"
+            "查询必须是单条只读语句，第一列 username，第二列 account_key，"
+            "下面每个 key 都要有一行。\n"
+            "授权不在宿主能查的库里时，不要编 JOIN。"
+            "把缺口写进 qa/OPEN-QUESTIONS.md，对应用例保持未覆盖，不要改步骤和预期。\n"
+            "不要 diff，不要读 dev-yard 的 src/。\n\n" + verify_feedback.strip()
+        )
+        return session_prompt_for(spec, root, jira, extra=extra)
     if contract_fix and verify_feedback and verify_feedback.strip():
         extra = (
             "契约修补。这不是重新设计。\n"

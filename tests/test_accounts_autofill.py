@@ -11,9 +11,12 @@ from dev_yard.qa_accounts import (
     Candidate,
     accounts_overview,
     autofill,
+    discovery_key_gaps,
     first_per_key,
     invalidate_all,
+    note_discovery_gaps,
     parse_candidates,
+    query_for_usql,
 )
 from dev_yard.qa_config import TestRejected, load_qa_config
 
@@ -40,6 +43,108 @@ def _workspace(tmp_path: Path, qa: str = QA_YAML) -> Path:
     (tmp_path / "reqs" / "J-1").mkdir(parents=True)
     (tmp_path / "qa.yaml").write_text(qa, encoding="utf-8")
     return tmp_path
+
+
+def test_discovery_key_gaps_when_query_misses_a_case_key(tmp_path: Path, monkeypatch):
+    root = _workspace(tmp_path)
+    case_dir = root / "reqs" / "J-1" / "qa" / "cases" / "mod"
+    case_dir.mkdir(parents=True)
+    (case_dir / "case-01.md").write_text(
+        "---\nid: case-01\ntitle: t\nrepo: backend\naccount: has_perm\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    sql_path = paths.qa_accounts_discover_sql(root, "J-1")
+    sql_path.write_text("SELECT username, 'other' AS account_key FROM users\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "dev_yard.qa_accounts.discover",
+        lambda *args, **kwargs: [Candidate("someone", "other")],
+    )
+    cfg = load_qa_config(root, "local", "J-1")
+    missing, reason = discovery_key_gaps(root, "J-1", cfg)
+    assert missing == ["has_perm"]
+    assert reason == ""
+
+
+def test_discovery_key_gaps_skips_when_no_query_file(tmp_path: Path, monkeypatch):
+    root = _workspace(tmp_path)
+    case_dir = root / "reqs" / "J-1" / "qa" / "cases" / "mod"
+    case_dir.mkdir(parents=True)
+    (case_dir / "case-01.md").write_text(
+        "---\nid: case-01\ntitle: t\nrepo: backend\naccount: has_perm\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("should not query")
+
+    monkeypatch.setattr("dev_yard.qa_accounts.discover", _boom)
+    cfg = load_qa_config(root, "local", "J-1")
+    assert discovery_key_gaps(root, "J-1", cfg) == ([], "")
+
+
+def test_note_discovery_gaps_once(tmp_path: Path):
+    qa = tmp_path / "qa"
+    note_discovery_gaps(qa, ["has_perm"], "0 rows")
+    note_discovery_gaps(qa, ["has_perm"], "0 rows")
+    text = (qa / "OPEN-QUESTIONS.md").read_text(encoding="utf-8")
+    assert text.count("has_perm") == 1
+    assert "不要编 JOIN" in text
+
+
+def test_parse_candidates_drops_usql_exec_status():
+    assert parse_candidates("EXEC 2\n") == []
+    assert parse_candidates("exec 2\nalice|has_perm\n") == [
+        Candidate("alice", "has_perm"),
+    ]
+
+
+def test_query_for_usql_wraps_parenthesized_statement():
+    sql = """\
+-- header
+(
+  SELECT username, 'has_perm' AS account_key FROM users LIMIT 1
+);
+"""
+    wrapped = query_for_usql(sql)
+    assert wrapped.startswith("SELECT * FROM (")
+    assert wrapped.rstrip().endswith(") qa_discover")
+    assert "AS qa_discover" not in wrapped
+    assert "SELECT username" in wrapped
+    plain = query_for_usql("SELECT username, 'has_perm' AS account_key FROM users;")
+    assert plain.startswith("SELECT username")
+    assert "qa_discover" not in plain
+
+
+def test_autofill_refuses_when_case_accounts_are_missing(tmp_path: Path):
+    root = _workspace(tmp_path)
+    case_dir = root / "reqs" / "J-1" / "qa" / "cases" / "mod"
+    case_dir.mkdir(parents=True)
+    (case_dir / "case-01.md").write_text(
+        "---\nid: case-01\ntitle: t\nrepo: backend\naccount: has_perm\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    cfg = load_qa_config(root, "local")
+    with pytest.raises(TestRejected, match="has_perm"):
+        autofill(root, "J-1", "local", cfg, [Candidate("EXEC 2", "")])
+    assert not (root / ".yard-qa" / "requirements" / "J-1" / "accounts.yaml").exists()
+
+
+def test_autofill_accepts_keys_already_configured(tmp_path: Path):
+    root = _workspace(tmp_path)
+    case_dir = root / "reqs" / "J-1" / "qa" / "cases" / "mod"
+    case_dir.mkdir(parents=True)
+    (case_dir / "case-01.md").write_text(
+        "---\nid: case-01\ntitle: t\nrepo: backend\naccount: admin\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    (case_dir / "case-02.md").write_text(
+        "---\nid: case-02\ntitle: t2\nrepo: backend\naccount: has_perm\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    cfg = load_qa_config(root, "local")
+    result = autofill(root, "J-1", "local", cfg, [Candidate("has01", "has_perm")])
+    assert "has_perm" in result.added
+    assert result.accounts["admin"] == "w.deng"
+    assert result.accounts["has_perm"] == "has01"
 
 
 def test_parse_candidates_two_columns_and_dedup():

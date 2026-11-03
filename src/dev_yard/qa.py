@@ -177,6 +177,36 @@ def _drop_unstarted_progress(run_dir: Path, *, resuming: bool, prior: bytes | No
     path.write_bytes(prior)
 
 
+def _lint_block_message(problems: list[str]) -> str:
+    """Why --approve stopped. Account gaps are filled, not redesigned."""
+    if problems and all(_is_account_gap(p) for p in problems):
+        return (
+            "用例账号未配置："
+            + "；".join(problems)
+            + "；请在本需求测试账号里点「发现并填充」，再审核"
+        )
+    return (
+        "用例契约检查未通过："
+        + "；".join(problems)
+        + "；修好后重跑设计，或加 --allow-unverified 越权"
+    )
+
+
+def _approve_lint_error(problems: list[str], *, allow_unverified: bool) -> str | None:
+    """Blocker for --approve, or None when lint may be skipped.
+
+    An unconfigured account still blocks when ``--allow-unverified`` is set.
+    That flag only skips other contract problems.
+    """
+    gaps = [p for p in problems if _is_account_gap(p)]
+    others = [p for p in problems if p not in gaps]
+    if gaps and (not others or allow_unverified):
+        return _lint_block_message(gaps)
+    if gaps or (others and not allow_unverified):
+        return _lint_block_message(gaps + others)
+    return None
+
+
 def req_test(
     root: Path,
     jira: str,
@@ -571,6 +601,61 @@ def _req_test(
             # The changed case set invalidates any prior approval; the review
             # gate holds it for a fresh look (no need to force `rejected`).
 
+    def _repair_discovery_query() -> None:
+        """One rewrite of accounts-discover.sql when a case key has no row."""
+        nonlocal cases
+        from dev_yard.qa_accounts import discovery_key_gaps, note_discovery_gaps
+
+        missing, reason = discovery_key_gaps(root, jira, cfg)
+        if not missing:
+            return
+        detail = "、".join(missing)
+        if reason:
+            detail += f"（{reason}）"
+        if on_log is not None:
+            on_log(f"发现查询没有返回用例要的账号：{detail}\n")
+            on_log("回灌设计，只重写发现查询\n")
+        _raise_if_cancelled(cancel_check, "qa-design")
+        fix_prompt = _design_prompt(
+            root,
+            jira,
+            cfg,
+            verify_feedback=(
+                "宿主跑过发现查询，这些 account_key 没有行：\n"
+                + "\n".join(f"- {key}" for key in missing)
+                + (f"\n查询没有跑成：{reason}" if reason else "")
+            ),
+            discover_fix=True,
+        )
+        _mark_design_pending(qa)
+        result = _start_repair(
+            _ensure_design_runner(), fix_prompt, root, jira, on_log=on_log
+        )
+        _raise_if_cancelled(cancel_check, "qa-design")
+        if not result.ok:
+            if read_design_marker(qa) is None:
+                raise TestRejected(
+                    f"qa-design 发现查询修正失败: {result.summary or result.exit_code}"
+                )
+            (qa / _DESIGN_PENDING).unlink(missing_ok=True)
+            if on_log is not None:
+                on_log(
+                    "发现查询修正没有得到模型回复，已保留本轮用例："
+                    f"{result.summary or result.exit_code}\n"
+                )
+        else:
+            cases = discover_cases(qa)
+            _finish_design(qa)
+        still, still_reason = discovery_key_gaps(root, jira, cfg)
+        if still:
+            note_discovery_gaps(qa, still, still_reason)
+            if on_log is not None:
+                on_log(
+                    "发现查询仍没有这些账号，已写入 OPEN-QUESTIONS："
+                    + "、".join(still)
+                    + "\n"
+                )
+
     if cases and not run_only and not rerun_ids and not verify_only and not allow_unverified:
         problems = lint_cases(root, jira, cfg, cases)
         added = absorb_worktree_constants(root, jira, problems)
@@ -582,6 +667,8 @@ def _req_test(
         problems = [p for p in problems if p not in account_gaps]
         if account_gaps and on_log is not None:
             on_log("缺账号不回灌设计，保持未覆盖：" + "；".join(account_gaps) + "\n")
+        if need_design:
+            _repair_discovery_query()
         if problems and not verify_enabled:
             _run_contract_fix(problems)
         elif problems:
@@ -713,12 +800,9 @@ def _req_test(
                 "uncovered_changes": uncovered,
                 "lint": lint_problems,
             }
-        if lint_problems and not allow_unverified:
-            raise TestRejected(
-                "用例契约检查未通过："
-                + "；".join(lint_problems)
-                + "；修好后重跑设计，或加 --allow-unverified 越权"
-            )
+        lint_error = _approve_lint_error(lint_problems, allow_unverified=allow_unverified)
+        if lint_error:
+            raise TestRejected(lint_error)
         ok, why = verify_gate(
             qa,
             cases_fingerprint(qa),
