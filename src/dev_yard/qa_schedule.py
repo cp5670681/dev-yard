@@ -25,6 +25,11 @@ _ENV_REASON = re.compile(
     re.I,
 )
 BLOCKED_KINDS = ("case-defect", "env", "cancelled", "other")
+# Structured values a worker may put in result.yaml `blocked_class`; the host
+# trusts this over guessing from the free-form `reason` text.
+BLOCKED_CLASSES = frozenset(
+    {"case-defect", "env", "undeployed", "auth", "cancelled", "other"}
+)
 
 
 def format_blocked_kind(kind: Any) -> str:
@@ -41,6 +46,35 @@ def format_blocked_kind(kind: Any) -> str:
 def normalize_status(status: Any) -> str:
     s = str(status or "blocked").strip().lower()
     return s if s in TERMINAL else "blocked"
+
+
+def normalize_case_verdict(
+    status: Any,
+    blocked_class: Any = "",
+    reason: Any = "",
+    defect_class: Any = "",
+) -> tuple[str, str, str]:
+    """Normalize (status, blocked_class, defect_class) consistently across run/schedule.
+
+    If a case defect is detected (defect_class is 'case' or reason starts with
+    'case-defect:'), a non-passing case is coerced to status='blocked',
+    blocked_class='case-defect', defect_class='case'. A `passed` verdict is
+    never rewritten: the coercion is meant to reclassify a broken *case*, not
+    to overturn a result the worker already reported as good.
+    """
+    st = normalize_status(status)
+    reas = str(reason or "")
+    raw_defect = str(defect_class or "").strip().lower()
+    defect = raw_defect if raw_defect in {"product", "case", "unclassified"} else ""
+
+    if st != "passed" and (
+        defect == "case" or reas.strip().lower().startswith("case-defect:")
+    ):
+        return "blocked", "case-defect", "case"
+
+    raw_blocked = str(blocked_class or "").strip().lower()
+    b_class = raw_blocked if st == "blocked" and raw_blocked in BLOCKED_CLASSES else ""
+    return st, b_class, defect
 
 
 @dataclass
@@ -403,11 +437,16 @@ def run_schedule(
         return any(p.id not in tripped for p in pools)
 
     def settle(job: CaseJob, slot: PoolSlot | None, result: dict[str, Any]) -> None:
-        status = normalize_status(result.get("status"))
+        status, blocked_class, defect_class = normalize_case_verdict(
+            result.get("status"),
+            result.get("blocked_class"),
+            result.get("reason"),
+            result.get("defect_class"),
+        )
         job.state = status
         job.reason = str(result.get("reason") or "")
-        job.blocked_class = str(result.get("blocked_class") or "")
-        job.defect_class = str(result.get("defect_class") or "")
+        job.blocked_class = blocked_class
+        job.defect_class = defect_class
         job.failure = (
             result.get("failure") if isinstance(result.get("failure"), dict) else None
         )

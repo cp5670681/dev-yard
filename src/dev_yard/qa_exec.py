@@ -21,12 +21,9 @@ from dev_yard.qa_config import (
     default_state_file,
     redact_qa_yaml,
 )
-from dev_yard.qa_schedule import CaseJob, normalize_status
+from dev_yard.qa_schedule import CaseJob, normalize_case_verdict, normalize_status
 
 _ASSERT_TYPES = {"ui", "net", "db"}
-# Structured values a worker may put in result.yaml `blocked_class`; the host
-# trusts this over guessing from the free-form `reason` text.
-BLOCKED_CLASSES = frozenset({"case-defect", "env", "undeployed", "auth", "other"})
 # Read-only statements a `data.verify` query may start with, and the write
 # keywords that disqualify one. Kept here (next to the SQL executor) so the
 # design-time verifier and any CLI discovery share one definition.
@@ -1076,7 +1073,13 @@ def normalize_case_result(
     data: dict[str, Any], job: CaseJob, *, require_assertions: bool
 ) -> dict[str, Any] | None:
     """Return a cleaned result, or None if the contract is broken."""
-    status = normalize_status(data.get("status"))
+    status, blocked_class, defect_class = normalize_case_verdict(
+        data.get("status"),
+        data.get("blocked_class"),
+        data.get("reason"),
+        data.get("defect_class"),
+    )
+    reason = str(data.get("reason") or "")
     assertions = _normalize_assertions(data.get("assertions"))
     if require_assertions and status in {"passed", "failed"}:
         if assertions is None:
@@ -1099,13 +1102,9 @@ def normalize_case_result(
             }
         else:
             return None
-    raw_class = str(data.get("blocked_class") or "").strip().lower()
-    blocked_class = raw_class if status == "blocked" and raw_class in BLOCKED_CLASSES else ""
-    raw_defect = str(data.get("defect_class") or "").strip().lower()
-    defect_class = raw_defect if raw_defect in {"product", "case", "unclassified"} else ""
     return {
         "status": status,
-        "reason": str(data.get("reason") or ""),
+        "reason": reason,
         "blocked_class": blocked_class,
         "defect_class": defect_class,
         "repo": str(data.get("repo") or job.repo),

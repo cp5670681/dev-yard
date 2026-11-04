@@ -597,6 +597,18 @@ def _lint_verify_sql_antipatterns(job: CaseJob) -> list[str]:
                     f"{job.id}: 用例限定闪讯角色，但 verify.sql 仅查询普通员工表（未关联闪讯团队或角色过滤）；"
                     "会选出非闪讯人员导致功能无法渲染，请关联 point_report_teams 或过滤闪讯成员"
                 )
+    # 4. Case asserts map notes/history but verify.sql only joins map_positions
+    if re.search(r"(?:弹窗|查看|点击|打开|展开).*备注(?:更新)?历史|备注(?:更新)?历史.*(?:可见|可用|弹窗|点击|打开|展开|按钮)", case_context):
+        if re.search(r"\bprojects\b", sql, re.I) and not re.search(r"\bproject_map_notes\b", sql, re.I):
+            out.append(
+                f"{job.id}: 用例断言了经纬度备注及更新历史，但 verify.sql 查询了 projects 却未关联 project_map_notes；"
+                "会选出无备注的数据导致备注历史按钮不渲染，请 JOIN project_map_notes 确保种子数据有备注记录"
+            )
+        if re.search(r"\bproject_news\b", sql, re.I) and not re.search(r"\bproject_news_map_notes\b", sql, re.I):
+            out.append(
+                f"{job.id}: 用例断言了资源备注及更新历史，但 verify.sql 查询了 project_news 却未关联 project_news_map_notes；"
+                "会选出无备注的数据导致备注历史按钮不渲染，请 JOIN project_news_map_notes 确保种子数据有备注记录"
+            )
     return out
 
 
@@ -669,6 +681,8 @@ def _duties(kind: str, jira: str) -> str:
             "the prerequisite role, team, or permission filter (e.g. join "
             "point_report_teams WHERE name LIKE '%闪讯%'); never query employees "
             "with an unrestricted WHERE e.active = 1 or fall back to default user w.deng. "
+            "When a case asserts or clicks optional/secondary entities (such as map_notes, pub_notes, history lists, or child attachments), verify.sql MUST JOIN or filter for rows where those sub-records exist (e.g. JOIN project_map_notes / project_news_map_notes); never assert presence of update histories or notes on a row whose child records are NULL or 0 rows. "
+            "When testing a restricted permission on an edit/action page (such as compare edit, audit, or submit forms), ensure the tested account has the required base page access (e.g. project_news_information_publisher for additional news edit); do not assign a purely read-only account with no page-entry permission to an edit URL that will 403 on load. "
             "UI radio options, tabs, and buttons MUST be verified against component "
             "templates; never invent conceptual labels like '合计'/'审核'. "
             "Prefer a row that already exists. The first draft has no setup and no "

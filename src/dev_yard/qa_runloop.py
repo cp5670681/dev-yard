@@ -36,6 +36,7 @@ from dev_yard.qa_schedule import (
     CaseJob,
     PoolSlot,
     blocked_kind,
+    normalize_case_verdict,
     normalize_status,
     progress_line,
     progress_payload,
@@ -548,10 +549,17 @@ def _read_case_result(
     cleaned = normalize_case_result(data, job, require_assertions=strict)
     if cleaned is None:
         if not strict:
+            status, blocked_class, defect_class = normalize_case_verdict(
+                data.get("status"),
+                data.get("blocked_class"),
+                data.get("reason"),
+                data.get("defect_class"),
+            )
             return {
-                "status": normalize_status(data.get("status")),
+                "status": status,
                 "reason": str(data.get("reason") or ""),
-                "blocked_class": str(data.get("blocked_class") or ""),
+                "blocked_class": blocked_class,
+                "defect_class": defect_class,
                 "repo": str(data.get("repo") or job.repo),
                 "title": str(data.get("title") or job.title),
                 "covers": data.get("covers") or job.covers,

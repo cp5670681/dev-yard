@@ -1984,3 +1984,99 @@ def test_lint_verify_sql_antipatterns(tmp_path: Path):
     )
     errs = _lint_verify_sql_antipatterns(job_flash)
     assert errs == []
+
+    # 5. Case asserts map notes/history but verify.sql only joins map_positions
+    v_sql.write_text("SELECT p.projectid FROM projects p JOIN project_map_positions pmp ON pmp.projectid = p.projectid;", encoding="utf-8")
+    job_notes = CaseJob(id="case-01", repo="repo", verify="verify.sql", path=str(case_dir / "case.md"), title="经纬度备注更新历史查看", body="检查备注更新历史")
+    errs = _lint_verify_sql_antipatterns(job_notes)
+    assert any("未关联 project_map_notes" in e for e in errs)
+
+    v_sql.write_text("SELECT p.projectid FROM projects p JOIN project_map_positions pmp ON pmp.projectid = p.projectid JOIN project_map_notes pmn ON pmn.projectid = p.projectid;", encoding="utf-8")
+    errs = _lint_verify_sql_antipatterns(job_notes)
+    assert errs == []
+
+
+    # 6. project_news and action prefix like 点击备注历史
+    v_sql.write_text("SELECT pn.id FROM project_news pn JOIN map_positions mp ON mp.news_id = pn.id;", encoding="utf-8")
+    job_news = CaseJob(id="case-02", repo="repo", verify="verify.sql", path=str(case_dir / "case.md"), title="资源备注测试", body="点击备注历史按钮查看详情")
+    errs = _lint_verify_sql_antipatterns(job_news)
+    assert any("未关联 project_news_map_notes" in e for e in errs)
+
+    v_sql.write_text("SELECT pn.id FROM project_news pn JOIN map_positions mp ON mp.news_id = pn.id JOIN project_news_map_notes pnm ON pnm.news_id = pn.id;", encoding="utf-8")
+    errs = _lint_verify_sql_antipatterns(job_news)
+    assert errs == []
+
+
+def test_normalize_case_verdict_coercion():
+    from dev_yard.qa_schedule import normalize_case_verdict
+
+    # defect_class='case' forces status='blocked' and blocked_class='case-defect'
+    assert normalize_case_verdict("failed", "", "assertion failed", "case") == ("blocked", "case-defect", "case")
+
+    # reason starting with case-defect: forces status='blocked', blocked_class='case-defect', defect_class='case'
+    assert normalize_case_verdict("failed", "", "case-defect: missing seed", "") == ("blocked", "case-defect", "case")
+
+    # preserves auth and undeployed in BLOCKED_CLASSES
+    assert normalize_case_verdict("blocked", "auth", "login 403", "") == ("blocked", "auth", "")
+    assert normalize_case_verdict("blocked", "undeployed", "502 bad gateway", "") == ("blocked", "undeployed", "")
+
+    # invalid blocked_class on blocked status gets cleared
+    assert normalize_case_verdict("blocked", "unknown_class", "unknown", "") == ("blocked", "", "")
+
+    # product failure
+    assert normalize_case_verdict("failed", "", "wrong text", "product") == ("failed", "", "product")
+
+    # a passing verdict is never rewritten by a stray case defect class
+    assert normalize_case_verdict("passed", "", "all good", "case") == ("passed", "", "case")
+
+
+def test_normalize_case_result_keeps_strict_contract_for_plain_failure():
+    from dev_yard.qa_exec import normalize_case_result
+    from dev_yard.qa_schedule import CaseJob
+
+    job = CaseJob(id="c2", title="title", repo="repo")
+    # A plain failure with no assertions and no failure dict is still rejected;
+    # only case-defect verdicts skip the strict contract.
+    assert normalize_case_result(
+        {"status": "failed", "reason": "assertion mismatch"},
+        job,
+        require_assertions=True,
+    ) is None
+
+
+def test_normalize_case_result_handles_early_case_defect_without_assertions():
+    from dev_yard.qa_exec import normalize_case_result
+    from dev_yard.qa_schedule import CaseJob
+
+    job = CaseJob(id="c1", title="title", repo="repo")
+    # Worker reported failed due to case-defect with no assertions and no failure dict
+    raw = {
+        "status": "failed",
+        "reason": "case-defect: seed row missing",
+    }
+    # With require_assertions=True, this should NOT return None
+    res = normalize_case_result(raw, job, require_assertions=True)
+    assert res is not None
+    assert res["status"] == "blocked"
+    assert res["blocked_class"] == "case-defect"
+    assert res["defect_class"] == "case"
+
+
+def test_qa_schedule_settle_preserves_auth_and_undeployed():
+    from dev_yard.qa_schedule import CaseJob, PoolSlot, run_schedule
+
+    job_auth = CaseJob(id="c_auth", title="title", repo="repo")
+    job_undep = CaseJob(id="c_undep", title="title", repo="repo")
+    cases = [job_auth, job_undep]
+    pools = [PoolSlot(id="p1", provider="prov", model="m", concurrency=2, priority=1)]
+
+    def mock_run(j, slot):
+        if j.id == "c_auth":
+            return {"status": "blocked", "blocked_class": "auth", "reason": "session expired"}
+        return {"status": "blocked", "blocked_class": "undeployed", "reason": "502 unreachable"}
+
+    run_schedule(cases, pools, mock_run)
+    assert job_auth.state == "blocked"
+    assert job_auth.blocked_class == "auth"
+    assert job_undep.state == "blocked"
+    assert job_undep.blocked_class == "undeployed"
