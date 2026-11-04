@@ -175,11 +175,14 @@ def probe_role_names(
         return []
     listed = ", ".join(_sql_quote(n) for n in names)
     sql = (
-        "SELECT r.name_en, COUNT(e.id) AS active_employees "
+        "SELECT r.name_en, COUNT(DISTINCT e.id) AS active_employees "
         "FROM right_roles r "
         "LEFT JOIN right_job_title_roles jtr "
-        "ON jtr.right_role_id = r.id AND jtr.roleable_type = 'Employee' "
-        "LEFT JOIN employees e ON e.id = jtr.roleable_id AND e.active = 1 "
+        "ON jtr.right_role_id = r.id "
+        "LEFT JOIN employees e ON ("
+        "  (jtr.roleable_type = 'Employee' AND e.id = jtr.roleable_id) "
+        "  OR (jtr.roleable_type = 'Right::JobTitle' AND e.position IS NOT NULL AND e.position = jtr.roleable_id)"
+        ") AND e.active = 1 "
         f"WHERE r.name_en IN ({listed}) "
         "GROUP BY r.name_en"
     )

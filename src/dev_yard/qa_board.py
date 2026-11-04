@@ -413,6 +413,17 @@ def qa_page_payload(root: Path, jira: str) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 — page must render even if state is odd
         snap = {"phase": "", "recorded_phase": None, "phase_drift": False}
         triage_payload = {"pending": [], "auto_recycled": [], "filed": {}}
+    missing_accounts: list[str] = []
+    has_discover_sql = paths.qa_accounts_discover_sql(root, jira).is_file()
+    try:
+        from dev_yard.qa_accounts import case_accounts_to_discover
+        from dev_yard.qa_config import load_qa_config
+
+        cfg = load_qa_config(root, None, jira)
+        missing_accounts = case_accounts_to_discover(root, jira, cfg)
+    except Exception:
+        pass
+
     return {
         "meta": meta_out,
         "cases": list_case_payloads(qa),
@@ -424,6 +435,8 @@ def qa_page_payload(root: Path, jira: str) -> dict[str, Any]:
         "recorded_phase": snap["recorded_phase"],
         "phase_drift": snap["phase_drift"],
         "triage": triage_payload,
+        "missing_accounts": missing_accounts,
+        "has_discover_sql": has_discover_sql,
     }
 
 

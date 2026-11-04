@@ -177,6 +177,33 @@ def _drop_unstarted_progress(run_dir: Path, *, resuming: bool, prior: bytes | No
     path.write_bytes(prior)
 
 
+def _try_autofill_accounts(
+    root: Path, jira: str, cfg: QaConfig, *, on_log: LogFn | None = None
+) -> QaConfig:
+    """Best-effort fill from qa/accounts-discover.sql if case accounts are missing."""
+    from dev_yard.qa_accounts import autofill, case_accounts_to_discover, discover
+
+    needed = case_accounts_to_discover(root, jira, cfg)
+    if not needed:
+        return cfg
+    sql_path = paths.qa_accounts_discover_sql(root, jira)
+    if not sql_path.is_file() or not cfg.env.db_url:
+        return cfg
+    try:
+        query = sql_path.read_text(encoding="utf-8")
+        candidates = discover(cfg.env.db_url, query)
+        res = autofill(root, jira, cfg.active_env, cfg, candidates)
+        if on_log is not None:
+            on_log(
+                "已按发现查询自动配置测试账号："
+                + "、".join(f"{k}({u})" for k, u in res.accounts.items())
+                + "\n"
+            )
+        return load_qa_config(root, cfg.active_env, jira)
+    except Exception:
+        return cfg
+
+
 def _lint_block_message(problems: list[str]) -> str:
     """Why --approve stopped. Account gaps are filled, not redesigned."""
     if problems and all(_is_account_gap(p) for p in problems):
@@ -669,6 +696,7 @@ def _req_test(
             on_log("缺账号不回灌设计，保持未覆盖：" + "；".join(account_gaps) + "\n")
         if need_design:
             _repair_discovery_query()
+            cfg = _try_autofill_accounts(root, jira, cfg, on_log=on_log)
         if problems and not verify_enabled:
             _run_contract_fix(problems)
         elif problems:
@@ -755,6 +783,7 @@ def _req_test(
     uncovered = uncovered_changes(qa, cases)
     if uncovered and on_log is not None:
         on_log(f"提示：改动点未被任何用例 covers：{', '.join(uncovered)}\n")
+    cfg = _try_autofill_accounts(root, jira, cfg, on_log=on_log)
     # M7: static contract checks, before a human is asked to approve.
     lint_problems = lint_cases(root, jira, cfg, cases) if cases else []
     if lint_problems and on_log is not None:
@@ -800,6 +829,12 @@ def _req_test(
                 "uncovered_changes": uncovered,
                 "lint": lint_problems,
             }
+        gaps = [p for p in lint_problems if _is_account_gap(p)]
+        if gaps:
+            new_cfg = _try_autofill_accounts(root, jira, cfg, on_log=on_log)
+            if new_cfg is not cfg:
+                cfg = new_cfg
+                lint_problems = lint_cases(root, jira, cfg, cases)
         lint_error = _approve_lint_error(lint_problems, allow_unverified=allow_unverified)
         if lint_error:
             raise TestRejected(lint_error)

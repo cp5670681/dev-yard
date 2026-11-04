@@ -174,6 +174,30 @@
             </v-expansion-panel>
           </v-expansion-panels>
 
+          <v-alert
+            v-if="missingAccounts.length"
+            type="warning"
+            variant="tonal"
+            density="compact"
+            class="mb-3"
+          >
+            <div class="d-flex align-center justify-space-between flex-wrap ga-2">
+              <span class="text-body-2">
+                用例账号未配置（{{ missingAccounts.join("、") }}），审核前需先填充。
+              </span>
+              <v-btn
+                v-if="hasDiscoverSql"
+                size="small"
+                color="warning"
+                variant="flat"
+                :loading="acting === 'autofill'"
+                @click="fillAccounts"
+              >
+                发现并填充账号
+              </v-btn>
+            </div>
+          </v-alert>
+
           <v-textarea
             v-model="feedbackText"
             label="审核意见（打回时必填；会交给 qa-design 重做用例）"
@@ -685,7 +709,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { mdiClipboardCheckOutline, mdiHelpCircleOutline, mdiRefresh, mdiMenuDown } from "@mdi/js";
-import { getQa, getRequirement, runAction, fileCaseBug, triageQaCases, assessQaReady } from "@/api/client";
+import { getQa, getRequirement, runAction, fileCaseBug, triageQaCases, assessQaReady, autoFillReqAccounts } from "@/api/client";
 import {
   jobTail,
   submitRerun,
@@ -875,10 +899,30 @@ async function executeCases() {
   }
 }
 
+const missingAccounts = computed(() => payload.value?.missing_accounts || []);
+const hasDiscoverSql = computed(() => Boolean(payload.value?.has_discover_sql));
+
+async function fillAccounts() {
+  acting.value = "autofill";
+  error.value = "";
+  try {
+    const res = await autoFillReqAccounts(jira.value);
+    snack.notify(`已配置 ${res.accounts.length} 个账号`, "success");
+    await load();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    acting.value = "";
+  }
+}
+
 async function approveCases() {
   acting.value = "approve";
   error.value = "";
   try {
+    if (missingAccounts.value.length && hasDiscoverSql.value) {
+      await autoFillReqAccounts(jira.value);
+    }
     // Approval only marks the cases reviewed; running is a separate 执行用例.
     await runAction(jira.value, "qa-review", { approve: true });
     await load();

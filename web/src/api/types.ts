@@ -350,6 +350,8 @@ export interface QaPage {
   next?: string;
   recorded_phase?: string | null;
   phase_drift?: boolean;
+  missing_accounts?: string[];
+  has_discover_sql?: boolean;
   triage?: {
     pending?: string[];
     auto_recycled?: string[];

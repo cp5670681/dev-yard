@@ -5045,6 +5045,38 @@ def test_approve_account_gap_points_at_fill(
     assert "--allow-unverified" not in str(raised.value)
 
 
+def test_approve_autofills_from_discovery_sql(
+    tmp_path: Path, git_src: Path, monkeypatch
+):
+    from dev_yard.qa_accounts import Candidate
+
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    yard = _testing_req(tmp_path, git_src, "QA-AUTO")
+    _write_qa_yaml(
+        yard,
+        "    auth:\n      default: default\n      accounts:\n        default:\n          username: admin\n          password: pwd\n"
+        "    db:\n      url: 'sqlite:///:memory:'\n",
+    )
+    _write_case(
+        yard,
+        "QA-AUTO",
+        "case-01.md",
+        "---\nid: case-01\ntitle: t\nrepo: backend\naccount: has_perm\n---\n\nbody\n",
+    )
+    sql_path = yard / "reqs" / "QA-AUTO" / "qa" / "accounts-discover.sql"
+    sql_path.write_text("SELECT 1;\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "dev_yard.qa_accounts.discover",
+        lambda *args, **kwargs: [Candidate("tester01", "has_perm")],
+    )
+    res = req_test(yard, "QA-AUTO", print_mode=True, approve=True, verify=False)
+    assert res.get("review", {}).get("status") == "passed"
+    req_acc = yard / ".yard-qa" / "requirements" / "QA-AUTO" / "accounts.yaml"
+    assert req_acc.is_file()
+    assert "tester01" in req_acc.read_text(encoding="utf-8")
+
+
 def test_lint_block_message_keeps_redesign_for_other_problems():
     from dev_yard.qa import _lint_block_message
 
