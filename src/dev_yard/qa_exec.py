@@ -835,6 +835,9 @@ def diagnose_pi_exit(code: int, output: str) -> tuple[str, str]:
     return reason, tail
 
 
+_CJK_CHAR = re.compile(r"[\u4e00-\u9fff]")
+
+
 def _is_prose_expected(value: Any) -> bool:
     """Case prose ("col = 0", a full sentence), not a value the cell can equal."""
     if value is None:
@@ -842,6 +845,11 @@ def _is_prose_expected(value: Any) -> bool:
     text = " ".join(str(value).split())
     if not text or "=" in text:
         return bool(text)
+    if _CJK_CHAR.search(text):
+        if any(p in text for p in ("，", "。", "、", "：", "；", "！", "？", "（", "）", " ")):
+            return True
+        if len(_CJK_CHAR.findall(text)) >= 4:
+            return True
     return len(text.split(" ")) > 2
 
 

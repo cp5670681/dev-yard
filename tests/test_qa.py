@@ -3875,6 +3875,31 @@ def test_run_ingest_does_not_auto_spawn_tickets(
     assert "## B1" not in tickets
 
 
+def test_recheck_chinese_prose_without_spaces_unverified(tmp_path: Path, monkeypatch):
+    from dev_yard.qa_exec import recheck_db_assertions
+
+    _write_qa_yaml(tmp_path, "    db:\n      url: postgres://u:p@h/db\n")
+    cfg = load_qa_config(tmp_path)
+    job = CaseJob(id="case-01", title="t", repo="front")
+    result = {
+        "status": "passed",
+        "assertions": [
+            {
+                "type": "db",
+                "expected": "角色定义表中包含 name_en = \x27project_map_view\x27 且 name = \x27项目地图查看权限\x27 的角色记录",
+                "actual": "数据库已包含该角色定义，verify.sql 返回成功",
+                "status": "passed",
+                "sql": "SELECT 1;",
+            }
+        ],
+    }
+    monkeypatch.setattr("dev_yard.qa_exec.run_sql_value", lambda cfg, sql, on_log=None, **k: "1")
+    problems = recheck_db_assertions(cfg, job, result)
+    assert len(problems) == 1
+    assert problems[0]["kind"] == "unverified"
+    assert problems[0]["actual"] == "1"
+
+
 def test_recheck_leaves_bilateral_prose_unverified(tmp_path: Path, monkeypatch):
     from dev_yard.qa_exec import recheck_db_assertions
 
