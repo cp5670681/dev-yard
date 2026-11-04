@@ -657,7 +657,7 @@ def _duties(kind: str, jira: str) -> str:
             "catalog name. Page URLs use that case's repo exec-site origin "
             "(context.md origins), not the env default host for another site. "
             "One case, one origin; cross-app flows use depends_on. Never invent columns or "
-            "treat app constants as table fields. Do not invent primary keys in "
+            "treat app constants as table fields. In projects / additional_news tables, names are commonly stored in l_project_name (while project_name column is often NULL); always use COALESCE(l_project_name, project_name) in verify.sql filters. Do not invent primary keys in "
             "verify.sql without a setup that inserts those rows. "
             "Never confuse a database surrogate primary key (auto-increment `id`) "
             "with a business cycle code or formatted identifier (such as `cutoff_id` "
