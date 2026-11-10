@@ -26,7 +26,7 @@
               label="需求链接或标识"
               placeholder="https://jira.company.com/browse/PG-13068 或 https://github.com/org/repo/issues/42 或 PG-13068"
               autocomplete="off"
-              :rules="[rules.required]"
+              :rules="[requiredRule]"
               hint="支持 Jira、GitHub Issue、飞书文档、Wiki 或任意 PRD 网页链接"
               persistent-hint
               class="mb-4"
@@ -38,7 +38,7 @@
               label="需求标识 (Key)"
               placeholder="例如 PG-13068、GH-42、pay-v2"
               autocomplete="off"
-              :rules="[rules.required, rules.key, rules.reserved]"
+              :rules="[requiredRule, keyRule, reservedRule]"
               hint="工作区目录名（冻结分支模板在「配置」页），可由 URL 自动提取或手动修改"
               persistent-hint
               class="mb-4"
@@ -53,7 +53,7 @@
               label="需求标识 (Key)"
               placeholder="例如 auth-refactor、export-order"
               autocomplete="off"
-              :rules="[rules.required, rules.key, rules.reserved]"
+              :rules="[requiredRule, keyRule, reservedRule]"
               hint="工作区目录名与 Git 分支名"
               persistent-hint
               class="mb-4"
@@ -65,7 +65,7 @@
               placeholder="在此粘贴需求背景、详细规则、验收标准等..."
               rows="8"
               auto-grow
-              :rules="[rules.required]"
+              :rules="[requiredRule]"
               hint="内容将直接写入 REQUIREMENT.md，0 秒极速创建"
               persistent-hint
               class="mb-4"
@@ -79,7 +79,7 @@
               label="需求标识 (Key)"
               placeholder="例如 prd-order-v2"
               autocomplete="off"
-              :rules="[rules.required, rules.key, rules.reserved]"
+              :rules="[requiredRule, keyRule, reservedRule]"
               hint="工作区目录名与 Git 分支名"
               persistent-hint
               class="mb-4"
@@ -90,7 +90,7 @@
               label="选择本地 Markdown 或文本文件"
               accept=".md,.markdown,.txt"
               show-size
-              :rules="[rules.fileRequired]"
+              :rules="[fileRequiredRule]"
               hint="支持 .md / .txt 文件，导入后作为 REQUIREMENT.md"
               persistent-hint
               class="mb-4"
@@ -105,7 +105,7 @@
               label="需求标识 (Key)"
               placeholder="例如 FEAT-101"
               autocomplete="off"
-              :rules="[rules.required, rules.key, rules.reserved]"
+              :rules="[requiredRule, keyRule, reservedRule]"
               hint="仅创建空白骨架模板，后续在界面上手动编写"
               persistent-hint
               class="mb-4"
@@ -150,17 +150,15 @@ const busy = ref(false);
 const error = ref("");
 const userCustomizedKey = ref(false);
 
-const rules = {
-  required: (v: string) => !!v?.trim() || "此项为必填",
-  fileRequired: (v: unknown) => {
-    if (Array.isArray(v)) return v.length > 0 || "请选择要导入的文件";
-    return !!v || "请选择要导入的文件";
-  },
-  key: (v: string) =>
-    /^[a-zA-Z0-9_.-]+$/.test(v?.trim()) || "仅支持英文、数字、中划线、下划线及点",
-  reserved: (v: string) =>
-    v?.trim().toLowerCase() !== "docs" || "docs 为系统保留关键字（用于全局 ADR/术语表）",
+const requiredRule = (v: string) => !!v?.trim() || "此项为必填";
+const fileRequiredRule = (v: unknown) => {
+  if (Array.isArray(v)) return v.length > 0 || "请选择要导入的文件";
+  return !!v || "请选择要导入的文件";
 };
+const keyRule = (v: string) =>
+  /^[a-zA-Z0-9_.-]+$/.test(v?.trim()) || "仅支持英文、数字、中划线、下划线及点";
+const reservedRule = (v: string) =>
+  v?.trim().toLowerCase() !== "docs" || "docs 为系统保留关键字（用于全局 ADR/术语表）";
 
 function extractKeyFromTarget(target: string): string {
   const s = target.trim();

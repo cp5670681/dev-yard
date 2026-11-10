@@ -193,9 +193,9 @@
                   <code>data.db</code> 点名；不写则用默认。
                 </p>
                 <v-select
-                  v-if="(currentEnv.db.catalogs || []).length"
+                  v-if="catalogs.length"
                   v-model="currentEnv.db.default"
-                  :items="(currentEnv.db.catalogs || []).map((c) => c.name).filter(Boolean)"
+                  :items="catalogs.map((c) => c.name).filter(Boolean)"
                   label="默认 catalog"
                   variant="outlined"
                   density="comfortable"
@@ -203,7 +203,7 @@
                   hide-details
                 />
                 <div
-                  v-for="(cat, i) in currentEnv.db.catalogs || []"
+                  v-for="(cat, i) in catalogs"
                   :key="i"
                   class="d-flex flex-column ga-2 mb-4 pa-3"
                   style="border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity)); border-radius: 8px"
@@ -231,7 +231,7 @@
                     label="url"
                     variant="outlined"
                     density="comfortable"
-                    placeholder="postgres://user:pass@host:5432/db"
+                    placeholder="postgres:&#47;&#47;user:pass@host:5432/db"
                     :prepend-inner-icon="mdiDatabaseOutline"
                     persistent-hint
                     hint="写权限 DSN；密码含特殊字符需 URL 编码。"
@@ -344,9 +344,9 @@
                     <code>exec</code> 点名；不写则用默认 site。origin 空则回落到环境 base_url。
                   </p>
                   <v-select
-                    v-if="(currentEnv.exec.sites || []).length"
+                    v-if="execSites.length"
                     v-model="currentEnv.exec.default"
-                    :items="(currentEnv.exec.sites || []).map((s) => s.name).filter(Boolean)"
+                    :items="execSites.map((s) => s.name).filter(Boolean)"
                     label="默认 site"
                     variant="outlined"
                     density="comfortable"
@@ -354,7 +354,7 @@
                     hide-details
                   />
                   <div
-                    v-for="(site, i) in currentEnv.exec.sites || []"
+                    v-for="(site, i) in execSites"
                     :key="i"
                     class="d-flex flex-column ga-2 mb-4 pa-3"
                     style="border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity)); border-radius: 8px"
@@ -395,7 +395,7 @@
                       label="origin / base_url（空=环境缺省）"
                       variant="outlined"
                       density="comfortable"
-                      placeholder="http://research.dev1.rccchina.com"
+                      placeholder="http:&#47;&#47;research.dev1.rccchina.com"
                     />
                     <v-text-field
                       v-model="site.rails"
@@ -421,12 +421,12 @@
                     />
                   </div>
                 </div>
-                <template v-else-if="currentEnv.exec.use === 'raw'">
+                <template v-if="currentEnv.exec.use === 'raw'">
                   <v-checkbox v-model="currentEnv.exec.shell" label="shell: true（否则 run/ping 按 argv，一行一个）" hide-details class="mb-2" />
                   <v-textarea v-model="currentEnv.exec.run_text" label="run" variant="outlined" density="comfortable" rows="3" class="mb-2" hint="宿主把脚本喂进 stdin，不要写 < {script}" persistent-hint />
                   <v-textarea v-model="currentEnv.exec.ping_text" label="ping" variant="outlined" density="comfortable" rows="2" class="mb-2" />
                 </template>
-                <template v-else-if="currentEnv.exec.use === 'delegate'">
+                <template v-if="currentEnv.exec.use === 'delegate'">
                   <v-text-field v-model="currentEnv.exec.skill" label="skill（与 command 二选一）" variant="outlined" density="comfortable" class="mb-2" />
                   <v-textarea v-model="currentEnv.exec.run_text" label="command argv（一行一个；配了 skill 则忽略）" variant="outlined" density="comfortable" rows="2" class="mb-2" />
                   <v-textarea v-model="currentEnv.exec.ping_text" label="ping argv" variant="outlined" density="comfortable" rows="2" class="mb-2" />
@@ -886,10 +886,12 @@ const catalog = computed(() => state.value?.catalog ?? { providers: [], error: n
 const catalogError = computed(() => catalog.value.error || "");
 const providerItems = computed(() => catalog.value.providers.map((p) => p.id));
 const envNames = computed(() => (form.value ? Object.keys(form.value.envs) : []));
-const currentEnv = computed(() => {
-  if (!form.value) return null;
-  return form.value.envs[editing.value] ?? null;
+const currentEnv = computed<QaEnvCfg>(() => {
+  if (!form.value) return blankEnv();
+  return form.value.envs[editing.value] ?? blankEnv();
 });
+const catalogs = computed(() => currentEnv.value.db.catalogs || []);
+const execSites = computed(() => currentEnv.value.exec.sites || []);
 const currentDraft = computed<EnvDraft>(
   () => drafts.value[editing.value] ?? { accounts: [], notes: "" },
 );

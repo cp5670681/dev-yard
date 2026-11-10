@@ -57,7 +57,7 @@
             label="需求标识 (Key)"
             placeholder="例如 PG-13068"
             autocomplete="off"
-            :rules="[rules.required, rules.key, rules.reserved]"
+            :rules="[requiredRule, keyRule, reservedRule]"
             hint="工作区目录名；可从链接自动提取"
             persistent-hint
             class="mb-4"
@@ -240,13 +240,11 @@ function syncAutoRefs() {
   }
 }
 
-const rules = {
-  required: (v: string) => !!v?.trim() || "此项为必填",
-  key: (v: string) =>
-    /^[a-zA-Z0-9_.-]+$/.test(v?.trim()) || "仅支持英文、数字、中划线、下划线及点",
-  reserved: (v: string) =>
-    v?.trim().toLowerCase() !== "docs" || "docs 为系统保留关键字",
-};
+const requiredRule = (v: string) => !!v?.trim() || "此项为必填";
+const keyRule = (v: string) =>
+  /^[a-zA-Z0-9_.-]+$/.test(v?.trim()) || "仅支持英文、数字、中划线、下划线及点";
+const reservedRule = (v: string) =>
+  v?.trim().toLowerCase() !== "docs" || "docs 为系统保留关键字";
 
 onMounted(async () => {
   try {
