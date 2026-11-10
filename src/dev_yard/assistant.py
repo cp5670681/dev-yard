@@ -786,17 +786,16 @@ def _delta_text(event: dict[str, Any]) -> str:
 
 
 class AntigravityRpc:
-    """Lightweight RPC adapter for running assistant turns via Antigravity (agy)."""
+    """Lightweight streaming RPC adapter for running assistant turns via Antigravity (agy)."""
 
     def __init__(self, root: Path, session: AssistantSession, model: str | None = None) -> None:
-        import queue
-
         self.root = root
         self.session = session
         self.model = model or "gemini-3.8-flash-high"
         self._conversation_id: str | None = None
         self._events: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self._aborted = False
+        self._proc: subprocess.Popen | None = None
 
     def prompt(self, message: str, streaming_behavior: str = "followUp") -> None:
         self._aborted = False
@@ -827,51 +826,71 @@ class AntigravityRpc:
             "--model",
             self.model,
             "--output-format",
-            "json",
+            "stream-json",
             "--dangerously-skip-permissions",
         ]
         if self._conversation_id:
             cmd.extend(["--conversation", self._conversation_id])
 
+        full_text_chunks: list[str] = []
         try:
-            proc = subprocess.run(
+            self._proc = subprocess.Popen(
                 cmd,
                 cwd=str(self.root),
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=180,
+                bufsize=1,
             )
-            raw_out = proc.stdout.strip()
-            data = {}
-            if raw_out:
+            assert self._proc.stdout is not None
+
+            for line in self._proc.stdout:
+                if self._aborted:
+                    break
+                raw = line.strip()
+                if not raw:
+                    continue
                 try:
-                    data = json.loads(raw_out)
+                    data = json.loads(raw)
                 except json.JSONDecodeError:
-                    pass
+                    continue
 
-            cid = data.get("conversation_id")
-            if cid and isinstance(cid, str):
-                self._conversation_id = cid
+                event_type = data.get("event")
+                if event_type == "init":
+                    cid = data.get("conversation_id")
+                    if cid and isinstance(cid, str):
+                        self._conversation_id = cid
+                elif event_type == "step_update":
+                    su = data.get("step_update") or {}
+                    delta = su.get("text_delta")
+                    if delta and isinstance(delta, str):
+                        full_text_chunks.append(delta)
+                        self._events.put({
+                            "type": "message_update",
+                            "assistantMessageEvent": {"type": "text_delta", "delta": delta},
+                        })
+                elif event_type == "result":
+                    res = data.get("result") or {}
+                    resp = res.get("response")
+                    if resp and isinstance(resp, str) and not full_text_chunks:
+                        full_text_chunks.append(resp)
+                        self._events.put({
+                            "type": "message_update",
+                            "assistantMessageEvent": {"type": "text_delta", "delta": resp},
+                        })
 
-            response_text = data.get("response") if isinstance(data, dict) and "response" in data else raw_out
-            if not response_text and proc.returncode != 0:
-                response_text = f"调用 agy 失败 (code {proc.returncode}): {proc.stderr}"
+            self._proc.wait()
+            full_text = "".join(full_text_chunks).strip()
+            if not full_text and self._proc.returncode != 0:
+                err = self._proc.stderr.read() if self._proc.stderr else ""
+                full_text = f"调用 agy 失败 (code {self._proc.returncode}): {err.strip()}"
 
-            if not response_text:
-                response_text = "（助手未返回有效文本）"
-
-            # Stream delta chunk
-            self._events.put({
-                "type": "message_update",
-                "assistantMessageEvent": {"type": "text_delta", "delta": response_text},
-            })
-            # Final message
             self._events.put({
                 "type": "message_end",
                 "message": {
                     "role": "assistant",
                     "stopReason": "end_turn",
-                    "content": [{"type": "text", "text": response_text}],
+                    "content": [{"type": "text", "text": full_text or "（助手未返回有效文本）"}],
                 },
             })
         except Exception as e:
@@ -885,11 +904,10 @@ class AntigravityRpc:
                 },
             })
         finally:
+            self._proc = None
             self._events.put({"type": "agent_settled"})
 
     def iter_until_settled(self, timeout: float = 600) -> Iterator[dict[str, Any]]:
-        import queue
-
         while True:
             try:
                 ev = self._events.get(timeout=timeout)
@@ -903,9 +921,14 @@ class AntigravityRpc:
 
     def abort(self) -> None:
         self._aborted = True
+        if self._proc is not None:
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
 
     def close(self) -> None:
-        self._aborted = True
+        self.abort()
 
 
 def default_rpc_factory(root: Path, session: AssistantSession) -> Any:

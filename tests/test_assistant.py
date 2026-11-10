@@ -758,22 +758,32 @@ def test_assistant_default_factory_antigravity(tmp_path: Path):
 
 
 def test_antigravity_rpc_prompt_execution(tmp_path: Path, monkeypatch):
+    import io
     import subprocess
     from dev_yard.assistant import AntigravityRpc, AssistantSession
 
     session = AssistantSession(id="sess1", route="/", jira="", created_at="")
     rpc = AntigravityRpc(tmp_path, session, model="gemini-3.8-flash-high")
 
-    def _mock_run(*args, **kwargs):
+    def _mock_popen(*args, **kwargs):
         class _Proc:
-            stdout = '{"conversation_id": "c1", "response": "hello test"}'
-            stderr = ""
+            stdout = io.StringIO(
+                '{"event": "init", "conversation_id": "c1"}\n'
+                '{"event": "step_update", "step_update": {"text_delta": "hello"}}\n'
+                '{"event": "result", "result": {"response": "hello"}}\n'
+            )
+            stderr = io.StringIO("")
             returncode = 0
+
+            def wait(self):
+                pass
+
         return _Proc()
 
-    monkeypatch.setattr(subprocess, "run", _mock_run)
+    monkeypatch.setattr(subprocess, "Popen", _mock_popen)
     rpc.prompt("hi")
     events = list(rpc.iter_until_settled(timeout=5))
     assert any(e.get("type") == "message_end" for e in events)
+    assert any(e.get("type") == "message_update" for e in events)
     assert rpc._conversation_id == "c1"
 
