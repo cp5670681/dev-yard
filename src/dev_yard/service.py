@@ -280,7 +280,12 @@ def req_open(
 
     d = paths.req_dir(root, req_key)
     if dry_run:
-        if source == "pi":
+        if source in ("pi", "agent", "antigravity"):
+            from dev_yard.config import resolve_agent_choice
+
+            choice = resolve_agent_choice(root, "open")
+            if choice.engine == "antigravity":
+                return d, f"agy -p (dry-run) --model={choice.model or 'default'}"
             return d, " ".join(
                 pi_argv(root=root, bundle="open", prompt="(dry-run)", print_mode=True)
             )
@@ -299,15 +304,26 @@ def req_open(
             )
     d.mkdir(parents=True, exist_ok=True)
     warning = ""
-    if source == "pi":
+    if source in ("pi", "agent", "antigravity"):
         import shutil
+        from dev_yard.config import resolve_agent_choice
 
+        choice = resolve_agent_choice(root, "open")
         if runner is None:
-            binary = agent_binary()
-            if not shutil.which(binary) and not Path(binary).exists():
-                raise FileNotFoundError(
-                    f"pi not found (`{binary}`). Install pi or set YARD_PI to its path."
-                )
+            if choice.engine == "antigravity":
+                from dev_yard.pi_catalog import resolve_agy_binary
+
+                binary = resolve_agy_binary()
+                if not binary:
+                    raise FileNotFoundError(
+                        "Antigravity CLI (`agy`) not found. Install agy or set YARD_ANTIGRAVITY_BIN."
+                    )
+            else:
+                binary = agent_binary()
+                if not shutil.which(binary) and not Path(binary).exists():
+                    raise FileNotFoundError(
+                        f"pi not found (`{binary}`). Install pi or set YARD_PI to its path."
+                    )
         assets = d / "assets"
         saved_assets = _stash_tree(assets)
         if assets.exists():
@@ -335,7 +351,7 @@ def req_open(
         skeleton = REQ_SKELETON.format(key=req_key, title=req_key, body="")
         if not req_md.exists() or req_md.read_text(encoding="utf-8") == skeleton:
             req_md.write_text(skeleton, encoding="utf-8")
-            warning = "pi did not write REQUIREMENT.md; wrote skeleton"
+            warning = f"{choice.engine} did not write REQUIREMENT.md; wrote skeleton"
     elif source == "text":
         content = (payload if payload is not None else actual_target) or ""
         if not content.strip():

@@ -426,7 +426,156 @@ class JobLogRunner(Runner):
         repo: str | None = None,
     ) -> RunResult:
         if self.job.cancel_requested.is_set():
-            raise JobCancelled(f"{self.bundle} cancelled before pi run")
+            raise JobCancelled(f"{self.bundle} cancelled before agent run")
+
+        from dev_yard.config import resolve_agent_choice
+
+        choice = resolve_agent_choice(self.root, self.bundle, repo=repo)
+        active_engine = choice.engine
+        active_model = self.model or choice.model
+
+        if active_engine == "antigravity":
+            from dev_yard.pi_catalog import resolve_agy_binary
+            from dev_yard.runners import (
+                MISSING_VERDICT_NOTE,
+                attachment_args,
+                clip_summary,
+            )
+
+            agy_bin = resolve_agy_binary()
+            if not agy_bin:
+                msg = (
+                    "Antigravity CLI (`agy`) not found. "
+                    "Please install Antigravity CLI or set YARD_ANTIGRAVITY_BIN."
+                )
+                self.job.append(msg)
+                return RunResult(ok=False, summary=msg, exit_code=127)
+
+            self.job.record_pi_run(cwd)
+            self.job.append(f"$ {agy_bin} -p …  model={active_model or 'default'}  cwd={cwd}\n")
+
+            spec = self.spec
+            if spec is None:
+                from dev_yard.stages import load_registry
+
+                spec = load_registry(self.root).get(self.bundle)
+
+            actual_prompt = prompt
+            if spec:
+                from dev_yard.stages import spec_skill_dirs
+
+                skill_texts = []
+                for sdir in spec_skill_dirs(self.root, spec):
+                    sf = sdir / "SKILL.md"
+                    if sf.is_file():
+                        try:
+                            skill_texts.append(
+                                f"# Skill: {sdir.name}\n\n{sf.read_text(encoding='utf-8')}"
+                            )
+                        except Exception:
+                            pass
+                if skill_texts:
+                    actual_prompt = "\n\n".join(skill_texts) + "\n\n---\n\n" + prompt
+
+            cmd = [
+                agy_bin,
+                "-p",
+                actual_prompt,
+                "--model",
+                active_model or "gemini-3.8-flash-high",
+                "--output-format",
+                "stream-json",
+                "--dangerously-skip-permissions",
+            ]
+            if extra_read_paths:
+                cmd.extend(attachment_args(extra_read_paths))
+
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(cwd),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+            self.job.track_proc(proc)
+            full_text_chunks: list[str] = []
+            findings: list[Any] = []
+            verdict: str | None = None
+            try:
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    if self.job.cancel_requested.is_set():
+                        proc.terminate()
+                        raise JobCancelled(f"{self.bundle} cancelled")
+                    raw = line.strip()
+                    if not raw:
+                        continue
+                    try:
+                        data = json.loads(raw)
+                    except json.JSONDecodeError:
+                        self.job.append(line if line.endswith("\n") else line + "\n")
+                        continue
+                    event_type = data.get("event")
+                    if event_type == "step_update":
+                        su = data.get("step_update") or {}
+                        stype = su.get("step_type")
+                        if stype == "tool":
+                            state = su.get("state")
+                            tname = su.get("tool_name")
+                            if state == "ACTIVE":
+                                tinfo = su.get("tool_info") or {}
+                                params = tinfo.get("parameters") or {}
+                                brief = f"[{tname}]"
+                                for k in (
+                                    "CommandLine",
+                                    "path",
+                                    "file_path",
+                                    "pattern",
+                                    "query",
+                                    "issue_key",
+                                    "issueKey",
+                                ):
+                                    if params.get(k):
+                                        brief += f" {str(params[k])[:80]}"
+                                        break
+                                self.job.append(brief + "\n")
+                        else:
+                            delta = su.get("text_delta")
+                            if delta and isinstance(delta, str):
+                                full_text_chunks.append(delta)
+                                self.job.append(delta)
+                    elif event_type == "result":
+                        res = data.get("result") or {}
+                        resp = res.get("response")
+                        if resp and isinstance(resp, str) and not full_text_chunks:
+                            full_text_chunks.append(resp)
+                            self.job.append(resp)
+                proc.wait()
+            finally:
+                self.job.untrack_proc(proc)
+
+            code = proc.returncode
+            summary = "".join(full_text_chunks).strip()
+            if not summary and code != 0:
+                err = proc.stderr.read() if proc.stderr else ""
+                summary = f"agy exited {code}: {err.strip()}"
+
+            verdict_missing = False
+            if self.bundle in STRUCTURED_REVIEW_STAGES:
+                if verdict is None:
+                    verdict_missing = True
+                    summary = (summary + f"\n\n{MISSING_VERDICT_NOTE}").strip()
+
+            return RunResult(
+                ok=(code == 0 and not verdict_missing),
+                summary=clip_summary(summary, self.bundle),
+                exit_code=code,
+                verdict=verdict,
+                findings=findings,
+                verdict_missing=verdict_missing,
+            )
+
         session_id: str | None = None
         if self.bundle in STRUCTURED_REVIEW_STAGES:
             session_id = f"yard{self.bundle.replace('-', '')}{uuid.uuid4().hex[:12]}"
@@ -547,7 +696,7 @@ def default_execute(root: Path, job: Job) -> None:
         return
     if job.action == "open":
         source = str(extra.get("source") or "pi")
-        runner = JobLogRunner(job, root, "open") if source == "pi" else None
+        runner = JobLogRunner(job, root, "open") if source in ("pi", "agent", "antigravity") else None
         dest, warning = service.req_open(
             root,
             job.jira,
@@ -555,7 +704,7 @@ def default_execute(root: Path, job: Job) -> None:
             target=extra.get("target"),
             payload=extra.get("payload"),
             force=bool(extra.get("force")),
-            on_progress=job.append if source != "pi" else None,
+            on_progress=job.append if source not in ("pi", "agent", "antigravity") else None,
             runner=runner,
         )
         job.append(str(dest))
@@ -564,7 +713,7 @@ def default_execute(root: Path, job: Job) -> None:
         return
     if job.action == "import":
         source = str(extra.get("source") or "pi")
-        runner = JobLogRunner(job, root, "open") if source == "pi" else None
+        runner = JobLogRunner(job, root, "open") if source in ("pi", "agent", "antigravity") else None
         data = service.req_import(
             root,
             job.jira,

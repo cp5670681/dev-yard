@@ -1224,3 +1224,84 @@ def test_run_test_job_cancel_marks_cancelled(tmp_path: Path, monkeypatch):
     assert job.done.wait(timeout=2)
     assert job.state == "cancelled"
     assert "cancelled" in job.log
+
+
+def test_job_log_runner_antigravity_stream(tmp_path: Path, monkeypatch):
+    import json
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    (yard / "repos.yaml").write_text(
+        """
+agent:
+  engine: antigravity
+  model: gemini-3.8-pro
+""",
+        encoding="utf-8",
+    )
+    job = Job(id="job123", jira="PG-13708", action="open")
+    captured = {}
+
+    class FakeProc:
+        def __init__(self, cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["cwd"] = kwargs.get("cwd")
+            self.returncode = 0
+            self.stdout = iter(
+                [
+                    json.dumps(
+                        {
+                            "event": "step_update",
+                            "step_update": {
+                                "state": "ACTIVE",
+                                "step_type": "tool",
+                                "tool_name": "jira_get_issue",
+                                "tool_info": {"parameters": {"issue_key": "PG-13708"}},
+                            },
+                        }
+                    )
+                    + "\n",
+                    json.dumps(
+                        {
+                            "event": "step_update",
+                            "step_update": {
+                                "state": "ACTIVE",
+                                "step_type": "agent_response",
+                                "text_delta": "Requirement details fetched.",
+                            },
+                        }
+                    )
+                    + "\n",
+                    json.dumps(
+                        {
+                            "event": "result",
+                            "result": {
+                                "status": "SUCCESS",
+                                "response": "Requirement details fetched.",
+                            },
+                        }
+                    )
+                    + "\n",
+                ]
+            )
+            self.stderr = None
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr("dev_yard.pi_catalog.resolve_agy_binary", lambda: "/custom/bin/agy")
+    monkeypatch.setattr("dev_yard.web.jobs.subprocess.Popen", FakeProc)
+
+    from dev_yard.web.jobs import JobLogRunner
+
+    res = JobLogRunner(job, yard, "open").start("Extract requirement", yard, [])
+    assert res.ok is True
+    assert res.summary == "Requirement details fetched."
+    assert "[jira_get_issue]" in job.log
+    assert "Requirement details fetched." in job.log
+    assert captured["cmd"][0] == "/custom/bin/agy"
+    assert "--model" in captured["cmd"]
+    assert "gemini-3.8-pro" in captured["cmd"]
+    assert "--output-format" in captured["cmd"]
+    assert "stream-json" in captured["cmd"]
+

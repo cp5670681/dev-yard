@@ -240,3 +240,35 @@ def test_req_open_url_auto_key_with_pi(tmp_path: Path):
     assert "https://jira.example.com/browse/PG-13090" in runner.captured_prompt
     assert (d / "REQUIREMENT.md").read_text() == "# PG-13090\n\nExtracted from URL.\n"
 
+
+def test_req_open_dry_run_antigravity(tmp_path: Path):
+    init_yard(tmp_path)
+    (tmp_path / "repos.yaml").write_text(
+        """
+agent:
+  engine: antigravity
+  model: gemini-3.8-pro
+""",
+        encoding="utf-8",
+    )
+    d, cmd = req_open(tmp_path, "PG-13090", dry_run=True)
+    assert "agy -p (dry-run)" in cmd
+    assert "--model=gemini-3.8-pro" in cmd
+
+
+def test_req_open_antigravity_missing_binary_raises(tmp_path: Path, monkeypatch):
+    import pytest
+
+    init_yard(tmp_path)
+    (tmp_path / "repos.yaml").write_text(
+        """
+agent:
+  engine: antigravity
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("dev_yard.pi_catalog.resolve_agy_binary", lambda: None)
+    with pytest.raises(FileNotFoundError, match="Antigravity CLI"):
+        req_open(tmp_path, "PG-13090")
+
+

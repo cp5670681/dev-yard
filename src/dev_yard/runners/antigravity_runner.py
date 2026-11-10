@@ -89,7 +89,9 @@ class AntigravityRunner(Runner):
             f.write(json.dumps(header, ensure_ascii=False) + "\n")
 
         if not has_sdk:
-            agy_bin = os.environ.get("YARD_ANTIGRAVITY_BIN") or shutil.which("agy")
+            from dev_yard.pi_catalog import resolve_agy_binary
+
+            agy_bin = resolve_agy_binary()
             if not agy_bin and not os.environ.get("YARD_TEST_MOCK_AGENT"):
                 msg = (
                     "Antigravity engine selected, but neither `google-antigravity` Python SDK "
@@ -115,6 +117,10 @@ class AntigravityRunner(Runner):
         session_file: Path,
         session_id: str,
     ) -> RunResult:
+        import sys
+        from dev_yard.pi_catalog import resolve_agy_binary
+        from dev_yard.runners import attachment_args
+
         review_verdict = ReviewVerdict()
         allowed_tools = set(self.tool_override or (self.spec.tools if self.spec else ()))
 
@@ -125,36 +131,121 @@ class AntigravityRunner(Runner):
             content=[{"type": "text", "text": prompt}],
         )
 
-        # If SDK is available, run through the SDK
-        try:
-            from google.antigravity import Agent, CapabilitiesConfig, LocalAgentConfig  # type: ignore
+        agy_bin = resolve_agy_binary()
+        if not os.environ.get("YARD_TEST_MOCK_AGENT") and agy_bin:
+            spec = self.spec
+            if spec is None:
+                from dev_yard.stages import load_registry
 
-            config = LocalAgentConfig(
-                model=self.model,
-                system_instructions=(self.spec.guidance if self.spec else ""),
-                capabilities=CapabilitiesConfig(
-                    allow_bash="bash" in allowed_tools,
-                    allow_file_write="write" in allowed_tools or "edit" in allowed_tools,
-                ),
+                spec = load_registry(self.root).get(self.bundle)
+
+            actual_prompt = prompt
+            if spec:
+                from dev_yard.stages import spec_skill_dirs
+
+                skill_texts = []
+                for sdir in spec_skill_dirs(self.root, spec):
+                    sf = sdir / "SKILL.md"
+                    if sf.is_file():
+                        try:
+                            skill_texts.append(
+                                f"# Skill: {sdir.name}\n\n{sf.read_text(encoding='utf-8')}"
+                            )
+                        except Exception:
+                            pass
+                if skill_texts:
+                    actual_prompt = "\n\n".join(skill_texts) + "\n\n---\n\n" + prompt
+
+            cmd = [
+                agy_bin,
+                "-p",
+                actual_prompt,
+                "--model",
+                self.model or "gemini-3.8-flash-high",
+                "--output-format",
+                "stream-json",
+                "--dangerously-skip-permissions",
+            ]
+            if extra_read_paths:
+                cmd.extend(attachment_args(extra_read_paths))
+
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(cwd),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
             )
-            # Synchronous wrapper around SDK async execution
-            import asyncio
+            if self.on_spawn:
+                self.on_spawn(proc)
 
-            async def _run():
-                async with Agent(config) as agent:
-                    return await agent.chat(prompt)
-
+            full_text_chunks: list[str] = []
             try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    raw = line.strip()
+                    if not raw:
+                        continue
+                    try:
+                        data = json.loads(raw)
+                    except json.JSONDecodeError:
+                        if self.print_mode:
+                            sys.stdout.write(line if line.endswith("\n") else line + "\n")
+                            sys.stdout.flush()
+                        continue
+                    event_type = data.get("event")
+                    if event_type == "step_update":
+                        su = data.get("step_update") or {}
+                        stype = su.get("step_type")
+                        if stype == "tool":
+                            state = su.get("state")
+                            tname = su.get("tool_name")
+                            if state == "ACTIVE" and self.print_mode:
+                                tinfo = su.get("tool_info") or {}
+                                params = tinfo.get("parameters") or {}
+                                brief = f"[{tname}]"
+                                for k in (
+                                    "CommandLine",
+                                    "path",
+                                    "file_path",
+                                    "pattern",
+                                    "query",
+                                    "issue_key",
+                                    "issueKey",
+                                ):
+                                    if params.get(k):
+                                        brief += f" {str(params[k])[:80]}"
+                                        break
+                                sys.stdout.write(brief + "\n")
+                                sys.stdout.flush()
+                        else:
+                            delta = su.get("text_delta")
+                            if delta and isinstance(delta, str):
+                                full_text_chunks.append(delta)
+                                if self.print_mode:
+                                    sys.stdout.write(delta)
+                                    sys.stdout.flush()
+                    elif event_type == "result":
+                        res = data.get("result") or {}
+                        resp = res.get("response")
+                        if resp and isinstance(resp, str) and not full_text_chunks:
+                            full_text_chunks.append(resp)
+                            if self.print_mode:
+                                sys.stdout.write(resp)
+                                sys.stdout.flush()
+                proc.wait()
+            finally:
+                if self.on_reap:
+                    self.on_reap(proc)
 
-            response = loop.run_until_complete(_run())
-            summary = str(response or "").strip()
-            ok = True
-        except Exception as e:
-            # Fallback for mock/test runs or subprocess
+            code = proc.returncode
+            summary = "".join(full_text_chunks).strip()
+            if not summary and code != 0:
+                err = proc.stderr.read() if proc.stderr else ""
+                summary = f"agy exited {code}: {err.strip()}"
+            ok = (code == 0)
+        else:
             summary = f"[Antigravity Engine] Stage `{self.bundle}` executed for model `{self.model}`."
             ok = True
 

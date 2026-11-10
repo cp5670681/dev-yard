@@ -50,6 +50,7 @@ def test_antigravity_runner_missing_runtime_returns_127(tmp_path: Path, monkeypa
     init_yard(yard)
     monkeypatch.delenv("YARD_ANTIGRAVITY_BIN", raising=False)
     monkeypatch.delenv("YARD_TEST_MOCK_AGENT", raising=False)
+    monkeypatch.setattr("dev_yard.pi_catalog.resolve_agy_binary", lambda: None)
     runner = AntigravityRunner(root=yard, bundle="spec", model="gemini-2.5-pro")
     res = runner.start("hi", yard, [])
     assert res.ok is False
