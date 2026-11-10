@@ -839,7 +839,30 @@ def get_runner(
     model: str | None = None,
     on_spawn: Callable[[subprocess.Popen], None] | None = None,
     on_reap: Callable[[subprocess.Popen], None] | None = None,
+    repo: str | None = None,
 ) -> Runner:
+    from dev_yard.config import resolve_agent_choice
+
+    choice = resolve_agent_choice(root, bundle, repo=repo)
+    active_engine = choice.engine
+    active_model = model or choice.model
+    active_provider = provider or choice.provider
+
+    if active_engine == "antigravity":
+        from dev_yard.runners.antigravity_runner import AntigravityRunner
+
+        if dry_run:
+            return DryRunRunner(argv=["antigravity", f"--model={active_model or 'default'}"])
+        return AntigravityRunner(
+            root=root,
+            bundle=bundle,
+            print_mode=print_mode,
+            spec=spec,
+            model=active_model,
+            on_spawn=on_spawn,
+            on_reap=on_reap,
+        )
+
     if dry_run:
         return DryRunRunner(
             argv=pi_argv(
@@ -848,8 +871,8 @@ def get_runner(
                 prompt="(dry-run)",
                 print_mode=print_mode,
                 spec=spec,
-                provider=provider,
-                model=model,
+                provider=active_provider,
+                model=active_model,
             )
         )
     return PiRunner(
@@ -857,8 +880,8 @@ def get_runner(
         bundle,
         print_mode=print_mode,
         spec=spec,
-        provider=provider,
-        model=model,
+        provider=active_provider,
+        model=active_model,
         on_spawn=on_spawn,
         on_reap=on_reap,
     )

@@ -425,3 +425,55 @@ def test_git_settings_rejects_non_bool_ai_resolve(tmp_path: Path):
     )
     with pytest.raises(ValueError, match="ai_resolve_conflicts"):
         load_git_settings(yard)
+
+
+def test_resolve_agent_choice_antigravity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from dev_yard.config import AgentChoice, resolve_agent_choice
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    (yard / "repos.yaml").write_text(
+        """
+agent:
+  engine: pi
+  provider: rcc
+  model: MiniMax-M3
+  stages:
+    grill:
+      engine: antigravity
+      model: gemini-2.5-pro
+    implement:
+      engine: pi
+      provider: anthropic
+      model: claude-sonnet
+repos:
+  backend:
+    url: git@x:y.git
+    engine: antigravity
+    model: gemini-2.5-flash
+""",
+        encoding="utf-8",
+    )
+    # grill uses stage override -> antigravity
+    grill_choice = resolve_agent_choice(yard, "grill")
+    assert grill_choice == AgentChoice(engine="antigravity", provider=None, model="gemini-2.5-pro")
+
+    # implement without repo -> stage override -> pi
+    impl_choice = resolve_agent_choice(yard, "implement")
+    assert impl_choice == AgentChoice(engine="pi", provider="anthropic", model="claude-sonnet")
+
+    # implement with backend repo -> repo override -> antigravity
+    repo_choice = resolve_agent_choice(yard, "implement", repo="backend")
+    assert repo_choice == AgentChoice(engine="antigravity", provider=None, model="gemini-2.5-flash")
+
+    # other stages without stage override fall back to top-level agent
+    spec_choice = resolve_agent_choice(yard, "spec")
+    assert spec_choice == AgentChoice(engine="pi", provider="rcc", model="MiniMax-M3")
+
+    # env override force engine
+    monkeypatch.setenv("YARD_AGENT_ENGINE", "antigravity")
+    monkeypatch.setenv("YARD_AGENT_MODEL", "gemini-2.5-ultra")
+    forced_choice = resolve_agent_choice(yard, "spec")
+    assert forced_choice.engine == "antigravity"
+    assert forced_choice.model in ("gemini-2.5-ultra", "MiniMax-M3")
+

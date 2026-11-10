@@ -79,7 +79,8 @@ def find_session(
     start_ts = _parse_iso(started_at)
     until_ts = _parse_iso(until)
     best: tuple[float, Path] | None = None
-    for path in root.glob("*/*.jsonl"):
+    candidates = list(root.glob("*/*.jsonl")) + list(root.glob("*.jsonl"))
+    for path in candidates:
         rec = _header(path)
         if rec is None:
             continue
@@ -216,6 +217,15 @@ def load_conversation(
         until=until,
         sessions_dir=sessions_dir,
     )
+    if path is None and sessions_dir is None:
+        ag_dir = root / ".yard-sessions"
+        if ag_dir.is_dir():
+            path = find_session(
+                cwd,
+                started_at=started_at,
+                until=until,
+                sessions_dir=ag_dir,
+            )
     if path is None:
         return {
             "found": False,

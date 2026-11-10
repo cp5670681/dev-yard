@@ -79,6 +79,7 @@ class Repo:
     test_branch: str | None = None
     databases: tuple[str, ...] = ()
     exec: str = ""
+    engine: str | None = None
 
     def source_path(self, root: Path) -> Path:
         if self.path:
@@ -116,6 +117,7 @@ def _blank(value: Any) -> str | None:
 class StageModel:
     provider: str | None = None
     model: str | None = None
+    engine: str | None = None
 
 
 @dataclass
@@ -123,9 +125,12 @@ class PiSettings:
     provider: str | None = None
     model: str | None = None
     stages: dict[str, StageModel] = field(default_factory=dict)
+    engine: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
+        if self.engine:
+            payload["engine"] = self.engine
         if self.provider:
             payload["provider"] = self.provider
         if self.model:
@@ -133,6 +138,8 @@ class PiSettings:
         stages: dict[str, dict[str, str]] = {}
         for name, stage in self.stages.items():
             entry: dict[str, str] = {}
+            if stage.engine:
+                entry["engine"] = stage.engine
             if stage.provider:
                 entry["provider"] = stage.provider
             if stage.model:
@@ -145,37 +152,45 @@ class PiSettings:
 
 
 def load_pi_settings(root: Path) -> PiSettings:
-    raw = load_workspace(root).get("pi") or {}
+    ws = load_workspace(root)
+    raw = ws.get("agent") or ws.get("pi") or {}
     if not isinstance(raw, dict):
-        raise ValueError("repos.yaml pi must be a mapping")
+        raise ValueError("repos.yaml agent/pi must be a mapping")
     stages: dict[str, StageModel] = {}
     for name, entry in (raw.get("stages") or {}).items():
         if name not in PI_STAGES:
             continue
         if not isinstance(entry, dict):
-            raise ValueError(f"repos.yaml pi.stages.{name} must be a mapping")
+            raise ValueError(f"repos.yaml stages.{name} must be a mapping")
         stages[name] = StageModel(
             provider=_blank(entry.get("provider")),
             model=_blank(entry.get("model")),
+            engine=_blank(entry.get("engine")),
         )
     return PiSettings(
         provider=_blank(raw.get("provider")),
         model=_blank(raw.get("model")),
         stages=stages,
+        engine=_blank(raw.get("engine")),
     )
 
 
 def save_pi_settings(root: Path, settings: PiSettings) -> None:
     unknown = [n for n in settings.stages if n not in PI_STAGES]
     if unknown:
-        raise ValueError(f"unknown pi stages: {', '.join(unknown)}")
+        raise ValueError(f"unknown agent/pi stages: {', '.join(unknown)}")
     data = load_workspace(root)
     data.setdefault("repos", data.get("repos") or {})
     payload = settings.to_payload()
+    # If workspace originally had `agent:`, write to `agent`, else `pi` (or `agent` if engine set)
+    key = "agent" if "agent" in data or (settings.engine and settings.engine != "pi") else "pi"
     if payload:
-        data["pi"] = payload
+        data[key] = payload
+        if key == "agent":
+            data.pop("pi", None)
     else:
         data.pop("pi", None)
+        data.pop("agent", None)
     dump_workspace(root, data)
 
 
@@ -195,6 +210,64 @@ def require_pair(provider: Any, model: Any) -> tuple[str, str] | None:
     return None
 
 
+@dataclass(frozen=True)
+class AgentChoice:
+    engine: str = "pi"
+    provider: str | None = None
+    model: str | None = None
+
+
+def resolve_agent_choice(
+    root: Path,
+    bundle: str,
+    repo: str | None = None,
+) -> AgentChoice:
+    """Resolve engine and model/provider pair with hierarchical fallback.
+
+    Layers: repo (implement only) -> stage -> workspace top-level -> environment.
+    If engine == 'antigravity', only model is required.
+    If engine == 'pi' (default), provider and model must form a pair.
+    """
+    import os
+
+    env_engine = _blank(os.environ.get("YARD_AGENT_ENGINE"))
+    settings = load_pi_settings(root)
+
+    # 1. Candidate layers
+    candidates: list[tuple[str | None, str | None, str | None]] = []
+    if bundle == "implement" and repo:
+        found = load_repos(root).get(repo)
+        if found:
+            candidates.append((found.engine, found.provider, found.model))
+
+    stage = settings.stages.get(bundle)
+    if stage:
+        candidates.append((stage.engine, stage.provider, stage.model))
+
+    candidates.append((settings.engine, settings.provider, settings.model))
+    candidates.append(
+        (
+            env_engine,
+            _blank(os.environ.get("YARD_PI_PROVIDER")),
+            _blank(os.environ.get("YARD_AGENT_MODEL") or os.environ.get("YARD_PI_MODEL")),
+        )
+    )
+
+    # Global forced engine from env overrides candidate engines
+    for eng, prov, mod in candidates:
+        active_engine = env_engine or eng or (settings.engine or "pi")
+        if active_engine == "antigravity":
+            if mod:
+                return AgentChoice(engine="antigravity", provider=None, model=mod)
+        else:
+            pair = _pair(prov, mod)
+            if pair:
+                return AgentChoice(engine="pi", provider=pair[0], model=pair[1])
+
+    final_engine = env_engine or settings.engine or "pi"
+    return AgentChoice(engine=final_engine, provider=None, model=None)
+
+
 def resolve_pi_choice(
     root: Path,
     bundle: str,
@@ -206,24 +279,8 @@ def resolve_pi_choice(
     Other stages (including review, contract): stage pair → workspace pair → env pair.
     Incomplete pairs (only provider or only model) are skipped.
     """
-    import os
-
-    settings = load_pi_settings(root)
-    layers: list[tuple[str, str] | None] = []
-    if bundle == "implement" and repo:
-        found = load_repos(root).get(repo)
-        if found:
-            layers.append(_pair(found.provider, found.model))
-    stage = settings.stages.get(bundle) or StageModel()
-    layers.append(_pair(stage.provider, stage.model))
-    layers.append(_pair(settings.provider, settings.model))
-    layers.append(
-        _pair(os.environ.get("YARD_PI_PROVIDER"), os.environ.get("YARD_PI_MODEL"))
-    )
-    for item in layers:
-        if item:
-            return item
-    return None, None
+    choice = resolve_agent_choice(root, bundle, repo=repo)
+    return choice.provider, choice.model
 
 
 def _exec_name(raw: Any, alias: str) -> str:
@@ -267,6 +324,7 @@ def load_repos(root: Path) -> dict[str, Repo]:
             test_branch=_blank(raw.get("test_branch")),
             databases=_database_names(raw.get("databases"), alias),
             exec=_exec_name(raw.get("exec"), alias),
+            engine=_blank(raw.get("engine")),
         )
     return out
 
