@@ -255,12 +255,16 @@ const stageEngineOptions = [
   { title: "antigravity", value: "antigravity" },
 ];
 
-const antigravityModels = [
+const antigravityModels = ref<string[]>([
+  "gemini-3.8-flash-high",
+  "gemini-3.8-flash-medium",
+  "gemini-3.8-flash-low",
+  "claude-sonnet-4-6",
+  "claude-opus-4-6-thinking",
+  "gpt-oss-120b-medium",
   "gemini-2.5-pro",
   "gemini-2.5-flash",
-  "gemini-1.5-pro",
-  "gemini-1.5-flash",
-];
+]);
 
 const SAMPLE_JIRA = "PROJ-101";
 const SAMPLE_TICKET = "T1";
@@ -330,6 +334,9 @@ onMounted(async () => {
     provider.value = cfg.provider;
     model.value = cfg.model;
     stageIds.value = cfg.stage_ids;
+    if (cfg.antigravity_models?.length) {
+      antigravityModels.value = cfg.antigravity_models;
+    }
     catalog.value = cfg.catalog?.providers || [];
     catalogError.value = cfg.catalog?.error || "";
     for (const id of cfg.stage_ids) {

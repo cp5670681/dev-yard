@@ -426,6 +426,7 @@ export interface PiSettings {
   stages: Record<string, StageModelCfg>;
   stage_ids: string[];
   catalog: PiCatalog;
+  antigravity_models?: string[];
 }
 
 export interface GitSettings {

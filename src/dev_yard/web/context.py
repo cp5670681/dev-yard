@@ -34,7 +34,7 @@ from dev_yard.config import (
     save_pi_settings,
 )
 from dev_yard.gitops import GitError
-from dev_yard.pi_catalog import list_pi_catalog
+from dev_yard.pi_catalog import list_antigravity_catalog, list_pi_catalog
 from dev_yard.pi_session import cwd_is_under_root
 from dev_yard.qa_config import (
     QaConfigUnreadable,
@@ -342,6 +342,7 @@ class AppContext:
             "stages": stages,
             "stage_ids": list(PI_STAGES),
             "catalog": list_pi_catalog(),
+            "antigravity_models": list_antigravity_catalog(),
         }
 
     def save_pi(self, payload: Any) -> dict[str, Any]:
