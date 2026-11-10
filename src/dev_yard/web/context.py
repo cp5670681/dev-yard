@@ -328,6 +328,7 @@ class AppContext:
         s = load_pi_settings(self.root)
         stages = {
             name: {
+                "engine": (s.stages.get(name).engine if name in s.stages else None) or "",
                 "provider": (s.stages.get(name).provider if name in s.stages else None)
                 or "",
                 "model": (s.stages.get(name).model if name in s.stages else None) or "",
@@ -335,6 +336,7 @@ class AppContext:
             for name in PI_STAGES
         }
         return {
+            "engine": s.engine or "pi",
             "provider": s.provider or "",
             "model": s.model or "",
             "stages": stages,
@@ -349,10 +351,12 @@ class AppContext:
         save_pi_settings(
             self.root,
             PiSettings(
+                engine=payload.engine.strip() or None,
                 provider=payload.provider.strip() or None,
                 model=payload.model.strip() or None,
                 stages={
                     name: StageModel(
+                        engine=entry.engine.strip() or None,
                         provider=entry.provider.strip() or None,
                         model=entry.model.strip() or None,
                     )

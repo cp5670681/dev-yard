@@ -154,11 +154,13 @@ class TestReportIn(BaseModel):
 class StageModelIn(BaseModel):
     provider: str = ""
     model: str = ""
+    engine: str = ""
 
 
 class PiSettingsIn(BaseModel):
     provider: str = ""
     model: str = ""
+    engine: str = ""
     stages: dict[str, StageModelIn] = Field(default_factory=dict)
 
 

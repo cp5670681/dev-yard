@@ -95,35 +95,58 @@
     <v-card v-else variant="outlined">
       <v-card-text>
         <p class="text-body-2 text-medium-emphasis mb-4">
-          选项来自本机 <code>pi --list-models</code>。provider 和 model 成对回退。实现：仓库对 →
-          阶段 implement → 全局 → 环境变量 → pi 默认。契约审查只用 contract 阶段/全局，审查只用
-          review 阶段/全局，不用仓库模型。写入 <code>pi:</code>。
+          支持选择底层 Agent 引擎（<code>pi</code> 或 <code>antigravity</code>）。
+          选 <code>pi</code> 时 provider 和 model 成对回退；选 <code>antigravity</code> 时直接指定模型。
+          覆盖优先级：仓库对 → 阶段 implement → 全局默认 → 环境变量。写入 <code>repos.yaml</code>。
         </p>
         <div class="text-subtitle-2 mb-3">全局默认</div>
         <v-row>
-          <v-col cols="12" sm="6">
+          <v-col cols="12" sm="4">
             <v-select
-              v-model="provider"
-              :items="providerItems"
-              label="provider"
+              v-model="engine"
+              :items="engineOptions"
+              label="引擎 (Engine)"
               variant="outlined"
               density="comfortable"
               hide-details
-              clearable
-              @update:model-value="onProviderChange('', $event)"
             />
           </v-col>
-          <v-col cols="12" sm="6">
-            <v-select
+          <v-col v-if="engine === 'antigravity'" cols="12" sm="8">
+            <v-combobox
               v-model="model"
-              :items="modelItems(provider)"
-              label="model"
+              :items="antigravityModels"
+              label="antigravity 模型 (如 gemini-2.5-pro)"
               variant="outlined"
               density="comfortable"
               hide-details
               clearable
             />
           </v-col>
+          <template v-else>
+            <v-col cols="12" sm="4">
+              <v-select
+                v-model="provider"
+                :items="providerItems"
+                label="provider"
+                variant="outlined"
+                density="comfortable"
+                hide-details
+                clearable
+                @update:model-value="onProviderChange('', $event)"
+              />
+            </v-col>
+            <v-col cols="12" sm="4">
+              <v-select
+                v-model="model"
+                :items="modelItems(provider)"
+                label="model"
+                variant="outlined"
+                density="comfortable"
+                hide-details
+                clearable
+              />
+            </v-col>
+          </template>
         </v-row>
         <div class="text-subtitle-2 mt-6 mb-3">按阶段覆盖</div>
         <v-row v-for="id in stageIds" :key="id">
@@ -131,29 +154,54 @@
             <span class="font-weight-medium">{{ STEP_LABELS[id] || id }}</span>
             <span class="text-caption text-medium-emphasis ml-2">{{ id }}</span>
           </v-col>
-          <v-col cols="12" sm="5">
+          <v-col cols="12" sm="3">
             <v-select
-              v-model="stages[id].provider"
-              :items="providerItems"
-              :label="`${id} provider`"
+              v-model="stages[id].engine"
+              :items="stageEngineOptions"
+              label="引擎"
               variant="outlined"
               density="comfortable"
               hide-details
-              clearable
-              @update:model-value="onProviderChange(id, $event)"
             />
           </v-col>
-          <v-col cols="12" sm="5">
-            <v-select
-              v-model="stages[id].model"
-              :items="modelItems(stages[id].provider)"
-              :label="`${id} model`"
-              variant="outlined"
-              density="comfortable"
-              hide-details
-              clearable
-            />
-          </v-col>
+          <template v-if="(stages[id].engine || engine) === 'antigravity'">
+            <v-col cols="12" sm="7">
+              <v-combobox
+                v-model="stages[id].model"
+                :items="antigravityModels"
+                :label="`${id} antigravity 模型`"
+                variant="outlined"
+                density="comfortable"
+                hide-details
+                clearable
+              />
+            </v-col>
+          </template>
+          <template v-else>
+            <v-col cols="12" sm="3">
+              <v-select
+                v-model="stages[id].provider"
+                :items="providerItems"
+                :label="`${id} provider`"
+                variant="outlined"
+                density="comfortable"
+                hide-details
+                clearable
+                @update:model-value="onProviderChange(id, $event)"
+              />
+            </v-col>
+            <v-col cols="12" sm="4">
+              <v-select
+                v-model="stages[id].model"
+                :items="modelItems(stages[id].provider)"
+                :label="`${id} model`"
+                variant="outlined"
+                density="comfortable"
+                hide-details
+                clearable
+              />
+            </v-col>
+          </template>
         </v-row>
       </v-card-text>
       <v-card-actions class="px-6 pb-4">
@@ -187,13 +235,32 @@ const saving = ref(false);
 const savingGit = ref(false);
 const savingDev = ref(false);
 const tdd = ref(true);
+const engine = ref("pi");
 const provider = ref("");
 const model = ref("");
 const stageIds = ref<string[]>([]);
-const stages = reactive<Record<string, { provider: string; model: string }>>({});
+const stages = reactive<Record<string, { engine: string; provider: string; model: string }>>({});
 const catalog = ref<PiCatalogProvider[]>([]);
 const freezeBranch = ref("req/{jira}");
 const examples = ref<string[]>(["req/{jira}", "feature/{jira}", "feat/{jira}", "{jira}"]);
+
+const engineOptions = [
+  { title: "pi (Coding Agent)", value: "pi" },
+  { title: "antigravity (Google)", value: "antigravity" },
+];
+
+const stageEngineOptions = [
+  { title: "继承全局", value: "" },
+  { title: "pi", value: "pi" },
+  { title: "antigravity", value: "antigravity" },
+];
+
+const antigravityModels = [
+  "gemini-2.5-pro",
+  "gemini-2.5-flash",
+  "gemini-1.5-pro",
+  "gemini-1.5-flash",
+];
 
 const SAMPLE_JIRA = "PROJ-101";
 const SAMPLE_TICKET = "T1";
@@ -259,14 +326,15 @@ onMounted(async () => {
   }
   try {
     const cfg = await getPiSettings();
+    engine.value = cfg.engine || "pi";
     provider.value = cfg.provider;
     model.value = cfg.model;
     stageIds.value = cfg.stage_ids;
     catalog.value = cfg.catalog?.providers || [];
     catalogError.value = cfg.catalog?.error || "";
     for (const id of cfg.stage_ids) {
-      const row = cfg.stages[id] || { provider: "", model: "" };
-      stages[id] = { provider: row.provider, model: row.model };
+      const row = cfg.stages[id] || { engine: "", provider: "", model: "" };
+      stages[id] = { engine: row.engine || "", provider: row.provider, model: row.model };
       ensureSaved(row.provider, row.model);
     }
     ensureSaved(cfg.provider, cfg.model);
@@ -309,12 +377,14 @@ async function save() {
   error.value = "";
   try {
     const payload = {
+      engine: engine.value,
       provider: provider.value || "",
       model: model.value || "",
       stages: Object.fromEntries(
         stageIds.value.map((id) => [
           id,
           {
+            engine: stages[id]?.engine || "",
             provider: stages[id]?.provider || "",
             model: stages[id]?.model || "",
           },

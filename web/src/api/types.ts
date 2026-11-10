@@ -413,7 +413,14 @@ export interface PiCatalog {
   error: string | null;
 }
 
+export interface StageModelCfg {
+  provider: string;
+  model: string;
+  engine?: string;
+}
+
 export interface PiSettings {
+  engine?: string;
   provider: string;
   model: string;
   stages: Record<string, StageModelCfg>;

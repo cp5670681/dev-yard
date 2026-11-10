@@ -377,9 +377,10 @@ export function getPiSettings() {
 }
 
 export function savePiSettings(payload: {
+  engine?: string;
   provider: string;
   model: string;
-  stages: Record<string, { provider: string; model: string }>;
+  stages: Record<string, { engine?: string; provider: string; model: string }>;
 }) {
   return api<PiSettings>("/api/pi", {
     method: "PUT",
