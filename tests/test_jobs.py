@@ -1305,3 +1305,11 @@ agent:
     assert "--output-format" in captured["cmd"]
     assert "stream-json" in captured["cmd"]
 
+    # Test with extra_read_paths containing an image
+    img = yard / "screenshot.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    JobLogRunner(job, yard, "open").start("Extract requirement", yard, [img])
+    assert f"@{img.resolve()}" in captured["cmd"][2]
+    assert f"@{img.resolve()}" not in captured["cmd"][3:]
+
+

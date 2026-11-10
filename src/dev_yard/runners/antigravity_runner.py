@@ -119,7 +119,6 @@ class AntigravityRunner(Runner):
     ) -> RunResult:
         import sys
         from dev_yard.pi_catalog import resolve_agy_binary
-        from dev_yard.runners import attachment_args
 
         review_verdict = ReviewVerdict()
         allowed_tools = set(self.tool_override or (self.spec.tools if self.spec else ()))
@@ -156,6 +155,17 @@ class AntigravityRunner(Runner):
                 if skill_texts:
                     actual_prompt = "\n\n".join(skill_texts) + "\n\n---\n\n" + prompt
 
+            if extra_read_paths:
+                from dev_yard.attachments import is_prompt_image
+
+                img_attachments = [
+                    f"@{p.resolve()}" for p in extra_read_paths if is_prompt_image(p)
+                ]
+                if img_attachments:
+                    actual_prompt = (
+                        actual_prompt + "\n\nAttached images:\n" + "\n".join(img_attachments)
+                    )
+
             cmd = [
                 agy_bin,
                 "-p",
@@ -166,8 +176,6 @@ class AntigravityRunner(Runner):
                 "stream-json",
                 "--dangerously-skip-permissions",
             ]
-            if extra_read_paths:
-                cmd.extend(attachment_args(extra_read_paths))
 
             proc = subprocess.Popen(
                 cmd,
