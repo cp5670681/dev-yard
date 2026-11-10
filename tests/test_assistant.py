@@ -756,3 +756,24 @@ def test_assistant_default_factory_antigravity(tmp_path: Path):
     assert isinstance(rpc, AntigravityRpc)
     assert rpc.model == "gemini-3.8-flash-high"
 
+
+def test_antigravity_rpc_prompt_execution(tmp_path: Path, monkeypatch):
+    import subprocess
+    from dev_yard.assistant import AntigravityRpc, AssistantSession
+
+    session = AssistantSession(id="sess1", route="/", jira="", created_at="")
+    rpc = AntigravityRpc(tmp_path, session, model="gemini-3.8-flash-high")
+
+    def _mock_run(*args, **kwargs):
+        class _Proc:
+            stdout = '{"conversation_id": "c1", "response": "hello test"}'
+            stderr = ""
+            returncode = 0
+        return _Proc()
+
+    monkeypatch.setattr(subprocess, "run", _mock_run)
+    rpc.prompt("hi")
+    events = list(rpc.iter_until_settled(timeout=5))
+    assert any(e.get("type") == "message_end" for e in events)
+    assert rpc._conversation_id == "c1"
+
