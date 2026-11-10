@@ -741,3 +741,18 @@ def test_assistant_clears_error_on_successful_retry(tmp_path: Path, monkeypatch)
     snap = _run_with(tmp_path, monkeypatch, RetrySucceedsRpc())
     assert snap["error"] is None
     assert not any(e.get("is_error") for e in snap["entries"])
+
+
+def test_assistant_default_factory_antigravity(tmp_path: Path):
+    from dev_yard.assistant import AntigravityRpc, AssistantSession, default_rpc_factory
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    (yard / "repos.yaml").write_text(
+        "agent:\n  engine: antigravity\n  model: gemini-3.8-flash-high\n", encoding="utf-8"
+    )
+    session = AssistantSession(id="sess1", route="/", jira="", created_at="")
+    rpc = default_rpc_factory(yard, session)
+    assert isinstance(rpc, AntigravityRpc)
+    assert rpc.model == "gemini-3.8-flash-high"
+

@@ -783,7 +783,136 @@ def _delta_text(event: dict[str, Any]) -> str:
     return ""
 
 
+class AntigravityRpc:
+    """Lightweight RPC adapter for running assistant turns via Antigravity (agy)."""
+
+    def __init__(self, root: Path, session: AssistantSession, model: str | None = None) -> None:
+        import queue
+
+        self.root = root
+        self.session = session
+        self.model = model or "gemini-3.8-flash-high"
+        self._conversation_id: str | None = None
+        self._events: queue.Queue[dict[str, Any] | None] = queue.Queue()
+        self._aborted = False
+
+    def prompt(self, message: str, streaming_behavior: str = "followUp") -> None:
+        self._aborted = False
+        thread = threading.Thread(target=self._run_prompt, args=(message,), daemon=True)
+        thread.start()
+
+    def _run_prompt(self, message: str) -> None:
+        from dev_yard.pi_catalog import resolve_agy_binary
+
+        agy_bin = resolve_agy_binary()
+        if not agy_bin:
+            self._events.put({
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "stopReason": "error",
+                    "errorMessage": "Antigravity CLI (agy) not found.",
+                    "content": [{"type": "text", "text": "未找到 agy 命令行工具，请检查 Antigravity 安装。"}],
+                },
+            })
+            self._events.put({"type": "agent_settled"})
+            return
+
+        cmd = [
+            agy_bin,
+            "-p",
+            message,
+            "--model",
+            self.model,
+            "--output-format",
+            "json",
+            "--dangerously-skip-permissions",
+        ]
+        if self._conversation_id:
+            cmd.extend(["--conversation", self._conversation_id])
+
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=str(self.root),
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            raw_out = proc.stdout.strip()
+            data = {}
+            if raw_out:
+                try:
+                    data = json.loads(raw_out)
+                except json.JSONDecodeError:
+                    pass
+
+            cid = data.get("conversation_id")
+            if cid and isinstance(cid, str):
+                self._conversation_id = cid
+
+            response_text = data.get("response") if isinstance(data, dict) and "response" in data else raw_out
+            if not response_text and proc.returncode != 0:
+                response_text = f"调用 agy 失败 (code {proc.returncode}): {proc.stderr}"
+
+            if not response_text:
+                response_text = "（助手未返回有效文本）"
+
+            # Stream delta chunk
+            self._events.put({
+                "type": "message_update",
+                "assistantMessageEvent": {"type": "text_delta", "delta": response_text},
+            })
+            # Final message
+            self._events.put({
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "stopReason": "end_turn",
+                    "content": [{"type": "text", "text": response_text}],
+                },
+            })
+        except Exception as e:
+            self._events.put({
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "stopReason": "error",
+                    "errorMessage": str(e),
+                    "content": [{"type": "text", "text": f"请求失败: {e}"}],
+                },
+            })
+        finally:
+            self._events.put({"type": "agent_settled"})
+
+    def iter_until_settled(self, timeout: float = 600) -> Iterator[dict[str, Any]]:
+        import queue
+
+        while True:
+            try:
+                ev = self._events.get(timeout=timeout)
+            except queue.Empty:
+                break
+            if ev is None:
+                break
+            yield ev
+            if ev.get("type") == "agent_settled":
+                break
+
+    def abort(self) -> None:
+        self._aborted = True
+
+    def close(self) -> None:
+        self._aborted = True
+
+
 def default_rpc_factory(root: Path, session: AssistantSession) -> Any:
+    from dev_yard.config import resolve_agent_choice
+
+    choice = resolve_agent_choice(root, "assistant")
+    if choice.engine == "antigravity":
+        return AntigravityRpc(root=root, session=session, model=choice.model)
+
     from dev_yard.pi_rpc import PiRpc
     from dev_yard.runners import assistant_pi_argv
 
