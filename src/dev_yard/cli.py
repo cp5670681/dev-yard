@@ -1715,3 +1715,67 @@ def web(
         serve(root, host=host, port=port, open_browser=open_browser, allow_remote=allow_remote)
     except ValueError as e:
         _die(e)
+
+
+def _record_review_verdict_cli(verdict_arg: str, findings_arg: str | None = None) -> None:
+    import json
+
+    v = verdict_arg.strip()
+    f_list: list[Any] = []
+    if v.startswith("{") and v.endswith("}"):
+        try:
+            parsed = json.loads(v)
+            if isinstance(parsed, dict):
+                v = str(parsed.get("verdict") or "").strip().lower()
+                if isinstance(parsed.get("findings"), list):
+                    f_list = parsed["findings"]
+        except Exception:
+            pass
+    if v not in ("passed", "failed"):
+        typer.echo(f"Error: verdict must be 'passed' or 'failed', got: {verdict_arg}", err=True)
+        raise typer.Exit(code=1)
+    if findings_arg:
+        try:
+            parsed_f = json.loads(findings_arg)
+            if isinstance(parsed_f, list):
+                f_list = parsed_f
+        except Exception as e:
+            typer.echo(f"Warning: could not parse findings JSON: {e}", err=True)
+    out_file = Path.cwd() / ".yard-review.json"
+    out_file.write_text(
+        json.dumps({"verdict": v, "findings": f_list}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    typer.echo(f"Recorded review verdict: {v}")
+
+
+@app.command(name="submit-review")
+def submit_review_cmd(
+    verdict: str = typer.Argument(..., help="passed | failed, or JSON string with verdict/findings"),
+    findings: str | None = typer.Option(None, "--findings", "-f", help="Findings JSON string"),
+) -> None:
+    """Submit the review verdict for the current review session."""
+    _record_review_verdict_cli(verdict, findings)
+
+
+def submit_review_entry() -> None:
+    """Standalone CLI entry point for `submit_review` / `submit-review`."""
+    import sys
+
+    if len(sys.argv) < 2 or sys.argv[1] in ("--help", "-h"):
+        sys.stderr.write("Usage: submit_review <passed|failed> [--findings JSON]\n")
+        sys.exit(0 if len(sys.argv) >= 2 else 1)
+    raw = sys.argv[1]
+    f_arg = None
+    if len(sys.argv) >= 4 and sys.argv[2] in ("--findings", "-f"):
+        f_arg = sys.argv[3]
+    try:
+        _record_review_verdict_cli(raw, f_arg)
+    except typer.Exit as e:
+        sys.exit(e.exit_code)
+
+
+if __name__ == "__main__":
+    app()
+
+

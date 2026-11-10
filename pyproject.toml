@@ -17,6 +17,8 @@ dependencies = [
 [project.scripts]
 dev-yard = "dev_yard.cli:app"
 devyard = "dev_yard.cli:app"
+submit-review = "dev_yard.cli:submit_review_entry"
+submit_review = "dev_yard.cli:submit_review_entry"
 
 [build-system]
 requires = ["hatchling"]

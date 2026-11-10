@@ -435,6 +435,11 @@ class JobLogRunner(Runner):
         active_model = self.model or choice.model
 
         if active_engine == "antigravity":
+            from dev_yard.guards.review_tool import (
+                ANTIGRAVITY_REVIEW_PROMPT_GUIDANCE,
+                ReviewVerdict,
+                extract_review_verdict,
+            )
             from dev_yard.pi_catalog import resolve_agy_binary
             from dev_yard.runners import (
                 MISSING_VERDICT_NOTE,
@@ -487,6 +492,9 @@ class JobLogRunner(Runner):
                         actual_prompt + "\n\nAttached images:\n" + "\n".join(img_attachments)
                     )
 
+            if self.bundle in STRUCTURED_REVIEW_STAGES:
+                actual_prompt += ANTIGRAVITY_REVIEW_PROMPT_GUIDANCE
+
             cmd = [
                 agy_bin,
                 "-p",
@@ -510,6 +518,7 @@ class JobLogRunner(Runner):
             full_text_chunks: list[str] = []
             findings: list[Any] = []
             verdict: str | None = None
+            review_verdict = ReviewVerdict()
             try:
                 assert proc.stdout is not None
                 for line in proc.stdout:
@@ -531,9 +540,13 @@ class JobLogRunner(Runner):
                         if stype == "tool":
                             state = su.get("state")
                             tname = su.get("tool_name")
+                            tinfo = su.get("tool_info") or {}
+                            params = tinfo.get("parameters") or {}
+                            if tname == "submit_review":
+                                review_verdict.execute(params)
+                            elif tname == "call_mcp_tool" and params.get("ToolName") == "submit_review":
+                                review_verdict.execute(params.get("Arguments") or {})
                             if state == "ACTIVE":
-                                tinfo = su.get("tool_info") or {}
-                                params = tinfo.get("parameters") or {}
                                 brief = f"[{tname}]"
                                 for k in (
                                     "CommandLine",
@@ -571,6 +584,11 @@ class JobLogRunner(Runner):
 
             verdict_missing = False
             if self.bundle in STRUCTURED_REVIEW_STAGES:
+                verdict, findings = extract_review_verdict(
+                    tool_verdict=review_verdict,
+                    cwd=cwd,
+                    text=summary,
+                )
                 if verdict is None:
                     verdict_missing = True
                     summary = (summary + f"\n\n{MISSING_VERDICT_NOTE}").strip()

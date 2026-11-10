@@ -1313,3 +1313,104 @@ agent:
     assert f"@{img.resolve()}" not in captured["cmd"][3:]
 
 
+def test_job_log_runner_antigravity_review_verdict_text(tmp_path: Path, monkeypatch):
+    import json
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    (yard / "repos.yaml").write_text(
+        """
+agent:
+  engine: antigravity
+  model: gemini-3.8-flash-high
+""",
+        encoding="utf-8",
+    )
+    job = Job(id="job_rev_1", jira="PG-13708", action="review")
+
+    class FakeProc:
+        def __init__(self, cmd, **kwargs):
+            self.returncode = 0
+            self.stdout = iter([
+                json.dumps({
+                    "event": "step_update",
+                    "step_update": {
+                        "state": "ACTIVE",
+                        "step_type": "agent_response",
+                        "text_delta": "Standards: 0 smells.\n\n```json\nsubmit_review({\n  \"verdict\": \"passed\",\n  \"findings\": []\n})\n```",
+                    },
+                }) + "\n",
+                json.dumps({
+                    "event": "result",
+                    "result": {
+                        "status": "SUCCESS",
+                        "response": "Done",
+                    },
+                }) + "\n",
+            ])
+            self.stderr = None
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr("dev_yard.pi_catalog.resolve_agy_binary", lambda: "/custom/bin/agy")
+    monkeypatch.setattr("dev_yard.web.jobs.subprocess.Popen", FakeProc)
+
+    from dev_yard.web.jobs import JobLogRunner
+
+    res = JobLogRunner(job, yard, "review").start("Review code", yard, [])
+    assert res.ok is True
+    assert res.verdict == "passed"
+    assert res.findings == []
+    assert res.verdict_missing is False
+
+
+def test_job_log_runner_antigravity_review_verdict_file(tmp_path: Path, monkeypatch):
+    import json
+
+    yard = tmp_path / "yard"
+    init_yard(yard)
+    (yard / "repos.yaml").write_text(
+        """
+agent:
+  engine: antigravity
+  model: gemini-3.8-flash-high
+""",
+        encoding="utf-8",
+    )
+    job = Job(id="job_rev_2", jira="PG-13708", action="review")
+
+    class FakeProc:
+        def __init__(self, cmd, **kwargs):
+            self.returncode = 0
+            # Simulates CLI submit_review writing .yard-review.json
+            vf = yard / ".yard-review.json"
+            vf.write_text(json.dumps({"verdict": "failed", "findings": [{"id": "F1"}]}), encoding="utf-8")
+            self.stdout = iter([
+                json.dumps({
+                    "event": "result",
+                    "result": {
+                        "status": "SUCCESS",
+                        "response": "Ran submit_review in bash",
+                    },
+                }) + "\n",
+            ])
+            self.stderr = None
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr("dev_yard.pi_catalog.resolve_agy_binary", lambda: "/custom/bin/agy")
+    monkeypatch.setattr("dev_yard.web.jobs.subprocess.Popen", FakeProc)
+
+    from dev_yard.web.jobs import JobLogRunner
+
+    res = JobLogRunner(job, yard, "review").start("Review code", yard, [])
+    assert res.ok is True
+    assert res.verdict == "failed"
+    assert len(res.findings) == 1
+    assert res.verdict_missing is False
+    assert not (yard / ".yard-review.json").exists()
+
+
+

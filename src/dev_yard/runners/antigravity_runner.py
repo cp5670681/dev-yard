@@ -13,7 +13,11 @@ from typing import Any
 
 from dev_yard.guards.command_guard import validate_tool_call
 from dev_yard.guards.doc_align_guard import validate_doc_align_write
-from dev_yard.guards.review_tool import ReviewVerdict
+from dev_yard.guards.review_tool import (
+    ANTIGRAVITY_REVIEW_PROMPT_GUIDANCE,
+    ReviewVerdict,
+    extract_review_verdict,
+)
 from dev_yard.runners import (
     MISSING_VERDICT_NOTE,
     REVIEW_NUDGE_PROMPT,
@@ -166,6 +170,9 @@ class AntigravityRunner(Runner):
                         actual_prompt + "\n\nAttached images:\n" + "\n".join(img_attachments)
                     )
 
+            if self.bundle in STRUCTURED_REVIEW_STAGES:
+                actual_prompt += ANTIGRAVITY_REVIEW_PROMPT_GUIDANCE
+
             cmd = [
                 agy_bin,
                 "-p",
@@ -209,9 +216,13 @@ class AntigravityRunner(Runner):
                         if stype == "tool":
                             state = su.get("state")
                             tname = su.get("tool_name")
+                            tinfo = su.get("tool_info") or {}
+                            params = tinfo.get("parameters") or {}
+                            if tname == "submit_review":
+                                review_verdict.execute(params)
+                            elif tname == "call_mcp_tool" and params.get("ToolName") == "submit_review":
+                                review_verdict.execute(params.get("Arguments") or {})
                             if state == "ACTIVE" and self.print_mode:
-                                tinfo = su.get("tool_info") or {}
-                                params = tinfo.get("parameters") or {}
                                 brief = f"[{tname}]"
                                 for k in (
                                     "CommandLine",
@@ -269,10 +280,12 @@ class AntigravityRunner(Runner):
         verdict_missing = False
 
         if self.bundle in STRUCTURED_REVIEW_STAGES:
-            if review_verdict.verdict:
-                verdict = review_verdict.verdict
-                findings = review_verdict.findings
-            else:
+            verdict, findings = extract_review_verdict(
+                tool_verdict=review_verdict,
+                cwd=cwd,
+                text=summary,
+            )
+            if verdict is None:
                 verdict_missing = True
                 summary = (summary + f"\n\n{MISSING_VERDICT_NOTE}").strip()
 
