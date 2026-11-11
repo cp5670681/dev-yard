@@ -8,6 +8,7 @@ import signal
 import subprocess
 import tempfile
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -23,6 +24,24 @@ _CRED_URL_RE = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@")
 
 class GitError(RuntimeError):
     pass
+
+
+_TRANSIENT_NETWORK_ERRORS = (
+    "kex_exchange_identification",
+    "connection closed by remote host",
+    "connection closed by",
+    "connection reset by peer",
+    "could not resolve host",
+    "operation timed out",
+    "network is unreachable",
+    "remote end hung up unexpectedly",
+    "early eof",
+)
+
+
+def is_transient_network_error(err: str | Exception) -> bool:
+    msg = str(err).lower()
+    return any(pattern in msg for pattern in _TRANSIENT_NETWORK_ERRORS)
 
 
 def _timeout() -> float:
@@ -152,25 +171,63 @@ def _run_progress(args: list[str], on_progress: Progress, cwd: Path | None = Non
         raise GitError(git_failure_message(lines, args))
 
 
-def ensure_clone(url: str, dest: Path, on_progress: Progress | None = None) -> None:
+def ensure_clone(
+    url: str,
+    dest: Path,
+    on_progress: Progress | None = None,
+    *,
+    retries: int = 2,
+    delay: float = 1.0,
+) -> None:
     if dest.exists() and (dest / ".git").exists():
-        fetch(dest, on_progress=on_progress)
+        fetch(dest, on_progress=on_progress, retries=retries, delay=delay)
         return
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    argv = ["git", "clone", "--progress", url, str(dest)]
-    if on_progress is None:
-        run(["git", "clone", url, str(dest)])
-        return
-    on_progress(f"git clone {redact(url)} -> {dest}")
-    _run_progress(argv, on_progress)
+    for attempt in range(retries + 1):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        argv = ["git", "clone", "--progress", url, str(dest)]
+        try:
+            if on_progress is None:
+                run(["git", "clone", url, str(dest)])
+                return
+            on_progress(f"git clone {redact(url)} -> {dest}")
+            _run_progress(argv, on_progress)
+            return
+        except GitError as e:
+            if attempt < retries and is_transient_network_error(e):
+                shutil.rmtree(dest, ignore_errors=True)
+                if on_progress:
+                    on_progress(
+                        f"git clone transient error ({e}), retrying ({attempt + 1}/{retries})..."
+                    )
+                time.sleep(delay)
+                continue
+            raise
 
 
-def fetch(source: Path, on_progress: Progress | None = None) -> None:
-    if on_progress is None:
-        run(["git", "fetch", "--all", "--prune"], cwd=source)
-        return
-    on_progress(f"git fetch {source}")
-    _run_progress(["git", "fetch", "--all", "--prune", "--progress"], on_progress, cwd=source)
+def fetch(
+    source: Path,
+    on_progress: Progress | None = None,
+    *,
+    retries: int = 2,
+    delay: float = 1.0,
+) -> None:
+    for attempt in range(retries + 1):
+        try:
+            if on_progress is None:
+                run(["git", "fetch", "--all", "--prune"], cwd=source)
+                return
+            on_progress(f"git fetch {source}")
+            _run_progress(["git", "fetch", "--all", "--prune", "--progress"], on_progress, cwd=source)
+            return
+        except GitError as e:
+            if attempt < retries and is_transient_network_error(e):
+                if on_progress:
+                    on_progress(
+                        f"git fetch transient error ({e}), retrying ({attempt + 1}/{retries})..."
+                    )
+                time.sleep(delay)
+                continue
+            raise
 
 
 def start_point(source: Path, default_base: str) -> str:
@@ -747,18 +804,36 @@ def push(
 
 
 def fetch_branch(
-    source: Path, remote: str, branch: str, on_progress: Progress | None = None
+    source: Path,
+    remote: str,
+    branch: str,
+    on_progress: Progress | None = None,
+    *,
+    retries: int = 2,
+    delay: float = 1.0,
 ) -> None:
     """Fetch one remote branch, updating `refs/remotes/<remote>/<branch>`."""
     argv = ["git", "fetch", "--prune"]
     if on_progress is not None:
         argv.append("--progress")
     argv.extend([remote, branch])
-    if on_progress is None:
-        run(argv, cwd=source)
-        return
-    on_progress(f"git fetch {remote} {branch}")
-    _run_progress(argv, on_progress, cwd=source)
+    for attempt in range(retries + 1):
+        try:
+            if on_progress is None:
+                run(argv, cwd=source)
+                return
+            on_progress(f"git fetch {remote} {branch}")
+            _run_progress(argv, on_progress, cwd=source)
+            return
+        except GitError as e:
+            if attempt < retries and is_transient_network_error(e):
+                if on_progress:
+                    on_progress(
+                        f"git fetch transient error ({e}), retrying ({attempt + 1}/{retries})..."
+                    )
+                time.sleep(delay)
+                continue
+            raise
 
 
 def push_ref(

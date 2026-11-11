@@ -12,6 +12,8 @@ from dev_yard.gitops import (
     git_failure_message,
     head_sha,
     integrate_onto,
+    is_transient_network_error,
+    fetch,
     run,
     worktree_add,
     worktree_remove,
@@ -335,5 +337,58 @@ def test_integrate_onto_merge_when_diverged(git_src: Path, tmp_path: Path):
     assert sha
     assert (wt / "feat.txt").exists()
     assert (wt / "main.txt").exists()
+
+
+def test_is_transient_network_error():
+    assert is_transient_network_error(
+        "kex_exchange_identification: Connection closed by remote host\nConnection closed by 47.96.8.244 port 22"
+    )
+    assert is_transient_network_error(
+        GitError("fatal: unable to access 'https://git.example.com/': Could not resolve host: git.example.com")
+    )
+    assert is_transient_network_error("fatal: early EOF")
+    assert not is_transient_network_error("fatal: destination path 'foo' already exists and is not an empty directory.")
+    assert not is_transient_network_error("error: Your local changes to the following files would be overwritten by checkout")
+
+
+def test_fetch_retries_transient_network_error(monkeypatch, tmp_path: Path):
+    calls = []
+
+    def mock_run(args, cwd=None, **kwargs):
+        calls.append(args)
+        if len(calls) < 2:
+            raise GitError("kex_exchange_identification: Connection closed by remote host")
+        return "ok"
+
+    monkeypatch.setattr("dev_yard.gitops.run", mock_run)
+    fetch(tmp_path, retries=2, delay=0.01)
+    assert len(calls) == 2
+
+
+def test_fetch_raises_after_exceeding_retries(monkeypatch, tmp_path: Path):
+    calls = []
+
+    def mock_run(args, cwd=None, **kwargs):
+        calls.append(args)
+        raise GitError("kex_exchange_identification: Connection closed by remote host")
+
+    monkeypatch.setattr("dev_yard.gitops.run", mock_run)
+    with pytest.raises(GitError, match="kex_exchange_identification"):
+        fetch(tmp_path, retries=2, delay=0.01)
+    assert len(calls) == 3
+
+
+def test_fetch_does_not_retry_non_transient_error(monkeypatch, tmp_path: Path):
+    calls = []
+
+    def mock_run(args, cwd=None, **kwargs):
+        calls.append(args)
+        raise GitError("fatal: Not a git repository")
+
+    monkeypatch.setattr("dev_yard.gitops.run", mock_run)
+    with pytest.raises(GitError, match="Not a git repository"):
+        fetch(tmp_path, retries=2, delay=0.01)
+    assert len(calls) == 1
+
 
 
