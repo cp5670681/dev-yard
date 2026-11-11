@@ -116,6 +116,8 @@ class TicketView:
     source: str = ""
     finding: str = ""
     merge_conflict: str | None = None
+    jira_key: str | None = None
+    jira_url: str | None = None
 
 
 @dataclass
@@ -258,6 +260,8 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
                     if isinstance(slot.get("merge_conflict"), str)
                     else None
                 ),
+                jira_key=slot.get("jira_key"),
+                jira_url=slot.get("jira_url"),
             )
         )
     docs = [_doc_view(req, slug, filename, jira) for slug, filename in DOC_FILES.items()]

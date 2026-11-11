@@ -29,6 +29,16 @@
             {{ detail.phase }}
           </v-chip>
           <v-btn
+            v-if="hasDevTickets"
+            variant="text"
+            size="small"
+            color="primary"
+            :prepend-icon="mdiLinkVariant"
+            @click="jiraDialog = true"
+          >
+            建 Jira 子任务
+          </v-btn>
+          <v-btn
             v-if="detail"
             variant="text"
             size="small"
@@ -435,6 +445,7 @@
         @rerun-case="rerunCase"
         @rerun-cases="rerunCases"
         @file-bug="fileCaseBugAsTicket"
+        @create-jira-subtasks="jiraDialog = true"
       />
       <v-card v-if="detail.changes?.length" variant="outlined" class="mt-4">
         <v-card-title class="text-subtitle-2">需求变更记录</v-card-title>
@@ -1019,6 +1030,11 @@
       @reviewed="onTicketReviewed"
       @aligned="onDocsAligned"
     />
+    <JiraSubtaskDialog
+      v-model="jiraDialog"
+      :jira="jira"
+      @created="onSubtasksCreated"
+    />
   </div>
 </template>
 
@@ -1038,6 +1054,7 @@ import {
   mdiFileDocumentAlertOutline,
   mdiFileDocumentCheckOutline,
   mdiHelpCircleOutline,
+  mdiLinkVariant,
   mdiPaperclip,
   mdiProgressClock,
   mdiRefresh,
@@ -1076,6 +1093,7 @@ import QaFeedbackDetails from "@/components/QaFeedbackDetails.vue";
 import ReqDocTabs from "@/components/ReqDocTabs.vue";
 import ScreenshotViewer from "@/components/ScreenshotViewer.vue";
 import TicketBoard from "@/components/TicketBoard.vue";
+import JiraSubtaskDialog from "@/components/JiraSubtaskDialog.vue";
 import CaseDetailDialog from "@/components/CaseDetailDialog.vue";
 import TicketDiffDialog from "@/components/TicketDiffDialog.vue";
 import TicketReviewDialog from "@/components/TicketReviewDialog.vue";
@@ -1215,6 +1233,17 @@ async function checkQaReady() {
   } finally {
     acting.value = "";
   }
+}
+
+const jiraDialog = ref(false);
+
+const hasDevTickets = computed(() => {
+  return detail.value?.tickets?.some((t) => Boolean(t.repo)) ?? false;
+});
+
+function onSubtasksCreated(created: Array<{ id: string; jira_key: string }>) {
+  snack.notify(`已成功创建 ${created.length} 个 Jira 子任务`, "success");
+  void load();
 }
 
 async function fileCaseBugAsTicket(caseId: string) {

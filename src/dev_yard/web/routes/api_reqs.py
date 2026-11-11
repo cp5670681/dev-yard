@@ -22,6 +22,7 @@ from dev_yard.web.schemas import (
     DocSaveIn,
     ExportIn,
     ImportIn,
+    JiraSubtasksIn,
     OpenIn,
     QaRerunIn,
     TestReportIn,
@@ -344,6 +345,45 @@ def build(ctx: AppContext) -> APIRouter:
             raise HTTPException(404, str(e)) from e
         except (ValueError, gitops.GitError, OSError) as e:
             raise HTTPException(400, str(e)) from e
+
+    @router.get("/api/requirements/{jira}/jira-subtasks/preview")
+    def api_jira_subtasks_preview(jira: str):
+        if paths.is_reserved_req_name(jira):
+            raise HTTPException(404, f"no requirement {jira}")
+        try:
+            from dev_yard import jira as jira_mod
+
+            return jira_mod.preview_dev_subtasks(ctx.root, jira)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except Exception as e:
+            raise HTTPException(500, f"预览失败: {e}") from e
+
+    @router.post("/api/requirements/{jira}/jira-subtasks")
+    def api_jira_subtasks_create(jira: str, payload: JiraSubtasksIn | None = None):
+        if paths.is_reserved_req_name(jira):
+            raise HTTPException(404, f"no requirement {jira}")
+        try:
+            from dev_yard import jira as jira_mod
+
+            items_dict = (
+                [it.model_dump() for it in payload.items]
+                if payload and payload.items
+                else None
+            )
+            assignee = payload.assignee if payload else None
+            created = jira_mod.create_dev_subtasks(
+                ctx.root, jira, items=items_dict, assignee=assignee
+            )
+            return {"ok": True, "created": created}
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except Exception as e:
+            raise HTTPException(500, f"创建 Jira 子任务失败: {e}") from e
 
     @router.post("/api/requirements/{jira}/contract/review")
     def api_contract_review_override(jira: str, payload: ContractReviewIn):

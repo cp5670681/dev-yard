@@ -28,6 +28,17 @@
         </div>
         <div class="d-flex align-center ga-2">
           <v-btn
+            v-if="devTickets.length"
+            size="x-small"
+            variant="tonal"
+            color="primary"
+            class="font-weight-medium"
+            :prepend-icon="mdiLinkVariant"
+            @click.stop="$emit('create-jira-subtasks')"
+          >
+            建 Jira 子任务
+          </v-btn>
+          <v-btn
             variant="text"
             size="x-small"
             class="text-medium-emphasis"
@@ -466,6 +477,7 @@ import {
   mdiFlaskOutline,
   mdiBugOutline,
   mdiBugCheckOutline,
+  mdiLinkVariant,
   mdiPlus,
   mdiRefresh,
   mdiMenuDown,
@@ -514,6 +526,7 @@ defineEmits<{
   "rerun-case": [caseId: string];
   "rerun-cases": [caseIds: string[]];
   "file-bug": [caseId: string];
+  "create-jira-subtasks": [];
 }>();
 
 const { mdAndUp } = useDisplay();

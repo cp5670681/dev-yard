@@ -118,6 +118,8 @@ export interface Ticket {
   source?: string;
   finding?: string;
   merge_conflict?: string | null;
+  jira_key?: string | null;
+  jira_url?: string | null;
 }
 
 export interface Action {
@@ -699,5 +701,39 @@ export interface ContractReviewOut {
   jobs: JobSnapshot[];
   error?: string | null;
 }
+
+export interface JiraSubtaskPreviewItem {
+  id: string;
+  title: string;
+  summary: string;
+  repo: string;
+  repo_note: string;
+  story_point: number;
+  description: string;
+  jira_key?: string | null;
+  jira_url?: string | null;
+  created: boolean;
+}
+
+export interface JiraSubtasksPreview {
+  jira: string;
+  parent_summary: string;
+  project_key: string;
+  default_assignee?: string | null;
+  default_assignee_display?: string | null;
+  items: JiraSubtaskPreviewItem[];
+}
+
+export interface CreateJiraSubtasksIn {
+  items?: {
+    id: string;
+    summary?: string;
+    story_point?: number;
+    description?: string;
+    assignee?: string | null;
+  }[];
+  assignee?: string | null;
+}
+
 
 

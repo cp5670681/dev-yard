@@ -290,6 +290,8 @@ class AppContext:
                     "source": t.source,
                     "finding": t.finding,
                     "merge_conflict": t.merge_conflict,
+                    "jira_key": t.jira_key,
+                    "jira_url": t.jira_url,
                 }
                 for t in detail.tickets
             ],

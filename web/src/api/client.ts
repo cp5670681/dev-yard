@@ -4,9 +4,11 @@ import type {
   AssistantSession,
   ContractReviewIn,
   ContractReviewOut,
+  CreateJiraSubtasksIn,
   DevSettings,
   DocPayload,
   GitSettings,
+  JiraSubtasksPreview,
   JobsOut,
   JobSnapshot,
   Meta,
@@ -562,5 +564,25 @@ export function submitContractReview(
     },
   );
 }
+
+export function getJiraSubtasksPreview(jira: string) {
+  return api<JiraSubtasksPreview>(
+    `/api/requirements/${encodeURIComponent(jira)}/jira-subtasks/preview`,
+  );
+}
+
+export function createJiraSubtasks(
+  jira: string,
+  payload?: CreateJiraSubtasksIn,
+) {
+  return api<{
+    ok: boolean;
+    created: Array<{ id: string; jira_key: string; url: string; summary: string }>;
+  }>(`/api/requirements/${encodeURIComponent(jira)}/jira-subtasks`, {
+    method: "POST",
+    body: payload ? JSON.stringify(payload) : undefined,
+  });
+}
+
 
 

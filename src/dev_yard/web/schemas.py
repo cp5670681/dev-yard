@@ -170,3 +170,17 @@ class GitSettingsIn(BaseModel):
 
 class DevSettingsIn(BaseModel):
     tdd: bool = True
+
+
+class JiraSubtaskItemIn(BaseModel):
+    id: str
+    summary: str = ""
+    story_point: float = 0.0
+    description: str = ""
+    assignee: str | None = None
+
+
+class JiraSubtasksIn(BaseModel):
+    items: list[JiraSubtaskItemIn] = Field(default_factory=list)
+    assignee: str | None = None
+

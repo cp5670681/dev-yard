@@ -28,6 +28,16 @@
             class="mr-0.5 flex-shrink-0"
           />
           <span class="jira-ticket-key text-truncate">{{ ticket.id }}</span>
+          <a
+            v-if="ticket.jira_key"
+            :href="ticket.jira_url || `http://jira.rccchina.com/browse/${ticket.jira_key}`"
+            target="_blank"
+            class="text-caption text-primary font-weight-medium text-decoration-none mr-1"
+            :title="`在 Jira 查看 ${ticket.jira_key}`"
+            @click.stop
+          >
+            {{ ticket.jira_key }}
+          </a>
           <v-chip v-if="showState" size="x-small" :color="dotColor" variant="tonal" class="jira-lozenge">
             {{ TICKET_STATE_LABELS[ticket.state] || ticket.state }}
           </v-chip>
