@@ -8,6 +8,15 @@ import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 const REASON =
   "dev-yard doc-align: 只能写提案 JSON（.doc-align/<ticket>.json），不能改文档、用例或代码。";
 
+/**
+ * Only the doc-align stage enforces this. pi auto-discovers `.pi/extensions` in
+ * an interactive session, where a stage-scoped write allow-list would block
+ * every ordinary edit; the yard runner sets YARD_STAGE when it spawns the stage.
+ */
+export function shouldEnforce(stage: string | undefined): boolean {
+  return (stage ?? "").trim() === "doc-align";
+}
+
 /** True when a write/edit path is the proposal file and does not escape it. */
 export function isProposalWrite(path: string): boolean {
   const text = path.replaceAll("\\", "/").trim();
@@ -17,6 +26,7 @@ export function isProposalWrite(path: string): boolean {
 
 export default function yardDocAlign(pi: ExtensionAPI): void {
   pi.on("tool_call", (event) => {
+    if (!shouldEnforce(process.env.YARD_STAGE)) return;
     if (!isToolCallEventType("write", event) && !isToolCallEventType("edit", event)) {
       return;
     }

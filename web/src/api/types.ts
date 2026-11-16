@@ -300,32 +300,6 @@ export interface QaCaseDetail {
   } | null;
 }
 
-export interface QaVerifyLint {
-  ok?: boolean;
-  empty?: boolean;
-  detail?: string;
-  matched?: string[];
-}
-
-export interface QaReviewVerifyDetail {
-  case: string;
-  verify_sql?: string;
-  rows?: number | null;
-  reason?: string;
-  error?: string;
-  lint?: QaVerifyLint;
-}
-
-export interface QaReviewVerify {
-  present: boolean;
-  stale: boolean;
-  updated_at?: string;
-  summary?: Record<string, number>;
-  failed?: string[];
-  empty?: string[];
-  details?: QaReviewVerifyDetail[];
-}
-
 export interface QaReview {
   status: string;
   approved: boolean;
@@ -335,7 +309,6 @@ export interface QaReview {
   feedback_html?: string;
   updated_at: string;
   fingerprint: string;
-  verify?: QaReviewVerify | null;
 }
 
 export interface QaPage {
@@ -356,7 +329,6 @@ export interface QaPage {
   has_discover_sql?: boolean;
   triage?: {
     pending?: string[];
-    auto_recycled?: string[];
     filed?: Record<string, string>;
   };
   runs: {

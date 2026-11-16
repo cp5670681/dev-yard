@@ -1,7 +1,7 @@
 """Persistent QA state: one authority for phase, triage and pool health.
 
 The evidence files stay authoritative for *facts* (``review.yaml``,
-``design-verify/``, ``evidence/<run>/progress.yaml``); this module is the index
+``evidence/<run>/progress.yaml``); this module is the index
 over them. It records the phase/triage/pool metadata so the CLI, the web board
 and restart recovery share one view, and derives the live phase from the
 evidence so a hand-edited workspace can never report a stale one.
@@ -28,7 +28,6 @@ PHASES = (
     "open",
     "frozen",
     "designing",
-    "verifying",
     "awaiting_review",
     "approved",
     "running",
@@ -43,8 +42,7 @@ NEXT_ACTION = {
     "open": "先对齐/拆票：dev-yard grill|spec|tickets",
     "frozen": "先提测：dev-yard req submit-test <JIRA>",
     "designing": "设计用例：dev-yard req test <JIRA> --design-only",
-    "verifying": "数据核实中：dev-yard req test <JIRA> --verify-only",
-    "awaiting_review": "审核用例：dev-yard req test <JIRA> --approve",
+    "awaiting_review": "看用例（可选）：dev-yard req test <JIRA> --approve",
     "approved": "执行用例：dev-yard req test <JIRA> --run-only",
     "running": "继续执行：dev-yard req test <JIRA> --resume",
     "awaiting_triage": "判定失败：在失败用例上「下 bug」，或 --redesign 修用例",
@@ -52,30 +50,16 @@ NEXT_ACTION = {
     "closed": "已完成",
 }
 
-# Legal events (spec §4.1). Each maps to the phases it may fire from and the
-# phase it lands in. `derive_phase` is the evidence-validated current phase, so
-# `transition` refuses an event whose source phase is not allowed — a gate
-# cannot be silently skipped. `to` is included in `from` so a re-entrant event
-# (e.g. a re-run after a failed run) is not rejected.
-EVENTS: dict[str, tuple[frozenset[str], str]] = {
-    "verify_start": (
-        frozenset({"awaiting_review", "verifying", "approved"}),
-        "verifying",
-    ),
-    "verify_done": (
-        frozenset({"verifying", "awaiting_review", "approved"}),
-        "awaiting_review",
-    ),
-    "approve": (frozenset({"awaiting_review", "approved"}), "approved"),
-    "run_start": (
-        frozenset({"approved", "awaiting_triage", "recycled", "running"}),
-        "running",
-    ),
-    "run_passed": (frozenset({"running", "closed"}), "closed"),
-    "run_failed": (frozenset({"running", "awaiting_triage"}), "awaiting_triage"),
-    "run_recycled": (frozenset({"running", "recycled"}), "recycled"),
-    "run_retryable": (frozenset({"running"}), "running"),
-    "file_bug": (frozenset({"awaiting_triage", "recycled"}), "recycled"),
+# Event -> phase. Kept as a plain map: the phase is *derived from evidence*
+# anyway (`derive_phase`), so a "legal move" guard only added refusal paths that
+# the caller had to catch and ignore.
+EVENTS: dict[str, str] = {
+    "approve": "approved",
+    "run_start": "running",
+    "run_passed": "closed",
+    "run_failed": "awaiting_triage",
+    "run_retryable": "running",
+    "file_bug": "recycled",
 }
 
 
@@ -136,32 +120,13 @@ def record(root: Path, jira: str, **fields: Any) -> dict[str, Any]:
         return data
 
 
-def can(root: Path, jira: str, event: str) -> tuple[bool, str]:
-    """Whether `event` may fire from the requirement's current (derived) phase."""
-    spec = EVENTS.get(event)
-    if spec is None:
-        return False, f"unknown qa transition {event!r}"
-    current = derive_phase(root, jira)
-    if current not in spec[0]:
-        return False, f"cannot {event} from phase {current}"
-    return True, ""
-
-
-def transition(
-    root: Path, jira: str, event: str, **fields: Any
-) -> dict[str, Any]:
-    """Advance the state machine, writing the new phase to `state.yaml`.
-
-    The current phase is *derived from evidence* (never a stale recorded write),
-    so the guard is a real check that the move is legal right now. An illegal
-    move raises `TestRejected` instead of silently recording a wrong phase.
-    """
-    ok, why = can(root, jira, event)
-    if not ok:
+def transition(root: Path, jira: str, event: str, **fields: Any) -> dict[str, Any]:
+    """Record the phase this event implies. Evidence stays authoritative."""
+    if event not in EVENTS:
         from dev_yard.qa_config import TestRejected
 
-        raise TestRejected(f"{jira}: {why}")
-    return record(root, jira, phase=EVENTS[event][1], **fields)
+        raise TestRejected(f"{jira}: unknown qa transition {event!r}")
+    return record(root, jira, phase=EVENTS[event], **fields)
 
 
 def record_pools(root: Path, jira: str, pools: dict[str, str]) -> dict[str, Any]:
@@ -186,7 +151,6 @@ def record_triage(
     root: Path,
     jira: str,
     pending: list[str],
-    auto_recycled: list[str],
     filed: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     with st.jira_lock(jira):
@@ -195,11 +159,7 @@ def record_triage(
         merged_filed = prev.get("filed") if isinstance(prev.get("filed"), dict) else {}
         if filed:
             merged_filed = {**merged_filed, **filed}
-        data["triage"] = {
-            "pending": sorted(set(pending)),
-            "auto_recycled": sorted(set(auto_recycled)),
-            "filed": merged_filed,
-        }
+        data["triage"] = {"pending": sorted(set(pending)), "filed": merged_filed}
         try:
             save(root, jira, data)
         except OSError:
@@ -211,10 +171,9 @@ def triage(root: Path, jira: str) -> dict[str, Any]:
     data = load(root, jira)
     t = data.get("triage")
     if not isinstance(t, dict):
-        return {"pending": [], "auto_recycled": [], "filed": {}}
+        return {"pending": [], "filed": {}}
     return {
         "pending": list(t.get("pending") or []),
-        "auto_recycled": list(t.get("auto_recycled") or []),
         "filed": t.get("filed") if isinstance(t.get("filed"), dict) else {},
     }
 
@@ -236,8 +195,7 @@ def derive_phase(root: Path, jira: str) -> str:
         return "closed"
     # phase == "testing"
     from dev_yard.qa import discover_cases, find_incomplete_run
-    from dev_yard.qa_review import cases_fingerprint, review_payload
-    from dev_yard.qa_verify import verify_view
+    from dev_yard.qa_review import review_payload
 
     qa = paths.qa_dir(root, jira)
     cases = discover_cases(qa) if qa.is_dir() else []
@@ -255,15 +213,10 @@ def derive_phase(root: Path, jira: str) -> str:
     if not review.get("approved"):
         # `no-cases` is impossible here (cases were discovered above).
         return "awaiting_review"
-    # Approved: a recorded run decides between triage / recycle / closed.
     from dev_yard.qa_board import latest_run_summary
 
     run = latest_run_summary(qa)
     if not run:
-        # Approved but never run (or verify still pending).
-        v = verify_view(qa, cases_fingerprint(qa))
-        if v.get("present") and v.get("blocked"):
-            return "verifying"
         return "approved"
     summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
     failed = int(summary.get("failed") or 0)
@@ -272,7 +225,7 @@ def derive_phase(root: Path, jira: str) -> str:
         t = triage(root, jira)
         if t["pending"]:
             return "awaiting_triage"
-        if t["auto_recycled"] or t.get("filed"):
+        if t.get("filed"):
             return "recycled"
         # Env-only blocks are retryable; report as still running.
         return "running"
@@ -286,16 +239,11 @@ def phase_snapshot(root: Path, jira: str) -> dict[str, Any]:
 
     Evidence wins for `phase`; the recorded write is surfaced so a stale or
     hand-edited `state.yaml` is visible rather than silently trusted. The
-    in-flight markers `designing`/`verifying` are not drift: evidence cannot
-    always show them.
+    in-flight marker `designing` is not drift: evidence cannot show it.
     """
     recorded_phase = load(root, jira).get("phase")
     phase = derive_phase(root, jira)
-    drift = bool(
-        recorded_phase
-        and recorded_phase != phase
-        and recorded_phase not in {"designing", "verifying"}
-    )
+    drift = bool(recorded_phase and recorded_phase != phase and recorded_phase != "designing")
     return {
         "phase": phase,
         "recorded_phase": recorded_phase,

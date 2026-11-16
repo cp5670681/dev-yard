@@ -39,9 +39,9 @@
     </v-alert>
 
     <v-card
-      v-if="triagePending.length || triageAuto.length"
+      v-if="triagePending.length"
       variant="tonal"
-      :color="triagePending.length ? 'warning' : 'info'"
+      color="warning"
       class="mb-4"
     >
       <v-card-title class="d-flex align-center ga-2 py-2">
@@ -49,12 +49,9 @@
         失败分流
       </v-card-title>
       <v-card-text class="text-body-2">
-        <p v-if="triagePending.length" class="mb-1">
-          <strong>待判定（疑似产品缺陷）：</strong>{{ triagePending.join("、") }}
-          —— 在失败用例上「下 bug」，或「打回重做」修用例。
-        </p>
-        <p v-if="triageAuto.length" class="mb-0 text-medium-emphasis">
-          将自动回流用例缺陷：{{ triageAuto.join("、") }}（下次设计时只改种子，不占人工判定）。
+        <p class="mb-0">
+          <strong>待判定（失败/缺数据）：</strong>{{ triagePending.join("、") }}
+          —— 在失败用例上「下 bug」，或「打回重做」修用例（不会自动回流）。
         </p>
       </v-card-text>
       <v-card-actions v-if="triagePending.length && reviewApproved">
@@ -119,50 +116,11 @@
         </v-card-title>
         <v-card-text>
           <p v-if="review?.stale && !review?.feedback" class="text-body-2 mb-2">
-            用例在通过之后又改动过，需要重新审核。
+            用例在通过之后又改动过，建议再看一眼（审核不阻塞执行）。
           </p>
           <p v-else-if="!review?.feedback" class="text-body-2 mb-2 text-medium-emphasis">
-            用例已生成，通过后才会开始执行。
+            用例已生成，可以直接执行；审核只作记录。
           </p>
-
-          <p v-if="verifyDetails.length" class="text-body-2 mb-1 text-warning">
-            <strong>数据核实未通过（design-blocked，执行时会跳过）：</strong>
-            共 {{ verifyDetails.length }} 条 —— {{ verifyCaseIds }}
-          </p>
-          <p v-if="verifyDetails.length" class="text-caption text-medium-emphasis mb-2">
-            详见 <code>qa/design-verify/BLOCKED.md</code>，修好前置后打回重做。
-          </p>
-          <p v-else-if="verifyStale" class="text-body-2 mb-2 text-medium-emphasis">
-            数据核实结果已过期（用例改动过），需重新核实后再审核。
-          </p>
-
-          <v-expansion-panels
-            v-if="verifyDetails.length"
-            variant="accordion"
-            flat
-            class="mb-2"
-          >
-            <v-expansion-panel v-for="d in verifyDetails" :key="d.case">
-              <v-expansion-panel-title class="text-body-2">
-                <code>{{ d.case }}</code>
-                <span class="ml-2 text-medium-emphasis">{{ d.reason || `${d.rows ?? 0} rows` }}</span>
-              </v-expansion-panel-title>
-              <v-expansion-panel-text>
-                <template v-if="d.verify_sql">
-                  <div class="text-caption text-medium-emphasis">verify.sql</div>
-                  <pre class="job-log">{{ d.verify_sql }}</pre>
-                </template>
-                <template v-if="d.lint?.detail">
-                  <div class="text-caption text-medium-emphasis mt-2">lint</div>
-                  <pre class="job-log">{{ d.lint.detail }}</pre>
-                </template>
-                <template v-if="d.error">
-                  <div class="text-caption text-medium-emphasis mt-2">错误</div>
-                  <pre class="job-log">{{ d.error }}</pre>
-                </template>
-              </v-expansion-panel-text>
-            </v-expansion-panel>
-          </v-expansion-panels>
 
           <v-expansion-panels v-if="review?.feedback" variant="accordion" flat class="mb-2">
             <v-expansion-panel>
@@ -225,6 +183,15 @@
             @click="approveCases"
           >
             通过审核
+          </v-btn>
+          <v-btn
+            color="primary"
+            variant="flat"
+            :loading="acting === 'run' || suiteLocked"
+            :disabled="suiteLocked"
+            @click="executeCases"
+          >
+            直接执行
           </v-btn>
         </v-card-actions>
       </v-card>
@@ -788,7 +755,6 @@ const openQuestions = computed(
 );
 
 const triagePending = computed(() => payload.value?.triage?.pending || []);
-const triageAuto = computed(() => payload.value?.triage?.auto_recycled || []);
 const phaseDrift = computed(() => Boolean(payload.value?.phase_drift));
 const recordedPhase = computed(() => payload.value?.recorded_phase || "");
 const triaging = ref(false);
@@ -824,22 +790,6 @@ const reviewLabel = computed(() => {
 
 const reviewColor = computed(() =>
   review.value?.status === "rejected" || review.value?.stale ? "warning" : "info",
-);
-
-// Cases the host proved unverifiable (`qa/design-verify/`). They are skipped at
-// run time, so the reviewer must see them here instead of approving blindly.
-const verifyDetails = computed(() => {
-  const verify = review.value?.verify;
-  if (!verify?.present || verify.stale) return [];
-  return verify.details ?? [];
-});
-
-const verifyCaseIds = computed(() => verifyDetails.value.map((d) => d.case).join("、"));
-
-// Stale verify means the summary predates the current cases, so its verdict is
-// no longer authoritative — surface that instead of silently hiding blockers.
-const verifyStale = computed(
-  () => Boolean(review.value?.verify?.present && review.value?.verify?.stale),
 );
 
 async function checkReady() {

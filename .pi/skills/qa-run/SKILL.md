@@ -18,7 +18,24 @@ description: >
 
 页面 URL = `context.md` 的 `base_url` + 已知路由。不要猜 host。hash 路由必须带 `#/`（如 `http://host/#/works/...`）。
 
-造数 / 清理由**宿主**按本次 env 的 exec 配方执行。不要再跑 `data.setup` / `data.cleanup`，不要自己 ssh/kubectl，不要对 freeze worktree 跑 `bin/rails runner`。用例正文里的 `<seed.name>` 已经换成 setup 打出的数字，按这个 id 打开页面。5xx 诊断走宿主只读命令 `dev-yard qa logs <JIRA> --request-id <id>`（见「四态」§7）。
+## 三条宿主通道（自己用，不要自己 ssh / kubectl / usql）
+
+你**可以**自己查库、自己跑脚本 —— 走下面三个宿主命令，DSN 与配方不进 prompt：
+
+| 目的 | 命令 |
+|---|---|
+| 查数据 / 跑 DB 断言 | `dev-yard qa sql <JIRA> -c "SELECT ..."`（或 `-f x.sql`；`--json` 取第一行；`--db <catalog>` 选库） |
+| 造数 / 清理 / 应用内自查 | `dev-yard qa exec <JIRA> qa/cases/<module>/setup.rb --case <case-id> --kind setup` |
+| 5xx 查日志 | `dev-yard qa logs <JIRA> --request-id <x-request-id>` |
+
+`qa sql` 只允许单条只读语句（`SELECT/SHOW/DESC/EXPLAIN/WITH`），写库一律走 `qa exec`（与宿主跑 setup/cleanup 同一条 exec 配方、同样的 worktree 回滚）。
+
+两条边界要知道：
+
+- 只读是**词法**判定：不要写 `SELECT ... FOR UPDATE` 这类加锁语句，也不要调有副作用的函数（它在判定上仍是 `SELECT`）。
+- 配了 `db.verify_url` 时 `qa sql` 走那条连接；若它指向**只读从库**，主从延迟会让刚提交的数据读不到。断言刚写入的数据前先用 `qa sql` 读一次确认，读不到先怀疑延迟，别直接判 failed。
+
+**数据就绪自己负责**：先 `qa sql` 查库里有没有能用的行；有就直接用（把真实值写进步骤）；**没有才** `qa exec` 造数，造完再 `qa sql` 确认。用例里的 id 是设计期查到的值，按它打开页面；数据变了（被人改脏、被前序用例消耗）就自己查一个新的，别直接判失败。不要为了「让预期成立」改用例预期。
 
 `driver: host` 的用例不会派给你。你只跑会开页面的那一条。
 
@@ -52,8 +69,7 @@ description: >
 7. 四态：`passed | failed | blocked | skipped`。
    - `failed`：**被测实现**与预期不符（UI 实际值 ≠ 预期，或落库值不符）。
    - `blocked`：登录失败 / 5xx / DB 连不上；或**用例自身的种子数据/前置不满足**（如期望出现在关联表/展开行/子表格里的记录，setup 没造出对应关联或字段）。
-   - **数据缺口判 blocked，不判 failed**：先查 DB 定位。DB 里**根本没有**该数据（记录/关联/字段缺失）→ 用例缺陷，`status: blocked`、`blocked_class: case-defect`，`reason` 也以 `case-defect:` 开头并写明缺哪个实体/关联/字段 + 建议补什么（**必须写成 YAML 引号标量：`reason: "case-defect: 缺 xxx"`**，否则裸 `: ` 会让整份 result.yaml 解析失败、本 case 被判 blocked）；DB 里**有**该数据但页面或接口没透出 → `failed`（实现问题）。
-     - 注意：设计期已跑过 `data.verify`（宿主执行，见 `qa/design-verify/`）。核实已过仍在 run 期缺数据，多半是**漂移**（被前序用例改脏或库变动）；照常按上面取证并写 `reason`（以 `case-defect:` 开头，加引号），宿主会据此自动回流设计期修种子后重排，不需要你在 run 期改 setup/预期。
+   - **数据缺口先自己补，补不出来才 blocked**：先 `qa sql` 定位。DB 里没有该数据（记录/关联/字段缺失）→ 先 `qa exec` 造出来并复测；确实造不出来（缺权限、缺依赖、缺账号）才 `status: blocked`、`blocked_class: case-defect`，`reason` 以 `case-defect:` 开头并写明缺哪个实体/关联/字段（**必须写成 YAML 引号标量：`reason: "case-defect: 缺 xxx"`**，否则裸 `: ` 会让整份 result.yaml 解析失败）；DB 里**有**该数据但页面或接口没透出 → `failed`（实现问题）。
    - **5xx 判据（诊断优先，禁止默认豁免）**：响应体常是兜底文案（如 `{"error":"Invalid response"}`），不代表真实原因。先取响应头 `x-request-id`，用宿主只读命令查日志：`dev-yard qa logs <JIRA> --request-id <id>`（不要自己 ssh/kubectl）。再判：未部署/环境 → `status: blocked`、`blocked_class: undeployed`（`reason` 写明依据）；实现缺陷 → `failed`。不要只看响应体，也不要先入为主写成"环境问题"；日志命令不可达时，在 `reason` 记 `undeployed:` + `x-request-id`，交人工排查。
    - **取消**：`reason` 以 `cancelled:` 开头，与 `case-defect:`/环境故障分开（由宿主统一打，不用你写）。
    - **校验类用例「意外成功」**：预期被拦截却通过了 → 先查 DB 确认是否真的写入。未写入按断言正常判；已写入即误创建：按记录 ID 清理，在 result.yaml 的 `cleanup` 段注明「执行中误创建并已清理」，然后复测该用例。
@@ -103,7 +119,7 @@ failure:
   - 缩进只用空格，`-` 列表项与上一级对齐一致；不要用 Tab。
 
 - **`blocked_class`（结构化，必填于 blocked）**：宿主优先按它分类，不再猜文本。`case-defect`（用例种子/前置缺口）、`undeployed`（现场未部署）、`auth`（登录失败）、`env`（环境故障）、`other`。缺字段时宿主按 `reason` 文本猜，容易误判并可能误触整轮中断。
-- **db 断言务必带 `sql`**：宿主会独立重跑该只读 SQL 并把结果与 `expected` 比对；不一致会把本 case 降级为 `failed`（`host-recheck-mismatch`），不要自报 passed 蒙混。
+- **db 断言务必带 `sql`**：宿主不再自动复核，`sql` 是给人一键复跑用的审计痕迹。判 passed 前自己先 `dev-yard qa sql` 跑一遍这条 SQL，把读到的值写进 `actual` —— 自报 passed 而值对不上，报告里一眼就能看出来。
 
 ## 陷阱
 
@@ -118,8 +134,8 @@ failure:
 | 组件状态残留 | 每条 case 先导航到目标页 |
 | 5xx/接口报错 | 响应体常是兜底文案；先按 `x-request-id` 查 pod 日志/Sentry 定位真实异常，再判环境/产品（见四态 §7） |
 | 时间字段显示 UTC | 断言前先换算到页面/需求口径 |
-| 只读库禁写 | DB 断言只用 `SELECT/SHOW/DESC`；写库交给宿主 setup/cleanup |
-| 期望元素在关联行/展开行/子表格却不存在 | 先查 DB：该行对应实体/关联/字段是否存在；不存在 = 用例种子数据缺口，判 `blocked` + `reason` 以 `case-defect:` 开头（加引号），不是产品缺陷（设计期已核实过仍缺 = 漂移，交宿主回流） |
+| 只读库禁写 | `qa sql` 只跑 `SELECT/SHOW/DESC`；写库一律走 `qa exec`（宿主记账） |
+| 期望元素在关联行/展开行/子表格却不存在 | 先 `qa sql` 查该行对应实体/关联/字段；缺就自己 `qa exec` 补齐（关联行往往是独立实体，不会从主记录继承）。补不出来才判 `blocked` + `reason` 以 `case-defect:` 开头（加引号） |
 | reason 裸写 `case-defect: xxx` | 值含 `: ` 会让 YAML 解析失败 → 整份 result.yaml 作废、本 case 判 blocked。自由文本标量一律加双引号或用 `|-` 块标量 |
 | 校验用例「意外成功」 | 先查 DB 确认是否真写入；已写入即误创建 → 按 ID 清理 → `cleanup` 段注明 → 复测 |
 | 两次结果不一致 | 大概率前端异步竞态：换一次性完整输入替代逐键输入，区分竞态与后端行为 |

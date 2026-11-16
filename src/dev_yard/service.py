@@ -2416,7 +2416,7 @@ def ticket_from_qa_case(root: Path, jira: str, case_id: str) -> dict[str, Any]:
 
     t = qa_st.triage(root, jira)
     rem = [c for c in t["pending"] if c != case_id]
-    qa_st.record_triage(root, jira, rem, t["auto_recycled"], filed={case_id: ticket.id})
+    qa_st.record_triage(root, jira, rem, filed={case_id: ticket.id})
     # M1: filing a bug is the explicit `awaiting_triage -> recycled` transition.
     # The ticket is already created; a bookkeeping guard must not undo that.
     try:
@@ -2435,11 +2435,11 @@ def ticket_from_qa_case(root: Path, jira: str, case_id: str) -> dict[str, Any]:
 def triage_qa_cases(
     root: Path, jira: str, *, product_only: bool = True
 ) -> dict[str, Any]:
-    """Open bug tickets for the run's pending failures in one go (M6b).
+    """Open bug tickets for the run's pending failures in one go.
 
-    `product_only` files only the cases the host classified as `product`; the
-    rest (unclassified, or a case-defect the host already recycles) are
-    reported as skipped and left for the design path.
+    `product_only` files only the cases classified as `product`; the rest
+    (unclassified, or a case-defect) are reported as skipped — a case-defect is
+    fixed with `--redesign`, not with a bug ticket.
     """
     from dev_yard import qa_state as qa_st
     from dev_yard.qa_board import list_runs
@@ -2488,8 +2488,7 @@ def triage_qa_cases(
         filed[cid] = out["ticket_id"]
     if filed:
         remaining = [c for c in pending if c not in filed]
-        cur = qa_st.triage(root, jira)
-        qa_st.record_triage(root, jira, remaining, cur["auto_recycled"], filed=filed)
+        qa_st.record_triage(root, jira, remaining, filed=filed)
     return {"filed": filed, "skipped": skipped, "skip_reasons": skip_reasons}
 
 

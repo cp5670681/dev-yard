@@ -10,17 +10,10 @@ const props = withDefaults(defineProps<{ review: QaReview | null; label?: string
 const expanded = ref(false);
 
 // The raw feedback is agent-facing markdown and can run to thousands of
-// characters. Show a one-line gist; the full text sits behind an explicit
-// toggle. Prefer the structured verify verdict, but never present a stale one
-// as current.
+// characters. Show a one-line gist; the full text sits behind an explicit toggle.
 const summary = computed(() => {
   const review = props.review;
   if (!review?.feedback) return "";
-  const verify = review.verify;
-  if (verify?.details?.length && !verify.stale) {
-    const ids = verify.details.map((d) => d.case).join("、");
-    return `${verify.details.length} 条用例数据核实未通过：${ids}`;
-  }
   const first = review.feedback.split("\n").map((l) => l.trim()).find(Boolean) || "";
   if (!first) return "（见详情）";
   return first.length > 80 ? `${first.slice(0, 80)}…` : first;

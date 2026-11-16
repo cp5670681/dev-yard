@@ -22,7 +22,6 @@ from dev_yard.qa_cases import _involved_aliases
 from dev_yard.qa_config import QaConfig, TestRejected
 from dev_yard.qa_design import _context_block, _duties
 from dev_yard.qa_exec import (
-    diagnose_pi_exit,
     ensure_auth,
     exec_site_for_job,
     normalize_case_result,
@@ -42,7 +41,6 @@ from dev_yard.qa_schedule import (
     progress_payload,
     resumable,
 )
-from dev_yard.runners import pi_argv, run_pi_print_tracked
 from dev_yard.skillbind import session_prompt_for
 from dev_yard.stages import load_registry
 
@@ -68,7 +66,20 @@ def _check_case_repos(root: Path, cases: list[CaseJob]) -> None:
             raise TestRejected(f"case {job.id} repo {job.repo!r} is not a repos.yaml alias")
 
 
-def _gate(root: Path, jira: str, *, waive_open_tickets: bool = False) -> None:
+def _gate(
+    root: Path,
+    jira: str,
+    *,
+    waive_open_tickets: bool = False,
+    on_log: Callable[[str], None] | None = None,
+) -> None:
+    """Prerequisites that make a run impossible, plus advisory notes.
+
+    Only a missing requirement dir / wrong phase / missing freeze worktree is a
+    hard stop: without them there is nothing to test. 「票未完成」和「已经测过」
+    只是提示 —— 测试是诊断动作，不该被未完成的产品票锁死（曾造成 redesign 与
+    单条重测的死锁）。
+    """
     req = paths.req_dir(root, jira)
     if not req.is_dir():
         raise TestRejected(f"missing {req}; run: dev-yard req open {jira}")
@@ -82,18 +93,18 @@ def _gate(root: Path, jira: str, *, waive_open_tickets: bool = False) -> None:
             f"{jira} contract_review is {data.get('contract_review')!r}; "
             "must be passed before req test"
         )
+    notes: list[str] = []
     if st.test_passed(data):
-        raise TestRejected(f"{jira} already has a passed test report")
-    # A single-case rerun and a case redesign are diagnostic. Open product
-    # tickets must not lock them; a fresh full run still waits for those tickets.
+        notes.append(f"{jira} 已有一轮通过的测试报告；本次是追加一轮")
     if not waive_open_tickets and not st.all_done(data):
-        raise TestRejected(
-            f"{jira} still has open tickets; finish the test bug tickets before re-testing"
-        )
+        notes.append(f"{jira} 还有未完成的产品票；仍按当前用例执行")
     aliases = _involved_aliases(root, jira)
     missing = [a for a in aliases if not paths.req_worktree(root, jira, a).is_dir()]
     if missing:
         raise TestRejected(f"{jira} missing freeze worktrees: {', '.join(missing)}")
+    if on_log is not None:
+        for note in notes:
+            on_log(f"提示：{note}\n")
 
 
 def _claim_run_dir(evidence: Path) -> tuple[str, Path]:
@@ -321,34 +332,6 @@ def _auth_failure_for(
         if keyed is not None:
             return keyed
     return failures.get(acct)
-
-
-def _real_pool_probe(
-    root: Path, slot: PoolSlot, *, on_spawn: SpawnFn | None = None, on_reap: ReapFn | None = None
-) -> tuple[bool, str]:
-    """A trivial pi call that proves a pool's provider/model can run (M3)."""
-    spec = load_registry(root)["qa-run"]
-    argv = pi_argv(
-        root=root,
-        bundle="qa-run",
-        prompt=None,
-        print_mode=True,
-        spec=spec,
-        provider=slot.provider,
-        model=slot.model,
-    )
-    code, raw = run_pi_print_tracked(
-        argv,
-        root,
-        "Reply with the single word: ok",
-        timeout=60,
-        on_spawn=on_spawn,
-        on_reap=on_reap,
-    )
-    if code == 0:
-        return True, ""
-    reason, _detail = diagnose_pi_exit(code, raw)
-    return False, reason
 
 
 def _run_prompt(

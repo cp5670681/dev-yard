@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -292,17 +293,13 @@ def case_script_path(job: CaseJob, name: str, kind: str) -> Path:
 def host_case_verdict(
     cfg: QaConfig,
     job: CaseJob,
-    seeds: dict[str, dict[str, str]],
     *,
     on_log: Any | None = None,
 ) -> dict[str, Any]:
-    """Prove a `driver: host` case with verify.sql. No browser.
+    """Prove a `driver: host` case with its `data.verify` query. No browser.
 
-    The same contract as design-time verify: one read-only query, at least one
-    row passes. Seed placeholders are substituted from this case's setup stdout.
+    One read-only query, at least one row passes.
     """
-    from dev_yard.qa_seeds import apply_seed_placeholders
-
     if not job.verify:
         return {
             "status": "failed",
@@ -330,15 +327,7 @@ def host_case_verdict(
             "repo": job.repo,
             "assertions": [],
         }
-    query, missing = apply_seed_placeholders(text, seeds, sql_literals=True)
-    if missing:
-        return {
-            "status": "blocked",
-            "blocked_class": "case-defect",
-            "reason": "case-defect: verify.sql 缺 QA_SEED " + ", ".join(missing),
-            "repo": job.repo,
-            "assertions": [],
-        }
+    query = text
     try:
         assert_readonly_sql(query)
         rows = run_sql_count(
@@ -477,6 +466,13 @@ def origin_for_job(root: Path, cfg: QaConfig, job: CaseJob) -> str:
     return origin_for_site(cfg.env, exec_site_for_job(root, cfg, job))
 
 
+@dataclass(frozen=True)
+class _RepoRef:
+    """Just enough of a CaseJob for site/origin resolution."""
+
+    repo: str | None = None
+
+
 def run_case_script(
     root: Path,
     jira: str,
@@ -488,30 +484,64 @@ def run_case_script(
     executor: Any | None = None,
 ) -> str:
     """Run setup or cleanup. Reverts worktree files the script created (local only)."""
-    from dev_yard.script_exec import ExecErrorClass, resolve_executor
-
     name = job.setup if kind == "setup" else job.cleanup
     if not name:
         return ""
     script = case_script_path(job, name, kind)
-    wt = paths.req_worktree(root, jira, job.repo) if job.repo else None
+    return run_script_path(
+        root,
+        jira,
+        cfg,
+        script,
+        repo=job.repo,
+        db=job.db,
+        case_id=job.id,
+        kind=kind,
+        on_log=on_log,
+        executor=executor,
+    )
+
+
+def run_script_path(
+    root: Path,
+    jira: str,
+    cfg: QaConfig,
+    script: Path,
+    *,
+    repo: str | None,
+    db: str | None,
+    case_id: str,
+    kind: str,
+    on_log: Any | None = None,
+    executor: Any | None = None,
+) -> str:
+    """Run one script through this env's exec recipe.
+
+    Shared by setup/cleanup and the agent-facing `dev-yard qa exec`, so a worker
+    that self-serves its own data uses the exact same channel (and the same
+    worktree-revert guard) as a host-run seed.
+    """
+    from dev_yard.script_exec import ExecErrorClass, resolve_executor
+
+    wt = paths.req_worktree(root, jira, repo) if repo else None
     # .sql 造数/清理一律在宿主用 usql 跑：无论 exec.use / db.exec 怎么配，
     # 都不把 SQL 丢进现场（pod 里既无 psql 也无 usql，且远端退出码会被吞）。
     if script.suffix.lower() == ".sql":
-        return _run_sql(cfg, script, on_log, catalog=job.db or None)
+        return _run_sql(cfg, script, on_log, catalog=db or None)
     started = time.time()
     db_env: dict[str, str] = {}
-    needs_db = bool(job.db) or bool(getattr(cfg.env, "db_catalogs", ())) or bool(
+    needs_db = bool(db) or bool(getattr(cfg.env, "db_catalogs", ())) or bool(
         cfg.env.db_url
     )
     if needs_db:
-        db_env["DATABASE_URL"] = connect_url(cfg, job.db or None)
-        db_env["QA_DB"] = job.db or cfg.env.db_default or "default"
+        db_env["DATABASE_URL"] = connect_url(cfg, db or None)
+        db_env["QA_DB"] = db or cfg.env.db_default or "default"
     from dev_yard.exec_cfg import bind_site
 
-    site_name = exec_site_for_job(root, cfg, job)
+    target = _RepoRef(repo=repo)
+    site_name = exec_site_for_job(root, cfg, target)
     if executor is None:
-        origin = origin_for_job(root, cfg, job)
+        origin = origin_for_job(root, cfg, target)
         executor = resolve_executor(
             cfg.env,
             base_url=origin or cfg.env.base_url,
@@ -534,7 +564,7 @@ def run_case_script(
             env_extra={
                 "QA_ENV": cfg.active_env,
                 "QA_JIRA": jira,
-                "QA_CASE_ID": job.id,
+                "QA_CASE_ID": case_id,
                 "QA_SCRIPT_KIND": kind,
                 "QA_EXEC_SITE": site_name or "",
                 **db_env,
@@ -674,113 +704,21 @@ def assert_readonly_sql(text: str, *, what: str = "verify.sql") -> str:
     return clean
 
 
-def run_sql_value(
-    cfg: QaConfig,
-    sql: str,
-    on_log: Any | None = None,
-    catalog: str | None = None,
-    *,
-    verify: bool = False,
-) -> str:
-    """Run a read-only verify statement and return its first scalar cell.
+def _limit_sql(body: str, url: str, limit: int, alias: str = "qa_verify") -> str:
+    """Wrap a SELECT/WITH so the database returns at most `limit` rows.
 
-    Used to re-check a worker's `db` assertion independently: the host runs the
-    statement the assertion carries and compares the value to `expected`. Empty
-    output is returned as "" so the caller can flag the mismatch.
+    Capping at the DB keeps a host-run self-service query (`dev-yard qa sql`) from
+    pulling a whole table into memory and into the worker's prompt. `show`/`desc`/
+    `explain` cannot be sub-queried, so those run as written and are capped on
+    output instead. Bare alias, never `AS`: Oracle rejects `FROM (...) AS x`.
     """
-    body = assert_readonly_sql(sql, what="db assertion sql")
-    try:
-        url = connect_url(cfg, catalog, verify=verify)
-    except TestRejected as e:
-        raise TestRejected("qa.yaml has no db.url; cannot re-check db assertion") from e
-    binary = shutil.which("usql")
-    if not binary:
-        raise TestRejected("usql not found; cannot re-check db assertion")
-    if on_log is not None:
-        label = catalog or cfg.env.db_default or "db.url"
-        on_log(f"$ usql <{label}> -t -A -c {body[:200]}")
-    r = _run(
-        [binary, url, "-t", "-A", "-c", body],
-        timeout=120,
-        label="usql recheck",
-    )
-    if r.returncode != 0:
-        err = redact_qa_yaml((r.stderr or r.stdout or "").strip()) or str(r.returncode)
-        raise TestRejected(f"db assertion sql failed: {err}")
-    for line in (r.stdout or "").splitlines():
-        cell = line.split("|", 1)[0].strip()
-        if cell:
-            return cell
-    return ""
-
-
-def recheck_db_assertions(
-    cfg: QaConfig,
-    job: CaseJob,
-    result: dict[str, Any],
-    on_log: Any | None = None,
-    seeds: dict[str, dict[str, str]] | None = None,
-) -> list[dict[str, Any]]:
-    """Re-run the `db` assertions that carry a `sql` field; report mismatches.
-
-    A worker self-attests `passed`; this is the host's independent check. Only
-    assertions that declare a machine-runnable read-only `sql` can be re-checked
-    — ones without it are left to the human and recorded as unverified.
-    `:seed.key` / `<seed.key>` left in the worker SQL are filled from setup stdout.
-    """
-    from dev_yard.qa_seeds import apply_seed_placeholders
-
-    problems: list[dict[str, Any]] = []
-    for item in result.get("assertions") or []:
-        if not isinstance(item, dict) or str(item.get("type")) != "db":
-            continue
-        sql = str(item.get("sql") or "").strip()
-        if not sql:
-            continue
-        if seeds:
-            sql, missing = apply_seed_placeholders(sql, seeds, sql_literals=True)
-            if missing:
-                problems.append(
-                    {
-                        "case": job.id,
-                        "expected": item.get("expected"),
-                        "actual": "recheck error: missing QA_SEED " + ", ".join(missing),
-                        "sql": sql,
-                        "kind": "error",
-                    }
-                )
-                continue
-            item["sql"] = sql
-        expected = item.get("expected")
-        try:
-            got = run_sql_value(cfg, sql, on_log=on_log, catalog=job.db or None)
-        except TestRejected as e:
-            # Could not run the check (usql missing, bad SQL): report it, but
-            # do not fail the case — only a real value mismatch downgrades.
-            problems.append(
-                {
-                    "case": job.id,
-                    "expected": expected,
-                    "actual": f"recheck error: {e}",
-                    "kind": "error",
-                }
-            )
-            continue
-        recorded = item.get("actual")
-        kind = _db_recheck_kind(expected, recorded, got)
-        if kind == "ok":
-            continue
-        problems.append(
-            {
-                "case": job.id,
-                "expected": expected,
-                "actual": got,
-                "recorded": recorded,
-                "sql": sql,
-                "kind": kind,
-            }
-        )
-    return problems
+    head = body.split(None, 1)[0].lower()
+    if head not in {"select", "with"}:
+        return body
+    scheme = url.split(":", 1)[0].lower()
+    if scheme in {"oracle", "godror"}:
+        return f"SELECT * FROM ({body}) {alias} WHERE ROWNUM <= {limit}"
+    return f"SELECT * FROM ({body}) {alias} LIMIT {limit}"
 
 
 def diagnose_pi_exit(code: int, output: str) -> tuple[str, str]:
@@ -832,52 +770,48 @@ def diagnose_pi_exit(code: int, output: str) -> tuple[str, str]:
     return reason, tail
 
 
-_CJK_CHAR = re.compile(r"[\u4e00-\u9fff]")
+def run_sql_rows(
+    cfg: QaConfig,
+    sql: str,
+    limit: int = 200,
+    on_log: Any | None = None,
+    catalog: str | None = None,
+    *,
+    verify: bool = False,
+    max_chars: int = 2000,
+) -> list[str]:
+    """Read-only query capped at `limit` rows and `max_chars` per line.
 
-
-def _is_prose_expected(value: Any) -> bool:
-    """Case prose ("col = 0", a full sentence), not a value the cell can equal."""
-    if value is None:
-        return False
-    text = " ".join(str(value).split())
-    if not text or "=" in text:
-        return bool(text)
-    if _CJK_CHAR.search(text):
-        if any(p in text for p in ("，", "。", "、", "：", "；", "！", "？", "（", "）", " ")):
-            return True
-        if len(_CJK_CHAR.findall(text)) >= 4:
-            return True
-    return len(text.split(" ")) > 2
-
-
-def _db_recheck_kind(expected: Any, recorded: Any, sql_value: str) -> str:
-    """`ok`, `mismatch`, or `unverified`.
-
-    A cell-shaped expected must equal the SQL cell. Obvious prose falls back
-    to the cell the worker recorded in `actual`. When that recorded value is
-    itself prose, the host cannot check it: keep the worker verdict and mark
-    the assertion unverified instead of failing the case.
+    The cap lives in three places on purpose: a DB-side LIMIT (no full-table
+    transfer), a row slice, and a per-line slice — the result becomes prompt text,
+    so an unbounded dump would also blow up the model window.
     """
-    if _scalar_eq(expected, sql_value):
-        return "ok"
-    if not _is_prose_expected(expected):
-        return "mismatch"
-    if _is_prose_expected(recorded):
-        return "unverified"
-    if _scalar_eq(recorded, sql_value):
-        return "ok"
-    return "mismatch"
-
-
-def _db_recheck_ok(expected: Any, recorded: Any, sql_value: str) -> bool:
-    """True when the host's SQL cell confirms the assertion."""
-    return _db_recheck_kind(expected, recorded, sql_value) == "ok"
-
-
-def _scalar_eq(expected: Any, got: str) -> bool:
-    if expected is None:
-        return False
-    return " ".join(str(expected).split()).casefold() == " ".join(got.split()).casefold()
+    body = assert_readonly_sql(sql, what="qa sql")
+    try:
+        url = connect_url(cfg, catalog, verify=verify)
+    except TestRejected as e:
+        raise TestRejected("qa.yaml has no db.url; cannot query data") from e
+    binary = shutil.which("usql")
+    if not binary:
+        raise TestRejected("usql not found; cannot query data")
+    if body.split(None, 1)[0].lower() == "table":
+        # `TABLE x` cannot be sub-queried on every dialect, so it cannot be capped
+        # at the DB; make the caller write a SELECT instead of dumping the table.
+        raise TestRejected("qa sql: 用 `SELECT * FROM <table>` 代替 `TABLE <table>`")
+    query = _limit_sql(body, url, limit)
+    if on_log is not None:
+        label = catalog or cfg.env.db_default or "db.url"
+        on_log(f"$ usql <{label}> -t -A -c {query[:200]}")
+    r = _run(
+        [binary, url, "-t", "-A", "-c", query],
+        timeout=120,
+        label="usql query",
+    )
+    if r.returncode != 0:
+        err = redact_qa_yaml((r.stderr or r.stdout or "").strip()) or str(r.returncode)
+        raise TestRejected(f"query failed: {err}")
+    lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
+    return [ln[:max_chars] for ln in lines[:limit]]
 
 
 def run_sql_lines(
@@ -948,8 +882,8 @@ def run_sql_first_row(
 ) -> dict[str, Any]:
     """First row of a read-only verify statement, keyed by column alias.
 
-    Used when a case has no setup and names page values as `<seed.alias>`.
-    Oracle gets `ROWNUM = 1`; other catalogs get `LIMIT 1`.
+    Used to read one real row (an id, a name) before asserting or opening a page.
+    Oracle gets `ROWNUM <= 1`; other catalogs get `LIMIT 1`.
     """
     body = assert_readonly_sql(sql)
     try:
@@ -959,11 +893,7 @@ def run_sql_first_row(
     binary = shutil.which("usql")
     if not binary:
         raise TestRejected("usql not found; cannot read an existing row")
-    scheme = url.split(":", 1)[0].lower()
-    if scheme in {"oracle", "godror"}:
-        wrapped = f"SELECT * FROM ({body}) qa_verify WHERE ROWNUM = 1"
-    else:
-        wrapped = f"SELECT * FROM ({body}) qa_verify LIMIT 1"
+    wrapped = _limit_sql(body, url, 1)
     if on_log is not None:
         label = catalog or cfg.env.db_default or "db.url"
         on_log(f"$ usql <{label}> -J -c {wrapped[:200]}")
@@ -1139,8 +1069,9 @@ def _normalize_assertions(raw: Any) -> list[dict[str, Any]] | None:
         if item.get("carrier"):
             row["carrier"] = item.get("carrier")
         if typ == "db" and item.get("sql"):
-            # Carried so the host can re-run the assertion itself (see
-            # recheck_db_assertions) instead of trusting the worker's `passed`.
+            # Kept as the audit trail for the assertion: the report shows the
+            # statement and the value the worker read, so a human can re-run it
+            # in one click. The host does not re-check it on its own.
             row["sql"] = str(item["sql"])
         out.append(row)
     return out

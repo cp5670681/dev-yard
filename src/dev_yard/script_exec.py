@@ -33,9 +33,6 @@ LogFn = Callable[[str], None]
 HELLO = "qa-check-env-ok"
 _ENV_TOKEN = re.compile(r"^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$")
 _ENV_IN_STR = re.compile(r"\{env:([A-Za-z_][A-Za-z0-9_]*)\}")
-FUSE_CLASSES = frozenset(
-    {"unreachable", "auth", "pod_not_found", "timeout", "runner"}
-)
 DELEGATE_PROMPT = """# yard-exec-delegate v1
 Execute the script at {script} using skill `{skill}`.
 Pass the script bytes via stdin or argv; do not inline-rewrite its content.

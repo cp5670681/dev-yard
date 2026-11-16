@@ -5,11 +5,9 @@ import pytest
 from dev_yard.qa_config import TestRejected, load_qa_config
 from dev_yard.qa_deploy import (
     branch_new_columns,
-    frozen_models,
     missing_on_site,
     parse_migration_text,
     requirement_migrations,
-    undeployed_columns,
 )
 from dev_yard.qa_ready import assert_ready, assess_ready
 from dev_yard.qa_schedule import CaseJob
@@ -43,36 +41,6 @@ def test_branch_new_columns_replays_in_filename_order(tmp_path: Path):
     b.write_text("remove_column :firm_tasks, :is_existing_contact\n", encoding="utf-8")
     assert branch_new_columns([b, a]) == {}
     assert branch_new_columns([a]) == {"firm_tasks": {"is_existing_contact"}}
-
-
-def test_frozen_models_scans_include(tmp_path: Path):
-    wt = tmp_path / "reqs" / "J-1" / "worktrees" / "reach"
-    model = wt / "app" / "models"
-    model.mkdir(parents=True)
-    (model / "firm_task.rb").write_text(
-        "class FirmTask < ActiveRecord::Base\n  include FreezeModelConcern\nend\n",
-        encoding="utf-8",
-    )
-    (model / "freeze_model_concern.rb").write_text(
-        "module FreezeModelConcern\nend\n", encoding="utf-8"
-    )
-    names = frozen_models(tmp_path, "J-1", "reach")
-    assert names == {"FirmTask"}
-
-
-def test_frozen_models_reads_non_utf8_ruby(tmp_path: Path):
-    wt = tmp_path / "reqs" / "J-1" / "worktrees" / "legacy"
-    model = wt / "app" / "models"
-    other = wt / "lib"
-    model.mkdir(parents=True)
-    other.mkdir(parents=True)
-    (model / "widget.rb").write_text(
-        "class Widget < ActiveRecord::Base\n  include FreezeModelConcern\nend\n",
-        encoding="utf-8",
-    )
-    other.joinpath("note.rb").write_bytes(b"# " + bytes([0xd7, 0xd4]) + b"\n")
-    names = frozen_models(tmp_path, "J-1", "legacy")
-    assert names == {"Widget"}
 
 
 def test_branch_new_columns_reads_non_utf8_migration(tmp_path: Path):
@@ -140,29 +108,6 @@ def test_missing_on_site_none_when_probe_fails(tmp_path: Path, monkeypatch):
     )
     cfg = load_qa_config(tmp_path)
     assert missing_on_site(tmp_path, "J-1", cfg, "reach") is None
-
-
-def test_undeployed_columns_lists_when_probe_undetermined(tmp_path: Path, monkeypatch):
-    from dev_yard import qa_deploy
-
-    monkeypatch.setattr(
-        qa_deploy, "requirement_migrations", lambda *a, **k: ["db/migrate/x.rb"]
-    )
-    monkeypatch.setattr(
-        qa_deploy,
-        "branch_new_columns",
-        lambda *_a, **_k: {"firm_tasks": {"is_existing_contact"}},
-    )
-    monkeypatch.setattr(qa_deploy, "missing_on_site", lambda *_a, **_k: None)
-    (tmp_path / "reqs" / "J-1" / "worktrees" / "reach").mkdir(parents=True)
-    (tmp_path / "qa.yaml").write_text(
-        "workers:\n  - {id: a, provider: rcc, model: m, concurrency: 1, priority: 1}\n"
-        "envs:\n  local:\n    base_url: http://x\n    db: {url: postgres://localhost/app}\n",
-        encoding="utf-8",
-    )
-    cfg = load_qa_config(tmp_path)
-    rows = undeployed_columns(tmp_path, "J-1", cfg, ["reach"])
-    assert ("reach", "firm_tasks.is_existing_contact", "db/migrate/x.rb") in rows
 
 
 def test_assert_ready_rejects_missing_branch_column(tmp_path: Path, monkeypatch):

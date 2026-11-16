@@ -32,8 +32,6 @@ _CREATE_TABLE = re.compile(
 )
 _T_COL = re.compile(r"^\s*(?P<blk>\w+)\.(?P<kind>\w+)\s+(?::(?P<c1>\w+)|['\"](?P<c2>\w+)['\"])", re.M)
 _SKIP_KINDS = frozenset({"timestamps", "index", "indexes", "check"})
-_INCLUDE_FREEZE = re.compile(r"\binclude\s+(?:\w+::)*FreezeModelConcern\b")
-_CLASS = re.compile(r"^class\s+(\w+)", re.M)
 _COL_PROBE = (
     "SELECT 1 FROM information_schema.columns "
     "WHERE LOWER(table_name) = '{table}' AND LOWER(column_name) = '{col}'"
@@ -153,32 +151,6 @@ def branch_new_columns(migrations: list[Path | str]) -> dict[str, set[str]]:
     return net
 
 
-def frozen_models(root: Path, jira: str, alias: str) -> set[str]:
-    """Model class names that `include FreezeModelConcern` (or a namespaced twin)."""
-    wt = paths.req_worktree(root, jira, alias)
-    if not wt.is_dir():
-        return set()
-    names: set[str] = set()
-    for path in wt.rglob("*.rb"):
-        try:
-            rel = path.relative_to(wt).as_posix()
-        except ValueError:
-            rel = path.as_posix()
-        if any(part in f"/{rel}/" for part in ("/vendor/", "/node_modules/", "/tmp/")):
-            continue
-        if path.name.lower() in {"freeze_model_concern.rb", "freeze_model.rb"}:
-            continue
-        text = _read_worktree_text(path)
-        if text is None:
-            continue
-        if not _INCLUDE_FREEZE.search(text):
-            continue
-        found = _CLASS.search(text)
-        if found:
-            names.add(found.group(1))
-    return names
-
-
 def catalogs_for_alias(root: Path, jira: str, cfg: QaConfig, alias: str) -> list[str]:
     repos = load_repos(root)
     repo = repos.get(alias)
@@ -240,36 +212,3 @@ def missing_on_site(
     if missing_cols:
         missing_files = list(rels)
     return missing_files, missing_cols
-
-
-def undeployed_columns(
-    root: Path, jira: str, cfg: QaConfig, aliases: list[str]
-) -> list[tuple[str, str, str]]:
-    """Rows of (alias, table.col, migration_rel) for context.md.
-
-    Live probe miss and probe-undetermined both list branch-new columns so
-    design still keeps those assertions. Empty only when every alias is
-    deployed or has no new columns.
-    """
-    rows: list[tuple[str, str, str]] = []
-    for alias in aliases:
-        rels = requirement_migrations(root, jira, alias)
-        if rels is None:
-            continue
-        wt = paths.req_worktree(root, jira, alias)
-        wanted = branch_new_columns([wt / rel for rel in rels])
-        if not wanted:
-            continue
-        file_hint = rels[0] if rels else ""
-        missing = missing_on_site(root, jira, cfg, alias)
-        if missing is None:
-            cols = [
-                f"{table}.{col}"
-                for table, names in sorted(wanted.items())
-                for col in sorted(names)
-            ]
-        else:
-            _files, cols = missing
-        for col in cols:
-            rows.append((alias, col, file_hint))
-    return rows

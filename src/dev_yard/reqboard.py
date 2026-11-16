@@ -381,12 +381,13 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
     # Gates shared by 设计用例 / 审核用例 / 执行用例, minus each action's own
     # precondition: the review gate must not require itself, and run must not
     # require what review clears.
+    # 未完成的产品票不再是 QA 动作的闸门：测试是诊断动作，被票锁死曾造成
+    # 「票挡住重测 / 重测又挡住改用例」的死锁。只在 reason 里提示。
     qa_ready = (
         can_fill
         and has_worktrees
         and not qa_reason
         and detail.phase == "testing"
-        and tickets_done
     )
 
     def _qa_base_reason() -> str:
@@ -402,8 +403,6 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
             return "需要 freeze worktree"
         if qa_reason:
             return qa_reason
-        if not tickets_done:
-            return "还有未完成的票，先处理测试 bug"
         return ""
 
     # 设计用例 is the entry point while there are no cases. Once cases exist,
@@ -420,13 +419,14 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
             review_qa_reason = "还没有用例，先点「设计用例」"
         elif not review_pending:
             review_qa_reason = "用例已审核通过，可直接「执行用例」"
-    can_run_qa = qa_ready and has_cases and review_approved
+    # 审核不再是闸门：没审也能跑（worker 在 run 期自证），只提示。
+    can_run_qa = qa_ready and has_cases
     run_qa_reason = _qa_base_reason()
     if not run_qa_reason:
         if not has_cases:
             run_qa_reason = "还没有用例，先点「设计用例」"
         elif review_pending:
-            run_qa_reason = "用例待审核：先通过「审核用例」"
+            run_qa_reason = "用例未审核（仍可执行；建议先看一眼用例清单）"
     can_fix_contract = frozen and (
         detail.contract == "failed"
         or any(t.source == "contract" and t.can_implement for t in detail.tickets)

@@ -7,7 +7,6 @@ import yaml
 from dev_yard.qa_schedule import blocked_kind, format_blocked_kind
 from dev_yard.test_report import Finding, InboundReport, ReportRejected
 
-DESIGN_BLOCKED_PREFIX = "design-blocked:"
 DEFECT_CLASSES = ("product", "case", "unclassified")
 
 
@@ -27,22 +26,6 @@ def classify_defect(item: dict[str, Any]) -> str:
     return "unclassified"
 
 
-def has_design_blocked_skip(cases: list[dict[str, Any]]) -> bool:
-    """True when a case was skipped because its data could not be verified.
-
-    `--allow-unverified` waives the gate and skips those cases; that must not
-    let the rest of the run read as a clean pass, so the caller refuses ingest.
-    """
-    for item in cases:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("status") or "") != "skipped":
-            continue
-        if str(item.get("reason") or "").startswith(DESIGN_BLOCKED_PREFIX):
-            return True
-    return False
-
-
 def map_qa_result(run: dict[str, Any], cases: list[dict[str, Any]]) -> InboundReport | None:
     """Map a yard-qa run into an inbound test report. None means do not ingest."""
     summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
@@ -54,10 +37,6 @@ def map_qa_result(run: dict[str, Any], cases: list[dict[str, Any]]) -> InboundRe
     if not cases or (total == 0 and failed == 0 and blocked == 0 and passed == 0 and skipped == 0):
         return None
     if failed == 0 and blocked > 0:
-        return None
-    # A skipped design-blocked case means unverified data was waived through;
-    # the run is not a clean pass even if the rest passed.
-    if failed == 0 and has_design_blocked_skip(cases):
         return None
     # A skipped-only run proves nothing: do not ingest it as a pass.
     if failed == 0 and passed == 0:
@@ -145,15 +124,15 @@ def _summary_line(summary: dict[str, Any]) -> str:
 
 
 def triage_buckets(cases: list[dict[str, Any]]) -> dict[str, list[str]]:
-    """Split a run's non-passing cases into human triage vs automatic recycle.
+    """The non-passing cases a person has to judge.
 
-    `pending` is what a person must judge (likely product defects); everything
-    the host can resolve itself — a `case-defect` seed gap — goes to
-    `auto_recycled` and never appears in the 下 bug list. Environment blocks are
-    retried in-run (M2) and are not triage items either.
+    Nothing recycles itself any more: a `case-defect` is diagnostic too, so it
+    lands in `pending` next to the likely product defects (the human either
+    fixes the case with `--redesign` or opens a bug). `classify_defect` is what
+    keeps a case-defect out of the 下 bug list. Environment blocks are retried
+    in-run (M2) and are not triage items.
     """
     pending: list[str] = []
-    auto_recycled: list[str] = []
     for item in cases:
         if not isinstance(item, dict):
             continue
@@ -162,20 +141,15 @@ def triage_buckets(cases: list[dict[str, Any]]) -> dict[str, list[str]]:
             continue
         status = str(item.get("status") or "")
         if status == "failed":
-            if classify_defect(item) == "case":
-                auto_recycled.append(cid)
-            else:
-                pending.append(cid)
+            pending.append(cid)
         elif status == "blocked":
             kind = blocked_kind(
                 str(item.get("reason") or ""), str(item.get("blocked_class") or "")
             )
-            if kind == "case-defect":
-                auto_recycled.append(cid)
-            elif kind == "other":
+            if kind in {"case-defect", "other"}:
                 pending.append(cid)
             # env (retried) and cancelled (collateral) are not triage items.
-    return {"pending": sorted(set(pending)), "auto_recycled": sorted(set(auto_recycled))}
+    return {"pending": sorted(set(pending))}
 
 
 def md_cell(text: Any) -> str:

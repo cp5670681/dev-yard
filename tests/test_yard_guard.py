@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from dev_yard.stages import resolve_extension_path
+from dev_yard.stages import resolve_doc_align_extension_path, resolve_extension_path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -158,6 +158,36 @@ def _pi_package_root() -> Path | None:
             continue
         if data.get("name") == "@earendil-works/pi-coding-agent":
             return parent
+    return _managed_package_root()
+
+
+def _managed_package_root() -> Path | None:
+    """pi's managed install, when the `pi` on PATH is a shim rather than a link."""
+    roots: list[Path] = []
+    env_root = os.environ.get("PI_MANAGED_INSTALL_ROOT", "").strip()
+    if env_root:
+        roots.append(Path(env_root).expanduser().resolve())
+    roots.append(Path.home() / ".pi" / "agent" / "install")
+    for root in roots:
+        releases = root / "releases"
+        if not releases.is_dir():
+            continue
+        for release in sorted(releases.iterdir(), reverse=True):
+            pkg = release / "node_modules" / "@earendil-works" / "pi-coding-agent"
+            if (pkg / "dist" / "index.js").is_file():
+                return pkg
+    return None
+
+
+def _jiti_loader(pkg: Path) -> Path | None:
+    """jiti ships hoisted next to the pi package, not always inside it."""
+    for base in (pkg, *pkg.parents):
+        candidate = base / "node_modules" / "jiti" / "lib" / "jiti-static.mjs"
+        if candidate.is_file():
+            return candidate
+        candidate = base / "jiti" / "lib" / "jiti-static.mjs"
+        if candidate.is_file():
+            return candidate
     return None
 
 
@@ -168,9 +198,9 @@ def test_yard_guard_logic(tmp_path: Path):
     pkg = _pi_package_root()
     if pkg is None:
         pytest.skip("global pi install not found")
-    jiti = pkg / "node_modules" / "jiti" / "lib" / "jiti-static.mjs"
+    jiti = _jiti_loader(pkg)
     entry = pkg / "dist" / "index.js"
-    if not jiti.is_file() or not entry.is_file():
+    if jiti is None or not entry.is_file():
         pytest.skip("pi's jiti loader not found")
 
     guard = resolve_extension_path(REPO_ROOT)
@@ -194,6 +224,64 @@ def test_yard_guard_logic(tmp_path: Path):
         text=True,
         timeout=120,
         cwd=tmp_path,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "ALL PASS" in proc.stdout
+
+
+DOC_ALIGN_HARNESS = """
+import {{ createJiti }} from {jiti};
+const jiti = createJiti(import.meta.url, {{
+  alias: {{ "@earendil-works/pi-coding-agent": {entry} }},
+}});
+const mod = await jiti.import({guard});
+let bad = 0;
+for (const [stage, want] of {cases}) {{
+  const got = mod.shouldEnforce(stage);
+  if (got !== want) {{ bad++; console.log(`FAIL stage want=${{want}} got=${{got}} :: ${{stage}}`); }}
+}}
+console.log(bad === 0 ? "ALL PASS" : `${{bad}} FAILURES`);
+process.exit(bad === 0 ? 0 : 1);
+"""
+
+# The doc-align write allow-list must not leak into other stages: pi
+# auto-discovers `.pi/extensions`, so an interactive session would otherwise be
+# unable to edit any file.
+DOC_ALIGN_STAGE_CASES = [
+    ("doc-align", True),
+    ("implement", False),
+    ("review", False),
+    ("", False),
+    (None, False),
+]
+
+
+def test_yard_doc_align_guard_is_stage_scoped(tmp_path: Path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+    pkg = _pi_package_root()
+    if pkg is None:
+        pytest.skip("global pi install not found")
+    jiti = _jiti_loader(pkg)
+    entry = pkg / "dist" / "index.js"
+    if jiti is None or not entry.is_file():
+        pytest.skip("pi's jiti loader not found")
+
+    guard = resolve_doc_align_extension_path(REPO_ROOT)
+    assert guard is not None and guard.is_file()
+
+    script = DOC_ALIGN_HARNESS.format(
+        jiti=json.dumps(str(jiti)),
+        entry=json.dumps(str(entry)),
+        guard=json.dumps(str(guard)),
+        cases=json.dumps(DOC_ALIGN_STAGE_CASES),
+    )
+    harness = tmp_path / "check-doc-align.mjs"
+    harness.write_text(script)
+
+    proc = subprocess.run(
+        [node, str(harness)], capture_output=True, text=True, timeout=120, cwd=tmp_path
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "ALL PASS" in proc.stdout

@@ -775,6 +775,9 @@ class PiRunner(Runner):
                 on_line=_echo,
                 on_spawn=self.on_spawn,
                 on_reap=self.on_reap,
+                # Stage-scoped extensions (yard-doc-align) must not fire on the
+                # other stages, and an interactive session sets nothing at all.
+                env={"YARD_STAGE": self.bundle},
             )
             if stream is not None:
                 _flush_stream_log(stream)
@@ -804,7 +807,9 @@ class PiRunner(Runner):
             model=self.model,
             attach=extra_read_paths,
         )
-        r = subprocess.run(argv, cwd=cwd)
+        r = subprocess.run(
+            argv, cwd=cwd, env={**os.environ, "YARD_STAGE": self.bundle}
+        )
         return RunResult(
             ok=r.returncode == 0,
             summary=f"pi exit {r.returncode}",

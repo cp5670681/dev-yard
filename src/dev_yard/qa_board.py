@@ -180,7 +180,7 @@ def qa_detail_summary(root: Path, jira: str) -> dict[str, Any]:
         triage_payload = qa_triage(root, jira)
     except Exception:  # noqa: BLE001 — the board must render even if state is odd
         snap = {"phase": "", "recorded_phase": None, "phase_drift": False}
-        triage_payload = {"pending": [], "auto_recycled": [], "filed": {}}
+        triage_payload = {"pending": [], "filed": {}}
 
     return {
         "has_cases": has_cases,
@@ -397,7 +397,7 @@ def qa_page_payload(root: Path, jira: str) -> dict[str, Any]:
             "next": "",
             "recorded_phase": None,
             "phase_drift": False,
-            "triage": {"pending": [], "auto_recycled": [], "filed": {}},
+            "triage": {"pending": [], "filed": {}},
         }
     meta, bad_meta = _load_yaml(qa / "meta.yaml")
     if bad_meta:
@@ -412,7 +412,7 @@ def qa_page_payload(root: Path, jira: str) -> dict[str, Any]:
         triage_payload = qa_triage(root, jira)
     except Exception:  # noqa: BLE001 — page must render even if state is odd
         snap = {"phase": "", "recorded_phase": None, "phase_drift": False}
-        triage_payload = {"pending": [], "auto_recycled": [], "filed": {}}
+        triage_payload = {"pending": [], "filed": {}}
     missing_accounts: list[str] = []
     has_discover_sql = paths.qa_accounts_discover_sql(root, jira).is_file()
     try:

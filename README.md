@@ -146,16 +146,16 @@ dev-yard req accounts PROJ-101 --auto        # 权限会漂移：按 qa/accounts
 dev-yard req accounts PROJ-101 --refresh     # 清本需求账号的缓存登录态强制重登；--auto --refresh 发现后一并刷新
 # 需求页「测试账号」卡片也有「发现并填充 / 刷新登录态」按钮（同一个接口）
 dev-yard qa ready PROJ-101               # 环境、账号、数据库都要通过，才可以设计或执行
-dev-yard req test PROJ-101 --design-only   # 只设计用例（qa-design + 数据核实），停下等人工审核，不建票
+dev-yard req test PROJ-101 --design-only   # 只设计用例（不跑执行），不建票；审核只作记录
 dev-yard req test PROJ-101 --design-only --design-notes-file cases.md --design-ref https://example/cases  # 附带已有用例/链接作参考
-dev-yard req test PROJ-101          # 执行已审核用例，失败只记报告，人工在失败用例上「下 bug」，通过则 phase=done
+dev-yard req test PROJ-101          # 设计（若无用例）并执行；失败只记报告，人工在失败用例上「下 bug」，通过则 phase=done
 dev-yard req test PROJ-101 --env test   # 指定环境；缺省用 qa.yaml 的 active_env
-dev-yard req test PROJ-101 --approve    # 人工审核通过当前用例（只标记，不执行）
-dev-yard req test PROJ-101 --run-only   # 执行已审核用例（与「执行用例」同义）
+dev-yard req test PROJ-101 --approve    # 人工审核通过当前用例（只标记，不执行；审核不阻塞执行）
+dev-yard req test PROJ-101 --run-only   # 跳过设计直接执行（与「执行用例」同义）
 dev-yard req test PROJ-101 --redesign --feedback "补齐权限拦截用例"   # 打回：带意见让 qa-design 重做用例
 # 用例 frontmatter 的 account: 选需求账号；不写用需求 default（需求无则回退全局默认）
 # 需求页「测试」Tab（/r/:key/qa）可看用例、改动点、run 与截图，并通过/打回用例
-# --design-only 仍可只出用例；--run-only 在用例未审核时需显式加 --unsafe-skip-review（CI 或已审过时）
+# worker 自查数据/造数：dev-yard qa sql PROJ-101 -c "SELECT ..." / dev-yard qa exec PROJ-101 <script> --kind setup
 # 提 bug 后修就绪的 B 票：dev-yard implement PROJ-101 --from-test
 
 # 9. 一键推送远端分支（提 PR）
@@ -256,17 +256,17 @@ dev-yard req import PROJ-101 --branch core-api:origin/feature/pay --no-submit   
 - 需求文档来源复用 `req open`（Jira 链接 / `--text` / `--file` / `--none`）。
 - 每个仓自动生成**一张** `source: import` 的票并直接置 `done`（仅供下游按仓门控），契约审查置 `passed`。
 - 外部分支收进各仓的冻结分支（默认 `req/{jira}`，模板见配置页）；diff 基线记 `merge-base(外部分支, origin/<default_base>)`（`--base` 可覆盖），qa-design 以 `qa/context.md` 的 `diff_base` 为准。
-- 之后完全走常规流程：`req test --design-only` → `--approve` → `--run-only`；失败「下 bug」→ `implement --from-test`（修完 `submit-test` 幂等重提）。
+- 之后完全走常规流程：`req test`（设计+执行；`--design-only` 只出用例）→ 失败「下 bug」→ `implement --from-test`（修完 `submit-test` 幂等重提）。
 - 约定：外部分支从各自主分支切出；导入后不要再跑 `req tickets` / `req freeze --force`。
 
 ### 自动化测试（`req test`）
 
-- **分段执行**：`--design-only`（或 Web「设计用例」）只出用例；`--approve`（Web「审核用例」）只标记通过，不再触发执行；真正跑用例是 `--run-only`（Web「执行用例」）。审核绑定用例指纹，改动用例即失效；未审核直接 `--run-only` 时必须显式加 `--unsafe-skip-review`。
-- **数据核实**：设计期由宿主真跑每条用例的 `data.verify`（单条只读 SQL，≥1 行通过），失败自动回灌 qa-design 重做，最多 `design.verify_attempts` 次；配 `db.verify_url` 可让核实走只读账号。
-- **宿主独立复核**：run 期 worker 对带 `sql` 的 db 断言自报 passed，宿主会重跑该 SQL 比对 `expected`，不一致降级为 `failed`。
+- **一段到底**：`req test` 没有用例就先设计、然后接着执行；`--design-only`（或 Web「设计用例」）只出用例，`--run-only`（Web「执行用例」）跳过设计。**审核不是闸门**：`--approve`（Web「审核用例」）只记一笔，未审也照跑；审核指纹仍会随用例改动变 stale，但只作记录。
+- **数据就绪由 worker 自己负责**：`dev-yard qa sql <JIRA> -c "SELECT ..."` 查库、`dev-yard qa exec <JIRA> <script> --kind setup` 造数（宿主代跑，DSN/配方不进 prompt，写操作记 `qa/exec-log.md`）。没有设计期数据核实环节；`data.verify`（单条只读 SQL，≥1 行通过）只用于 `driver: host` 用例的判定与人审凭据。配 `db.verify_url` 可让查询走只读账号。
+- **证据即审计**：worker 对 db 断言自己跑 SQL、把值写进 `actual`，并留下 `sql`。宿主**不再自动重跑复核**（历史上「整句 expected vs 单元格」的假失败会直接拆成产品 B 票）；报告原样展示 SQL 与取值，人可用 `dev-yard qa sql <JIRA> -c "<那条 sql>"` 复跑。
 - **阻塞分类**：worker 在 result.yaml 写 `blocked_class`（`case-defect`/`env`/`undeployed`/`auth`/`other`），宿主据此决策；无法归类的原因不再触发整轮中断。
 - **变更门**：run 前后比对 worktree 的 git 状态与 HEAD，commit 级改动也会被判为 worker 越权改动而中止。
-- **可恢复执行环**：`qa/state.yaml` 记录状态机（phase/待判定失败/隔离池），`dev-yard qa status <JIRA>` 一屏看当前态与下一步；模型/环境类 `blocked` 在轮内自动重试（`run.retry_attempts`），坏池按 pool 隔离；web 重启自动续跑未完成的 run（`run.resume_on_restart`）；B 票修完默认只重跑上一轮 failed/blocked（`run.incremental`，`--fresh` 全量）；同 env 跨需求排队等待而非直接报错（`run.env_wait_timeout`，`--no-wait` 立即拒绝）；可选 `run.pool_preflight` 跑前逐个探测模型池。`case-defect` 自动回流 design，只有疑似产品缺陷才进人工「下 bug」列表。详见 [`docs/superpowers/specs/2026-09-24-yard-qa-recovery-design.md`](docs/superpowers/specs/2026-09-24-yard-qa-recovery-design.md)。
+- **可恢复执行环**：`qa/state.yaml` 记录 phase（由证据推导）与待判定失败，`dev-yard qa status <JIRA>` 一屏看当前态与下一步；`blocked` 在轮内自动重试（`run.retry_attempts`），一条用例的模型/环境故障只挡它自己（不再熔断整轮、不做池预检）；web 重启自动续跑未完成的 run（`run.resume_on_restart`）；B 票修完默认只重跑上一轮 failed/blocked（`run.incremental`，`--fresh` 全量）；同 env 跨需求排队等待而非直接报错（`run.env_wait_timeout`，`--no-wait` 立即拒绝）。非 passed 的用例只进人工「下 bug」列表（不自动拆票、不自动回流 design）。详见 [`docs/superpowers/specs/2026-09-24-yard-qa-recovery-design.md`](docs/superpowers/specs/2026-09-24-yard-qa-recovery-design.md)。
 
 ### 目录与分支拓扑
 ```text
@@ -319,7 +319,7 @@ dev-yard web --host 0.0.0.0 --allow-remote
 | `dev-yard req export <key>` | 导出需求为 bundle（文档 + 各仓代码分支），换机导入用 | `-o/--output`, `--archive`, `--full`, `--snapshot`, `--accounts`, `--force` |
 | `dev-yard req import-bundle <path>` | 从 `req export` 的 bundle 还原需求（含逐票状态与 Worktree） | `--force` |
 | `dev-yard req submit-test <key>` | 标记提测 | |
-| `dev-yard req test <key>` | `--design-only` 出用例 → `--approve` 只标记通过 → `--run-only` 执行 | `--env`, `--print`, `--design-only`, `--run-only`, `--unsafe-skip-review`, `--redesign`, `--approve`, `--feedback`, `--feedback-file`, `--design-notes`, `--design-notes-file`, `--design-ref`, `--verify-only`, `--no-verify`, `--allow-unverified`, `--resume`, `--fresh`, `--full`, `--no-wait`, `--rerun-case`, `--no-ingest` |
+| `dev-yard req test <key>` | 设计（若无用例）+ 执行；`--design-only` 只出用例，`--run-only` 跳过设计 | `--env`, `--print`, `--design-only`, `--run-only`, `--redesign`, `--approve`, `--feedback`, `--feedback-file`, `--design-notes`, `--design-notes-file`, `--design-ref`, `--resume`, `--fresh`, `--full`, `--no-wait`, `--rerun-case`, `--no-ingest` |
 | `dev-yard req triage <key>` | 给待判定失败用例批量下 bug | `--product/--all` |
 | `dev-yard req change <key>` | 轻量变更：追加变更记录 + 更新 SPEC + 建一张轻量票 | `--note`, `--repo`, `--grill`, `--run`, `--print` |
 | `dev-yard req changes <key>` | 打印该需求的变更记录 | |

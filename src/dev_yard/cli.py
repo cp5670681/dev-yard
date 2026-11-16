@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+from contextlib import nullcontext as _nullcontext
 from pathlib import Path
 
 import typer
@@ -92,26 +95,6 @@ def _echo_blocked_hint(summary: dict, jira: str = "") -> None:
         typer.echo(
             f"  {kind['other']} 条原因未归类，请人工查看 qa/evidence 下的 result.yaml"
         )
-
-
-def _echo_verify_hint(view: dict | None) -> None:
-    """Show the design-time data-verification verdict, if one is on disk."""
-    if not isinstance(view, dict) or not view.get("present"):
-        return
-    summary = view.get("summary") or {}
-    total = summary.get("total")
-    state = "过期" if view.get("stale") else "最新"
-    typer.echo(
-        f"  数据核实（{state}）：passed={summary.get('passed', 0)} "
-        f"failed={summary.get('failed', 0)} skipped={summary.get('skipped', 0)}"
-        + (f" total={total}" if total is not None else "")
-    )
-    failed = view.get("failed") or []
-    if failed:
-        typer.echo(f"  未通过：{', '.join(failed)}（见 qa/design-verify/）")
-    exempt = view.get("empty") or []
-    if exempt:
-        typer.echo(f"  空转豁免（SELECT 1）：{', '.join(exempt)}")
 
 
 def _echo_uncovered_hint(result: dict) -> None:
@@ -1069,11 +1052,8 @@ def qa_status_cmd(jira: str) -> None:
         )
     typer.echo(f"  review={review.get('status') or '?'} approved={bool(review.get('approved'))}")
     pending = triage.get("pending") or []
-    recycled = triage.get("auto_recycled") or []
     if pending:
         typer.echo(f"  待判定失败（下 bug 或 --redesign）: {', '.join(pending)}")
-    if recycled:
-        typer.echo(f"  自动回流用例缺陷: {', '.join(recycled)}")
     pools = payload.get("pools") or {}
     bad = [k for k, v in pools.items() if (v or {}).get("state") == "quarantined"]
     if bad:
@@ -1113,6 +1093,187 @@ def qa_logs_cmd(
         typer.echo(f"({use}) 无匹配日志")
         return
     typer.echo(text.rstrip())
+
+
+@qa_app.command("sql")
+def qa_sql_cmd(
+    jira: str,
+    sql: str = typer.Option("", "--sql", "-c", help="只读 SQL（与 -f 互斥）"),
+    file: str = typer.Option("", "--file", "-f", help="只读 SQL 文件（与 -c 互斥）"),
+    db: str = typer.Option("", "--db", help="qa.yaml db catalog 别名；缺省 db.default"),
+    env: str = typer.Option("", "--env", help="qa.yaml envs.<name>; default active_env"),
+    as_json: bool = typer.Option(False, "--json", help="只输出第一行（列名→值 JSON）"),
+    limit: int = typer.Option(
+        200, "--limit", help="最多行数（DB 端 LIMIT 与打印上限；--json 时忽略）"
+    ),
+) -> None:
+    """跑一条只读 SQL（宿主代跑，DSN 不进 prompt），供 worker 自查数据与 DB 断言。
+
+    worker 自己看库，就不必靠猜列名/常量/主键，也不必让宿主在设计期预证数据。
+    """
+    from dev_yard.qa_config import TestRejected, load_qa_config
+    from dev_yard.qa_exec import run_sql_first_row, run_sql_rows
+
+    root = root_opt()
+    if file.strip() and sql.strip():
+        _die(TestRejected("-c 与 -f 互斥"))
+        return
+    if not file.strip() and not sql.strip():
+        _die(TestRejected("需要 -c <sql> 或 -f <file>"))
+        return
+    body = sql
+    if file.strip():
+        path = Path(file)
+        if not path.is_absolute():
+            for base in (
+                Path.cwd(),
+                root,
+                paths.req_dir(root, jira),
+                paths.qa_dir(root, jira),
+            ):
+                if (base / path).is_file():
+                    path = base / path
+                    break
+        if not path.is_file():
+            _die(TestRejected(f"找不到 SQL 文件 {file}"))
+            return
+        body = path.read_text(encoding="utf-8")
+    catalog = db.strip() or None
+    try:
+        cfg = load_qa_config(root, env.strip() or None, jira)
+        if as_json:
+            row = run_sql_first_row(cfg, str(body), catalog=catalog, verify=True)
+            typer.echo(json.dumps(row, ensure_ascii=False))
+            return
+        rows = run_sql_rows(cfg, str(body), max(1, limit), catalog=catalog, verify=True)
+    except (ValueError, FileNotFoundError, TestRejected, GitError) as e:
+        _die(e)
+        return
+    if not rows:
+        typer.echo("(0 rows)")
+        return
+    for line in rows:
+        typer.echo(line)
+    if len(rows) >= max(1, limit):
+        typer.echo(f"... (capped at {limit} rows; raise --limit)", err=True)
+
+
+@qa_app.command("exec")
+def qa_exec_cmd(
+    jira: str,
+    script: str,
+    case: str = typer.Option("", "--case", help="用例 id；用它取 repo/db，缺省按仓推断"),
+    db: str = typer.Option("", "--db", help="qa.yaml db catalog 别名；缺省用例的 data.db"),
+    repo: str = typer.Option("", "--repo", help="repos.yaml 别名；缺省用例 repo 或唯一涉及的仓"),
+    kind: str = typer.Option("other", "--kind", help="setup | cleanup | verify | other"),
+    env: str = typer.Option("", "--env", help="qa.yaml envs.<name>; default active_env"),
+) -> None:
+    """按本次 env 的 exec 配方跑一个脚本（造数/清理/自查），stdout 原样回传。
+
+    与宿主跑 setup/cleanup 走同一条通道（同样的 exec 配方、同样的 worktree 回滚），
+    区别只是由 worker 自己决定什么时候跑。
+    """
+    from dev_yard.qa_cases import _involved_aliases, discover_cases
+    from dev_yard.qa_config import TestRejected, load_qa_config
+    from dev_yard.qa_exec import run_script_path
+    from dev_yard.qa_verify import env_lock
+
+    root = root_opt()
+    qa = paths.qa_dir(root, jira)
+    target = Path(script)
+    if not target.is_absolute():
+        # The worker's cwd is the yard root, but a case step may cd into a
+        # worktree; accept every plausible base so `qa/cases/x.rb` works from all.
+        for base in (Path.cwd(), root, paths.req_dir(root, jira), qa, qa / "cases"):
+            if (base / target).is_file():
+                target = (base / target).resolve()
+                break
+    if not target.is_file():
+        _die(TestRejected(f"找不到脚本 {script}"))
+        return
+    # 与 qa-design 的脚本契约一致：脚本只能来自本需求的 qa/（别拿产品仓里的脚本当造数）。
+    try:
+        target.resolve().relative_to(qa.resolve())
+    except ValueError:
+        _die(TestRejected(f"脚本必须在本需求的 qa/ 目录内：{target}"))
+        return
+    try:
+        cfg = load_qa_config(root, env.strip() or None, jira)
+    except (ValueError, FileNotFoundError, TestRejected, GitError) as e:
+        _die(e)
+        return
+    job = None
+    if case.strip():
+        job = next((c for c in discover_cases(qa) if c.id == case.strip()), None)
+        if job is None:
+            _die(TestRejected(f"{jira} 没有用例 {case.strip()}"))
+            return
+    alias = repo.strip() or (job.repo if job else "")
+    if not alias:
+        aliases = _involved_aliases(root, jira)
+        alias = aliases[0] if aliases else ""
+    catalog = db.strip() or (job.db if job else "") or ""
+    resolved_kind = kind.strip() or "other"
+    case_id = (job.id if job else case.strip()) or "adhoc"
+    # 写操作要按 env 串行：同一套测试库不能被两个需求同时写。正在跑的那个 run 已经
+    # 持锁，它派生的 worker 靠 YARD_QA_ENV_LOCK 认出自己（否则父子进程会互相死等）。
+    inside_run = (os.environ.get("YARD_QA_ENV_LOCK") or "").strip() == cfg.active_env
+    lock = (
+        _nullcontext()
+        if inside_run
+        else env_lock(
+            root,
+            cfg.active_env,
+            what="qa exec",
+            wait_timeout=cfg.run_env_wait_timeout,
+            on_wait=lambda waiting: (
+                typer.echo(f"等待 env {cfg.active_env} 的锁（另一个 run/造数在写同一测试库）", err=True)
+                if waiting
+                else None
+            ),
+        )
+    )
+    try:
+        with lock:
+            out = run_script_path(
+                root,
+                jira,
+                cfg,
+                target,
+                repo=alias or None,
+                db=catalog or None,
+                case_id=case_id,
+                kind=resolved_kind,
+                on_log=lambda line: typer.echo(str(line).rstrip(), err=True),
+            )
+    except (ValueError, FileNotFoundError, TestRejected, GitError) as e:
+        _append_exec_log(qa, cfg.active_env, case_id, resolved_kind, target, f"FAILED: {e}")
+        _die(e)
+        return
+    # 写操作留痕：谁在哪个需求、哪条用例、什么时候跑了什么脚本。
+    _append_exec_log(qa, cfg.active_env, case_id, resolved_kind, target, "ok")
+    if out:
+        typer.echo(out)
+
+
+def _append_exec_log(
+    qa: Path,
+    env: str,
+    case_id: str,
+    kind: str,
+    script: Path,
+    outcome: str,
+) -> None:
+    """One line per host-run script so a data write is always attributable."""
+    from dev_yard.qa_schedule import now_iso
+
+    try:
+        qa.mkdir(parents=True, exist_ok=True)
+        line = f"- {now_iso()} env={env} case={case_id} kind={kind} script={script.name} {outcome}\n"
+        with (qa / "exec-log.md").open("a", encoding="utf-8") as fh:
+            fh.write(line)
+    except OSError:
+        pass
 
 
 @req_app.command("triage")
@@ -1201,22 +1362,6 @@ def req_test_cmd(
         "--no-wait",
         help="同 env 已有 run 时立即拒绝，不排队等待（run.env_wait_timeout）",
     ),
-    no_verify: bool = typer.Option(
-        False, "--no-verify", help="跳过设计期数据核实（verify.sql）"
-    ),
-    verify_only: bool = typer.Option(
-        False, "--verify-only", help="只跑设计期数据核实并落盘，不设计、不执行"
-    ),
-    allow_unverified: bool = typer.Option(
-        False,
-        "--allow-unverified",
-        help="显式越权：数据核实未通过也允许 --approve/执行（未通过用例会被跳过）",
-    ),
-    unsafe_skip_review: bool = typer.Option(
-        False,
-        "--unsafe-skip-review",
-        help="显式越权：允许 --run-only 在用例未审核时执行",
-    ),
 ) -> None:
     """Design and run UI cases after submit-test. Ingests into the test slot."""
     from dev_yard.qa import req_test
@@ -1226,9 +1371,6 @@ def req_test_cmd(
     root = root_opt()
     if resume and (fresh or full):
         _die(ValueError("--resume and --fresh/--full are mutually exclusive"))
-        return
-    if verify_only and no_verify:
-        _die(ValueError("--verify-only and --no-verify are mutually exclusive"))
         return
     if rerun_case and (
         resume
@@ -1243,14 +1385,12 @@ def req_test_cmd(
         or design_notes
         or design_notes_file
         or design_ref
-        or verify_only
     ):
         _die(
             ValueError(
                 "--rerun-case cannot be combined with "
                 "--resume/--fresh/--design-only/--run-only/--redesign/--approve"
                 "/--feedback/--design-notes/--design-notes-file/--design-ref"
-                "/--verify-only"
             )
         )
         return
@@ -1290,49 +1430,19 @@ def req_test_cmd(
             ingest=not no_ingest,
             resume=True if resume else False if (fresh or full) else None,
             rerun_cases=rerun_case or None,
-            verify=False if no_verify else None,
-            verify_only=verify_only,
-            allow_unverified=allow_unverified,
-            unsafe_skip_review=unsafe_skip_review,
             no_wait=no_wait,
             on_log=lambda line: typer.echo(line.rstrip() if isinstance(line, str) else line),
         )
     except (ValueError, FileNotFoundError, TestRejected, ReportRejected, GitError) as e:
         _die(e)
-    if result.get("awaiting_review"):
-        oq = result.get("open_questions") or {}
-        q = result.get("questions") or 0
-        if q:
-            qline = f"\n  OPEN-QUESTIONS: {q}（见 qa/OPEN-QUESTIONS.md）"
-        elif oq.get("error"):
-            qline = "\n  OPEN-QUESTIONS: 读取失败（qa/OPEN-QUESTIONS.md 存在但不可读）"
-        elif oq.get("exists"):
-            qline = "\n  OPEN-QUESTIONS: 0（已产出空文件，无待澄清）"
-        else:
-            qline = "\n  OPEN-QUESTIONS: 未产出（qa/OPEN-QUESTIONS.md 缺失）"
-        typer.echo(
-            f"{jira} 用例待审核 cases={result.get('cases')}（{result.get('reason') or ''}）{qline}"
-        )
-        _echo_verify_hint(result.get("verify"))
-        _echo_uncovered_hint(result)
-        _echo_account_hint(root, jira)
-        typer.echo(
-            f"  通过（只标记）：dev-yard req test {jira} --approve\n"
-            f"  通过后执行：dev-yard req test {jira} --run-only\n"
-            f"  打回重做：dev-yard req test {jira} --redesign --feedback-file <path>"
-        )
-        return
     if result.get("approved"):
         review = result.get("review") or {}
         typer.echo(
             f"{jira} 用例已审核通过 cases={result.get('cases')} "
             f"review={review.get('status') or '?'}"
         )
-        typer.echo(f"  执行：dev-yard req test {jira} --run-only")
-        return
-    if result.get("verify_only"):
-        typer.echo(f"{jira} verify-only cases={result.get('cases')}")
-        _echo_verify_hint(result.get("verify"))
+        # 审核只作记录，执行不需要它：这里只提示下一步怎么跑。
+        typer.echo(f"  执行：dev-yard req test {jira}（或 --run-only）")
         return
     if result.get("design_only"):
         review = result.get("review") or {}
@@ -1350,16 +1460,8 @@ def req_test_cmd(
             f"{jira} design-only cases={result.get('cases')} "
             f"review={review.get('status') or '?'}{qline}"
         )
-        _echo_verify_hint(result.get("verify"))
         _echo_uncovered_hint(result)
         _echo_account_hint(root, jira)
-        if result.get("design_blocked"):
-            failed = (result.get("verify") or {}).get("failed") or []
-            typer.echo(
-                f"{jira} 设计未完成：{len(failed)} 条用例数据核实未通过，"
-                "见 qa/design-verify/BLOCKED.md"
-            )
-            raise typer.Exit(1)
         return
     summary = result.get("summary") or {}
     extra = ""
@@ -1718,7 +1820,7 @@ def web(
 
 
 def _record_review_verdict_cli(verdict_arg: str, findings_arg: str | None = None) -> None:
-    import json
+    from typing import Any
 
     v = verdict_arg.strip()
     f_list: list[Any] = []
