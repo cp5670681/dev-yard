@@ -173,11 +173,13 @@ class DevSettingsIn(BaseModel):
 
 
 class JiraSubtaskItemIn(BaseModel):
-    id: str
+    id: str = ""
+    ticket_ids: list[str] = Field(default_factory=list)
     summary: str = ""
     story_point: float = 0.0
     description: str = ""
     assignee: str | None = None
+    repo: str | None = None
 
 
 class JiraSubtasksIn(BaseModel):

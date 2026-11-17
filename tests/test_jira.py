@@ -192,3 +192,132 @@ tickets:
     assert r2.json()["ok"] is True
     assert r2.json()["created"] == []
 
+
+def test_aggregate_subtasks_by_repo(tmp_path, monkeypatch):
+    root = tmp_path
+    req_dir = root / "reqs" / "DEMO-2"
+    req_dir.mkdir(parents=True)
+
+    (req_dir / "TICKETS.md").write_text(
+        """# Tickets — DEMO-2
+
+## T1: 后端表设计
+- repo: backend
+- depends_on:
+
+表结构设计与迁移。
+
+## T2: 后端接口实现
+- repo: backend
+- depends_on: T1
+
+接口编写。
+
+## T3: 前端页面展示
+- repo: frontend
+- depends_on: T2
+
+前端页面。
+""",
+        encoding="utf-8",
+    )
+
+    (req_dir / "STATUS.yaml").write_text(
+        """jira: DEMO-2
+phase: frozen
+tickets:
+  T1:
+    state: pending
+    repo: backend
+  T2:
+    state: pending
+    repo: backend
+  T3:
+    state: pending
+    repo: frontend
+""",
+        encoding="utf-8",
+    )
+
+    (root / "repos.yaml").write_text(
+        """repos:
+  backend:
+    url: git@example.com:backend.git
+    note: 后端
+  frontend:
+    url: git@example.com:frontend.git
+    note: 前端
+""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("JIRA_BASE_URL", "http://jira.example.com")
+    monkeypatch.setenv("JIRA_USER", "tester")
+    monkeypatch.setenv("JIRA_PASSWORD", "pass")
+
+    def mock_fetch_parent(key, creds=None, root=None):
+        return {
+            "key": "DEMO-2",
+            "summary": "父需求聚合测试",
+            "project_key": "DEMO",
+            "assignee_name": "developer",
+            "assignee_display": "Developer",
+        }
+
+    monkeypatch.setattr("dev_yard.jira.fetch_parent_issue", mock_fetch_parent)
+
+    created_issues = []
+    comments_sent = []
+
+    def mock_jira_request(path, method="GET", payload=None, creds=None, root=None, timeout=30):
+        if method == "POST" and path == "rest/api/2/issue":
+            created_issues.append(payload)
+            key = f"DEMO-{200 + len(created_issues)}"
+            return {"key": key, "id": str(2000 + len(created_issues))}
+        if method == "POST" and "/comment" in path:
+            comments_sent.append((path, payload))
+            return {"id": "comment-1"}
+        return {}
+
+    monkeypatch.setattr("dev_yard.jira._jira_request", mock_jira_request)
+
+    # 聚合创建：T1+T2 合并为一个后端子任务，T3 单独一个前端子任务
+    items_to_create = [
+        {
+            "id": "repo:backend",
+            "ticket_ids": ["T1", "T2"],
+            "summary": "【后端】DEMO-2 后端开发",
+            "story_point": 3,
+            "repo": "backend",
+        },
+        {
+            "id": "repo:frontend",
+            "ticket_ids": ["T3"],
+            "summary": "【前端】DEMO-2 前端开发",
+            "story_point": 2,
+            "repo": "frontend",
+        },
+    ]
+
+    res = create_dev_subtasks(root, "DEMO-2", items=items_to_create)
+    assert len(res) == 2
+    assert res[0]["ticket_ids"] == ["T1", "T2"]
+    assert res[0]["jira_key"] == "DEMO-201"
+    assert res[1]["ticket_ids"] == ["T3"]
+    assert res[1]["jira_key"] == "DEMO-202"
+
+    from dev_yard import status as st
+
+    saved_status = st.load(root, "DEMO-2")
+    # T1 和 T2 应该都绑定同一个 jira_key DEMO-201
+    assert saved_status["tickets"]["T1"]["jira_key"] == "DEMO-201"
+    assert saved_status["tickets"]["T1"]["jira_url"] == "http://jira.example.com/browse/DEMO-201"
+    assert saved_status["tickets"]["T2"]["jira_key"] == "DEMO-201"
+    assert saved_status["tickets"]["T2"]["jira_url"] == "http://jira.example.com/browse/DEMO-201"
+    # T3 绑定 DEMO-202
+    assert saved_status["tickets"]["T3"]["jira_key"] == "DEMO-202"
+
+    # 检查评论中包含了 T1 和 T2
+    assert any("包含 2 张研发票：T1, T2" in c[1]["body"] for c in comments_sent)
+
+

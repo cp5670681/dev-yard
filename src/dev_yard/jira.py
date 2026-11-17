@@ -267,16 +267,41 @@ def create_dev_subtasks(
     preview = preview_dev_subtasks(root, jira)
     preview_items = {it["id"]: it for it in preview["items"]}
 
+    targets: list[dict[str, Any]] = []
     if items is None:
-        targets = [it for it in preview["items"] if not it.get("created")]
+        for it in preview["items"]:
+            if not it.get("created"):
+                t = dict(it)
+                t["ticket_ids"] = [it["id"]]
+                targets.append(t)
     else:
-        targets = []
         for it in items:
-            tid = it.get("id")
-            if not tid or tid not in preview_items:
+            raw_tids = it.get("ticket_ids")
+            if isinstance(raw_tids, list) and raw_tids:
+                tids = [str(x) for x in raw_tids if str(x) in preview_items]
+            elif it.get("id") and str(it["id"]) in preview_items:
+                tids = [str(it["id"])]
+            else:
+                tids = []
+
+            if not tids:
                 continue
-            base_it = dict(preview_items[tid])
+
+            if len(tids) == 1 and tids[0] in preview_items:
+                base_it = dict(preview_items[tids[0]])
+            else:
+                first = preview_items[tids[0]]
+                base_it = {
+                    "id": it.get("id") or tids[0],
+                    "title": it.get("summary") or f"Subtask ({', '.join(tids)})",
+                    "summary": it.get("summary") or first.get("summary"),
+                    "repo": it.get("repo") or first.get("repo"),
+                    "repo_note": it.get("repo_note") or first.get("repo_note"),
+                    "story_point": 0,
+                    "description": it.get("description") or "",
+                }
             base_it.update(it)
+            base_it["ticket_ids"] = tids
             targets.append(base_it)
 
     created_results: list[dict[str, Any]] = []
@@ -286,12 +311,15 @@ def create_dev_subtasks(
         slots = st.tickets_map(data.get("tickets"))
 
         for target in targets:
-            tid = target["id"]
-            slot = slots.setdefault(tid, {})
-            if slot.get("jira_key") and not target.get("force"):
+            tids = target.get("ticket_ids") or ([target["id"]] if target.get("id") else [])
+            if not tids:
                 continue
 
-            summary = (target.get("summary") or "").strip() or target.get("title") or f"Subtask {tid}"
+            all_created = all(slots.get(tid, {}).get("jira_key") for tid in tids)
+            if all_created and not target.get("force"):
+                continue
+
+            summary = (target.get("summary") or "").strip() or target.get("title") or f"Subtask {','.join(tids)}"
             if len(summary) > 250:
                 summary = summary[:247] + "..."
 
@@ -336,30 +364,60 @@ def create_dev_subtasks(
             new_id = res.get("id")
             subtask_url = f"{base}/browse/{new_key}"
 
-            slot["jira_key"] = new_key
-            slot["jira_url"] = subtask_url
+            for tid in tids:
+                slot = slots.setdefault(tid, {})
+                slot["jira_key"] = new_key
+                slot["jira_url"] = subtask_url
             data["tickets"] = slots
             st.save(root, jira, data)
 
-            # Post task description as comment if non-empty
-            if desc and new_key:
-                comment_body = (
-                    f"### 任务说明（对应研发票 {tid}）\n- **代码仓**：{target.get('repo', '')}\n\n{desc}"
-                )
-                try:
-                    _jira_request(
-                        f"rest/api/2/issue/{new_key}/comment",
-                        method="POST",
-                        payload={"body": comment_body},
-                        creds=creds,
-                        root=root,
-                    )
-                except Exception:
-                    pass
+            # Post task description as comment if non-empty or multiple tickets
+            if new_key:
+                comment_lines = []
+                if len(tids) == 1:
+                    comment_lines.append(f"### 任务说明（对应研发票 {tids[0]}）")
+                    if target.get("repo"):
+                        comment_lines.append(f"- **代码仓**：{target.get('repo')}")
+                else:
+                    comment_lines.append(f"### 任务说明（包含 {len(tids)} 张研发票：{', '.join(tids)}）")
+                    if target.get("repo"):
+                        comment_lines.append(f"- **代码仓**：{target.get('repo')}")
+                    comment_lines.append("- **研发票清单**：")
+                    for tid in tids:
+                        t_item = preview_items.get(tid, {})
+                        t_title = t_item.get("title", "")
+                        comment_lines.append(f"  - **{tid}**: {t_title}")
+
+                if desc:
+                    comment_lines.append("")
+                    comment_lines.append(desc)
+                elif len(tids) > 1:
+                    comment_lines.append("")
+                    comment_lines.append("---")
+                    for tid in tids:
+                        t_desc = preview_items.get(tid, {}).get("description", "").strip()
+                        if t_desc:
+                            comment_lines.append(f"#### {tid}: {preview_items.get(tid, {}).get('title', '')}")
+                            comment_lines.append(t_desc)
+                            comment_lines.append("")
+
+                comment_body = "\n".join(comment_lines).strip()
+                if comment_body:
+                    try:
+                        _jira_request(
+                            f"rest/api/2/issue/{new_key}/comment",
+                            method="POST",
+                            payload={"body": comment_body},
+                            creds=creds,
+                            root=root,
+                        )
+                    except Exception:
+                        pass
 
             created_results.append(
                 {
-                    "id": tid,
+                    "id": target.get("id") or tids[0],
+                    "ticket_ids": tids,
                     "jira_key": new_key,
                     "jira_id": new_id,
                     "url": subtask_url,

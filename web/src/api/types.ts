@@ -703,10 +703,12 @@ export interface JiraSubtasksPreview {
 export interface CreateJiraSubtasksIn {
   items?: {
     id: string;
+    ticket_ids?: string[];
     summary?: string;
     story_point?: number;
     description?: string;
     assignee?: string | null;
+    repo?: string;
   }[];
   assignee?: string | null;
 }
