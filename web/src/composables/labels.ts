@@ -53,6 +53,36 @@ export function contractTone(contract: string | null | undefined): {
   };
 }
 
+export function uiReviewTone(verdict: string | null | undefined): {
+  color: string;
+  label: string;
+  short: string;
+  summary: string;
+} {
+  if (verdict === "passed") {
+    return {
+      color: "success",
+      label: "原型核对通过",
+      short: "原型通过",
+      summary: "通过 passed",
+    };
+  }
+  if (verdict === "inconclusive") {
+    return {
+      color: "warning",
+      label: "原型核对无结论",
+      short: "原型待定",
+      summary: "无结论",
+    };
+  }
+  return {
+    color: "error",
+    label: "原型核对未通过",
+    short: "原型有出入",
+    summary: "未通过 failed",
+  };
+}
+
 export const TICKET_STATE_LABELS: Record<string, string> = {
   pending: "待办",
   ready: "就绪",
@@ -89,6 +119,8 @@ export const ACTION_LABELS: Record<string, string> = {
   freeze: "冻结 worktree",
   contract: "契约审查",
   change: "轻量变更",
+  "ui-review": "原型核对",
+  "fix-ui": "按原型修复",
   "fix-contract": "按契约修",
   "submit-test": "提测",
   "qa-design": "设计用例",

@@ -164,7 +164,7 @@ class AppContext:
     ) -> list[Job]:
         jobs = self.jobs
         root = self.root
-        if action in {"implement", "review", "fix-contract", "fix-test"}:
+        if action in {"implement", "review", "fix-contract", "fix-test", "fix-ui"}:
             busy = jobs.busy_tickets(jira, action)
             if busy is None:
                 raise ValueError(f"{jira} already has a running job")
@@ -174,6 +174,8 @@ class AppContext:
                     wanted = yard_service.prepare_fix_tickets(root, jira, "contract")
                 elif action == "fix-test":
                     wanted = yard_service.prepare_fix_tickets(root, jira, "test")
+                elif action == "fix-ui":
+                    wanted = yard_service.prepare_fix_tickets(root, jira, "ui")
                 else:
                     wanted = [
                         t.id
@@ -263,6 +265,14 @@ class AppContext:
                 if detail.contract_summary
                 else ""
             ),
+            "ui_review": detail.ui_review,
+            "ui_summary": detail.ui_summary,
+            "ui_summary_html": (
+                render_markdown(detail.ui_summary, detail.jira)
+                if detail.ui_summary
+                else ""
+            ),
+            "ui_findings": detail.ui_findings,
             "test": detail.test,
             "repos": detail.repos,
             "worktrees": detail.worktrees,

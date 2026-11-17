@@ -1562,6 +1562,7 @@ _RUN_VIA_DEDICATED = {
     "open": "dev-yard req open",
     "implement": "dev-yard implement",
     "review": "dev-yard review",
+    "ui-review": "dev-yard review --ui (or dev-yard ui-review)",
     "contract": "dev-yard review --contract",
     "qa-design": "dev-yard req test",
     "qa-run": "dev-yard req test",
@@ -1629,6 +1630,11 @@ def implement(
         "--from-test",
         help="Implement ready test bug tickets (B tickets from 提 bug)",
     ),
+    from_ui: bool = typer.Option(
+        False,
+        "--from-ui",
+        help="Implement ready UI/prototype bug tickets (B tickets from 原型核对)",
+    ),
     force: bool = typer.Option(
         False,
         "--force",
@@ -1642,8 +1648,8 @@ def implement(
 ) -> None:
     root = root_opt()
     if until_done:
-        if ticket_ids or from_contract or from_test or force or dry_run:
-            _die(ValueError("--until-done 不能和票号、--from-contract、--from-test、--force、--dry-run 一起用"))
+        if ticket_ids or from_contract or from_test or from_ui or force or dry_run:
+            _die(ValueError("--until-done 不能和票号、--from-contract、--from-test、--from-ui、--force、--dry-run 一起用"))
         try:
             result = service.implement_until_done(
                 root, jira, print_mode=print_mode, on_log=typer.echo
@@ -1661,6 +1667,7 @@ def implement(
             print_mode=print_mode,
             from_contract=from_contract,
             from_test=from_test,
+            from_ui=from_ui,
             force=force,
         )
     except (ValueError, GitError, KeyError, FileNotFoundError) as e:
@@ -1673,13 +1680,31 @@ def review(
     jira: str,
     ticket_ids: list[str] | None = typer.Argument(None),
     contract: bool = False,
+    ui: bool = typer.Option(False, "--ui", help="Review frontend code against requirement docs and prototypes"),
     dry_run: bool = False,
     print_mode: bool = typer.Option(False, "--print", help="pi -p one-shot instead of TUI"),
 ) -> None:
     root = root_opt()
     try:
         ran = service.review(
-            root, jira, ticket_ids, contract=contract, dry_run=dry_run, print_mode=print_mode
+            root, jira, ticket_ids, contract=contract, ui=ui, dry_run=dry_run, print_mode=print_mode
+        )
+    except (ValueError, GitError, KeyError, FileNotFoundError) as e:
+        _die(e)
+    typer.echo("reviewed: " + (", ".join(ran) if ran else "(none)"))
+
+
+@app.command(name="ui-review")
+def ui_review_cmd(
+    jira: str,
+    dry_run: bool = False,
+    print_mode: bool = typer.Option(False, "--print", help="pi -p one-shot instead of TUI"),
+) -> None:
+    """Review frontend code against requirement docs, HTML prototypes, and UI screenshots."""
+    root = root_opt()
+    try:
+        ran = service.review(
+            root, jira, None, ui=True, dry_run=dry_run, print_mode=print_mode
         )
     except (ValueError, GitError, KeyError, FileNotFoundError) as e:
         _die(e)
@@ -1689,16 +1714,29 @@ def review(
 @app.command(name="review-override")
 def review_override(
     jira: str,
-    ticket_id: str | None = typer.Argument(None, help="Ticket ID (e.g. T1). Omit when overriding contract review."),
+    ticket_id: str | None = typer.Argument(None, help="Ticket ID (e.g. T1). Omit when overriding contract or UI review."),
     contract: bool = typer.Option(False, "--contract", help="Override contract review instead of a ticket"),
+    ui: bool = typer.Option(False, "--ui", help="Override UI/prototype review instead of a ticket"),
     verdict: str = typer.Option(..., "--verdict", "-v", help="Verdict: 'passed' or 'failed'"),
     summary: str | None = typer.Option(None, "--summary", "-m", help="Review comments / feedback"),
 ) -> None:
-    """Manually override a ticket's or contract review verdict and feedback."""
+    """Manually override a ticket's, contract, or UI review verdict and feedback."""
     root = root_opt()
+    if contract and ui:
+        typer.echo("Error: --contract and --ui are mutually exclusive", err=True)
+        raise typer.Exit(1)
+    if ui:
+        try:
+            updated = service.ui_review_override(
+                root, jira, verdict=verdict, summary=summary
+            )
+            typer.echo(f"Updated ui review: {updated.get('ui_review')}")
+        except (ValueError, GitError, KeyError, FileNotFoundError) as e:
+            _die(e)
+        return
     if contract or not ticket_id:
         if not contract and not ticket_id:
-            typer.echo("Error: Provide a ticket_id or specify --contract", err=True)
+            typer.echo("Error: Provide a ticket_id or specify --contract or --ui", err=True)
             raise typer.Exit(1)
         try:
             updated = service.contract_review_override(

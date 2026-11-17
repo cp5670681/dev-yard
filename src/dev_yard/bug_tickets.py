@@ -13,7 +13,7 @@ from dev_yard.config import load_repos
 from dev_yard.parse import as_bool, as_list
 from dev_yard.tickets import Ticket, load_tickets
 
-KINDS = ("contract", "test", "review")
+KINDS = ("contract", "test", "review", "ui")
 GAPS = frozenset({"missing", "partial", "contradicts", "unrequested"})
 
 
@@ -147,8 +147,15 @@ def _repo_list(data: dict[str, Any], tickets: list[Ticket]) -> list[str]:
 def _synthetic_findings(
     kind: str, data: dict[str, Any], tickets: list[Ticket]
 ) -> list[dict[str, Any]]:
-    summary = (data.get("contract_summary") or "").strip() if kind == "contract" else ""
-    title = "契约缺口" if kind == "contract" else "测试缺陷"
+    if kind == "contract":
+        summary = (data.get("contract_summary") or "").strip()
+        title = "契约缺口"
+    elif kind == "ui":
+        summary = (data.get("ui_summary") or "").strip()
+        title = "原型与UI缺口"
+    else:
+        summary = ""
+        title = "测试缺陷"
     return [
         {
             "id": f"repo:{repo}",
@@ -276,6 +283,12 @@ def _findings_for_kind(
     if kind == "test":
         slot = data.get("test") if isinstance(data.get("test"), dict) else {}
         raw = normalize_findings(slot.get("findings") or [])
+    elif kind == "ui":
+        stored = data.get("ui_findings")
+        if isinstance(stored, list):
+            raw = normalize_findings(stored)
+        else:
+            raw = parse_findings_from_summary(data.get("ui_summary") or "")
     else:
         stored = data.get("contract_findings")
         if isinstance(stored, list):
@@ -296,7 +309,9 @@ def _findings_for_kind(
         # Findings were reported against a known repo but none survive as this
         # requirement's work; do not fall back to per-repo synthetic tickets.
         return []
-    if data.get("contract_review") == "failed":
+    if (kind == "ui" and data.get("ui_review") == "failed") or (
+        kind == "contract" and data.get("contract_review") == "failed"
+    ):
         return _synthetic_findings(kind, data, tickets)
     return []
 

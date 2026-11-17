@@ -9,6 +9,23 @@
         </div>
         <div class="d-flex align-center ga-2">
           <v-chip
+            v-if="detail?.ui_review"
+            size="small"
+            :color="detail.ui_review === 'passed' ? 'success' : detail.ui_review === 'inconclusive' ? 'warning' : 'error'"
+            variant="tonal"
+            class="jira-lozenge font-weight-bold cursor-pointer"
+            :prepend-icon="
+              detail.ui_review === 'passed'
+                ? mdiCheckCircleOutline
+                : detail.ui_review === 'inconclusive'
+                  ? mdiHelpCircleOutline
+                  : mdiAlertCircleOutline
+            "
+            @click="uiReviewDialog = true"
+          >
+            {{ detail.ui_review === 'passed' ? '原型通过' : detail.ui_review === 'inconclusive' ? '原型待定' : '原型有出入' }}
+          </v-chip>
+          <v-chip
             v-if="detail?.contract"
             size="small"
             :color="contractTone(detail.contract).color"
@@ -196,6 +213,59 @@
           <span class="ml-1 text-caption font-weight-bold">{{ g.enabledCount }}</span>
         </v-chip>
       </div>
+
+      <!-- 原型核对状态显式横幅 -->
+      <v-alert
+        v-if="detail.ui_review === 'failed'"
+        type="warning"
+        variant="tonal"
+        border="start"
+        class="mb-4"
+        :icon="mdiFileDocumentAlertOutline"
+      >
+        <div class="d-flex flex-column flex-sm-row justify-space-between align-sm-center ga-3">
+          <div>
+            <div class="text-subtitle-1 font-weight-bold">
+              原型核对未通过 (Prototype Review Failed)
+            </div>
+            <div class="text-body-2 text-medium-emphasis mt-0.5">
+              检测到当前代码与原型图/HTML原型或文档存在字段缺失、组件联动或文案偏差。建议通过「按原型修复」一键修复。
+            </div>
+          </div>
+          <div class="d-flex flex-wrap align-center ga-2 flex-shrink-0">
+            <v-btn
+              v-if="detail.ui_summary"
+              size="small"
+              variant="outlined"
+              color="warning"
+              :prepend-icon="mdiEyeOutline"
+              @click="uiReviewDialog = true"
+            >
+              查看原型报告
+            </v-btn>
+            <v-btn
+              size="small"
+              color="warning"
+              variant="flat"
+              :prepend-icon="mdiWrench"
+              :loading="acting === 'fix-ui'"
+              @click="confirmAction('fix-ui')"
+            >
+              按原型修复
+            </v-btn>
+            <v-btn
+              size="small"
+              variant="text"
+              color="warning"
+              :prepend-icon="mdiRefresh"
+              :loading="acting === 'ui-review'"
+              @click="confirmAction('ui-review')"
+            >
+              重跑原型核对
+            </v-btn>
+          </div>
+        </div>
+      </v-alert>
 
       <!-- 契约审查状态显式横幅 -->
       <v-alert
@@ -624,6 +694,25 @@
             </v-list>
           </v-expansion-panel-text>
         </v-expansion-panel>
+        <v-expansion-panel v-if="detail.ui_summary">
+          <v-expansion-panel-title>
+            <div class="d-flex align-center ga-2">
+              <span>原型与 UI 核对摘要</span>
+              <v-chip
+                size="x-small"
+                :color="detail.ui_review === 'passed' ? 'success' : 'error'"
+                variant="tonal"
+                class="font-weight-bold"
+              >
+                {{ detail.ui_review === 'passed' ? '通过' : '有出入' }}
+              </v-chip>
+            </div>
+          </v-expansion-panel-title>
+          <v-expansion-panel-text>
+            <div v-if="detail.ui_summary_html" class="markdown" v-html="detail.ui_summary_html" />
+            <pre v-else class="job-log">{{ detail.ui_summary }}</pre>
+          </v-expansion-panel-text>
+        </v-expansion-panel>
         <v-expansion-panel v-if="detail.contract_summary">
           <v-expansion-panel-title>
             <div class="d-flex align-center ga-2">
@@ -888,6 +977,15 @@
       @reviewed="onContractReviewed"
     />
 
+    <UiReviewDialog
+      v-model="uiReviewDialog"
+      :jira="jira"
+      :ui-review="detail?.ui_review || null"
+      :summary="detail?.ui_summary || null"
+      :summary-html="detail?.ui_summary_html"
+      @reviewed="onUiReviewed"
+    />
+
     <v-dialog v-model="changeOpen" max-width="560">
       <v-card>
         <v-card-title>轻量变更</v-card-title>
@@ -1088,6 +1186,7 @@ import type {
   Ticket,
 } from "@/api/types";
 import ContractReviewDialog from "@/components/ContractReviewDialog.vue";
+import UiReviewDialog from "@/components/UiReviewDialog.vue";
 import JobPanel from "@/components/JobPanel.vue";
 import QaFeedbackDetails from "@/components/QaFeedbackDetails.vue";
 import ReqDocTabs from "@/components/ReqDocTabs.vue";
@@ -1201,6 +1300,7 @@ const ticketDelete = reactive({ open: false, ticket: null as Ticket | null });
 const diffDialog = reactive({ open: false, ticketId: "" });
 const reviewDialog = reactive({ open: false, ticket: null as Ticket | null });
 const contractDialog = ref(false);
+const uiReviewDialog = ref(false);
 const jobProgress = ref<QaProgress | null>(null);
 const caseDialog = reactive({ open: false, caseId: "" });
 const caseFromQuery = ref(false);
@@ -1316,6 +1416,17 @@ async function onContractReviewed(jobs: JobSnapshot[]) {
     snack.notify("已保存契约审查反馈并启动修复", "success");
   } else {
     snack.notify("已更新跨仓契约审查结果", "success");
+  }
+  await load();
+}
+
+async function onUiReviewed(payload: { verdict: string; summary: string; jobs: JobSnapshot[] }) {
+  uiReviewDialog.value = false;
+  if (payload.jobs.length > 0 && payload.jobs[0]?.id) {
+    await router.replace({ query: { ...route.query, job: payload.jobs[0].id } });
+    snack.notify("已保存原型核对反馈并启动修复", "success");
+  } else {
+    snack.notify("已更新原型与 UI 核对结果", "success");
   }
   await load();
 }

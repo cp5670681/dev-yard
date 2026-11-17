@@ -22,7 +22,7 @@ _AC = re.compile(r"(?<![A-Za-z0-9])US\d+/AC\d+")
 _US = re.compile(r"(?<![A-Za-z0-9])US\d+")
 _CONTRACT = re.compile(r"(?<![A-Za-z0-9])C-\d+")
 # Tickets the host appended. They do not have to cite a story.
-_EXEMPT_SOURCES = frozenset({"light", "import", "contract", "test", "review"})
+_EXEMPT_SOURCES = frozenset({"light", "import", "contract", "test", "review", "ui"})
 _STATUSES = ("已问", "默认", "不适用", "延后")
 _HOST_START = "<!-- host-coverage -->"
 _HOST_END = "<!-- /host-coverage -->"

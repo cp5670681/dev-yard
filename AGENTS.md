@@ -31,7 +31,9 @@ pi 的 `bash` 工具 `timeout` 是可选、**无默认值**，内置 `find`/`gre
 | `dev-yard analyze` | 只读核对：技能写 `ANALYZE.md` 的定性部分，宿主盖上编号覆盖；规格用了 `FR-` / `US` 编号时，CRITICAL 会拦住 `req freeze` |
 | `dev-yard implement` | implement + tdd + codebase-design（`dev.tdd=false` 时不加载 tdd）。`--until-done` 按依赖逐张实现、审查、按意见修改并合并，直到全部票完成或某张卡住；不跑契约审查、不提测。网页按钮是「一次性实现」 |
 | `dev-yard review` | code-review |
-| `dev-yard run <stage>` | 插件阶段，以及 grill/spec/tickets（`dev-yard stages` 可查）。`open` / `implement` / `review` / `contract` / `qa-design` / `qa-run` / `test` 走专用命令 |
+| `dev-yard review --ui` / `dev-yard ui-review` | ui-review：对照需求文档、`uploads/` HTML 原型与原型图截图审查前端代码还原度；未通过自动拆 `source: ui` 修复票 |
+| `dev-yard implement --from-ui` | 修就绪的原型/UI 修复票（B 票） |
+| `dev-yard run <stage>` | 插件阶段，以及 grill/spec/tickets（`dev-yard stages` 可查）。`open` / `implement` / `review` / `ui-review` / `contract` / `qa-design` / `qa-run` / `test` 走专用命令 |
 | `dev-yard req submit-test` | 提测：把冻结分支 push 到远端，再 merge 进各仓 `test_branch` 并 push（缺 `test_branch` 的仓跳过）；幂等可重入，冲突时默认用 implement 模型消解（`--no-resolve` 关闭，`--all` 全量重推） |
 | `dev-yard req pull <JIRA> [repos...]` | 不跑 agent；fetch 远端后把各仓 worktree 更新到**自己的**远端分支 `origin/<freeze_branch>`（默认 `--strategy ff-only`，分叉时用 merge/rebase）；与「同步远端」（更新到 `default_base`）不同。web 需求页有对应「拉取远端分支」按钮 |
 | `dev-yard req export <JIRA>` | 不跑 agent；把需求导成 bundle（`reqs/<JIRA>/` 文档去掉 `worktrees/` + 每仓一个 `git bundle`：freeze 分支与在途票分支）到 `-o/--output` 目录或 `--archive` 的 `.tar.gz`；默认**瘦包**（`--not origin/<default_base>`，还原需能 fetch 远端 base），base 只有本地 ref 时自动全量；`--full` 强制自包含（离线可还原，体积大）；worktree 有未提交改动时默认拒绝，`--snapshot` 先 `commit_all` 再导；STATUS.yaml 里的绝对 worktree 路径会被剥掉；`--accounts` 附带 `.yard-qa` 账号（明文密钥，默认不带） |

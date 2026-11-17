@@ -50,7 +50,7 @@ GUARD_EXTENSION = "yard-guard.ts"
 # Pi extension that registers submit_review for the review and contract stages.
 REVIEW_EXTENSION = "yard-review.ts"
 REVIEW_VERDICT_TOOL = "submit_review"
-STRUCTURED_REVIEW_STAGES = frozenset({"review", "contract"})
+STRUCTURED_REVIEW_STAGES = frozenset({"review", "contract", "ui-review"})
 # Loaded only for doc-align. pi's write tool has no path allow-list of its own.
 DOC_ALIGN_EXTENSION = "yard-doc-align.ts"
 
@@ -115,6 +115,11 @@ _GUIDANCE = {
         "Do not add CONTEXT.md or docs/adr to the business repo."
     ),
     "review": "Do not implement; report Standards and Spec axes.",
+    "ui-review": (
+        "Do not implement; review frontend code against requirement docs, "
+        "HTML prototypes, and UI screenshots. Report layout, field, and interaction gaps. "
+        "Call submit_review exactly once with verdict passed or failed."
+    ),
     "contract": (
         "Do not implement; report Spec contract gaps across worktrees. "
         "Treat REQUIREMENT.md as the product source of truth for behavior and "
@@ -221,25 +226,32 @@ BUILTIN_STAGES: dict[str, StageSpec] = {
             order=55,
         ),
         _spec(
+            "ui-review",
+            "ui-review",
+            ("ui-review",),
+            ("read", "grep", "find", "ls", REVIEW_VERDICT_TOOL),
+            order=56,
+        ),
+        _spec(
             "contract",
             "code-review",
             ("code-review",),
             ("read", "grep", "find", "ls", REVIEW_VERDICT_TOOL),
-            order=56,
+            order=57,
         ),
         _spec(
             "qa-design",
             "qa-design",
             ("qa-design",),
             ("read", "bash", "grep", "find", "ls", "edit", "write"),
-            order=57,
+            order=58,
         ),
         _spec(
             "qa-run",
             "qa-run",
             ("qa-run",),
             ("read", "bash", "grep", "find", "ls", "edit", "write"),
-            order=58,
+            order=59,
         ),
     )
 }

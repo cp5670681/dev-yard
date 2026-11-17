@@ -417,6 +417,38 @@ def build(ctx: AppContext) -> APIRouter:
             "error": auto_error,
         }
 
+    @router.post("/api/requirements/{jira}/ui/review")
+    def api_ui_review_override(jira: str, payload: ContractReviewIn):
+        if paths.is_reserved_req_name(jira):
+            raise HTTPException(404, f"no requirement {jira}")
+        try:
+            updated = yard_service.ui_review_override(
+                ctx.root,
+                jira,
+                verdict=payload.verdict,
+                summary=payload.summary,
+                findings=payload.findings or None,
+            )
+        except (ValueError, GitError, KeyError, FileNotFoundError) as e:
+            raise HTTPException(400, str(e)) from e
+
+        job_snapshots = []
+        auto_error = None
+        norm = payload.verdict.strip().lower()
+        if norm in {"failed", "fail", "blocked"} and payload.auto_implement:
+            try:
+                submitted = ctx.submit_action("fix-ui", jira, None, extra={})
+                job_snapshots = [j.snapshot() for j in submitted]
+            except ValueError as e:
+                auto_error = str(e)
+
+        return {
+            "jira": jira,
+            "ui_review": updated,
+            "jobs": job_snapshots,
+            "error": auto_error,
+        }
+
     @router.get("/api/requirements/{jira}/diff")
     def api_req_diff(jira: str):
         if paths.is_reserved_req_name(jira):

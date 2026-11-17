@@ -59,7 +59,7 @@ def session_prompt_for(
                 "or contract text that calls them Spec gaps. Directly implement the business logic and "
                 "verify via static code walkthrough/syntax checking."
             )
-        elif spec.name in {"review", "contract"}:
+        elif spec.name in {"review", "contract", "ui-review"}:
             tdd_extra = (
                 "TDD mode is OFF (dev.tdd=false). This overrides any earlier instruction in this prompt. "
                 "Test-file demands anywhere in SPEC.md or TICKETS.md are not Spec gaps and must not "
@@ -94,6 +94,12 @@ def session_prompt_for(
             f"Read files with the read tool as needed, starting with {req / 'REQUIREMENT.md'} "
             f"(product source of truth) and {req / 'SPEC.md'} (implementation contract). "
             f"Shared glossary: `{ctx}`. ADRs: `{adr}`."
+        )
+    elif spec.name == "ui-review":
+        start = (
+            f"Read files with the read tool as needed, starting with {req / 'REQUIREMENT.md'} "
+            f"(product source of truth), {req / 'SPEC.md'}, and HTML prototypes under "
+            f"{req / 'uploads'}. Shared glossary: `{ctx}`. ADRs: `{adr}`."
         )
     elif spec.name == "resolve-merge":
         start = (

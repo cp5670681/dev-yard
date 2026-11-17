@@ -2221,6 +2221,10 @@ _CLAIM = {
         "implementing",
         {"ready", "blocked", "implementing"},
     ),
+    "fix-ui": (
+        "implementing",
+        {"ready", "blocked", "implementing"},
+    ),
 }
 
 _FROM_CONTRACT_STATES = {
@@ -2240,6 +2244,7 @@ def _implement_prompt_extra(
     last_summary: str | None,
     contract_summary: str | None = None,
     test_report: str | None = None,
+    ui_summary: str | None = None,
     finding: str = "",
     sync_conflict: str | None = None,
     prior_verdict: str | None = None,
@@ -2253,7 +2258,7 @@ def _implement_prompt_extra(
             "先解决所有冲突并保留兄弟票已合并的改动，再完成本票改动；"
             f"完成后一并提交。\n{sync_conflict}"
         )
-    if contract_summary or test_report:
+    if contract_summary or test_report or ui_summary:
         scope = f"finding {finding}" if finding else f"ticket {tid}"
         extra += (
             f" Fix only {scope}; do not implement sibling bug tickets. "
@@ -2505,7 +2510,7 @@ def ticket_delete(root: Path, jira: str, ticket_id: str) -> dict[str, Any]:
         ticket = tickets.get(ticket_id)
         if ticket is None:
             raise FileNotFoundError(f"no ticket {ticket_id}")
-        if ticket.source not in {"contract", "test", "review"}:
+        if ticket.source not in {"contract", "test", "review", "ui"}:
             raise ValueError(f"{ticket_id} 不是 bug 票，不能删除")
         data = st.sync_tickets(st.load(root, jira), list(tickets.values()))
         st.refresh_ready(data)
@@ -2578,10 +2583,20 @@ def implement(
     runner: Runner | None = None,
     from_contract: bool = False,
     from_test: bool = False,
+    from_ui: bool = False,
     force: bool = False,
 ) -> list[str]:
-    if from_contract and from_test:
-        raise ValueError("from_contract and from_test are mutually exclusive")
+    selected = [
+        name
+        for name, val in [
+            ("from_contract", from_contract),
+            ("from_test", from_test),
+            ("from_ui", from_ui),
+        ]
+        if val
+    ]
+    if len(selected) > 1:
+        raise ValueError(f"{' and '.join(selected)} are mutually exclusive")
     req = paths.req_dir(root, jira)
     tickets = {t.id: t for t in load_tickets(req)}
     test_body = ""
@@ -2591,6 +2606,7 @@ def implement(
         if not dry_run:
             st.save(root, jira, data)
         contract_summary = (data.get("contract_summary") or "").strip()
+        ui_summary = (data.get("ui_summary") or "").strip()
         ts = data.get("test") if isinstance(data.get("test"), dict) else {}
         parts = [str(ts.get("summary") or "").strip(), str(ts.get("body") or "").strip()]
         findings = ts.get("findings")
@@ -2609,8 +2625,11 @@ def implement(
         if from_contract:
             if not contract_summary:
                 raise ValueError("no contract_summary; run review --contract first")
-    if from_contract or from_test:
-        kind = "contract" if from_contract else "test"
+        if from_ui:
+            if not ui_summary:
+                raise ValueError("no ui_summary; run review --ui first")
+    if from_contract or from_test or from_ui:
+        kind = "contract" if from_contract else ("ui" if from_ui else "test")
         spawned = spawn_fix_tickets_result(root, jira, kind, persist=not dry_run)
         tickets = {t.id: t for t in load_tickets(req)}
         for t in spawned.tickets:
@@ -2622,13 +2641,17 @@ def implement(
         targets = (
             from_contract_ids(tickets, ids, data)
             if from_contract
-            else fix_ticket_ids(tickets, ids, data, "test")
+            else fix_ticket_ids(tickets, ids, data, kind)
         )
         if from_test and not ids and not targets:
             raise ValueError("no ready test bug tickets; submit bugs first")
         if from_contract and not ids and not targets:
             raise ValueError(
                 "no ready contract bug tickets; run a failed contract review first"
+            )
+        if from_ui and not ids and not targets:
+            raise ValueError(
+                "no ready ui bug tickets; run a failed ui review first"
             )
         if ids and not targets:
             raise ValueError(
@@ -2641,10 +2664,16 @@ def implement(
     extra = attachments.with_images(root, jira, [req / "SPEC.md", req / "TICKETS.md"])
     allowed = (
         _FROM_CONTRACT_STATES
-        if (from_contract or from_test) and ids
+        if (from_contract or from_test or from_ui) and ids
         else {"ready", "blocked", "implementing"}
     )
-    skip_state_check = bool(force) and ids is not None and not from_contract and not from_test
+    skip_state_check = (
+        bool(force)
+        and ids is not None
+        and not from_contract
+        and not from_test
+        and not from_ui
+    )
     for tid in targets:
         t = tickets.get(tid)
         if not t:
@@ -2672,9 +2701,9 @@ def implement(
             if not isinstance(prior_verdict, str):
                 prior_verdict = None
             was_blocked = slot.get("state") == "blocked"
-            was_fix_ticket = slot.get("source") in {"contract", "test", "review"}
+            was_fix_ticket = slot.get("source") in {"contract", "test", "review", "ui"}
             slot["state"] = "implementing"
-            if from_contract and data.get("phase") == "done":
+            if (from_contract or from_ui) and data.get("phase") == "done":
                 data["phase"] = "frozen"
             if from_test and data.get("phase") == "testing":
                 data["phase"] = "frozen"
@@ -2705,6 +2734,7 @@ def implement(
                 last_summary,
                 contract_summary if from_contract else None,
                 test_report=test_body if from_test else None,
+                ui_summary=ui_summary if from_ui else None,
                 finding=t.finding,
                 sync_conflict=sync_conflict,
                 prior_verdict=prior_verdict,
@@ -2851,21 +2881,92 @@ def review(
     jira: str,
     ids: list[str] | None,
     contract: bool = False,
+    ui: bool = False,
     dry_run: bool = False,
     print_mode: bool = False,
     runner: Runner | None = None,
 ) -> list[str]:
+    if contract and ui:
+        raise ValueError("contract and ui are mutually exclusive")
     req = paths.req_dir(root, jira)
     tickets = {t.id: t for t in load_tickets(req)}
     with st.jira_lock(jira):
         data = st.sync_tickets(st.load(root, jira), list(tickets.values()))
         if not dry_run:
             st.save(root, jira, data)
+    stage_name = "contract" if contract else ("ui-review" if ui else "review")
     runner = runner or get_runner(
-        root, "contract" if contract else "review", dry_run=dry_run, print_mode=print_mode
+        root, stage_name, dry_run=dry_run, print_mode=print_mode
     )
     extra = attachments.with_images(root, jira, [req / "SPEC.md", req / "TICKETS.md"])
     ran: list[str] = []
+    if ui:
+        extra = [req / "REQUIREMENT.md", *extra]
+        aliases = list(data.get("repos") or [])
+        if not aliases:
+            raise ValueError("no repos in STATUS.yaml; freeze first")
+        repos = load_repos(root)
+        saved_bases = _saved_bases(data)
+        wt_lines: list[str] = []
+        wt_paths: list[Path] = []
+        diffs: list[str] = []
+        for alias in aliases:
+            wt = paths.req_worktree(root, jira, alias)
+            if not wt.exists():
+                raise ValueError(f"missing worktree {wt}; freeze first")
+            wt_paths.append(wt)
+            repo = repos.get(alias)
+            role_hint = f" (role: {repo.role})" if repo and repo.role else ""
+            default_base = repo.default_base if repo else "main"
+            base = gitops.freeze_base(wt, default_base, saved_bases.get(alias))
+            wt_lines.append(
+                f"- {alias}{role_hint}: {wt}  (diff vs freeze point {base}, already inlined below)"
+            )
+            diffs.append(f"### {alias}\n{_diff_vs_base(wt, default_base, base)}")
+        listed = "\n".join(wt_lines)
+        prompt = session_prompt(
+            root,
+            "ui-review",
+            jira,
+            extra=(
+                "Mode: --ui. Review implemented frontend code against REQUIREMENT.md, "
+                "SPEC.md, HTML prototypes, and UI screenshot attachments.\n"
+                "Focus on frontend code and user interfaces: check element completeness, "
+                "form inputs, table columns, button labels, visibility/disabled linkage, "
+                "dialog triggers, and copywriting consistency.\n"
+                "Report layout or interaction gaps between the implementation and prototypes.\n"
+                "After the written report, call submit_review exactly once with verdict passed or failed.\n"
+                "If there are UI/prototype gaps, pass them as submit_review findings:\n"
+                "  id, title, repo (<repos.yaml alias>), detail,\n"
+                "  files (paths whose code you cite; omit for missing code),\n"
+                "  depends_on (other finding ids, if this fix must wait).\n"
+                f"Worktrees:\n{listed}\n\n"
+                + "\n\n".join(diffs)
+            ),
+        )
+        result = runner.start(prompt, root, extra + wt_paths)
+        if dry_run:
+            return ["__ui__"]
+        rejected = result.verdict == "failed"
+        with st.jira_lock(jira):
+            data = st.load(root, jira)
+            if not _review_blocked(result):
+                data["ui_review"] = "passed"
+            elif rejected:
+                data["ui_review"] = "failed"
+            else:
+                data["ui_review"] = "inconclusive"
+            data["ui_summary"] = result.summary
+            if result.verdict is not None:
+                data["ui_findings"] = normalize_findings(result.findings or [])
+            else:
+                parsed_findings = parse_findings_from_summary(result.summary or "")
+                if parsed_findings:
+                    data["ui_findings"] = parsed_findings
+            st.save(root, jira, data)
+        if rejected:
+            spawn_fix_tickets(root, jira, "ui")
+        return ["__ui__"]
     if contract:
         # REQUIREMENT.md is the product source of truth; without it the reviewer
         # flags code that faithfully implements an explicit product rule (e.g. a
@@ -2885,10 +2986,11 @@ def review(
                 raise ValueError(f"missing worktree {wt}; freeze first")
             wt_paths.append(wt)
             repo = repos.get(alias)
+            role_hint = f" (role: {repo.role})" if repo and repo.role else ""
             default_base = repo.default_base if repo else "main"
             base = gitops.freeze_base(wt, default_base, saved_bases.get(alias))
             wt_lines.append(
-                f"- {alias}: {wt}  (diff vs freeze point {base}, already inlined below)"
+                f"- {alias}{role_hint}: {wt}  (diff vs freeze point {base}, already inlined below)"
             )
             diffs.append(f"### {alias}\n{_diff_vs_base(wt, default_base, base)}")
         listed = "\n".join(wt_lines)
@@ -3446,6 +3548,43 @@ def contract_review_override(
         return {
             "contract_review": data.get("contract_review"),
             "contract_summary": data.get("contract_summary"),
+        }
+
+
+def ui_review_override(
+    root: Path,
+    jira: str,
+    verdict: str,
+    summary: str | None = None,
+    findings: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    norm_verdict = (verdict or "").strip().lower()
+    if norm_verdict in {"pass", "passed", "ok", "done"}:
+        norm_verdict = "passed"
+    elif norm_verdict in {"fail", "failed", "blocked"}:
+        norm_verdict = "failed"
+    else:
+        raise ValueError(f"invalid verdict {verdict!r}; must be 'passed' or 'failed'")
+
+    with st.jira_lock(jira):
+        data = st.load(root, jira)
+        data["ui_review"] = norm_verdict
+        if summary is not None:
+            data["ui_summary"] = summary.strip()
+        if findings:
+            from dev_yard.bug_tickets import normalize_findings
+
+            data["ui_findings"] = normalize_findings(findings)
+        elif norm_verdict == "failed":
+            parsed = parse_findings_from_summary(data.get("ui_summary") or "")
+            if parsed:
+                data["ui_findings"] = parsed
+        st.save(root, jira, data)
+        if norm_verdict == "failed":
+            spawn_fix_tickets(root, jira, "ui")
+        return {
+            "ui_review": data.get("ui_review"),
+            "ui_summary": data.get("ui_summary"),
         }
 
 

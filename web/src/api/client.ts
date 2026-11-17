@@ -565,6 +565,19 @@ export function submitContractReview(
   );
 }
 
+export function submitUiReview(
+  jira: string,
+  payload: ContractReviewIn,
+) {
+  return api<{ jira: string; ui_review: any; jobs: JobSnapshot[]; error?: string | null }>(
+    `/api/requirements/${encodeURIComponent(jira)}/ui/review`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
 export function getJiraSubtasksPreview(jira: string) {
   return api<JiraSubtasksPreview>(
     `/api/requirements/${encodeURIComponent(jira)}/jira-subtasks/preview`,

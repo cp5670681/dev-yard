@@ -33,6 +33,8 @@ BOARD_ACTIONS: tuple[ActionSpec, ...] = (
     ActionSpec("implement-all", "一次性实现"),
     ActionSpec("review", "审查"),
     ActionSpec("merge", "合并"),
+    ActionSpec("ui-review", "原型核对"),
+    ActionSpec("fix-ui", "按原型修复"),
     ActionSpec("contract", "契约审查"),
     ActionSpec("fix-contract", "按契约修"),
     ActionSpec("submit-test", "提测"),
@@ -67,5 +69,5 @@ HOST_JOB_ACTIONS: frozenset[str] = JOB_ACTIONS
 # a child). Either one beside `review` can lock the ref and get recorded as a
 # content conflict on the other ticket.
 TICKET_ACTIONS: frozenset[str] = frozenset(
-    {"implement", "review", "fix-contract", "fix-test"}
+    {"implement", "review", "fix-contract", "fix-test", "fix-ui"}
 )

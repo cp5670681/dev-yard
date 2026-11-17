@@ -42,13 +42,13 @@
             {{ TICKET_STATE_LABELS[ticket.state] || ticket.state }}
           </v-chip>
           <v-chip
-            v-if="ticket.source === 'test' || ticket.source === 'contract' || ticket.source === 'review'"
+            v-if="ticket.source === 'test' || ticket.source === 'contract' || ticket.source === 'review' || ticket.source === 'ui'"
             size="x-small"
-            :color="ticket.source === 'test' ? 'warning' : ticket.source === 'review' ? 'info' : 'error'"
+            :color="ticket.source === 'test' ? 'warning' : ticket.source === 'review' ? 'info' : ticket.source === 'ui' ? 'purple' : 'error'"
             variant="tonal"
             class="px-0.5 font-weight-bold text-caption"
           >
-            {{ ticket.source === "test" ? "bug" : ticket.source === "review" ? "缺口" : "契约" }}
+            {{ ticket.source === "test" ? "bug" : ticket.source === "review" ? "缺口" : ticket.source === "ui" ? "原型" : "契约" }}
           </v-chip>
           <a
             v-if="ticket.source === 'test' && caseId"
@@ -536,10 +536,10 @@ const isRunning = computed(() => {
   );
 });
 
-// Only not-yet-started bug tickets (contract/test/review) can be dropped.
+// Only not-yet-started bug tickets (contract/test/review/ui) can be dropped.
 const canDelete = computed(() => {
   const t = props.ticket;
-  if (t.source !== "contract" && t.source !== "test" && t.source !== "review") return false;
+  if (t.source !== "contract" && t.source !== "test" && t.source !== "review" && t.source !== "ui") return false;
   if (t.state !== "pending" && t.state !== "ready") return false;
   return !isRunning.value;
 });

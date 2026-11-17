@@ -1090,8 +1090,10 @@ def default_execute(root: Path, job: Job) -> None:
         "implement": "implement",
         "review": "review",
         "contract": "contract",
+        "ui-review": "ui-review",
         "fix-contract": "implement",
         "fix-test": "implement",
+        "fix-ui": "implement",
     }.get(job.action)
     if bundle is None:
         raise ValueError(f"unknown action {job.action}")
@@ -1107,7 +1109,7 @@ def default_execute(root: Path, job: Job) -> None:
             raise RuntimeError(f"{job.action} failed")
         job.append(f"{job.action} finished")
         return
-    if job.action in {"implement", "fix-contract", "fix-test"}:
+    if job.action in {"implement", "fix-contract", "fix-test", "fix-ui"}:
         ran = service.implement(
             root,
             job.jira,
@@ -1116,6 +1118,7 @@ def default_execute(root: Path, job: Job) -> None:
             runner=runner,
             from_contract=job.action == "fix-contract",
             from_test=job.action == "fix-test",
+            from_ui=job.action == "fix-ui",
         )
         job.append("ran: " + (", ".join(ran) if ran else "(none)"))
         return
@@ -1124,6 +1127,12 @@ def default_execute(root: Path, job: Job) -> None:
             root, job.jira, job.ticket_ids, print_mode=True, runner=runner
         )
         job.append("reviewed: " + (", ".join(ran) if ran else "(none)"))
+        return
+    if job.action == "ui-review":
+        ran = service.review(
+            root, job.jira, None, ui=True, print_mode=True, runner=runner
+        )
+        job.append("ui-review: " + (", ".join(ran) if ran else "(none)"))
         return
     ran = service.review(
         root, job.jira, None, contract=True, print_mode=True, runner=runner

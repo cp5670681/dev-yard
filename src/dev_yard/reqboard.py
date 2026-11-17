@@ -68,9 +68,11 @@ ACTION_STAGES = {
     "implement": "implement",
     "implement-all": "implement",
     "review": "review",
+    "ui-review": "review",
     "merge": "review",
     "contract": "review",
     "fix-contract": "review",
+    "fix-ui": "review",
     "submit-test": "testing",
     "qa-design": "testing",
     "qa-review": "testing",
@@ -154,6 +156,9 @@ class ReqDetail:
     uploads: list[str]
     contract: str | None
     contract_summary: str | None
+    ui_review: str | None = None
+    ui_summary: str | None = None
+    ui_findings: list[dict] = field(default_factory=list)
     test: dict | None = None
     repos: list[str] = field(default_factory=list)
     stage_runs: dict = field(default_factory=dict)
@@ -293,6 +298,7 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
             qa.get("has_cases") and not ((qa.get("review") or {}).get("approved"))
         ),
         coverage_blocked=coverage_blocked,
+        ui_review=data.get("ui_review"),
     )
     steps = _steps(phase, docs, tickets, awaiting, data.get("contract_review"), test)
     detail = ReqDetail(
@@ -309,6 +315,9 @@ def requirement_detail(root: Path, jira: str) -> ReqDetail | None:
         uploads=attachments.list_names(root, jira),
         contract=data.get("contract_review"),
         contract_summary=data.get("contract_summary"),
+        ui_review=data.get("ui_review"),
+        ui_summary=data.get("ui_summary"),
+        ui_findings=list(data.get("ui_findings") or []),
         test=test,
         repos=list(data.get("repos") or []),
         stage_runs=dict(data.get("stage_runs") or {}),
@@ -431,6 +440,10 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
         detail.contract == "failed"
         or any(t.source == "contract" and t.can_implement for t in detail.tickets)
     )
+    can_fix_ui = frozen and (
+        detail.ui_review == "failed"
+        or any(t.source == "ui" and t.can_implement for t in detail.tickets)
+    )
     can_transfer_worktree = (
         detail.phase in {"frozen", "done", "testing"}
     ) and has_worktrees
@@ -537,6 +550,18 @@ def available_actions(detail: ReqDetail, root: Path) -> list[Action]:
             ""
             if any(t.state == "approved" for t in detail.tickets)
             else "没有已通过、待合并的票",
+        ),
+        Action(
+            "ui-review",
+            ACTION_LABELS["ui-review"],
+            frozen and has_worktrees,
+            "" if frozen and has_worktrees else "需要先 freeze 创建 worktree",
+        ),
+        Action(
+            "fix-ui",
+            ACTION_LABELS["fix-ui"],
+            can_fix_ui,
+            "" if can_fix_ui else "需要原型核对 failed 或有待实现的 UI 修复票",
         ),
         Action(
             "contract",
@@ -745,6 +770,7 @@ def _next_label(
     has_cases: bool = False,
     review_pending: bool = False,
     coverage_blocked: bool = False,
+    ui_review: str | None = None,
 ) -> str:
     by_slug = {d.slug: d for d in docs}
     if st.pipeline_complete({"phase": phase, "test": test}):
@@ -753,10 +779,12 @@ def _next_label(
     # implement shortcuts run against the parent, so they must not hide merge.
     if any(t.state == "approved" for t in tickets):
         return "merge"
+    if any(t.source == "ui" and t.state in _IMPLEMENT_STATES for t in tickets):
+        return "fix-ui"
     ready_bugs = any(
         t.source == "test" and t.state in _IMPLEMENT_STATES for t in tickets
     )
-    open_bugs = any(t.source == "test" and t.state != "done" for t in tickets)
+    open_bugs = any(t.source in {"test", "ui"} and t.state != "done" for t in tickets)
     if ready_bugs:
         return "fix-test"
     if open_bugs:
@@ -770,7 +798,13 @@ def _next_label(
             return "qa-run"
         return "fill-test-report"
     if tickets and all(t.state == "done" for t in tickets):
-        return "submit-test" if contract == "passed" else "contract"
+        if ui_review == "failed":
+            return "fix-ui"
+        if contract == "passed":
+            return "submit-test"
+        if ui_review is None:
+            return "ui-review"
+        return "contract"
     if any(t.state in _REVIEW_STATES for t in tickets):
         return "review"
     if phase in {"frozen", "done", "testing"}:

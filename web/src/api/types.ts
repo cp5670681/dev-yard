@@ -182,6 +182,10 @@ export interface ReqDetail {
   contract: string | null;
   contract_summary: string | null;
   contract_summary_html?: string;
+  ui_review?: string | null;
+  ui_summary?: string | null;
+  ui_summary_html?: string;
+  ui_findings?: { id?: string; title?: string; detail?: string; repo?: string }[];
   test: {
     status?: string;
     latest_id?: string;
